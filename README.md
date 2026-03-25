@@ -25,13 +25,13 @@ Raspberry Pi 5 uzerinde calisan kapsamli ag guvenligi ve yonetim paneli.
 ## Hizli Kurulum (Pi5 uzerinde)
 
 ```bash
-sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/akane/Pi5/main/install.sh)"
+sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/Ea2601/Pi5/main/install.sh)"
 ```
 
 veya:
 
 ```bash
-git clone https://github.com/akane/Pi5.git
+git clone https://github.com/Ea2601/Pi5.git
 cd Pi5
 sudo chmod +x install.sh
 sudo ./install.sh

@@ -6,10 +6,10 @@ set -e
 # ║                                                              ║
 # ║  Kullanım:                                                   ║
 # ║    curl -fsSL https://raw.githubusercontent.com/             ║
-# ║      akane/Pi5/main/install.sh | bash                        ║
+# ║      Ea2601/Pi5/main/install.sh | bash                        ║
 # ║                                                              ║
 # ║  veya:                                                       ║
-# ║    git clone https://github.com/akane/Pi5.git                ║
+# ║    git clone https://github.com/Ea2601/Pi5.git                ║
 # ║    cd Pi5 && chmod +x install.sh && ./install.sh             ║
 # ╚══════════════════════════════════════════════════════════════╝
 
@@ -68,7 +68,7 @@ if [ -d "$INSTALL_DIR" ]; then
   cd "$INSTALL_DIR"
   git pull --rebase 2>/dev/null || true
 else
-  git clone https://github.com/akane/Pi5.git "$INSTALL_DIR"
+  git clone https://github.com/Ea2601/Pi5.git "$INSTALL_DIR"
   cd "$INSTALL_DIR"
 fi
 log "Proje dosyaları hazır: $INSTALL_DIR"
