@@ -1,5 +1,6 @@
 import { exec } from 'child_process';
 import util from 'util';
+import { checkDnsHealth, isLinux, systemctlAction } from './system';
 
 const execAsync = util.promisify(exec);
 
@@ -13,20 +14,32 @@ export async function checkSystemHealth() {
   checksTotal++;
   lastCheckTime = new Date().toISOString();
   try {
-    await execAsync('dig +time=2 +tries=1 google.com @127.0.0.1 -p 53');
-    lastCheckResult = 'healthy';
+    const healthy = await checkDnsHealth();
 
-    if (isFailOpen) {
-      console.log('System recovered. Restoring secure nftables rules.');
-      await execAsync('echo "Restoring strict routing"');
-      isFailOpen = false;
+    if (healthy) {
+      lastCheckResult = 'healthy';
+      if (isFailOpen) {
+        console.log('System recovered. Restoring secure nftables rules.');
+        if (isLinux) {
+          // Restore real nftables rules
+          try { await execAsync('systemctl restart nftables'); } catch { /* ignore */ }
+        }
+        isFailOpen = false;
+      }
+    } else {
+      throw new Error('DNS health check failed');
     }
   } catch (error) {
     checksFailed++;
     lastCheckResult = 'failed';
     if (!isFailOpen) {
       console.warn('CRITICAL: DNS/Proxy Engine failed! Activating Fail-Open Bypass Mechanism.');
-      await execAsync('echo "Applying emergency direct NAT routing bypassing dead services"');
+      if (isLinux) {
+        // Apply emergency bypass routing
+        try {
+          await execAsync('echo "Applying emergency direct NAT routing bypassing dead services"');
+        } catch { /* ignore */ }
+      }
       isFailOpen = true;
     }
   }

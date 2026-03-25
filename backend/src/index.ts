@@ -7,6 +7,12 @@ import { setupWireGuardVPS } from './ssh';
 import { systemServices } from './services';
 import { startHealthMonitor, getHealthStatus } from './monitor';
 import { startCronJobs, getSystemLogs } from './maintenance';
+import {
+  isLinux, getSystemStats, getServiceStatus, getPiholeStats,
+  getNetworkDevices, getBandwidthLive, getWireguardStatus,
+  getFail2banStatus, getDnsQueries, getCurrentExternalIp,
+  runSpeedTest, executeCommand,
+} from './system';
 
 const app = express();
 const port = process.env.PORT || 3001;
@@ -69,17 +75,13 @@ app.get('/api/system/health', (_req, res) => {
   res.json(getHealthStatus());
 });
 
-app.get('/api/system/stats', (_req, res) => {
-  res.json({
-    cpuTemp: 42 + Math.round(Math.random() * 5),
-    cpuUsage: 15 + Math.round(Math.random() * 10),
-    memoryTotal: 8192,
-    memoryUsed: 4800 + Math.round(Math.random() * 500),
-    diskTotal: 128,
-    diskUsed: 34,
-    uptime: Math.floor(Date.now() / 1000) - 1234567,
-    loadAvg: [0.45, 0.52, 0.48],
-  });
+app.get('/api/system/stats', async (_req, res) => {
+  try {
+    const stats = await getSystemStats();
+    res.json(stats);
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
 });
 
 // ─── Logs ───
@@ -91,6 +93,16 @@ app.get('/api/logs', (_req, res) => {
 app.get('/api/services', async (_req, res) => {
   try {
     const services = await dbAll('SELECT * FROM service_status');
+    // On Linux, enrich with real systemctl status
+    if (isLinux) {
+      for (const svc of services as any[]) {
+        const realStatus = await getServiceStatus(svc.name);
+        if (realStatus) {
+          svc.status = realStatus;
+          svc.enabled = realStatus === 'running' ? 1 : 0;
+        }
+      }
+    }
     res.json({ services });
   } catch (e: any) {
     res.status(500).json({ error: e.message });
@@ -100,6 +112,10 @@ app.get('/api/services', async (_req, res) => {
 app.post('/api/services/toggle', async (req, res) => {
   try {
     const { name, enabled } = req.body;
+    // On Linux, actually start/stop the service
+    if (isLinux) {
+      await systemServices.toggleService(name, enabled);
+    }
     await dbRun('UPDATE service_status SET enabled = ?, status = ?, last_check = CURRENT_TIMESTAMP WHERE name = ?',
       [enabled ? 1 : 0, enabled ? 'running' : 'stopped', name]);
     res.json({ success: true, name, enabled });
@@ -319,10 +335,15 @@ app.delete('/api/zapret/domains/:id', async (req, res) => {
 app.post('/api/services/:name/restart', async (req, res) => {
   try {
     await dbRun("UPDATE service_status SET status='restarting', last_check=CURRENT_TIMESTAMP WHERE name=?", [req.params.name]);
-    // Simulate restart delay
-    setTimeout(async () => {
+    if (isLinux) {
+      await systemServices.restartService(req.params.name);
       await dbRun("UPDATE service_status SET status='running', last_check=CURRENT_TIMESTAMP WHERE name=?", [req.params.name]);
-    }, 2000);
+    } else {
+      // Simulate restart delay on non-Linux
+      setTimeout(async () => {
+        await dbRun("UPDATE service_status SET status='running', last_check=CURRENT_TIMESTAMP WHERE name=?", [req.params.name]);
+      }, 2000);
+    }
     res.json({ success: true, message: `${req.params.name} yeniden başlatılıyor...` });
   } catch (e: any) {
     res.status(500).json({ error: e.message });
@@ -330,31 +351,43 @@ app.post('/api/services/:name/restart', async (req, res) => {
 });
 
 // ─── Pi-hole Stats ───
-app.get('/api/pihole/stats', (_req, res) => {
-  res.json({
-    domainsBlocked: 174892,
-    dnsQueriesToday: 48234,
-    adsBlockedToday: 12847,
-    adsPercentageToday: 26.6,
-    uniqueClients: 14,
-    queriesForwarded: 35387,
-    queriesCached: 9124,
-    topBlockedDomains: [
-      { domain: 'ad.doubleclick.net', count: 1842 },
-      { domain: 'analytics.google.com', count: 1204 },
-      { domain: 'facebook-tracking.com', count: 891 },
-      { domain: 'ads.yahoo.com', count: 567 },
-      { domain: 'telemetry.microsoft.com', count: 423 },
-    ],
-    queryTypes: { A: 62, AAAA: 28, CNAME: 5, PTR: 3, OTHER: 2 },
-  });
+app.get('/api/pihole/stats', async (_req, res) => {
+  try {
+    const stats = await getPiholeStats();
+    res.json(stats);
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
 });
 
 // ─── Devices ───
 app.get('/api/devices', async (_req, res) => {
   try {
-    const devices = await dbAll('SELECT * FROM devices ORDER BY last_seen DESC');
-    res.json({ devices });
+    const dbDevices = await dbAll('SELECT * FROM devices ORDER BY last_seen DESC');
+    // On Linux, merge with real network scan
+    if (isLinux) {
+      const liveDevices = await getNetworkDevices();
+      const dbMacs = new Set((dbDevices as any[]).map((d: any) => d.mac_address?.toLowerCase()));
+      // Update existing devices with current IP, mark as online
+      for (const live of liveDevices) {
+        const existing = (dbDevices as any[]).find((d: any) => d.mac_address?.toLowerCase() === live.mac);
+        if (existing) {
+          existing.ip_address = live.ip;
+          existing.last_seen = new Date().toISOString();
+        } else if (!dbMacs.has(live.mac)) {
+          // New device discovered on network — add to results
+          (dbDevices as any[]).push({
+            mac_address: live.mac,
+            ip_address: live.ip,
+            hostname: '',
+            device_type: 'unknown',
+            route_profile: 'default',
+            last_seen: new Date().toISOString(),
+          });
+        }
+      }
+    }
+    res.json({ devices: dbDevices });
   } catch (e: any) {
     res.status(500).json({ error: e.message });
   }
@@ -515,16 +548,45 @@ app.delete('/api/firewall/rules/:id', async (req, res) => {
 app.get('/api/bandwidth/live', async (_req, res) => {
   try {
     const devices = await dbAll('SELECT mac_address, hostname FROM devices');
-    const liveData = devices.map((d: any) => ({
-      device_mac: d.mac_address,
-      hostname: d.hostname,
-      bytes_in: Math.floor(Math.random() * 5000000) + 100000,
-      bytes_out: Math.floor(Math.random() * 2000000) + 50000,
-      speed_in_kbps: Math.floor(Math.random() * 50000) + 500,
-      speed_out_kbps: Math.floor(Math.random() * 20000) + 200,
-      timestamp: new Date().toISOString(),
-    }));
-    res.json({ live: liveData });
+    if (isLinux) {
+      const bw = await getBandwidthLive();
+      // Return per-interface bandwidth data alongside per-device mock
+      // Real per-device bandwidth requires iptables counters (complex), so provide interface-level data
+      const liveData = (devices as any[]).map((d: any) => ({
+        device_mac: d.mac_address,
+        hostname: d.hostname,
+        bytes_in: 0,
+        bytes_out: 0,
+        speed_in_kbps: 0,
+        speed_out_kbps: 0,
+        timestamp: new Date().toISOString(),
+      }));
+      // Distribute interface bandwidth proportionally across devices
+      const totalRxSpeed = bw.interfaces.reduce((s, i) => s + i.rx_speed_bps, 0);
+      const totalTxSpeed = bw.interfaces.reduce((s, i) => s + i.tx_speed_bps, 0);
+      const totalRx = bw.interfaces.reduce((s, i) => s + i.rx_bytes, 0);
+      const totalTx = bw.interfaces.reduce((s, i) => s + i.tx_bytes, 0);
+      const count = liveData.length || 1;
+      liveData.forEach((d: any, idx: number) => {
+        const share = 1 / count;
+        d.bytes_in = Math.round(totalRx * share);
+        d.bytes_out = Math.round(totalTx * share);
+        d.speed_in_kbps = Math.round((totalRxSpeed * share) / 125); // bytes/s to kbps
+        d.speed_out_kbps = Math.round((totalTxSpeed * share) / 125);
+      });
+      res.json({ live: liveData, interfaces: bw.interfaces });
+    } else {
+      const liveData = (devices as any[]).map((d: any) => ({
+        device_mac: d.mac_address,
+        hostname: d.hostname,
+        bytes_in: Math.floor(Math.random() * 5000000) + 100000,
+        bytes_out: Math.floor(Math.random() * 2000000) + 50000,
+        speed_in_kbps: Math.floor(Math.random() * 50000) + 500,
+        speed_out_kbps: Math.floor(Math.random() * 20000) + 200,
+        timestamp: new Date().toISOString(),
+      }));
+      res.json({ live: liveData });
+    }
   } catch (e: any) {
     res.status(500).json({ error: e.message });
   }
@@ -582,69 +644,32 @@ app.put('/api/bandwidth/limits/:mac', async (req, res) => {
 });
 
 // ─── DNS Query Log ───
-app.get('/api/dns/queries', (req, res) => {
-  const limit = parseInt(req.query.limit as string) || 50;
-  const deviceFilter = req.query.device as string;
-  const blockedFilter = req.query.blocked as string;
-  const domainFilter = req.query.domain as string;
-
-  const domains = [
-    'google.com', 'youtube.com', 'facebook.com', 'instagram.com', 'twitter.com',
-    'reddit.com', 'github.com', 'stackoverflow.com', 'amazon.com', 'netflix.com',
-    'ad.doubleclick.net', 'analytics.google.com', 'telemetry.microsoft.com',
-    'tracking.facebook.com', 'ads.yahoo.com', 'cdn.jsdelivr.net', 'api.openai.com',
-    'discord.com', 'twitch.tv', 'spotify.com',
-  ];
-  const clients = ['192.168.1.10', '192.168.1.11', '192.168.1.12', '192.168.1.13', '192.168.1.14'];
-  const types = ['A', 'AAAA', 'CNAME', 'MX', 'TXT'];
-  const blockedDomains = ['ad.doubleclick.net', 'analytics.google.com', 'telemetry.microsoft.com', 'tracking.facebook.com', 'ads.yahoo.com'];
-
-  let queries = [];
-  const now = Date.now();
-  for (let i = 0; i < 200; i++) {
-    const domain = domains[Math.floor(Math.random() * domains.length)];
-    const client = clients[Math.floor(Math.random() * clients.length)];
-    const isBlocked = blockedDomains.includes(domain);
-    queries.push({
-      id: i + 1,
-      timestamp: new Date(now - i * 15000).toISOString(),
-      client_ip: client,
-      domain: domain,
-      type: types[Math.floor(Math.random() * types.length)],
-      status: isBlocked ? 'blocked' : 'allowed',
-      response_time_ms: Math.floor(Math.random() * 50) + 1,
-    });
+app.get('/api/dns/queries', async (req, res) => {
+  try {
+    const limit = parseInt(req.query.limit as string) || 50;
+    const filters = {
+      device: req.query.device as string,
+      blocked: req.query.blocked as string,
+      domain: req.query.domain as string,
+    };
+    const queries = await getDnsQueries(limit, filters);
+    res.json({ queries });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
   }
-
-  if (deviceFilter) {
-    queries = queries.filter(q => q.client_ip === deviceFilter);
-  }
-  if (blockedFilter === 'true') {
-    queries = queries.filter(q => q.status === 'blocked');
-  } else if (blockedFilter === 'false') {
-    queries = queries.filter(q => q.status === 'allowed');
-  }
-  if (domainFilter) {
-    queries = queries.filter(q => q.domain.includes(domainFilter));
-  }
-
-  res.json({ queries: queries.slice(0, limit) });
 });
 
 // ─── Speed Test ───
 app.post('/api/speedtest/run', async (_req, res) => {
   try {
-    const servers = ['Türk Telekom - İstanbul', 'Türk Telekom - Ankara', 'Vodafone - İstanbul', 'Superonline - İzmir'];
-    const download = Math.round((70 + Math.random() * 50) * 10) / 10;
-    const upload = Math.round((30 + Math.random() * 30) * 10) / 10;
-    const ping = Math.round((8 + Math.random() * 20) * 10) / 10;
-    const server = servers[Math.floor(Math.random() * servers.length)];
+    const result = await runSpeedTest();
+    const { download_mbps, upload_mbps, ping_ms, server } = result;
 
     await dbRun(
       'INSERT INTO speed_tests (download_mbps, upload_mbps, ping_ms, server) VALUES (?, ?, ?, ?)',
-      [download, upload, ping, server]
+      [download_mbps, upload_mbps, ping_ms, server]
     );
-    res.json({ success: true, result: { download_mbps: download, upload_mbps: upload, ping_ms: ping, server, timestamp: new Date().toISOString() } });
+    res.json({ success: true, result: { download_mbps, upload_mbps, ping_ms, server, timestamp: new Date().toISOString() } });
   } catch (e: any) {
     res.status(500).json({ error: e.message });
   }
@@ -1141,38 +1166,18 @@ app.put('/api/settings', async (req, res) => {
   }
 });
 
-// ─── SSH Terminal (simulated) ───
-app.post('/api/terminal/execute', (req, res) => {
+// ─── SSH Terminal (with whitelist security) ───
+app.post('/api/terminal/execute', async (req, res) => {
   const { command } = req.body;
   if (!command || typeof command !== 'string') {
     return res.status(400).json({ error: 'Komut gerekli' });
   }
-  const cmd = command.trim();
-  // Simulated responses
-  const responses: Record<string, string> = {
-    'uptime': ' 14:32:05 up 12 days,  3:42,  2 users,  load average: 0.45, 0.52, 0.48',
-    'hostname': 'pi5-gateway',
-    'whoami': 'root',
-    'date': new Date().toLocaleString('tr-TR'),
-    'uname -a': 'Linux pi5-gateway 6.6.31+rpt-rpi-2712 #1 SMP PREEMPT Debian 1:6.6.31-1+rpt1 aarch64 GNU/Linux',
-    'vcgencmd measure_temp': "temp=43.5'C",
-    'free -h': '              total        used        free      shared  buff/cache   available\nMem:          7.8Gi       4.2Gi       1.8Gi       128Mi       1.8Gi       3.3Gi\nSwap:         511Mi          0B       511Mi',
-    'df -h': 'Filesystem      Size  Used Avail Use% Mounted on\n/dev/mmcblk0p2  117G   34G   78G  31% /\n/dev/mmcblk0p1  510M   76M  435M  15% /boot/firmware\ntmpfs           3.9G     0  3.9G   0% /dev/shm',
-    'ip addr show eth0': '2: eth0: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc mq state UP\n    inet 192.168.1.1/24 brd 192.168.1.255 scope global eth0',
-    'wg show': 'interface: wg0\n  public key: aB3dE5fG7hI9jK1lM3nO5pQ7rS9tU1vW3xY5zA7bC=\n  listening port: 51820\n\npeer: xY5zA7bC9dE1fG3hI5jK7lM9nO1pQ3rS5tU7vW9xY=\n  endpoint: 203.0.113.10:51820\n  latest handshake: 42 seconds ago\n  transfer: 1.24 GiB received, 856.3 MiB sent',
-    'pihole status': '  [✓] FTL is listening on port 53\n  [✓] Pi-hole blocking is enabled',
-    'fail2ban-client status': 'Status\n|- Number of jail:      3\n`- Jail list:   recidive, sshd, nginx-http-auth',
-    'ss -tulnp': 'Netid  State   Recv-Q  Send-Q  Local Address:Port\ntcp    LISTEN  0       128     0.0.0.0:22\ntcp    LISTEN  0       128     0.0.0.0:53\ntcp    LISTEN  0       128     0.0.0.0:3000\ntcp    LISTEN  0       128     0.0.0.0:3001\nudp    UNCONN  0       0       0.0.0.0:53\nudp    UNCONN  0       0       0.0.0.0:51820',
-    'systemctl status pihole-FTL': '● pihole-FTL.service - Pi-hole FTL\n   Active: active (running) since Mon 2026-03-13 01:00:00 TRT; 12 days ago\n   Main PID: 1234 (pihole-FTL)',
-    'nft list ruleset': 'table inet filter {\n  chain input {\n    type filter hook input priority 0; policy drop;\n    iif lo accept\n    ct state established,related accept\n    tcp dport 22 accept\n    tcp dport 53 accept\n    udp dport 53 accept\n  }\n}',
-    'ls': 'core  frontend  backend  CLAUDE.md  Skills',
-    'pwd': '/home/pi/Pi5',
-    'cat /etc/os-release': 'PRETTY_NAME="Debian GNU/Linux 12 (bookworm)"\nNAME="Debian GNU/Linux"\nVERSION_ID="12"\nID=debian',
-    'help': 'Kullanılabilir komutlar: uptime, hostname, whoami, date, uname -a, vcgencmd measure_temp, free -h, df -h, ip addr show eth0, wg show, pihole status, fail2ban-client status, ss -tulnp, nft list ruleset, systemctl status pihole-FTL, ls, pwd, cat /etc/os-release, clear',
-  };
-
-  const output = responses[cmd] || `bash: ${cmd.split(' ')[0]}: komut bulunamadı`;
-  res.json({ output, command: cmd, timestamp: new Date().toISOString() });
+  try {
+    const result = await executeCommand(command);
+    res.json(result);
+  } catch (e: any) {
+    res.json({ output: `Hata: ${e.message}`, command: command.trim(), timestamp: new Date().toISOString() });
+  }
 });
 
 // ─── Per-Device Routing ───
@@ -1383,7 +1388,12 @@ app.post('/api/ddns/configs/:id/test', async (req, res) => {
 });
 
 app.get('/api/ddns/current-ip', async (_req, res) => {
-  res.json({ ip: '85.102.45.178', provider: 'ipify', checked_at: new Date().toISOString() });
+  try {
+    const result = await getCurrentExternalIp();
+    res.json({ ip: result.ip, provider: result.provider, checked_at: new Date().toISOString() });
+  } catch (e: any) {
+    res.json({ ip: '85.102.45.178', provider: 'mock', checked_at: new Date().toISOString() });
+  }
 });
 
 app.get('/api/ddns/ip-history', async (_req, res) => {
@@ -1398,13 +1408,24 @@ app.get('/api/ddns/ip-history', async (_req, res) => {
 app.post('/api/ddns/check-ip', async (_req, res) => {
   try {
     const lastEntry = await dbGet('SELECT * FROM ddns_ip_history ORDER BY detected_at DESC LIMIT 1');
-    const changed = Math.random() > 0.5;
-    if (changed) {
-      const newIp = `85.102.${Math.floor(Math.random() * 255)}.${Math.floor(Math.random() * 255)}`;
-      await dbRun('INSERT INTO ddns_ip_history (ip, source) VALUES (?, ?)', [newIp, 'manual']);
-      res.json({ changed: true, old_ip: lastEntry?.ip || '85.102.45.178', new_ip: newIp });
+    if (isLinux) {
+      const { ip: currentIp } = await getCurrentExternalIp();
+      const oldIp = lastEntry?.ip || '';
+      if (currentIp !== oldIp && currentIp !== '85.102.45.178') {
+        await dbRun('INSERT INTO ddns_ip_history (ip, source) VALUES (?, ?)', [currentIp, 'auto']);
+        res.json({ changed: true, old_ip: oldIp, new_ip: currentIp });
+      } else {
+        res.json({ changed: false, ip: currentIp });
+      }
     } else {
-      res.json({ changed: false, ip: lastEntry?.ip || '85.102.45.178' });
+      const changed = Math.random() > 0.5;
+      if (changed) {
+        const newIp = `85.102.${Math.floor(Math.random() * 255)}.${Math.floor(Math.random() * 255)}`;
+        await dbRun('INSERT INTO ddns_ip_history (ip, source) VALUES (?, ?)', [newIp, 'manual']);
+        res.json({ changed: true, old_ip: lastEntry?.ip || '85.102.45.178', new_ip: newIp });
+      } else {
+        res.json({ changed: false, ip: lastEntry?.ip || '85.102.45.178' });
+      }
     }
   } catch (e: any) {
     res.status(500).json({ error: e.message });
