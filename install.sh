@@ -50,7 +50,7 @@ apt install -y -qq \
   curl git build-essential \
   sqlite3 libsqlite3-dev \
   nginx certbot python3-certbot-nginx \
-  qrencode
+  qrencode speedtest-cli vnstat
 
 # Node.js 22 LTS
 if ! command -v node &>/dev/null || [ "$(node -v | cut -d. -f1 | tr -d v)" -lt 20 ]; then
