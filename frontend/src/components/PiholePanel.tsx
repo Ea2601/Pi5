@@ -22,8 +22,7 @@ export function PiholePanel() {
   const handleToggle = async () => {
     setToggling(true);
     try {
-      if (!isEnabled) await postApi('/services/setup', { action: 'pihole' });
-      else await postApi('/services/toggle', { name: 'pihole', enabled: false });
+      await postApi('/services/toggle', { name: 'pihole', enabled: !isEnabled });
       await refetchSvc();
     } catch { /* */ }
     setToggling(false);
