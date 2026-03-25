@@ -44,11 +44,26 @@ export function ZapretPanel() {
     autohostlist: 'Otomatik Liste',
   };
 
+  // Read current mode from zapret config
+  const { data: configData, refetch: refetchConfig } = useApi<{ config: Record<string, { key: string; value: string }[]> }>('/services/zapret/config', { config: {} });
+  const currentMode = configData.config?.general?.find((c: any) => c.key === 'mode')?.value || 'nfqws';
+  const [switching, setSwitching] = useState(false);
+
   const bypassModes = [
-    { name: 'NFQWS', desc: 'Netfilter Queue paket manipülasyonu', active: true },
-    { name: 'TPROXY', desc: 'Transparent proxy yönlendirme', active: false },
-    { name: 'Sing-box', desc: 'Gelişmiş protokol routing', active: false },
+    { id: 'nfqws', name: 'NFQWS', desc: 'Netfilter Queue paket manipülasyonu' },
+    { id: 'tpws', name: 'TPWS', desc: 'Transparent proxy yönlendirme' },
+    { id: 'singbox', name: 'Sing-box', desc: 'Gelişmiş protokol routing' },
   ];
+
+  const handleModeChange = async (modeId: string) => {
+    if (modeId === currentMode || switching) return;
+    setSwitching(true);
+    try {
+      await putApi('/services/zapret/config', { changes: { mode: modeId } });
+      await refetchConfig();
+    } catch { /* */ }
+    setSwitching(false);
+  };
 
   return (
     <div className="fade-in">
@@ -70,11 +85,18 @@ export function ZapretPanel() {
       {activeTab === 'overview' && (
         <>
           <div style={{ marginTop: 14 }}>
-            <Panel title="Bypass Modları">
+            <Panel title="Bypass Modları" subtitle="Aktif DPI atlatma yöntemini seçin">
               <div className="zapret-modes">
                 {bypassModes.map(mode => (
-                  <div key={mode.name} className={`zapret-mode ${mode.active ? 'zapret-mode-active' : ''}`}>
-                    <div className="zapret-mode-header"><Shield size={16} /><strong>{mode.name}</strong>{mode.active && <Badge variant="success">Aktif</Badge>}</div>
+                  <div key={mode.id}
+                    className={`zapret-mode ${currentMode === mode.id ? 'zapret-mode-active' : ''}`}
+                    onClick={() => handleModeChange(mode.id)}
+                    style={{ cursor: switching ? 'wait' : 'pointer' }}>
+                    <div className="zapret-mode-header">
+                      <Shield size={16} />
+                      <strong>{mode.name}</strong>
+                      {currentMode === mode.id && <Badge variant="success">Aktif</Badge>}
+                    </div>
                     <p>{mode.desc}</p>
                   </div>
                 ))}

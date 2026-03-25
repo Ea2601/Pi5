@@ -132,7 +132,7 @@ export const initDb = () => {
 
     // Zapret config
     const zapretConfigs: [string, string, string, string, string, string, string][] = [
-      ['zapret', 'general', 'mode', 'nfqws', 'Bypass Modu', 'DPI atlatma yontemi', 'select'],
+      ['zapret', 'general', 'mode', 'nfqws', 'Bypass Modu', 'DPI atlatma yontemi (nfqws|tpws|singbox)', 'select'],
       ['zapret', 'general', 'qnum', '200', 'Queue Numarasi', 'NFQWS kuyruk numarasi', 'number'],
       ['zapret', 'nfqws', 'desync_mode', 'fake,split2', 'Desync Modu', 'Paket manipulasyon stratejisi', 'text'],
       ['zapret', 'nfqws', 'desync_ttl', '6', 'TTL Degeri', 'Sahte paket TTL', 'number'],
@@ -142,6 +142,8 @@ export const initDb = () => {
     zapretConfigs.forEach(([svc, cat, key, val, label, desc, type]) => {
       db.run(`INSERT OR IGNORE INTO service_config VALUES (?, ?, ?, ?, ?, ?, ?, '')`, [svc, cat, key, val, label, desc, type]);
     });
+    // Ensure mode select has options (for existing DBs)
+    db.run(`UPDATE service_config SET options = 'nfqws,tpws,singbox' WHERE service = 'zapret' AND key = 'mode'`);
 
     // Unbound config
     const unboundConfigs: [string, string, string, string, string, string, string][] = [
