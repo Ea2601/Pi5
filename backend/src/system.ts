@@ -85,10 +85,17 @@ export async function getSystemStats() {
 }
 
 // ─── 2. Service Status ───
+// DB name → actual systemd unit name
+const SYSTEMD_NAME_MAP: Record<string, string> = {
+  pihole: 'pihole-FTL',
+  wireguard: 'wg-quick@wg0',
+};
+
 // Returns actual systemctl status. Empty = service not found.
 export async function getServiceStatus(name: string): Promise<string> {
   if (!isLinux) return '';
-  const result = await run(`systemctl is-active ${name}`);
+  const svcName = SYSTEMD_NAME_MAP[name] || name;
+  const result = await run(`systemctl is-active ${svcName}`);
   if (result === 'active') return 'running';
   if (result === 'inactive') return 'stopped';
   if (result === 'failed') return 'error';

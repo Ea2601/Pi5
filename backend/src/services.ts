@@ -4,6 +4,16 @@ import { isLinux, systemctlAction } from './system';
 
 const execAsync = util.promisify(exec);
 
+// DB name → actual systemd service name
+const SERVICE_NAME_MAP: Record<string, string> = {
+  pihole: 'pihole-FTL',
+  unbound: 'unbound',
+  zapret: 'zapret',
+  wireguard: 'wg-quick@wg0',
+  fail2ban: 'fail2ban',
+  nftables: 'nftables',
+};
+
 export const systemServices = {
     async installPihole() {
         if (isLinux) {
@@ -85,7 +95,8 @@ table ip nat {
     async toggleService(name: string, enable: boolean) {
         if (isLinux) {
             const action = enable ? 'start' : 'stop';
-            const result = await systemctlAction(action, name);
+            const svcName = SERVICE_NAME_MAP[name] || name;
+            const result = await systemctlAction(action, svcName);
             return result;
         }
         return `Mock: ${enable ? 'started' : 'stopped'} ${name}`;
@@ -93,7 +104,8 @@ table ip nat {
 
     async restartService(name: string) {
         if (isLinux) {
-            return await systemctlAction('restart', name);
+            const svcName = SERVICE_NAME_MAP[name] || name;
+            return await systemctlAction('restart', svcName);
         }
         return `Mock: restarted ${name}`;
     },
