@@ -172,7 +172,7 @@ step "8/8 — Otomatik Bakım Ayarlanıyor"
 cat > /etc/cron.d/pi5-maintenance << 'CRONEOF'
 # Pi5 Gateway günlük bakım
 0 3 * * * root apt update -qq && apt upgrade -y -qq >> /opt/pi5-gateway/core/system.log 2>&1
-30 3 * * * root cd /opt/pi5-gateway && git pull --rebase >> /opt/pi5-gateway/core/system.log 2>&1
+30 3 * * * root cd /opt/pi5-gateway && git pull --rebase && cd frontend && npm run build && cd ../backend && npm run build >> /opt/pi5-gateway/core/system.log 2>&1
 0 4 * * * root systemctl restart pi5-backend >> /opt/pi5-gateway/core/system.log 2>&1
 0 2 * * 1 root journalctl --vacuum-time=7d && find /var/log -name "*.gz" -mtime +30 -delete >> /opt/pi5-gateway/core/system.log 2>&1
 CRONEOF
