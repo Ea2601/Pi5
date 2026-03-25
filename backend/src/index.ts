@@ -421,48 +421,126 @@ app.get('/api/vps/list', async (_req, res) => {
   }
 });
 
-// VPS setup — Step 1: Test connection and save server record
+// ─── VPS Setup (async with live polling) ───
+
+const SETUP_STEP_KEYS = ['connection', 'update', 'packages', 'maintenance', 'wireguard', 'handshake'];
+
+interface SetupProgress {
+  steps: { key: string; status: 'pending' | 'running' | 'success' | 'error'; message: string; duration: string }[];
+  overall: 'running' | 'success' | 'error';
+  startedAt: number;
+}
+
+// In-memory store for active setup jobs
+const setupJobs = new Map<number, SetupProgress>();
+
+// Run all steps in background
+async function runSetupInBackground(vpsId: number, ip: string, username: string, password?: string) {
+  const progress: SetupProgress = {
+    steps: SETUP_STEP_KEYS.map(key => ({ key, status: 'pending' as const, message: '', duration: '' })),
+    overall: 'running',
+    startedAt: Date.now(),
+  };
+  setupJobs.set(vpsId, progress);
+
+  for (let i = 0; i < SETUP_STEP_KEYS.length; i++) {
+    progress.steps[i].status = 'running';
+    const stepStart = Date.now();
+
+    try {
+      const result = await executeSetupStep({ ip, username, password }, SETUP_STEP_KEYS[i]);
+      progress.steps[i].status = result.status;
+      progress.steps[i].message = result.message;
+      progress.steps[i].duration = result.duration;
+
+      if (result.status === 'error') {
+        progress.overall = 'error';
+        await dbRun('UPDATE vps_servers SET status = ? WHERE id = ?', ['error', vpsId]);
+        return;
+      }
+    } catch (err: any) {
+      const elapsed = ((Date.now() - stepStart) / 1000).toFixed(1);
+      progress.steps[i].status = 'error';
+      progress.steps[i].message = err.message || 'Komut çalıştırılamadı';
+      progress.steps[i].duration = `${elapsed}s`;
+      progress.overall = 'error';
+      await dbRun('UPDATE vps_servers SET status = ? WHERE id = ?', ['error', vpsId]);
+      return;
+    }
+  }
+
+  progress.overall = 'success';
+  await dbRun('UPDATE vps_servers SET status = ? WHERE id = ?', ['connected', vpsId]);
+  // Clean up after 5 minutes
+  setTimeout(() => setupJobs.delete(vpsId), 5 * 60 * 1000);
+}
+
+// Start setup — test connection, save record, kick off async steps
 app.post('/api/vps/setup', async (req, res) => {
   const { ip, username, password, location } = req.body;
   if (!ip || !username) {
     return res.status(400).json({ error: 'IP ve kullanıcı adı gerekli' });
   }
   try {
-    // Test SSH connection first
     const connTest = await testSSHConnection({ ip, username, password });
     if (!connTest.success) {
       return res.status(400).json({ success: false, error: `SSH bağlantısı başarısız: ${connTest.message}` });
     }
-    // Save to DB with 'pending' status — steps will be run via /api/vps/:id/steps
     await dbRun('INSERT INTO vps_servers (ip, username, password, location, status) VALUES (?, ?, ?, ?, ?)',
-      [ip, username, password || '', location || '', 'pending']);
+      [ip, username, password || '', location || '', 'installing']);
     const row: any = await dbGet('SELECT last_insert_rowid() as id');
-    res.json({ success: true, id: row.id, message: 'Bağlantı başarılı, kurulum adımları başlatılabilir.' });
+    const vpsId = row.id;
+
+    // Start setup in background — returns immediately
+    runSetupInBackground(vpsId, ip, username, password || undefined);
+
+    res.json({ success: true, id: vpsId, message: 'Kurulum başlatıldı' });
   } catch (e: any) {
     res.status(500).json({ success: false, error: e.message || 'Bağlantı hatası' });
   }
 });
 
-// VPS setup — Step 2: Execute individual setup steps
+// Poll setup progress — frontend calls this every 1-2s
+app.get('/api/vps/:id/setup-status', async (req, res) => {
+  const vpsId = Number(req.params.id);
+  const job = setupJobs.get(vpsId);
+  if (job) {
+    // Add live elapsed time for the running step
+    const steps = job.steps.map(s => {
+      if (s.status === 'running') {
+        return { ...s, duration: `${Math.floor((Date.now() - job.startedAt) / 1000)}s` };
+      }
+      return s;
+    });
+    return res.json({ active: true, overall: job.overall, steps });
+  }
+  // No active job — check DB for final status
+  const server: any = await dbGet('SELECT status FROM vps_servers WHERE id = ?', [vpsId]);
+  if (!server) return res.status(404).json({ active: false, overall: 'error' });
+  res.json({
+    active: false,
+    overall: server.status === 'connected' ? 'success' : server.status === 'error' ? 'error' : 'pending',
+    steps: SETUP_STEP_KEYS.map(key => ({
+      key,
+      status: server.status === 'connected' ? 'success' : 'pending',
+      message: '', duration: '',
+    })),
+  });
+});
+
+// Legacy per-step endpoint (kept for compatibility)
 app.post('/api/vps/:id/steps', async (req, res) => {
   const { step } = req.body;
-  if (!step) {
-    return res.status(400).json({ status: 'error', message: 'Adım belirtilmedi' });
-  }
+  if (!step) return res.status(400).json({ status: 'error', message: 'Adım belirtilmedi' });
   try {
     const server: any = await dbGet('SELECT * FROM vps_servers WHERE id = ?', [req.params.id]);
-    if (!server) {
-      return res.status(404).json({ status: 'error', message: 'Sunucu bulunamadı' });
-    }
+    if (!server) return res.status(404).json({ status: 'error', message: 'Sunucu bulunamadı' });
     const result = await executeSetupStep(
-      { ip: server.ip, username: server.username, password: server.password || undefined },
-      step
+      { ip: server.ip, username: server.username, password: server.password || undefined }, step
     );
-    // On final successful step, mark server as connected
     if (step === 'handshake' && result.status === 'success') {
       await dbRun('UPDATE vps_servers SET status = ? WHERE id = ?', ['connected', req.params.id]);
     }
-    // On any error, mark as error
     if (result.status === 'error') {
       await dbRun('UPDATE vps_servers SET status = ? WHERE id = ?', ['error', req.params.id]);
     }

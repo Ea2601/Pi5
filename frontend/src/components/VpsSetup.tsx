@@ -224,38 +224,57 @@ export function VpsSetup() {
     }
   }, [data.servers, selectedVpsId]);
 
-  // Live elapsed timer for running steps
-  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const stepStartRef = useRef<number>(0);
+  const pollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  const startStepTimer = (stepIndex: number) => {
-    stepStartRef.current = Date.now();
-    if (timerRef.current) clearInterval(timerRef.current);
-    timerRef.current = setInterval(() => {
-      const elapsed = ((Date.now() - stepStartRef.current) / 1000).toFixed(0);
-      setSteps(prev => prev.map((s, idx) =>
-        idx === stepIndex && s.status === 'running'
-          ? { ...s, duration: `${elapsed}s` }
-          : s
-      ));
-    }, 1000);
-  };
+  const stopPolling = useCallback(() => {
+    if (pollingRef.current) { clearInterval(pollingRef.current); pollingRef.current = null; }
+  }, []);
 
-  const stopStepTimer = () => {
-    if (timerRef.current) { clearInterval(timerRef.current); timerRef.current = null; }
-  };
+  // Cleanup on unmount
+  useEffect(() => () => stopPolling(), [stopPolling]);
 
-  // Cleanup timer on unmount
-  useEffect(() => () => stopStepTimer(), []);
+  const startPolling = useCallback((vpsId: number) => {
+    stopPolling();
+    pollingRef.current = setInterval(async () => {
+      try {
+        const res = await fetch(`/api/vps/${vpsId}/setup-status`);
+        const data = await res.json();
+        if (data.steps) {
+          setSteps(data.steps.map((s: any) => ({
+            key: s.key,
+            label: SETUP_STEPS.find(ss => ss.key === s.key)?.label || s.key,
+            status: s.status as StepStatus,
+            message: s.message || '',
+            duration: s.duration || '',
+          })));
+        }
+        if (data.overall === 'success') {
+          stopPolling();
+          setState('success');
+          setIp(''); setPassword(''); setLocation('');
+          refetch();
+        } else if (data.overall === 'error') {
+          stopPolling();
+          setState('error');
+          setErrorMsg('Kurulum sırasında hata oluştu');
+          refetch();
+        }
+      } catch { /* polling error, will retry next interval */ }
+    }, 1500);
+  }, [stopPolling, refetch]);
 
   const handleDeploy = async () => {
     if (!ip.trim()) return;
     setState('deploying');
     setErrorMsg('');
-    setSteps([]);
+
+    // Initialize steps as pending
+    setSteps(SETUP_STEPS.map(s => ({
+      ...s, status: 'pending' as StepStatus, message: '', duration: '',
+    })));
 
     try {
-      // Step 1: Test connection and create server record
+      // POST /vps/setup — tests connection, saves record, starts async background job
       const setupResult = await postApi('/vps/setup', {
         ip: ip.trim(), username: username.trim(),
         password: password.trim(), location: location.trim(),
@@ -264,74 +283,16 @@ export function VpsSetup() {
       if (!setupResult.success) {
         setState('error');
         setErrorMsg(setupResult.error || 'Bağlantı başarısız');
+        setSteps([]);
         return;
       }
 
-      const vpsId = setupResult.id;
-
-      // Step 2: Run setup steps one by one
-      const initialSteps: SetupStep[] = SETUP_STEPS.map(s => ({
-        ...s, status: 'pending' as StepStatus, message: '', duration: '',
-      }));
-      setSteps(initialSteps);
-
-      // Per-step fetch timeout: 5 min for update/packages, 2 min for others
-      const STEP_TIMEOUTS: Record<string, number> = {
-        update: 5 * 60 * 1000,
-        packages: 5 * 60 * 1000,
-        wireguard: 3 * 60 * 1000,
-      };
-      const DEFAULT_TIMEOUT = 2 * 60 * 1000;
-
-      let allSuccess = true;
-      for (let i = 0; i < SETUP_STEPS.length; i++) {
-        const stepKey = SETUP_STEPS[i].key;
-        setSteps(prev => prev.map((s, idx) => idx === i ? { ...s, status: 'running', duration: '0s' } : s));
-        startStepTimer(i);
-
-        try {
-          const controller = new AbortController();
-          const timeout = STEP_TIMEOUTS[stepKey] || DEFAULT_TIMEOUT;
-          const timeoutId = setTimeout(() => controller.abort(), timeout);
-
-          const res = await fetch(`/api/vps/${vpsId}/steps`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ step: stepKey }),
-            signal: controller.signal,
-          });
-          clearTimeout(timeoutId);
-          stopStepTimer();
-
-          const result = await res.json();
-          setSteps(prev => prev.map((s, idx) => idx === i ? {
-            ...s, status: result.status as StepStatus, message: result.message, duration: result.duration,
-          } : s));
-          if (result.status === 'error') {
-            allSuccess = false;
-            break;
-          }
-        } catch (err) {
-          stopStepTimer();
-          const isTimeout = err instanceof DOMException && err.name === 'AbortError';
-          setSteps(prev => prev.map((s, idx) => idx === i ? {
-            ...s,
-            status: 'error',
-            message: isTimeout ? 'Zaman aşımı — adım arka planda tamamlanmış olabilir' : 'Bağlantı hatası',
-          } : s));
-          allSuccess = false;
-          break;
-        }
-      }
-
-      setState(allSuccess ? 'success' : 'error');
-      if (!allSuccess) setErrorMsg('Kurulum sırasında hata oluştu');
-      if (allSuccess) { setIp(''); setPassword(''); setLocation(''); }
-      await refetch();
+      // Backend is now running steps in background — start polling for live updates
+      startPolling(setupResult.id);
     } catch (e) {
-      stopStepTimer();
       setState('error');
       setErrorMsg(e instanceof Error ? e.message : 'Bağlantı başarısız');
+      setSteps([]);
     }
   };
 
