@@ -1,0 +1,12 @@
+node_modules/
+dist/
+*.sqlite
+*.sqlite-journal
+.env
+.env.local
+.env*.local
+core/system.log
+core/vps-wg.conf
+*.log
+.DS_Store
+Thumbs.db

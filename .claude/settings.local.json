@@ -1,0 +1,27 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npm install:*)",
+      "Bash(npm run:*)",
+      "Bash(find /c/Users/akane/Desktop/Pi5/frontend/src -type f \\\\\\(-name *.ts -o -name *.tsx \\\\\\))",
+      "Bash(find /c/Users/akane/Desktop/Pi5/backend/src -type f \\\\\\(-name *.ts -o -name *.js \\\\\\))",
+      "Bash(xargs -I {} bash -c \"echo \"\"=== {} ===\"\" && head -30 \"\"{}\"\"\")",
+      "Bash(find /c/Users/akane/Desktop/Pi5 -maxdepth 1 -type f -name *.json -o -name *.ts -o -name *.tsx)",
+      "Bash(npx tsc:*)",
+      "Bash(pkill -f \"ts-node src/index.ts\")",
+      "Bash(pkill -f nodemon)",
+      "Bash(fuser /c/Users/akane/Desktop/Pi5/core/pi5router.sqlite)",
+      "Bash(tasklist)",
+      "Bash(taskkill //F //PID 33096 //PID 16352 //PID 2476 //PID 27832 //PID 32384)",
+      "Bash(curl -s http://localhost:3001/api/services/pihole/config)",
+      "Bash(curl -s http://localhost:3001/api/pihole/lists)",
+      "Bash(taskkill //F //IM node.exe)",
+      "Bash(curl -s http://localhost:3001/api/bandwidth/live)",
+      "Bash(npx vite:*)",
+      "Bash(curl:*)",
+      "Bash(git init:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)"
+    ]
+  }
+}
