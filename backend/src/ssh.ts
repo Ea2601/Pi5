@@ -89,11 +89,11 @@ export async function executeSetupStep(
         successMsg = 'SSH bağlantısı başarılı';
         break;
       case 'update':
-        cmd = 'apt update -qq && apt upgrade -y -qq 2>&1 | tail -5';
+        cmd = 'export DEBIAN_FRONTEND=noninteractive && apt-get update -qq && apt-get upgrade -y -qq -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" 2>&1 | tail -5';
         successMsg = 'Sistem güncellendi';
         break;
       case 'packages':
-        cmd = 'apt install -y -qq wireguard qrencode iptables 2>&1 | tail -3';
+        cmd = 'export DEBIAN_FRONTEND=noninteractive && apt-get install -y -qq wireguard qrencode iptables 2>&1 | tail -3';
         successMsg = 'WireGuard paketleri kuruldu';
         break;
       case 'maintenance':
@@ -132,7 +132,9 @@ WGEOF
         return { status: 'error', message: `Bilinmeyen adım: ${step}`, duration: '0s' };
     }
 
-    const result = await ssh.execCommand(cmd, { execOptions: { timeout: 120000 } });
+    // update/packages can take minutes on slow VPS
+    const timeout = (step === 'update' || step === 'packages') ? 300000 : 120000;
+    const result = await ssh.execCommand(cmd, { execOptions: { timeout } });
     ssh.dispose();
 
     const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
