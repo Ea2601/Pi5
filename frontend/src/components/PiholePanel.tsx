@@ -18,13 +18,20 @@ export function PiholePanel() {
   const piholeSvc = svcData.services.find(s => s.name === 'pihole');
   const isEnabled = piholeSvc?.enabled === 1;
   const [toggling, setToggling] = useState(false);
+  const [toggleError, setToggleError] = useState('');
 
   const handleToggle = async () => {
     setToggling(true);
+    setToggleError('');
     try {
-      await postApi('/services/toggle', { name: 'pihole', enabled: !isEnabled });
+      const result = await postApi('/services/toggle', { name: 'pihole', enabled: !isEnabled });
+      if (!result.success) {
+        setToggleError(result.error || 'Servis değiştirilemedi');
+      }
       await refetchSvc();
-    } catch { /* */ }
+    } catch (e: any) {
+      setToggleError(e.message || 'İstek başarısız');
+    }
     setToggling(false);
   };
 
@@ -58,9 +65,12 @@ export function PiholePanel() {
       <Panel title="Pi-hole DNS Reklam Engelleme" icon={<ShieldBan size={20} style={{ marginRight: 8 }} />}
         subtitle="Headless Pi-hole + Unbound DNS — Reklam & tracker bloklama"
         actions={
-          <button className={isEnabled ? 'btn-outline btn-sm' : 'btn-primary btn-sm'} onClick={handleToggle} disabled={toggling}>
-            {toggling ? 'İşleniyor...' : isEnabled ? 'Devre Dışı Bırak' : 'Etkinleştir'}
-          </button>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            {toggleError && <span style={{ fontSize: 11, color: 'var(--danger-color)', maxWidth: 300 }}>{toggleError}</span>}
+            <button className={isEnabled ? 'btn-outline btn-sm' : 'btn-primary btn-sm'} onClick={handleToggle} disabled={toggling}>
+              {toggling ? 'İşleniyor...' : isEnabled ? 'Devre Dışı Bırak' : 'Etkinleştir'}
+            </button>
+          </div>
         }>
         <div className="service-tabs">
           {tabs.map(tab => (

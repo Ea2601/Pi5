@@ -112,15 +112,27 @@ app.get('/api/services', async (_req, res) => {
 app.post('/api/services/toggle', async (req, res) => {
   try {
     const { name, enabled } = req.body;
-    // On Linux, actually start/stop the service
     if (isLinux) {
-      await systemServices.toggleService(name, enabled);
+      const result = await systemServices.toggleService(name, enabled);
+      // Verify the service actually changed state
+      const newStatus = await getServiceStatus(name);
+      const actuallyRunning = newStatus === 'running';
+      if (enabled && !actuallyRunning) {
+        return res.status(500).json({
+          success: false, name, enabled: false,
+          error: `Servis başlatılamadı. systemctl çıktısı: ${result}. Durum: ${newStatus}. Servis kurulu olmayabilir.`,
+        });
+      }
+      await dbRun('UPDATE service_status SET enabled = ?, status = ?, last_check = CURRENT_TIMESTAMP WHERE name = ?',
+        [actuallyRunning ? 1 : 0, newStatus, name]);
+      res.json({ success: true, name, enabled: actuallyRunning, status: newStatus });
+    } else {
+      await dbRun('UPDATE service_status SET enabled = ?, status = ?, last_check = CURRENT_TIMESTAMP WHERE name = ?',
+        [enabled ? 1 : 0, enabled ? 'running' : 'stopped', name]);
+      res.json({ success: true, name, enabled });
     }
-    await dbRun('UPDATE service_status SET enabled = ?, status = ?, last_check = CURRENT_TIMESTAMP WHERE name = ?',
-      [enabled ? 1 : 0, enabled ? 'running' : 'stopped', name]);
-    res.json({ success: true, name, enabled });
   } catch (e: any) {
-    res.status(500).json({ error: e.message });
+    res.status(500).json({ success: false, error: e.message });
   }
 });
 
