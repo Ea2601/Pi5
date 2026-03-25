@@ -2,7 +2,7 @@ import {
   Server, Lock, Globe, Loader2, CheckCircle, AlertTriangle, Trash2, Plus,
   Wifi, Settings, Activity, Network, Eye, EyeOff, Copy, X, QrCode, Users
 } from 'lucide-react';
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { useApi, postApi, deleteApi } from '../hooks/useApi';
 import { ServiceSettings } from './ui/ServiceSettings';
 import type { VpsServer } from '../types';
@@ -224,6 +224,30 @@ export function VpsSetup() {
     }
   }, [data.servers, selectedVpsId]);
 
+  // Live elapsed timer for running steps
+  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const stepStartRef = useRef<number>(0);
+
+  const startStepTimer = (stepIndex: number) => {
+    stepStartRef.current = Date.now();
+    if (timerRef.current) clearInterval(timerRef.current);
+    timerRef.current = setInterval(() => {
+      const elapsed = ((Date.now() - stepStartRef.current) / 1000).toFixed(0);
+      setSteps(prev => prev.map((s, idx) =>
+        idx === stepIndex && s.status === 'running'
+          ? { ...s, duration: `${elapsed}s` }
+          : s
+      ));
+    }, 1000);
+  };
+
+  const stopStepTimer = () => {
+    if (timerRef.current) { clearInterval(timerRef.current); timerRef.current = null; }
+  };
+
+  // Cleanup timer on unmount
+  useEffect(() => () => stopStepTimer(), []);
+
   const handleDeploy = async () => {
     if (!ip.trim()) return;
     setState('deploying');
@@ -251,15 +275,34 @@ export function VpsSetup() {
       }));
       setSteps(initialSteps);
 
+      // Per-step fetch timeout: 5 min for update/packages, 2 min for others
+      const STEP_TIMEOUTS: Record<string, number> = {
+        update: 5 * 60 * 1000,
+        packages: 5 * 60 * 1000,
+        wireguard: 3 * 60 * 1000,
+      };
+      const DEFAULT_TIMEOUT = 2 * 60 * 1000;
+
       let allSuccess = true;
       for (let i = 0; i < SETUP_STEPS.length; i++) {
-        setSteps(prev => prev.map((s, idx) => idx === i ? { ...s, status: 'running' } : s));
+        const stepKey = SETUP_STEPS[i].key;
+        setSteps(prev => prev.map((s, idx) => idx === i ? { ...s, status: 'running', duration: '0s' } : s));
+        startStepTimer(i);
+
         try {
+          const controller = new AbortController();
+          const timeout = STEP_TIMEOUTS[stepKey] || DEFAULT_TIMEOUT;
+          const timeoutId = setTimeout(() => controller.abort(), timeout);
+
           const res = await fetch(`/api/vps/${vpsId}/steps`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ step: SETUP_STEPS[i].key }),
+            body: JSON.stringify({ step: stepKey }),
+            signal: controller.signal,
           });
+          clearTimeout(timeoutId);
+          stopStepTimer();
+
           const result = await res.json();
           setSteps(prev => prev.map((s, idx) => idx === i ? {
             ...s, status: result.status as StepStatus, message: result.message, duration: result.duration,
@@ -268,8 +311,14 @@ export function VpsSetup() {
             allSuccess = false;
             break;
           }
-        } catch {
-          setSteps(prev => prev.map((s, idx) => idx === i ? { ...s, status: 'error', message: 'Bağlantı hatası' } : s));
+        } catch (err) {
+          stopStepTimer();
+          const isTimeout = err instanceof DOMException && err.name === 'AbortError';
+          setSteps(prev => prev.map((s, idx) => idx === i ? {
+            ...s,
+            status: 'error',
+            message: isTimeout ? 'Zaman aşımı — adım arka planda tamamlanmış olabilir' : 'Bağlantı hatası',
+          } : s));
           allSuccess = false;
           break;
         }
@@ -280,6 +329,7 @@ export function VpsSetup() {
       if (allSuccess) { setIp(''); setPassword(''); setLocation(''); }
       await refetch();
     } catch (e) {
+      stopStepTimer();
       setState('error');
       setErrorMsg(e instanceof Error ? e.message : 'Bağlantı başarısız');
     }
