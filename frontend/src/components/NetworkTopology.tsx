@@ -18,6 +18,7 @@ const deviceIcon = (type: string, size = 18) => {
 const profileLabels: Record<string, { label: string; color: string; desc: string; lineColor: string }> = {
   default:     { label: 'Varsayılan',     color: 'badge-neutral',  desc: 'Direkt ISP',              lineColor: '#94a3b8' },
   adblock:     { label: 'Reklamsız',      color: 'badge-success',  desc: 'Pi-hole + ISP',           lineColor: '#22c55e' },
+  vpn_only:    { label: 'Sadece VPN',     color: 'badge-info',     desc: 'VPN (Pi-hole yok)',       lineColor: '#6366f1' },
   vpn:         { label: 'VPN',            color: 'badge-info',     desc: 'Pi-hole + VPN',           lineColor: '#3b82f6' },
   dpi:         { label: 'DPI',            color: 'badge-warning',  desc: 'Zapret DPI',              lineColor: '#f59e0b' },
   adblock_dpi: { label: 'Reklamsız DPI',  color: 'badge-error',    desc: 'Pi-hole + Zapret DPI',   lineColor: '#ef4444' },

@@ -123,6 +123,7 @@ function SchedulerView() {
                   onChange={e => setNewSchedule({ ...newSchedule, schedule_route_type: e.target.value })}>
                   <option value="direct">Direkt ISP</option>
                   <option value="adblock">Reklamsız (Pi-hole + ISP)</option>
+                  <option value="vpn_only">Sadece VPN</option>
                   <option value="vpn">VPN (Pi-hole + VPN)</option>
                   <option value="dpi">DPI (Zapret)</option>
                   <option value="adblock_dpi">Reklamsız DPI (Pi-hole + Zapret)</option>
@@ -185,7 +186,7 @@ function SchedulerView() {
                 </div>
                 <Badge variant={
                   schedule.schedule_route_type === 'blocked' ? 'error' :
-                  schedule.schedule_route_type === 'vpn' ? 'info' :
+                  schedule.schedule_route_type === 'vpn' || schedule.schedule_route_type === 'vpn_only' ? 'info' :
                   schedule.schedule_route_type === 'dpi' ? 'warning' :
                   schedule.schedule_route_type === 'adblock_dpi' ? 'error' :
                   schedule.schedule_route_type === 'adblock' ? 'success' : 'neutral'
@@ -193,6 +194,7 @@ function SchedulerView() {
                   {{
                     direct: 'Direkt ISP',
                     adblock: 'Reklamsız',
+                    vpn_only: 'Sadece VPN',
                     vpn: 'VPN',
                     dpi: 'DPI',
                     adblock_dpi: 'Reklamsız DPI',

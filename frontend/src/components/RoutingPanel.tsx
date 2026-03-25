@@ -20,6 +20,7 @@ const categoryMeta: Record<string, { label: string; icon: React.ReactNode; color
 const routeLabels: Record<string, { label: string; badge: string }> = {
   direct:      { label: 'Direkt ISP',       badge: 'neutral' },
   adblock:     { label: 'Reklamsız (Pi-hole + ISP)', badge: 'success' },
+  vpn_only:    { label: 'Sadece VPN',                badge: 'info' },
   vpn:         { label: 'VPN (Pi-hole + VPN)',       badge: 'info' },
   dpi:         { label: 'DPI (Zapret)',              badge: 'warning' },
   adblock_dpi: { label: 'Reklamsız DPI (Pi-hole + Zapret)', badge: 'error' },
@@ -116,6 +117,7 @@ export function RoutingPanel() {
                           >
                             <option value="direct">Direkt ISP</option>
                             <option value="adblock">Reklamsız (Pi-hole + ISP)</option>
+                            <option value="vpn_only">Sadece VPN</option>
                             <option value="vpn">VPN (Pi-hole + VPN)</option>
                             <option value="dpi">DPI (Zapret)</option>
                             <option value="adblock_dpi">Reklamsız DPI (Pi-hole + Zapret)</option>

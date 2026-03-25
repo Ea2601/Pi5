@@ -469,6 +469,7 @@ function RoutingDoc() {
           <tbody>
             <tr><td><strong>Varsayılan</strong></td><td>Direkt ISP — herhangi bir filtreleme veya tünel olmadan doğrudan internet</td></tr>
             <tr><td><strong>Reklamsız</strong></td><td>Pi-hole + ISP — reklam engelleme aktif, direkt ISP çıkışı</td></tr>
+            <tr><td><strong>Sadece VPN</strong></td><td>VPN — reklam engelleme olmadan sadece VPN tüneli üzerinden çıkış</td></tr>
             <tr><td><strong>VPN</strong></td><td>Pi-hole + VPN — reklam engelleme + VPN tüneli üzerinden çıkış</td></tr>
             <tr><td><strong>DPI</strong></td><td>Zapret DPI — DPI atlatma aktif, reklam engelleme yok</td></tr>
             <tr><td><strong>Reklamsız DPI</strong></td><td>Pi-hole + Zapret DPI — hem reklam engelleme hem DPI atlatma aktif</td></tr>

@@ -124,6 +124,7 @@ export function DeviceRoutingPanel() {
                       onChange={e => setNewRule({ ...newRule, route_type: e.target.value })}>
                       <option value="direct">Direkt ISP</option>
                       <option value="adblock">Reklamsız (Pi-hole + ISP)</option>
+                      <option value="vpn_only">Sadece VPN</option>
                       <option value="vpn">VPN (Pi-hole + VPN)</option>
                       <option value="dpi">DPI (Zapret)</option>
                       <option value="adblock_dpi">Reklamsız DPI (Pi-hole + Zapret)</option>
@@ -170,6 +171,7 @@ export function DeviceRoutingPanel() {
                       style={{ fontSize: 12, padding: '2px 6px' }}>
                       <option value="direct">Direkt ISP</option>
                       <option value="adblock">Reklamsız (Pi-hole + ISP)</option>
+                      <option value="vpn_only">Sadece VPN</option>
                       <option value="vpn">VPN (Pi-hole + VPN)</option>
                       <option value="dpi">DPI (Zapret)</option>
                       <option value="adblock_dpi">Reklamsız DPI (Pi-hole + Zapret)</option>
