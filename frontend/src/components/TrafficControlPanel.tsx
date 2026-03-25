@@ -5,7 +5,7 @@ import {
 } from 'lucide-react';
 import { useApi, postApi, putApi, deleteApi } from '../hooks/useApi';
 import { Panel, Badge } from './ui';
-import type { TrafficRule, TrafficSchedule, ThrottleRule, VpsServer } from '../types';
+import type { TrafficRule, TrafficSchedule, ThrottleRule } from '../types';
 
 type TrafficTab = 'scheduler' | 'throttle' | 'analytics';
 
@@ -54,12 +54,10 @@ const DAY_LABELS: { key: string; label: string }[] = [
 function SchedulerView() {
   const { data, refetch } = useApi<{ schedules: TrafficSchedule[] }>('/routing/schedules', { schedules: [] });
   const { data: rulesData } = useApi<{ rules: TrafficRule[] }>('/routing/rules', { rules: [] });
-  const { data: vpsData } = useApi<{ servers: VpsServer[] }>('/vps/list', { servers: [] });
   const [showAdd, setShowAdd] = useState(false);
   const [newSchedule, setNewSchedule] = useState({
     traffic_routing_id: 0,
     schedule_route_type: 'direct',
-    schedule_vps_id: null as number | null,
     time_start: '09:00',
     time_end: '17:00',
     days_of_week: '',
@@ -78,12 +76,11 @@ function SchedulerView() {
       await postApi('/routing/schedules', {
         traffic_routing_id: newSchedule.traffic_routing_id,
         schedule_route_type: newSchedule.schedule_route_type,
-        schedule_vps_id: newSchedule.schedule_vps_id,
         time_start: newSchedule.time_start,
         time_end: newSchedule.time_end,
         days_of_week: selectedDays.join(','),
       });
-      setNewSchedule({ traffic_routing_id: 0, schedule_route_type: 'direct', schedule_vps_id: null, time_start: '09:00', time_end: '17:00', days_of_week: '' });
+      setNewSchedule({ traffic_routing_id: 0, schedule_route_type: 'direct', time_start: '09:00', time_end: '17:00', days_of_week: '' });
       setSelectedDays([]);
       setShowAdd(false);
       await refetch();
@@ -124,24 +121,14 @@ function SchedulerView() {
                 <label>Yonlendirme Tipi</label>
                 <select className="config-select" value={newSchedule.schedule_route_type}
                   onChange={e => setNewSchedule({ ...newSchedule, schedule_route_type: e.target.value })}>
-                  <option value="direct">Direkt</option>
-                  <option value="vps">VPS</option>
-                  <option value="zapret">Zapret</option>
+                  <option value="direct">Direkt ISP</option>
+                  <option value="adblock">Reklamsız (Pi-hole + ISP)</option>
+                  <option value="vpn">VPN (Pi-hole + VPN)</option>
+                  <option value="dpi">DPI (Zapret)</option>
+                  <option value="adblock_dpi">Reklamsız DPI (Pi-hole + Zapret)</option>
                   <option value="blocked">Engelle</option>
                 </select>
               </div>
-              {newSchedule.schedule_route_type === 'vps' && (
-                <div className="form-group">
-                  <label>VPS Sunucu</label>
-                  <select className="config-select" value={newSchedule.schedule_vps_id ?? ''}
-                    onChange={e => setNewSchedule({ ...newSchedule, schedule_vps_id: e.target.value ? Number(e.target.value) : null })}>
-                    <option value="">VPS secin...</option>
-                    {vpsData.servers.map(s => (
-                      <option key={s.id} value={s.id}>{s.location} ({s.ip})</option>
-                    ))}
-                  </select>
-                </div>
-              )}
               <div className="form-group">
                 <label>Baslangic Saati</label>
                 <input className="config-input" type="time" value={newSchedule.time_start}
@@ -196,8 +183,21 @@ function SchedulerView() {
                     {schedule.time_start} - {schedule.time_end} &middot; {dayNames}
                   </div>
                 </div>
-                <Badge variant={schedule.schedule_route_type === 'blocked' ? 'error' : schedule.schedule_route_type === 'vps' ? 'info' : 'success'}>
-                  {schedule.schedule_route_type}
+                <Badge variant={
+                  schedule.schedule_route_type === 'blocked' ? 'error' :
+                  schedule.schedule_route_type === 'vpn' ? 'info' :
+                  schedule.schedule_route_type === 'dpi' ? 'warning' :
+                  schedule.schedule_route_type === 'adblock_dpi' ? 'error' :
+                  schedule.schedule_route_type === 'adblock' ? 'success' : 'neutral'
+                }>
+                  {{
+                    direct: 'Direkt ISP',
+                    adblock: 'Reklamsız',
+                    vpn: 'VPN',
+                    dpi: 'DPI',
+                    adblock_dpi: 'Reklamsız DPI',
+                    blocked: 'Engelli',
+                  }[schedule.schedule_route_type] || schedule.schedule_route_type}
                 </Badge>
                 <button className="icon-btn icon-btn-sm cron-delete" onClick={() => handleDelete(schedule.id)} title="Sil">
                   <Trash2 size={13} />

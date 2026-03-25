@@ -16,10 +16,11 @@ const deviceIcon = (type: string, size = 18) => {
 };
 
 const profileLabels: Record<string, { label: string; color: string; desc: string; lineColor: string }> = {
-  default:    { label: 'Varsayılan',  color: 'badge-info',    desc: 'Zapret DPI + Pi-hole DNS',     lineColor: '#3b82f6' },
-  developer:  { label: 'Geliştirici', color: 'badge-success', desc: 'VPS tünel + Tam erişim',       lineColor: '#22c55e' },
-  streaming:  { label: 'Streaming',   color: 'badge-warning', desc: 'Direkt ISP + Düşük gecikme',   lineColor: '#f59e0b' },
-  restricted: { label: 'Kısıtlı',    color: 'badge-error',   desc: 'Sadece yerel ağ erişimi',      lineColor: '#ef4444' },
+  default:     { label: 'Varsayılan',     color: 'badge-neutral',  desc: 'Direkt ISP',              lineColor: '#94a3b8' },
+  adblock:     { label: 'Reklamsız',      color: 'badge-success',  desc: 'Pi-hole + ISP',           lineColor: '#22c55e' },
+  vpn:         { label: 'VPN',            color: 'badge-info',     desc: 'Pi-hole + VPN',           lineColor: '#3b82f6' },
+  dpi:         { label: 'DPI',            color: 'badge-warning',  desc: 'Zapret DPI',              lineColor: '#f59e0b' },
+  adblock_dpi: { label: 'Reklamsız DPI',  color: 'badge-error',    desc: 'Pi-hole + Zapret DPI',   lineColor: '#ef4444' },
 };
 
 const profiles = Object.keys(profileLabels);

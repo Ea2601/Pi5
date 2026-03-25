@@ -6,7 +6,7 @@ import { useApi, putApi } from '../hooks/useApi';
 import { useState } from 'react';
 import { Panel, Badge } from './ui';
 import { AppLogo } from './AppLogos';
-import type { TrafficRule, VpsServer } from '../types';
+import type { TrafficRule } from '../types';
 
 const categoryMeta: Record<string, { label: string; icon: React.ReactNode; color: string }> = {
   voip: { label: 'VoIP & Mesajlaşma', icon: <MessageCircle size={16} />, color: 'badge-success' },
@@ -18,14 +18,15 @@ const categoryMeta: Record<string, { label: string; icon: React.ReactNode; color
 
 
 const routeLabels: Record<string, { label: string; badge: string }> = {
-  direct: { label: 'Direkt (ISP)', badge: 'neutral' },
-  zapret: { label: 'Zapret Bypass', badge: 'warning' },
-  vps: { label: 'VPS Tünel', badge: 'success' },
+  direct:      { label: 'Direkt ISP',       badge: 'neutral' },
+  adblock:     { label: 'Reklamsız (Pi-hole + ISP)', badge: 'success' },
+  vpn:         { label: 'VPN (Pi-hole + VPN)',       badge: 'info' },
+  dpi:         { label: 'DPI (Zapret)',              badge: 'warning' },
+  adblock_dpi: { label: 'Reklamsız DPI (Pi-hole + Zapret)', badge: 'error' },
 };
 
 export function RoutingPanel() {
   const { data: rulesData, refetch } = useApi<{ rules: TrafficRule[] }>('/routing/rules', { rules: [] });
-  const { data: vpsData } = useApi<{ servers: VpsServer[] }>('/vps/list', { servers: [] });
   const [editingId, setEditingId] = useState<number | null>(null);
   const [filterCat, setFilterCat] = useState<string>('all');
 
@@ -58,7 +59,7 @@ export function RoutingPanel() {
   return (
     <div className="fade-in">
       <Panel title="Trafik Yönlendirme" icon={<Route size={20} style={{ marginRight: 8 }} />}
-        subtitle="Tüm uygulama ve protokol trafiğini yönetin — VPS, Zapret veya direkt ISP üzerinden yönlendirin"
+        subtitle="Tüm uygulama ve protokol trafiğini yönetin — Direkt ISP, Reklamsız, VPN, DPI veya Reklamsız DPI profilleri"
         badge={<Badge variant="info">{rules.length} kural</Badge>}>
 
         {/* Category filter */}
@@ -97,12 +98,8 @@ export function RoutingPanel() {
                       <div className="app-details">
                         <h4>{rule.app_name}</h4>
                         <p>
-                          Rota: <strong>
-                            {rule.route_type === 'vps' && rule.vps_ip
-                              ? `VPS ${rule.vps_ip} (${rule.vps_location || '?'})`
-                              : routeInfo.label}
-                          </strong>
-                          <span className={`route-status route-${rule.route_type === 'vps' ? 'active' : rule.route_type}`}>
+                          Rota: <strong>{routeInfo.label}</strong>
+                          <span className={`route-status route-${rule.route_type}`}>
                             {routeInfo.label}
                           </span>
                         </p>
@@ -114,23 +111,14 @@ export function RoutingPanel() {
                       {editingId === rule.id ? (
                         <div className="voip-edit">
                           <select
-                            defaultValue={rule.route_type === 'vps' ? `vps:${rule.vps_id || ''}` : rule.route_type}
-                            onChange={e => {
-                              const val = e.target.value;
-                              if (val.startsWith('vps:')) {
-                                handleRouteChange(rule.id, 'vps', parseInt(val.split(':')[1]));
-                              } else {
-                                handleRouteChange(rule.id, val, null);
-                              }
-                            }}
+                            defaultValue={rule.route_type}
+                            onChange={e => handleRouteChange(rule.id, e.target.value, null)}
                           >
-                            <option value="direct">Direkt (ISP)</option>
-                            <option value="zapret">Zapret Bypass</option>
-                            {vpsData.servers.map(vps => (
-                              <option key={vps.id} value={`vps:${vps.id}`}>
-                                VPS: {vps.ip} ({vps.location || vps.username})
-                              </option>
-                            ))}
+                            <option value="direct">Direkt ISP</option>
+                            <option value="adblock">Reklamsız (Pi-hole + ISP)</option>
+                            <option value="vpn">VPN (Pi-hole + VPN)</option>
+                            <option value="dpi">DPI (Zapret)</option>
+                            <option value="adblock_dpi">Reklamsız DPI (Pi-hole + Zapret)</option>
                           </select>
                         </div>
                       ) : (
