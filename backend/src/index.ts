@@ -1442,6 +1442,61 @@ app.post('/api/ddns/check-ip', async (_req, res) => {
   }
 });
 
+// ─── Quick System Update ───
+app.post('/api/system/update', async (_req, res) => {
+  try {
+    if (!isLinux) {
+      return res.json({ success: false, error: 'Guncelleme sadece Pi5 uzerinde calisir.' });
+    }
+    const steps: { step: string; output: string; success: boolean }[] = [];
+
+    // 1. Git pull
+    try {
+      const { stdout } = await require('util').promisify(require('child_process').exec)(
+        'cd /opt/pi5-gateway && git pull --rebase', { timeout: 30000 }
+      );
+      steps.push({ step: 'Git Pull', output: stdout.trim(), success: true });
+    } catch (e: any) {
+      steps.push({ step: 'Git Pull', output: e.message, success: false });
+    }
+
+    // 2. Backend build
+    try {
+      const { stdout } = await require('util').promisify(require('child_process').exec)(
+        'cd /opt/pi5-gateway/backend && npm run build', { timeout: 60000 }
+      );
+      steps.push({ step: 'Backend Build', output: stdout.trim().slice(-200), success: true });
+    } catch (e: any) {
+      steps.push({ step: 'Backend Build', output: e.message, success: false });
+    }
+
+    // 3. Frontend build
+    try {
+      const { stdout } = await require('util').promisify(require('child_process').exec)(
+        'cd /opt/pi5-gateway/frontend && npm run build', { timeout: 120000 }
+      );
+      steps.push({ step: 'Frontend Build', output: stdout.trim().slice(-200), success: true });
+    } catch (e: any) {
+      steps.push({ step: 'Frontend Build', output: e.message, success: false });
+    }
+
+    // 4. Restart backend
+    try {
+      const { stdout } = await require('util').promisify(require('child_process').exec)(
+        'systemctl restart pi5-backend', { timeout: 15000 }
+      );
+      steps.push({ step: 'Servis Restart', output: stdout.trim() || 'Basarili', success: true });
+    } catch (e: any) {
+      steps.push({ step: 'Servis Restart', output: e.message, success: false });
+    }
+
+    const allSuccess = steps.every(s => s.success);
+    res.json({ success: allSuccess, steps });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // ─── Global Error Handler ───
 app.use((err: any, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
   console.error('Unhandled error:', err.message || err);

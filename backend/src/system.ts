@@ -337,9 +337,12 @@ export async function runSpeedTest(): Promise<{
 // ─── 11. Terminal (whitelist) ───
 const ALLOWED_PREFIXES = [
   'ls', 'cat /etc/', 'cat /proc/', 'df', 'free', 'uptime', 'uname', 'whoami', 'date', 'hostname',
-  'ip ', 'ss ', 'wg ', 'pihole', 'fail2ban-client', 'systemctl status', 'systemctl is-active',
+  'ip ', 'ss ', 'wg ', 'pihole', 'fail2ban-client',
+  'systemctl status', 'systemctl is-active', 'systemctl restart pi5-backend',
   'dig', 'nft list', 'vcgencmd', 'journalctl', 'pwd', 'head', 'tail', 'grep',
   'ping -c', 'traceroute', 'nslookup', 'curl -s',
+  'cd /opt/pi5-gateway', 'git pull', 'npm run build',
+  'apt update', 'apt upgrade',
 ];
 
 export async function executeCommand(cmd: string): Promise<{ output: string; command: string; timestamp: string }> {

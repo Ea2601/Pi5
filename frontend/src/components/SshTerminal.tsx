@@ -61,6 +61,20 @@ const QUICK_COMMANDS: QuickGroup[] = [
     ],
   },
   {
+    label: 'Bakım & Güncelleme',
+    commands: [
+      { cmd: 'cd /opt/pi5-gateway && git pull', desc: 'Panel güncellemelerini indir' },
+      { cmd: 'cd /opt/pi5-gateway/frontend && npm run build', desc: 'Frontend yeniden derle' },
+      { cmd: 'cd /opt/pi5-gateway/backend && npm run build', desc: 'Backend yeniden derle' },
+      { cmd: 'systemctl restart pi5-backend', desc: 'Backend servisini yeniden başlat' },
+      { cmd: 'systemctl status pi5-backend', desc: 'Backend servis durumu' },
+      { cmd: 'journalctl -u pi5-backend --no-pager -n 30', desc: 'Son 30 backend log satırı' },
+      { cmd: 'apt update -qq && apt upgrade -y -qq', desc: 'Sistem paketlerini güncelle' },
+      { cmd: 'pihole -up', desc: 'Pi-hole yazılımını güncelle' },
+      { cmd: 'pihole -g', desc: 'Pi-hole gravity listesini güncelle' },
+    ],
+  },
+  {
     label: 'Dosya & Dizin',
     commands: [
       { cmd: 'ls', desc: 'Mevcut dizin içeriği' },
