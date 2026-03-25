@@ -224,51 +224,64 @@ export function VpsSetup() {
     }
   }, [data.servers, selectedVpsId]);
 
-  const runSetupSteps = async () => {
-    const initialSteps: SetupStep[] = SETUP_STEPS.map(s => ({
-      ...s, status: 'pending' as StepStatus, message: '', duration: '',
-    }));
-    setSteps(initialSteps);
-
-    for (let i = 0; i < SETUP_STEPS.length; i++) {
-      setSteps(prev => prev.map((s, idx) => idx === i ? { ...s, status: 'running' } : s));
-      await new Promise(resolve => setTimeout(resolve, 800 + Math.random() * 1200));
-      try {
-        const res = await fetch('/api/vps/1/steps', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ step: SETUP_STEPS[i].key }),
-        });
-        const result = await res.json();
-        setSteps(prev => prev.map((s, idx) => idx === i ? {
-          ...s, status: result.status as StepStatus, message: result.message, duration: result.duration,
-        } : s));
-        if (result.status === 'error') return false;
-      } catch {
-        setSteps(prev => prev.map((s, idx) => idx === i ? { ...s, status: 'error', message: 'Baglanti hatasi' } : s));
-        return false;
-      }
-    }
-    return true;
-  };
-
   const handleDeploy = async () => {
     if (!ip.trim()) return;
     setState('deploying');
     setErrorMsg('');
+    setSteps([]);
+
     try {
-      await postApi('/vps/setup', {
+      // Step 1: Test connection and create server record
+      const setupResult = await postApi('/vps/setup', {
         ip: ip.trim(), username: username.trim(),
         password: password.trim(), location: location.trim(),
       });
-      const allSuccess = await runSetupSteps();
+
+      if (!setupResult.success) {
+        setState('error');
+        setErrorMsg(setupResult.error || 'Bağlantı başarısız');
+        return;
+      }
+
+      const vpsId = setupResult.id;
+
+      // Step 2: Run setup steps one by one
+      const initialSteps: SetupStep[] = SETUP_STEPS.map(s => ({
+        ...s, status: 'pending' as StepStatus, message: '', duration: '',
+      }));
+      setSteps(initialSteps);
+
+      let allSuccess = true;
+      for (let i = 0; i < SETUP_STEPS.length; i++) {
+        setSteps(prev => prev.map((s, idx) => idx === i ? { ...s, status: 'running' } : s));
+        try {
+          const res = await fetch(`/api/vps/${vpsId}/steps`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ step: SETUP_STEPS[i].key }),
+          });
+          const result = await res.json();
+          setSteps(prev => prev.map((s, idx) => idx === i ? {
+            ...s, status: result.status as StepStatus, message: result.message, duration: result.duration,
+          } : s));
+          if (result.status === 'error') {
+            allSuccess = false;
+            break;
+          }
+        } catch {
+          setSteps(prev => prev.map((s, idx) => idx === i ? { ...s, status: 'error', message: 'Bağlantı hatası' } : s));
+          allSuccess = false;
+          break;
+        }
+      }
+
       setState(allSuccess ? 'success' : 'error');
-      if (!allSuccess) setErrorMsg('Kurulum sirasinda hata olustu');
-      setIp(''); setPassword(''); setLocation('');
+      if (!allSuccess) setErrorMsg('Kurulum sırasında hata oluştu');
+      if (allSuccess) { setIp(''); setPassword(''); setLocation(''); }
       await refetch();
     } catch (e) {
       setState('error');
-      setErrorMsg(e instanceof Error ? e.message : 'Deployment failed');
+      setErrorMsg(e instanceof Error ? e.message : 'Bağlantı başarısız');
     }
   };
 

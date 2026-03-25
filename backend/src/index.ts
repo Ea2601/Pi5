@@ -3,7 +3,7 @@ import cors from 'cors';
 import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
 import { initDb, dbAll, dbRun, dbGet } from './db';
-import { setupWireGuardVPS } from './ssh';
+import { setupWireGuardVPS, testSSHConnection, executeSetupStep, addWireGuardClient } from './ssh';
 import { systemServices } from './services';
 import { startHealthMonitor, getHealthStatus } from './monitor';
 import { startCronJobs, getSystemLogs } from './maintenance';
@@ -421,24 +421,104 @@ app.get('/api/vps/list', async (_req, res) => {
   }
 });
 
+// VPS setup — Step 1: Test connection and save server record
 app.post('/api/vps/setup', async (req, res) => {
-  const { ip, username, password, privateKeyPath, location } = req.body;
+  const { ip, username, password, location } = req.body;
   if (!ip || !username) {
-    return res.status(400).json({ error: 'Missing required parameters (ip, username)' });
+    return res.status(400).json({ error: 'IP ve kullanıcı adı gerekli' });
   }
-  const success = await setupWireGuardVPS(ip, username, privateKeyPath || '/root/.ssh/id_rsa');
-  const status = success ? 'connected' : 'error';
-  await dbRun('INSERT INTO vps_servers (ip, username, password, location, status) VALUES (?, ?, ?, ?, ?)',
-    [ip, username, password || '', location || '', status]);
-  if (success) {
-    res.json({ success: true, message: 'WireGuard setup completed.' });
-  } else {
-    res.status(500).json({ success: false, error: 'Failed to setup WireGuard.' });
+  try {
+    // Test SSH connection first
+    const connTest = await testSSHConnection({ ip, username, password });
+    if (!connTest.success) {
+      return res.status(400).json({ success: false, error: `SSH bağlantısı başarısız: ${connTest.message}` });
+    }
+    // Save to DB with 'pending' status — steps will be run via /api/vps/:id/steps
+    await dbRun('INSERT INTO vps_servers (ip, username, password, location, status) VALUES (?, ?, ?, ?, ?)',
+      [ip, username, password || '', location || '', 'pending']);
+    const row: any = await dbGet('SELECT last_insert_rowid() as id');
+    res.json({ success: true, id: row.id, message: 'Bağlantı başarılı, kurulum adımları başlatılabilir.' });
+  } catch (e: any) {
+    res.status(500).json({ success: false, error: e.message || 'Bağlantı hatası' });
+  }
+});
+
+// VPS setup — Step 2: Execute individual setup steps
+app.post('/api/vps/:id/steps', async (req, res) => {
+  const { step } = req.body;
+  if (!step) {
+    return res.status(400).json({ status: 'error', message: 'Adım belirtilmedi' });
+  }
+  try {
+    const server: any = await dbGet('SELECT * FROM vps_servers WHERE id = ?', [req.params.id]);
+    if (!server) {
+      return res.status(404).json({ status: 'error', message: 'Sunucu bulunamadı' });
+    }
+    const result = await executeSetupStep(
+      { ip: server.ip, username: server.username, password: server.password || undefined },
+      step
+    );
+    // On final successful step, mark server as connected
+    if (step === 'handshake' && result.status === 'success') {
+      await dbRun('UPDATE vps_servers SET status = ? WHERE id = ?', ['connected', req.params.id]);
+    }
+    // On any error, mark as error
+    if (result.status === 'error') {
+      await dbRun('UPDATE vps_servers SET status = ? WHERE id = ?', ['error', req.params.id]);
+    }
+    res.json(result);
+  } catch (e: any) {
+    res.status(500).json({ status: 'error', message: e.message || 'Adım çalıştırılamadı', duration: '0s' });
+  }
+});
+
+// VPS clients — add new WireGuard peer
+app.post('/api/vps/:id/clients', async (req, res) => {
+  const { name } = req.body;
+  if (!name) {
+    return res.status(400).json({ error: 'Client adı gerekli' });
+  }
+  try {
+    const server: any = await dbGet('SELECT * FROM vps_servers WHERE id = ?', [req.params.id]);
+    if (!server) return res.status(404).json({ error: 'Sunucu bulunamadı' });
+
+    // Count existing clients to determine next IP index
+    const existing: any[] = await dbAll('SELECT * FROM wg_clients WHERE vps_id = ?', [req.params.id]);
+    const clientIndex = existing.length;
+
+    const result = await addWireGuardClient(
+      { ip: server.ip, username: server.username, password: server.password || undefined },
+      name,
+      clientIndex
+    );
+
+    if (!result) {
+      return res.status(500).json({ error: 'Client oluşturulamadı' });
+    }
+
+    await dbRun(
+      'INSERT INTO wg_clients (vps_id, name, ip, public_key, config, qr_data) VALUES (?, ?, ?, ?, ?, ?)',
+      [req.params.id, name, result.ip, result.publicKey, result.config, result.qrData]
+    );
+    res.json({ success: true, client: result });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message || 'Client eklenemedi' });
+  }
+});
+
+// VPS clients — list
+app.get('/api/vps/:id/clients', async (req, res) => {
+  try {
+    const clients = await dbAll('SELECT * FROM wg_clients WHERE vps_id = ? ORDER BY created_at', [req.params.id]);
+    res.json({ clients });
+  } catch (e: any) {
+    res.json({ clients: [] });
   }
 });
 
 app.delete('/api/vps/:id', async (req, res) => {
   try {
+    await dbRun('DELETE FROM wg_clients WHERE vps_id = ?', [req.params.id]);
     await dbRun('DELETE FROM vps_servers WHERE id = ?', [req.params.id]);
     res.json({ success: true });
   } catch (e: any) {
@@ -1281,57 +1361,6 @@ app.post('/api/devices/:mac/services', async (req, res) => {
       [req.params.mac, service_name, enabled !== undefined ? (enabled ? 1 : 0) : 1, config_json || '{}']
     );
     res.json({ success: true });
-  } catch (e: any) {
-    res.status(500).json({ error: e.message });
-  }
-});
-
-// ─── VPS Setup Steps ───
-app.post('/api/vps/:id/steps', async (req, res) => {
-  const { step } = req.body;
-  const steps: Record<string, { status: string; message: string; duration: string }> = {
-    'connection': { status: 'success', message: 'SSH bağlantısı başarılı', duration: '1.2s' },
-    'update': { status: 'success', message: 'Sistem güncellendi (42 paket)', duration: '45s' },
-    'packages': { status: 'success', message: 'wireguard, iptables, curl, qrencode kuruldu', duration: '12s' },
-    'maintenance': { status: 'success', message: 'Günlük restart (04:00), log rotasyonu, otomatik güncelleme ayarlandı', duration: '3s' },
-    'wireguard': { status: 'success', message: 'WireGuard kuruldu, wg0 arayüzü aktif', duration: '8s' },
-    'handshake': { status: 'success', message: 'Handshake başarılı, tünel aktif', duration: '2s' },
-  };
-  const result = steps[step] || { status: 'error', message: 'Bilinmeyen adım', duration: '0s' };
-  res.json(result);
-});
-
-// ─── WireGuard Clients ───
-app.get('/api/vps/:id/clients', async (req, res) => {
-  try {
-    const clients = await dbAll('SELECT * FROM wg_clients WHERE vps_id = ? ORDER BY id', [req.params.id]);
-    const clientsWithQr = clients.map((c: any) => ({
-      ...c,
-      qr_data: `data:image/svg+xml;base64,${Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200"><rect width="200" height="200" fill="#111820"/><text x="100" y="90" text-anchor="middle" fill="#64748b" font-size="12" font-family="monospace">QR Code</text><text x="100" y="115" text-anchor="middle" fill="#e2e8f0" font-size="14" font-family="monospace">${c.name}</text><rect x="40" y="130" width="120" height="4" rx="2" fill="#3b82f6" opacity="0.5"/></svg>`).toString('base64')}`,
-    }));
-    res.json({ clients: clientsWithQr });
-  } catch (e: any) {
-    res.status(500).json({ error: e.message });
-  }
-});
-
-app.post('/api/vps/:id/clients', async (req, res) => {
-  try {
-    const { name } = req.body;
-    if (!name) {
-      return res.status(400).json({ error: 'name gerekli' });
-    }
-    const existing = await dbAll('SELECT * FROM wg_clients WHERE vps_id = ?', [req.params.id]);
-    const nextIp = `10.66.66.${existing.length + 5}`;
-    const pubKey = Buffer.from(name + Date.now().toString()).toString('base64').slice(0, 44) + '=';
-    const vps = await dbGet('SELECT * FROM vps_servers WHERE id = ?', [req.params.id]);
-    const endpoint = vps ? vps.ip : '0.0.0.0';
-    const config = `[Interface]\nPrivateKey = ${Buffer.from(Date.now().toString()).toString('base64').slice(0, 44)}=\nAddress = ${nextIp}/32\nDNS = 1.1.1.1\n\n[Peer]\nPublicKey = xY5zA7bC9dE1fG3hI5jK7lM9nO1pQ3rS5tU7vW9xY=\nEndpoint = ${endpoint}:51820\nAllowedIPs = 0.0.0.0/0\nPersistentKeepalive = 25`;
-    await dbRun('INSERT INTO wg_clients (vps_id, name, ip, public_key, config) VALUES (?, ?, ?, ?, ?)',
-      [req.params.id, name, nextIp, pubKey, config]);
-    const client = await dbGet('SELECT * FROM wg_clients WHERE vps_id = ? AND name = ?', [req.params.id, name]);
-    const qr_data = `data:image/svg+xml;base64,${Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200"><rect width="200" height="200" fill="#111820"/><text x="100" y="90" text-anchor="middle" fill="#64748b" font-size="12" font-family="monospace">QR Code</text><text x="100" y="115" text-anchor="middle" fill="#e2e8f0" font-size="14" font-family="monospace">${name}</text><rect x="40" y="130" width="120" height="4" rx="2" fill="#3b82f6" opacity="0.5"/></svg>`).toString('base64')}`;
-    res.json({ success: true, client: { ...client, config, qr_data } });
   } catch (e: any) {
     res.status(500).json({ error: e.message });
   }

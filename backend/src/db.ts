@@ -335,7 +335,7 @@ export const initDb = () => {
     db.run(`CREATE TABLE IF NOT EXISTS wg_clients (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       vps_id INTEGER NOT NULL, name TEXT NOT NULL, ip TEXT NOT NULL,
-      public_key TEXT NOT NULL, config TEXT NOT NULL,
+      public_key TEXT NOT NULL, config TEXT NOT NULL, qr_data TEXT DEFAULT '',
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY(vps_id) REFERENCES vps_servers(id)
     )`);
