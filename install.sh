@@ -87,9 +87,72 @@ npm ci --production=false 2>/dev/null || npm install
 npm run build
 log "Frontend build tamamlandı"
 
-# ─── 6. Core Dizini ───
-step "6/8 — Veri Dizini Hazırlanıyor"
-mkdir -p "$INSTALL_DIR/core"
+# ─── 6. SSD Algılama & Veri Dizini ───
+step "6/8 — SSD Algılama & Veri Dizini"
+
+# NVMe SSD algılama
+SSD_DETECTED=false
+SSD_MOUNT=""
+if lsblk -dno NAME,TYPE | grep -q "nvme.*disk"; then
+  SSD_DEV=$(lsblk -dno NAME,TYPE | grep "nvme.*disk" | head -1 | awk '{print $1}')
+  log "NVMe SSD algılandı: /dev/$SSD_DEV"
+
+  # SSD mount edilmiş mi kontrol et
+  SSD_MOUNT=$(lsblk -no MOUNTPOINT /dev/${SSD_DEV}p1 2>/dev/null | head -1)
+
+  if [ -z "$SSD_MOUNT" ]; then
+    warn "SSD mount edilmemiş. /mnt/ssd olarak hazırlanıyor..."
+
+    # Partition yoksa oluştur
+    if ! lsblk -no NAME /dev/$SSD_DEV | grep -q "p1"; then
+      warn "SSD bölümlendiriliyor..."
+      echo -e "g\nn\n\n\n\nw" | fdisk /dev/$SSD_DEV 2>/dev/null
+      sleep 2
+    fi
+
+    # Filesystem yoksa oluştur
+    PART="/dev/${SSD_DEV}p1"
+    if ! blkid "$PART" | grep -q "ext4"; then
+      warn "SSD ext4 formatlanıyor..."
+      mkfs.ext4 -F "$PART"
+    fi
+
+    # Mount
+    SSD_MOUNT="/mnt/ssd"
+    mkdir -p "$SSD_MOUNT"
+    mount "$PART" "$SSD_MOUNT"
+
+    # fstab'a ekle (kalıcı mount)
+    UUID=$(blkid -s UUID -o value "$PART")
+    if ! grep -q "$UUID" /etc/fstab; then
+      echo "UUID=$UUID /mnt/ssd ext4 defaults,noatime,discard 0 2" >> /etc/fstab
+      log "SSD /etc/fstab'a eklendi (kalıcı mount)"
+    fi
+  fi
+
+  SSD_DETECTED=true
+  log "SSD mount noktası: $SSD_MOUNT"
+
+  # Core ve DB dizinini SSD'ye taşı (performans için)
+  if [ -n "$SSD_MOUNT" ]; then
+    SSD_DATA="$SSD_MOUNT/pi5-data"
+    mkdir -p "$SSD_DATA"
+
+    # Mevcut core dizinini SSD'ye taşı
+    if [ -d "$INSTALL_DIR/core" ] && [ ! -L "$INSTALL_DIR/core" ]; then
+      cp -a "$INSTALL_DIR/core/"* "$SSD_DATA/" 2>/dev/null || true
+      rm -rf "$INSTALL_DIR/core"
+    fi
+
+    # Symlink oluştur: core → SSD
+    ln -sfn "$SSD_DATA" "$INSTALL_DIR/core"
+    log "Veri dizini SSD'ye taşındı: $SSD_DATA → $INSTALL_DIR/core"
+  fi
+else
+  warn "NVMe SSD algılanamadı, SD kart üzerinde çalışılacak"
+  mkdir -p "$INSTALL_DIR/core"
+fi
+
 touch "$INSTALL_DIR/core/system.log"
 log "Core dizini hazır"
 

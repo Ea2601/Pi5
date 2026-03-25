@@ -69,7 +69,7 @@ export function SettingsPanel() {
     setSaving(true);
     setResult(null);
     try {
-      await putApi('/settings', toApiSettings(settings));
+      await putApi('/settings', { settings: toApiSettings(settings) });
       setResult({ type: 'success', msg: 'Ayarlar kaydedildi.' });
     } catch (e: unknown) {
       setResult({ type: 'error', msg: e instanceof Error ? e.message : 'Kaydetme başarısız.' });

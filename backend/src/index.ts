@@ -354,6 +354,14 @@ app.post('/api/services/:name/restart', async (req, res) => {
 app.get('/api/pihole/stats', async (_req, res) => {
   try {
     const stats = await getPiholeStats();
+    if (!stats) {
+      return res.json({
+        domainsBlocked: 0, dnsQueriesToday: 0, adsBlockedToday: 0,
+        adsPercentageToday: 0, uniqueClients: 0, queriesForwarded: 0,
+        queriesCached: 0, topBlockedDomains: [], queryTypes: {},
+        _status: 'Pi-hole kurulu degil veya erisilemiyor'
+      });
+    }
     res.json(stats);
   } catch (e: any) {
     res.status(500).json({ error: e.message });
@@ -663,8 +671,10 @@ app.get('/api/dns/queries', async (req, res) => {
 app.post('/api/speedtest/run', async (_req, res) => {
   try {
     const result = await runSpeedTest();
+    if (!result) {
+      return res.status(503).json({ error: 'speedtest-cli kurulu degil veya gelistirme ortaminda calisiyorsunuz. Pi5 uzerinde: sudo apt install speedtest-cli' });
+    }
     const { download_mbps, upload_mbps, ping_ms, server } = result;
-
     await dbRun(
       'INSERT INTO speed_tests (download_mbps, upload_mbps, ping_ms, server) VALUES (?, ?, ?, ?)',
       [download_mbps, upload_mbps, ping_ms, server]
