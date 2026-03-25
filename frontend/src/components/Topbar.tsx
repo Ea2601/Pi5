@@ -19,8 +19,8 @@ export function Topbar() {
     try {
       const result = await postApi('/system/update', {});
       if (result.success) {
-        setUpdateResult({ success: true, message: 'Guncelleme tamamlandi! Sayfa yenilenecek...' });
-        setTimeout(() => window.location.reload(), 3000);
+        setUpdateResult({ success: true, message: 'Guncelleme tamamlandi! Servis yeniden baslatiliyor, 8sn sonra sayfa yenilenecek...' });
+        setTimeout(() => window.location.reload(), 8000);
       } else {
         const failed = result.steps?.filter((s: any) => !s.success).map((s: any) => s.step).join(', ');
         setUpdateResult({ success: false, message: `Basarisiz adimlar: ${failed}` });

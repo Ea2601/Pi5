@@ -1480,18 +1480,17 @@ app.post('/api/system/update', async (_req, res) => {
       steps.push({ step: 'Frontend Build', output: e.message, success: false });
     }
 
-    // 4. Restart backend
-    try {
-      const { stdout } = await require('util').promisify(require('child_process').exec)(
-        'systemctl restart pi5-backend', { timeout: 15000 }
-      );
-      steps.push({ step: 'Servis Restart', output: stdout.trim() || 'Basarili', success: true });
-    } catch (e: any) {
-      steps.push({ step: 'Servis Restart', output: e.message, success: false });
-    }
-
+    // Send response BEFORE restart — otherwise backend kills itself and client gets 502
     const allSuccess = steps.every(s => s.success);
+    steps.push({ step: 'Servis Restart', output: '3 saniye sonra yeniden baslatilacak...', success: true });
     res.json({ success: allSuccess, steps });
+
+    // 4. Delayed restart — response already sent
+    if (allSuccess) {
+      setTimeout(() => {
+        require('child_process').exec('systemctl restart pi5-backend', () => {});
+      }, 3000);
+    }
   } catch (e: any) {
     res.status(500).json({ error: e.message });
   }
