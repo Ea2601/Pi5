@@ -39,13 +39,13 @@ echo "  ╚═══════════════════════
 echo -e "${NC}"
 
 # ─── 1. Sistem Güncellemesi ───
-step "1/8 — Sistem Güncelleniyor"
+step "1/10 — Sistem Güncelleniyor"
 apt update -qq
 apt upgrade -y -qq
 log "Sistem güncellendi"
 
 # ─── 2. Gerekli Paketler ───
-step "2/8 — Bağımlılıklar Kuruluyor"
+step "2/10 — Bağımlılıklar Kuruluyor"
 apt install -y -qq \
   curl git build-essential \
   sqlite3 libsqlite3-dev \
@@ -62,7 +62,7 @@ log "Node.js $(node -v) hazır"
 log "npm $(npm -v) hazır"
 
 # ─── 3. Proje Dosyaları ───
-step "3/8 — Proje Dosyaları İndiriliyor"
+step "3/10 — Proje Dosyaları İndiriliyor"
 if [ -d "$INSTALL_DIR" ]; then
   warn "Mevcut kurulum bulundu, güncelleniyor..."
   cd "$INSTALL_DIR"
@@ -74,21 +74,131 @@ fi
 log "Proje dosyaları hazır: $INSTALL_DIR"
 
 # ─── 4. Backend Kurulumu ───
-step "4/8 — Backend Kuruluyor"
+step "4/10 — Backend Kuruluyor"
 cd "$INSTALL_DIR/backend"
 npm ci --production=false 2>/dev/null || npm install
 npm run build 2>/dev/null || warn "Backend build uyarısı (devam ediyor)"
 log "Backend bağımlılıkları kuruldu"
 
 # ─── 5. Frontend Kurulumu ───
-step "5/8 — Frontend Kuruluyor"
+step "5/10 — Frontend Kuruluyor"
 cd "$INSTALL_DIR/frontend"
 npm ci --production=false 2>/dev/null || npm install
 npm run build
 log "Frontend build tamamlandı"
 
-# ─── 6. SSD Algılama & Veri Dizini ───
-step "6/8 — SSD Algılama & Veri Dizini"
+# ─── 6. Ağ Servislerinin Kurulumu ───
+step "6/10 — Ağ Servisleri Kuruluyor"
+
+# --- Pi-hole ---
+if command -v pihole &>/dev/null; then
+  log "Pi-hole zaten kurulu"
+else
+  warn "Pi-hole kuruluyor (headless)..."
+  mkdir -p /etc/pihole
+  cat > /etc/pihole/setupVars.conf << 'PHEOF'
+PIHOLE_INTERFACE=eth0
+PIHOLE_DNS_1=127.0.0.1#5335
+PIHOLE_DNS_2=1.1.1.1
+QUERY_LOGGING=true
+INSTALL_WEB_SERVER=false
+INSTALL_WEB_INTERFACE=false
+LIGHTTPD_ENABLED=false
+CACHE_SIZE=10000
+DNS_FQDN_REQUIRED=true
+DNS_BOGUS_PRIV=true
+DNSMASQ_LISTENING=local
+BLOCKING_ENABLED=true
+PHEOF
+  curl -sSL https://install.pi-hole.net | bash /dev/stdin --unattended
+  log "Pi-hole kuruldu"
+fi
+
+# --- Unbound (recursive DNS) ---
+if command -v unbound &>/dev/null; then
+  log "Unbound zaten kurulu"
+else
+  warn "Unbound kuruluyor..."
+  apt install -y -qq unbound
+  cat > /etc/unbound/unbound.conf.d/pi5-unbound.conf << 'UBEOF'
+server:
+    verbosity: 0
+    interface: 127.0.0.1
+    port: 5335
+    do-ip4: yes
+    do-udp: yes
+    do-tcp: yes
+    do-ip6: no
+    prefer-ip6: no
+    harden-glue: yes
+    harden-dnssec-stripped: yes
+    use-caps-for-id: no
+    edns-buffer-size: 1232
+    prefetch: yes
+    num-threads: 1
+    so-rcvbuf: 1m
+    private-address: 192.168.0.0/16
+    private-address: 169.254.0.0/16
+    private-address: 172.16.0.0/12
+    private-address: 10.0.0.0/8
+UBEOF
+  systemctl enable unbound
+  systemctl restart unbound
+  log "Unbound kuruldu ve aktif (port 5335)"
+fi
+
+# --- Fail2Ban ---
+if command -v fail2ban-client &>/dev/null; then
+  log "Fail2Ban zaten kurulu"
+else
+  warn "Fail2Ban kuruluyor..."
+  apt install -y -qq fail2ban
+  cat > /etc/fail2ban/jail.local << 'F2BEOF'
+[DEFAULT]
+bantime = 3600
+findtime = 600
+maxretry = 5
+
+[sshd]
+enabled = true
+port = ssh
+filter = sshd
+logpath = /var/log/auth.log
+maxretry = 3
+bantime = 7200
+F2BEOF
+  systemctl enable fail2ban
+  systemctl restart fail2ban
+  log "Fail2Ban kuruldu ve aktif"
+fi
+
+# --- nftables ---
+if command -v nft &>/dev/null; then
+  log "nftables zaten kurulu"
+else
+  warn "nftables kuruluyor..."
+  apt install -y -qq nftables
+fi
+systemctl enable nftables
+log "nftables aktif"
+
+# --- Zapret (DPI bypass) ---
+if [ -d "/opt/zapret" ]; then
+  log "Zapret zaten kurulu"
+else
+  warn "Zapret kuruluyor..."
+  git clone --depth=1 https://github.com/bol-van/zapret.git /opt/zapret 2>/dev/null || true
+  if [ -f "/opt/zapret/install_easy.sh" ]; then
+    cd /opt/zapret
+    # Auto-install mode
+    echo -e "1\n1\n" | bash install_easy.sh 2>/dev/null || warn "Zapret kurulumu kısmen tamamlandı (manuel kontrol gerekebilir)"
+    cd "$INSTALL_DIR"
+  fi
+  log "Zapret kuruldu"
+fi
+
+# ─── 7. SSD Algılama & Veri Dizini ───
+step "7/10 — SSD Algılama & Veri Dizini"
 
 # NVMe SSD algılama
 SSD_DETECTED=false
@@ -156,8 +266,8 @@ fi
 touch "$INSTALL_DIR/core/system.log"
 log "Core dizini hazır"
 
-# ─── 7. Systemd Servisleri ───
-step "7/8 — Sistem Servisleri Kuruluyor"
+# ─── 8. Systemd Servisleri ───
+step "8/10 — Sistem Servisleri Kuruluyor"
 
 # Backend servisi
 cat > /etc/systemd/system/pi5-backend.service << 'SVCEOF'
@@ -228,8 +338,17 @@ systemctl start pi5-backend
 log "Backend servisi çalışıyor"
 log "Nginx reverse proxy aktif"
 
-# ─── 8. Günlük Bakım Cron ───
-step "8/8 — Otomatik Bakım Ayarlanıyor"
+# ─── 9. IP Forwarding & Ağ Ayarları ───
+step "9/10 — IP Forwarding Aktifleştiriliyor"
+cat > /etc/sysctl.d/99-pi5-gateway.conf << 'SYSEOF'
+net.ipv4.ip_forward=1
+net.ipv6.conf.all.forwarding=1
+SYSEOF
+sysctl -p /etc/sysctl.d/99-pi5-gateway.conf 2>/dev/null
+log "IP forwarding aktif"
+
+# ─── 10. Günlük Bakım Cron ───
+step "10/10 — Otomatik Bakım Ayarlanıyor"
 
 # Günlük otomatik güncelleme + restart
 cat > /etc/cron.d/pi5-maintenance << 'CRONEOF'
