@@ -62,6 +62,28 @@ export const initDb = () => {
       FOREIGN KEY(vps_id) REFERENCES vps_servers(id)
     )`);
 
+    // Default app routing rules (real app list — not mock data)
+    const trafficRules: [number, string, string, string][] = [
+      [1, 'WhatsApp', 'voip', 'direct'],
+      [2, 'Telegram', 'voip', 'direct'],
+      [3, 'Discord', 'voip', 'direct'],
+      [4, 'Signal', 'voip', 'direct'],
+      [5, 'YouTube', 'streaming', 'direct'],
+      [6, 'Netflix', 'streaming', 'direct'],
+      [7, 'Twitch', 'streaming', 'direct'],
+      [8, 'Instagram', 'social', 'direct'],
+      [9, 'Twitter/X', 'social', 'direct'],
+      [10, 'TikTok', 'social', 'direct'],
+      [11, 'Steam', 'gaming', 'direct'],
+      [12, 'Epic Games', 'gaming', 'direct'],
+      [13, 'Spotify', 'streaming', 'direct'],
+      [14, 'Google', 'web', 'direct'],
+      [15, 'GitHub', 'web', 'direct'],
+    ];
+    trafficRules.forEach(([id, app, cat, route]) => {
+      db.run(`INSERT OR IGNORE INTO traffic_routing (id, app_name, category, route_type) VALUES (?, ?, ?, ?)`, [id, app, cat, route]);
+    });
+
     db.run(`CREATE TABLE IF NOT EXISTS devices (
       mac_address TEXT PRIMARY KEY, ip_address TEXT, hostname TEXT,
       device_type TEXT DEFAULT 'unknown', route_profile TEXT DEFAULT 'default',
