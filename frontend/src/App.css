@@ -2325,6 +2325,7 @@ select:disabled,
   display: flex; justify-content: flex-end; gap: 8px;
   padding: 12px 20px; border-top: 1px solid var(--panel-border);
 }
+@keyframes breathe { 0%, 100% { opacity: 0.4 } 50% { opacity: 1 } }
 @keyframes fadeIn { from { opacity: 0 } to { opacity: 1 } }
 @keyframes slideUp { from { opacity: 0; transform: translateY(16px) } to { opacity: 1; transform: translateY(0) } }
 

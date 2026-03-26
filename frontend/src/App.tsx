@@ -26,6 +26,8 @@ import { BackupPanel } from './components/BackupPanel';
 import { SettingsPanel } from './components/SettingsPanel';
 import { SshTerminal } from './components/SshTerminal';
 import { DdnsPanel } from './components/DdnsPanel';
+import { CaseControlPanel } from './components/CaseControlPanel';
+import { KioskSettingsPanel } from './components/KioskSettingsPanel';
 import type { TabId } from './types';
 import './index.css';
 import './App.css';
@@ -75,6 +77,8 @@ function App() {
       case 'devicecontrol': return <DeviceControlPanel />;
       case 'trafficcontrol': return <TrafficControlPanel />;
       case 'deviceservices': return <DeviceServicesPanel />;
+      case 'casecontrol': return <CaseControlPanel />;
+      case 'kiosk': return <KioskSettingsPanel />;
       case 'backup': return <BackupPanel />;
       case 'settings': return <SettingsPanel />;
       case 'terminal': return <SshTerminal />;

@@ -1,0 +1,233 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>Pi5 Kiosk</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: #0a0e14; color: #e2e8f0;
+    font-family: 'Inter', -apple-system, sans-serif;
+    overflow: hidden; height: 100vh; width: 100vw;
+    cursor: none;
+  }
+  body.touch-active { cursor: default; }
+  .kiosk-page { display: none; height: 100vh; padding: 24px; flex-direction: column; gap: 16px; }
+  .kiosk-page.active { display: flex; animation: fadeIn 0.5s ease; }
+  .kiosk-header { display: flex; justify-content: space-between; align-items: center; }
+  .kiosk-title { font-size: clamp(18px, 3vw, 28px); font-weight: 700; }
+  .kiosk-time { font-family: 'JetBrains Mono', monospace; font-size: clamp(14px, 2vw, 20px); color: #64748b; }
+  .kiosk-grid { display: grid; gap: 12px; flex: 1; }
+  .kiosk-grid-2 { grid-template-columns: 1fr 1fr; }
+  .kiosk-grid-4 { grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); }
+  .kiosk-card {
+    background: rgba(17, 24, 32, 0.85); border: 1px solid rgba(255,255,255,0.08);
+    border-radius: 12px; padding: 20px; display: flex; flex-direction: column; gap: 8px;
+  }
+  .kiosk-card-label { font-size: clamp(11px, 1.5vw, 14px); color: #64748b; text-transform: uppercase; letter-spacing: 0.5px; }
+  .kiosk-card-value { font-size: clamp(24px, 4vw, 48px); font-weight: 700; }
+  .kiosk-card-sub { font-size: clamp(10px, 1.2vw, 13px); color: #475569; }
+  .text-blue { color: #3b82f6; } .text-green { color: #22c55e; }
+  .text-orange { color: #f59e0b; } .text-red { color: #ef4444; }
+  .text-purple { color: #a855f7; } .text-cyan { color: #06b6d4; }
+  .dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; margin-right: 6px; }
+  .dot-on { background: #22c55e; } .dot-off { background: #475569; }
+  .progress-bar { height: 8px; background: rgba(255,255,255,0.05); border-radius: 4px; overflow: hidden; }
+  .progress-fill { height: 100%; border-radius: 4px; transition: width 0.5s; }
+  .kiosk-nav { display: flex; justify-content: center; gap: 8px; padding: 8px 0; }
+  .kiosk-dot { width: 8px; height: 8px; border-radius: 4px; background: #475569; border: none; cursor: pointer; transition: all 0.3s; }
+  .kiosk-dot.active { background: #3b82f6; width: 24px; }
+  @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+</style>
+</head>
+<body>
+<div id="pages"></div>
+<div class="kiosk-nav" id="nav"></div>
+
+<script>
+const API = '/api';
+let currentPage = 0;
+let pages = [];
+let rotateInterval = 10;
+let timer = null;
+
+async function fetchJSON(url) {
+  try { const r = await fetch(API + url); return await r.json(); } catch { return null; }
+}
+
+function timeStr() {
+  const now = new Date();
+  return now.toLocaleTimeString('tr-TR', { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+    + ' | ' + now.toLocaleDateString('tr-TR', { day: '2-digit', month: 'short', year: 'numeric' });
+}
+
+function card(label, value, sub, colorClass) {
+  return `<div class="kiosk-card"><span class="kiosk-card-label">${label}</span><span class="kiosk-card-value ${colorClass || ''}">${value}</span>${sub ? `<span class="kiosk-card-sub">${sub}</span>` : ''}</div>`;
+}
+
+function progressBar(percent, color) {
+  return `<div class="progress-bar"><div class="progress-fill" style="width:${Math.min(percent, 100)}%;background:${color}"></div></div>`;
+}
+
+async function buildSystemPage() {
+  const stats = await fetchJSON('/system/stats');
+  if (!stats) return '<div class="kiosk-card"><span class="kiosk-card-value">Veri yok</span></div>';
+  const memP = stats.memoryTotal > 0 ? Math.round(stats.memoryUsed / stats.memoryTotal * 100) : 0;
+  const diskP = stats.diskTotal > 0 ? Math.round(stats.diskUsed / stats.diskTotal * 100) : 0;
+  return `<div class="kiosk-grid kiosk-grid-4">
+    ${card('CPU Sicaklik', stats.cpuTemp + '°C', progressBar(stats.cpuTemp / 85 * 100, stats.cpuTemp > 70 ? '#ef4444' : '#f59e0b'), stats.cpuTemp > 70 ? 'text-red' : 'text-orange')}
+    ${card('CPU Kullanim', stats.cpuUsage + '%', progressBar(stats.cpuUsage, '#3b82f6'), 'text-blue')}
+    ${card('Bellek', memP + '%', `${stats.memoryUsed}/${stats.memoryTotal} MB` + progressBar(memP, '#a855f7'), 'text-purple')}
+    ${card('Disk', diskP + '%', `${stats.diskUsed}/${stats.diskTotal} GB` + progressBar(diskP, '#06b6d4'), 'text-cyan')}
+  </div>`;
+}
+
+async function buildVpnPage() {
+  const d = await fetchJSON('/vps/list');
+  if (!d?.servers?.length) return card('VPN', 'Tünel yok', '', 'text-orange');
+  return `<div class="kiosk-grid kiosk-grid-4">${d.servers.map(v =>
+    card(v.location || 'VPS', v.ip, `<span class="dot ${v.status === 'connected' ? 'dot-on' : 'dot-off'}"></span>${v.status === 'connected' ? 'Bagli' : 'Bagli Degil'}`,
+    v.status === 'connected' ? 'text-green' : '')
+  ).join('')}</div>`;
+}
+
+async function buildSpeedPage() {
+  const d = await fetchJSON('/speedtest/history?period=24h');
+  const t = d?.tests?.[0];
+  if (!t) return card('Hiz Testi', 'Veri yok', '', '');
+  return `<div class="kiosk-grid kiosk-grid-4">
+    ${card('Indirme', t.download_mbps.toFixed(1) + ' Mbps', '', 'text-blue')}
+    ${card('Yukleme', t.upload_mbps.toFixed(1) + ' Mbps', '', 'text-green')}
+    ${card('Ping', t.ping_ms.toFixed(1) + ' ms', '', 'text-orange')}
+    ${card('Jitter', (t.jitter_ms || 0).toFixed(1) + ' ms', '', 'text-purple')}
+  </div>`;
+}
+
+async function buildDevicesPage() {
+  const d = await fetchJSON('/devices');
+  const count = d?.devices?.length || 0;
+  return `<div class="kiosk-grid kiosk-grid-2">
+    ${card('Aktif Cihazlar', count, '', 'text-green')}
+    ${card('Ag Durumu', 'Online', new Date().toLocaleString('tr-TR'), 'text-blue')}
+  </div>`;
+}
+
+async function buildAlertsPage() {
+  const d = await fetchJSON('/alerts');
+  const alerts = (d?.alerts || []).slice(0, 6);
+  if (!alerts.length) return card('Bildirimler', 'Temiz', 'Aktif uyari yok', 'text-green');
+  return `<div style="display:flex;flex-direction:column;gap:8px;flex:1">${alerts.map(a =>
+    `<div class="kiosk-card" style="flex-direction:row;align-items:center;gap:12px;padding:12px 16px">
+      <span class="dot ${a.severity === 'critical' ? 'dot-on' : 'dot-off'}" style="background:${a.severity === 'critical' ? '#ef4444' : a.severity === 'warning' ? '#f59e0b' : '#3b82f6'}"></span>
+      <span style="flex:1;font-size:clamp(12px,1.5vw,15px)">${a.message}</span>
+      <span style="font-size:11px;color:#475569">${new Date(a.created_at).toLocaleTimeString('tr-TR')}</span>
+    </div>`
+  ).join('')}</div>`;
+}
+
+async function buildServicesPage() {
+  const d = await fetchJSON('/services');
+  const svcs = d?.services || [];
+  return `<div class="kiosk-grid kiosk-grid-4">${svcs.map(s =>
+    card(s.name, s.enabled ? 'Aktif' : 'Durdu', `<span class="dot ${s.enabled ? 'dot-on' : 'dot-off'}"></span>`,
+    s.enabled ? 'text-green' : 'text-red')
+  ).join('')}</div>`;
+}
+
+async function buildPiholePage() {
+  const d = await fetchJSON('/pihole/stats');
+  return `<div class="kiosk-grid kiosk-grid-4">
+    ${card('Engellenen', (d?.adsBlockedToday || 0).toLocaleString(), '', 'text-red')}
+    ${card('Toplam Sorgu', (d?.dnsQueriesToday || 0).toLocaleString(), '', 'text-blue')}
+    ${card('Istemciler', d?.uniqueClients || 0, '', 'text-green')}
+  </div>`;
+}
+
+const PAGE_BUILDERS = {
+  system: { title: 'Sistem Durumu', build: buildSystemPage },
+  network: { title: 'Ag Trafigi', build: buildSystemPage },
+  vpn: { title: 'VPN Tunelleri', build: buildVpnPage },
+  devices: { title: 'Aktif Cihazlar', build: buildDevicesPage },
+  speedtest: { title: 'Hiz Testi', build: buildSpeedPage },
+  alerts: { title: 'Bildirimler', build: buildAlertsPage },
+  pihole: { title: 'Pi-hole', build: buildPiholePage },
+  services: { title: 'Servisler', build: buildServicesPage },
+};
+
+async function loadConfig() {
+  const d = await fetchJSON('/case/kiosk');
+  const cfg = d?.config;
+  if (cfg) {
+    rotateInterval = cfg.rotateInterval || 10;
+    const enabled = (cfg.widgets || []).filter(w => w.enabled);
+    pages = enabled.length ? enabled.map(w => w.id) : Object.keys(PAGE_BUILDERS);
+  } else {
+    pages = Object.keys(PAGE_BUILDERS);
+  }
+}
+
+async function renderPage(idx) {
+  const id = pages[idx % pages.length];
+  const builder = PAGE_BUILDERS[id];
+  if (!builder) return;
+  const content = await builder.build();
+  const container = document.getElementById('pages');
+  container.innerHTML = `<div class="kiosk-page active">
+    <div class="kiosk-header">
+      <span class="kiosk-title">${builder.title}</span>
+      <span class="kiosk-time">${timeStr()}</span>
+    </div>
+    ${content}
+  </div>`;
+  // Nav dots
+  document.getElementById('nav').innerHTML = pages.map((_, i) =>
+    `<button class="kiosk-dot ${i === idx % pages.length ? 'active' : ''}" onclick="goTo(${i})"></button>`
+  ).join('');
+}
+
+function goTo(idx) {
+  currentPage = idx;
+  renderPage(currentPage);
+  resetTimer();
+}
+
+function resetTimer() {
+  if (timer) clearInterval(timer);
+  timer = setInterval(() => {
+    currentPage = (currentPage + 1) % pages.length;
+    renderPage(currentPage);
+  }, rotateInterval * 1000);
+}
+
+// Touch/mouse shows cursor briefly
+document.addEventListener('touchstart', () => { document.body.classList.add('touch-active'); });
+document.addEventListener('mousemove', () => {
+  document.body.classList.add('touch-active');
+  clearTimeout(window._cursorTimer);
+  window._cursorTimer = setTimeout(() => document.body.classList.remove('touch-active'), 3000);
+});
+
+// Swipe support
+let touchStartX = 0;
+document.addEventListener('touchstart', e => { touchStartX = e.touches[0].clientX; });
+document.addEventListener('touchend', e => {
+  const diff = e.changedTouches[0].clientX - touchStartX;
+  if (Math.abs(diff) > 50) {
+    currentPage = diff < 0 ? (currentPage + 1) % pages.length : (currentPage - 1 + pages.length) % pages.length;
+    renderPage(currentPage);
+    resetTimer();
+  }
+});
+
+// Init
+(async () => {
+  await loadConfig();
+  await renderPage(0);
+  resetTimer();
+  // Reload config every 5 minutes
+  setInterval(loadConfig, 300000);
+})();
+</script>
+</body>
+</html>

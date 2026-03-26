@@ -1694,6 +1694,62 @@ app.post('/api/ddns/check-ip', async (_req, res) => {
   }
 });
 
+// ─── Case LED / LCD Control ───
+app.get('/api/case/led', async (_req, res) => {
+  try {
+    const row = await dbGet("SELECT value FROM app_settings WHERE key = 'led_config'");
+    const config = row?.value ? JSON.parse(row.value) : { color: '#3b82f6', brightness: 80, animation: 'static', enabled: true };
+    res.json({ config });
+  } catch { res.json({ config: { color: '#3b82f6', brightness: 80, animation: 'static', enabled: true } }); }
+});
+
+app.put('/api/case/led', async (req, res) => {
+  try {
+    const config = JSON.stringify(req.body);
+    await dbRun("INSERT OR REPLACE INTO app_settings (key, value) VALUES ('led_config', ?)", [config]);
+    // Apply LED via Python script on Pi
+    if (isLinux) {
+      const { color, brightness, animation, enabled } = req.body;
+      const cmd = enabled
+        ? `python3 /opt/pi5-gateway/scripts/led_control.py set "${color}" ${brightness} "${animation}"`
+        : 'python3 /opt/pi5-gateway/scripts/led_control.py off';
+      require('child_process').exec(cmd, { timeout: 5000 }, () => {});
+    }
+    res.json({ success: true });
+  } catch (e: any) { res.status(500).json({ error: e.message }); }
+});
+
+app.get('/api/case/lcd', async (_req, res) => {
+  try {
+    const row = await dbGet("SELECT value FROM app_settings WHERE key = 'lcd_pages'");
+    const pages = row?.value ? JSON.parse(row.value) : [];
+    res.json({ pages });
+  } catch { res.json({ pages: [] }); }
+});
+
+app.put('/api/case/lcd', async (req, res) => {
+  try {
+    const { pages } = req.body;
+    await dbRun("INSERT OR REPLACE INTO app_settings (key, value) VALUES ('lcd_pages', ?)", [JSON.stringify(pages)]);
+    res.json({ success: true });
+  } catch (e: any) { res.status(500).json({ error: e.message }); }
+});
+
+app.get('/api/case/kiosk', async (_req, res) => {
+  try {
+    const row = await dbGet("SELECT value FROM app_settings WHERE key = 'kiosk_config'");
+    const config = row?.value ? JSON.parse(row.value) : null;
+    res.json({ config });
+  } catch { res.json({ config: null }); }
+});
+
+app.put('/api/case/kiosk', async (req, res) => {
+  try {
+    await dbRun("INSERT OR REPLACE INTO app_settings (key, value) VALUES ('kiosk_config', ?)", [JSON.stringify(req.body)]);
+    res.json({ success: true });
+  } catch (e: any) { res.status(500).json({ error: e.message }); }
+});
+
 // ─── Timezone ───
 app.get('/api/system/timezone', async (_req, res) => {
   try {
