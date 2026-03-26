@@ -581,14 +581,19 @@ app.post('/api/vps/:id/clients', async (req, res) => {
     const existing: any[] = await dbAll('SELECT * FROM wg_clients WHERE vps_id = ?', [req.params.id]);
     const clientIndex = existing.length;
 
-    const result = await addWireGuardClient(
-      { ip: server.ip, username: server.username, password: server.password || undefined },
-      name,
-      clientIndex
-    );
+    let result;
+    try {
+      result = await addWireGuardClient(
+        { ip: server.ip, username: server.username, password: server.password || undefined },
+        name,
+        clientIndex
+      );
+    } catch (clientErr: any) {
+      return res.status(500).json({ error: clientErr.message || 'Client oluşturulamadı' });
+    }
 
     if (!result) {
-      return res.status(500).json({ error: 'Client oluşturulamadı' });
+      return res.status(500).json({ error: 'Client oluşturulamadı — geliştirme ortamında SSH bağlantısı yapılamaz' });
     }
 
     await dbRun(
