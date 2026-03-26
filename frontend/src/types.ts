@@ -2,7 +2,7 @@ export type TabId =
   | 'dashboard' | 'topology' | 'pihole' | 'zapret' | 'firewall' | 'routing' | 'vps'
   | 'unbound' | 'fail2ban' | 'maintenance' | 'docs'
   | 'bandwidth' | 'dnslog' | 'speedtest' | 'ddns' | 'alerts' | 'nettools'
-  | 'parental' | 'devicecontrol' | 'trafficcontrol' | 'deviceservices' | 'backup' | 'settings' | 'terminal'
+  | 'parental' | 'devicecontrol' | 'trafficcontrol' | 'backup' | 'settings' | 'terminal'
   | 'casecontrol' | 'kiosk';
 
 export interface ServiceStatus {

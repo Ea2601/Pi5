@@ -2,7 +2,7 @@ import {
   Shield, LayoutDashboard, Network, Route, Terminal, Server,
   ShieldBan, Zap, Flame, Globe, ShieldAlert, BookOpen,
   Activity, Search, Gauge, Bell, Wrench, Users, Sliders,
-  Database, Settings, MonitorSmartphone, TerminalSquare, ShieldCheck, Lightbulb, Monitor
+  Database, Settings, MonitorSmartphone, TerminalSquare, Lightbulb, Monitor
 } from 'lucide-react';
 import type { TabId } from '../types';
 
@@ -10,7 +10,6 @@ const tabs: { id: TabId; label: string; icon: React.ReactNode; group?: string }[
   { id: 'dashboard', label: 'Dashboard', icon: <LayoutDashboard size={17} /> },
   { id: 'topology', label: 'Ağ Haritası', icon: <Network size={17} />, group: 'Ağ Yönetimi' },
   { id: 'routing', label: 'Routing', icon: <Route size={17} /> },
-  { id: 'deviceservices', label: 'Cihaz Servisleri', icon: <ShieldCheck size={17} /> },
   { id: 'bandwidth', label: 'Bant Genisligi', icon: <Activity size={17} /> },
   { id: 'dnslog', label: 'DNS Sorgu Logu', icon: <Search size={17} /> },
   { id: 'speedtest', label: 'Hız Testi', icon: <Gauge size={17} /> },

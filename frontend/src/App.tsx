@@ -21,7 +21,6 @@ import { NetworkToolsPanel } from './components/NetworkToolsPanel';
 import { ParentalPanel } from './components/ParentalPanel';
 import { DeviceControlPanel } from './components/DeviceControlPanel';
 import { TrafficControlPanel } from './components/TrafficControlPanel';
-import { DeviceServicesPanel } from './components/DeviceServicesPanel';
 import { BackupPanel } from './components/BackupPanel';
 import { SettingsPanel } from './components/SettingsPanel';
 import { SshTerminal } from './components/SshTerminal';
@@ -76,7 +75,6 @@ function App() {
       case 'parental': return <ParentalPanel />;
       case 'devicecontrol': return <DeviceControlPanel />;
       case 'trafficcontrol': return <TrafficControlPanel />;
-      case 'deviceservices': return <DeviceServicesPanel />;
       case 'casecontrol': return <CaseControlPanel />;
       case 'kiosk': return <KioskSettingsPanel />;
       case 'backup': return <BackupPanel />;
