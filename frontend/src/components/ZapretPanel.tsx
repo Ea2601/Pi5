@@ -1,4 +1,4 @@
-import { Zap, Play, Square, Globe, Shield, Settings, List, Plus, Trash2, Search } from 'lucide-react';
+import { Zap, Globe, Shield, Settings, List, Plus, Trash2, Search } from 'lucide-react';
 import { useApi, postApi, putApi, deleteApi } from '../hooks/useApi';
 import { useState } from 'react';
 import { Panel, Badge, Alert } from './ui';
@@ -70,7 +70,11 @@ export function ZapretPanel() {
       <Panel title="Zapret DPI Bypass Motoru" icon={<Zap size={20} style={{ marginRight: 8 }} />}
         subtitle="ISP DPI engellemelerini aşmak için nfqws paket manipülasyonu"
         badge={<Badge variant={isEnabled ? 'success' : 'neutral'}>{isEnabled ? 'Aktif' : 'Pasif'}</Badge>}
-        actions={<button className="icon-btn" onClick={handleToggle} title={isEnabled ? 'Durdur' : 'Başlat'}>{isEnabled ? <Square size={14} /> : <Play size={14} />}</button>}>
+        actions={
+          <button className={`toggle-btn ${isEnabled ? 'toggle-on' : 'toggle-off'}`} onClick={handleToggle} title={isEnabled ? 'Durdur' : 'Başlat'}>
+            <div className="toggle-knob" />
+          </button>
+        }>
         <div className="service-tabs">
           {tabs.map(tab => (
             <button key={tab.id}

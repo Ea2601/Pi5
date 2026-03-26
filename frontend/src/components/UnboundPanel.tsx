@@ -1,4 +1,4 @@
-import { Globe, Play, Square, Server, Gauge, Shield, Settings, Activity } from 'lucide-react';
+import { Globe, Server, Gauge, Shield, Settings, Activity } from 'lucide-react';
 import { useApi, postApi } from '../hooks/useApi';
 import { useState } from 'react';
 import { Panel, StatCard, Badge } from './ui';
@@ -47,8 +47,8 @@ export function UnboundPanel() {
         subtitle="Özyinelemeli DNS çözücü — Pi-hole ile entegre, gizlilik odaklı"
         badge={<Badge variant={isEnabled ? 'success' : 'neutral'}>{isEnabled ? 'Aktif' : 'Pasif'}</Badge>}
         actions={
-          <button className="icon-btn" onClick={handleToggle} title={isEnabled ? 'Durdur' : 'Başlat'}>
-            {isEnabled ? <Square size={14} /> : <Play size={14} />}
+          <button className={`toggle-btn ${isEnabled ? 'toggle-on' : 'toggle-off'}`} onClick={handleToggle} title={isEnabled ? 'Durdur' : 'Başlat'}>
+            <div className="toggle-knob" />
           </button>
         }>
         <div className="service-tabs">

@@ -1,9 +1,9 @@
 import { useState, useEffect } from 'react';
 import {
   Settings, Palette, Globe, Bell, Zap, Info, Save, ChevronDown, ChevronRight,
-  Sun, Moon, Volume2, VolumeX, Monitor, Clock
+  Sun, Moon, Volume2, VolumeX, Monitor, Clock, RefreshCw, Download, Check, X, Loader2
 } from 'lucide-react';
-import { useApi, putApi } from '../hooks/useApi';
+import { useApi, putApi, postApi } from '../hooks/useApi';
 import { Panel, Badge } from './ui';
 
 interface AppSettings {
@@ -81,10 +81,29 @@ export function SettingsPanel() {
     setCollapsed(prev => ({ ...prev, [cat]: !prev[cat] }));
   };
 
+  // Apply theme/accent to DOM immediately
+  const applyTheme = (theme: string) => {
+    document.documentElement.classList.toggle('light-theme', theme === 'light');
+  };
+
+  const applyAccentColor = (color: string) => {
+    document.documentElement.classList.remove('accent-green', 'accent-purple', 'accent-orange');
+    if (color !== 'blue') {
+      document.documentElement.classList.add(`accent-${color}`);
+    }
+  };
+
+  // Apply settings on load
+  useEffect(() => {
+    if (loaded) {
+      applyTheme(settings.theme);
+      applyAccentColor(settings.accentColor);
+    }
+  }, [loaded]);
+
   const handleTheme = (theme: 'dark' | 'light') => {
     setSettings(prev => ({ ...prev, theme }));
-    document.documentElement.classList.toggle('light-theme', theme === 'light');
-    document.documentElement.classList.toggle('dark-theme', theme === 'dark');
+    applyTheme(theme);
   };
 
   const requestDesktopNotifications = async () => {
@@ -141,7 +160,7 @@ export function SettingsPanel() {
                     border: settings.accentColor === c.value ? '2px solid #fff' : '2px solid transparent',
                     cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center'
                   }}
-                  onClick={() => setSettings(prev => ({ ...prev, accentColor: c.value }))}
+                  onClick={() => { setSettings(prev => ({ ...prev, accentColor: c.value })); applyAccentColor(c.value); }}
                   title={c.label}
                 />
               ))}
@@ -250,6 +269,12 @@ export function SettingsPanel() {
       ),
     },
     {
+      key: 'update',
+      label: 'Sistem Güncellemesi',
+      icon: <Download size={15} />,
+      content: <UpdateSection />,
+    },
+    {
       key: 'about',
       label: 'Hakkında',
       icon: <Info size={15} />,
@@ -322,6 +347,71 @@ export function SettingsPanel() {
           ))}
         </div>
       </Panel>
+    </div>
+  );
+}
+
+// ─── Update Section ───
+function UpdateSection() {
+  const [updating, setUpdating] = useState(false);
+  const [updateResult, setUpdateResult] = useState<{ success: boolean; message: string } | null>(null);
+
+  const handleUpdate = async () => {
+    setUpdating(true);
+    setUpdateResult(null);
+    try {
+      const result = await postApi('/system/update', {});
+      if (result.success) {
+        setUpdateResult({ success: true, message: 'Güncelleme tamamlandı! Servis yeniden başlatılıyor, 8sn sonra sayfa yenilenecek...' });
+        setTimeout(() => window.location.reload(), 8000);
+      } else {
+        const failed = result.steps?.filter((s: any) => !s.success).map((s: any) => s.step).join(', ');
+        setUpdateResult({ success: false, message: `Başarısız adımlar: ${failed}` });
+      }
+    } catch (e: any) {
+      setUpdateResult({ success: false, message: e.message || 'Güncelleme başarısız' });
+    }
+    setUpdating(false);
+  };
+
+  return (
+    <div className="config-items">
+      <div className="config-item">
+        <div className="config-item-info">
+          <span className="config-item-label">Mevcut Versiyon</span>
+          <span className="config-item-desc">Pi5 Secure Gateway Panel</span>
+        </div>
+        <div className="config-item-control">
+          <Badge variant="info">v2.0</Badge>
+        </div>
+      </div>
+      <div className="config-item">
+        <div className="config-item-info">
+          <span className="config-item-label">Sistemi Güncelle</span>
+          <span className="config-item-desc">Git pull + build + servis yeniden başlat</span>
+        </div>
+        <div className="config-item-control">
+          <button
+            className={updating ? 'btn-outline btn-sm' : 'btn-primary btn-sm'}
+            onClick={handleUpdate}
+            disabled={updating}
+          >
+            {updating ? <Loader2 size={13} className="spin" /> : <RefreshCw size={13} />}
+            <span>{updating ? 'Güncelleniyor...' : 'Güncelle'}</span>
+          </button>
+        </div>
+      </div>
+      {updateResult && (
+        <div style={{
+          padding: '8px 12px', borderRadius: 6, marginTop: 8,
+          background: updateResult.success ? 'rgba(16,185,129,0.1)' : 'rgba(239,68,68,0.1)',
+          color: updateResult.success ? '#10b981' : '#ef4444', fontSize: 13,
+          display: 'flex', alignItems: 'center', gap: 6,
+        }}>
+          {updateResult.success ? <Check size={14} /> : <X size={14} />}
+          {updateResult.message}
+        </div>
+      )}
     </div>
   );
 }

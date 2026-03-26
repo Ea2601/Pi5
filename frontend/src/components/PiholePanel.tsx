@@ -1,7 +1,7 @@
 import { ShieldBan, Search, BarChart3, Globe, Users, ArrowRight, Settings, List, Plus, Trash2, Check, X, Server, Lock, Gauge, Radio } from 'lucide-react';
 import { useApi, postApi, putApi, deleteApi } from '../hooks/useApi';
 import { useState } from 'react';
-import { Panel, StatCard } from './ui';
+import { Panel, StatCard, Badge } from './ui';
 import { ServiceSettings } from './ui/ServiceSettings';
 import type { PiholeStats, ServiceStatus, PiholeListItem } from '../types';
 
@@ -67,8 +67,13 @@ export function PiholePanel() {
         actions={
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
             {toggleError && <span style={{ fontSize: 11, color: 'var(--danger-color)', maxWidth: 300 }}>{toggleError}</span>}
-            <button className={isEnabled ? 'btn-outline btn-sm' : 'btn-primary btn-sm'} onClick={handleToggle} disabled={toggling}>
-              {toggling ? 'İşleniyor...' : isEnabled ? 'Devre Dışı Bırak' : 'Etkinleştir'}
+            <Badge variant={isEnabled ? 'success' : 'neutral'}>{isEnabled ? 'Aktif' : 'Pasif'}</Badge>
+            <button
+              className={`toggle-btn ${isEnabled ? 'toggle-on' : 'toggle-off'}`}
+              onClick={handleToggle} disabled={toggling}
+              title={isEnabled ? 'Devre dışı bırak' : 'Etkinleştir'}
+            >
+              <div className="toggle-knob" />
             </button>
           </div>
         }>

@@ -1,4 +1,4 @@
-import { ShieldAlert, Play, Square, Settings, Activity, Lock, Ban, Users, AlertTriangle } from 'lucide-react';
+import { ShieldAlert, Settings, Activity, Lock, Ban, Users, AlertTriangle } from 'lucide-react';
 import { useApi, postApi } from '../hooks/useApi';
 import { useState } from 'react';
 import { Panel, StatCard, Badge } from './ui';
@@ -60,8 +60,12 @@ export function Fail2banPanel() {
         subtitle="SSH brute-force ve servis saldırılarına karşı otomatik IP engelleme"
         badge={<Badge variant={isEnabled ? 'success' : 'neutral'}>{isEnabled ? 'Aktif' : 'Pasif'}</Badge>}
         actions={
-          <button className="icon-btn" onClick={handleToggle} title={isEnabled ? 'Durdur' : 'Başlat'}>
-            {isEnabled ? <Square size={14} /> : <Play size={14} />}
+          <button
+            className={`toggle-btn ${isEnabled ? 'toggle-on' : 'toggle-off'}`}
+            onClick={handleToggle}
+            title={isEnabled ? 'Durdur' : 'Başlat'}
+          >
+            <div className="toggle-knob" />
           </button>
         }>
         <div className="service-tabs">

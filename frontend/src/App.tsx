@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { Sidebar } from './components/Sidebar';
 import { Topbar } from './components/Topbar';
@@ -32,6 +32,25 @@ import './App.css';
 
 function App() {
   const [activeTab, setActiveTab] = useState<TabId>('dashboard');
+
+  // Load and apply saved theme/accent on app start
+  useEffect(() => {
+    fetch('/api/settings')
+      .then(r => r.json())
+      .then(data => {
+        const s = data.settings || {};
+        // Theme
+        if (s.theme === 'light') {
+          document.documentElement.classList.add('light-theme');
+        }
+        // Accent color
+        const accent = s.accent_color || 'blue';
+        if (accent !== 'blue') {
+          document.documentElement.classList.add(`accent-${accent}`);
+        }
+      })
+      .catch(() => {});
+  }, []);
 
   const renderTab = () => {
     switch (activeTab) {
