@@ -151,7 +151,10 @@ export interface SpeedTestResult {
   download_mbps: number;
   upload_mbps: number;
   ping_ms: number;
+  jitter_ms: number;
+  packet_loss: number;
   server: string;
+  isp: string;
   timestamp: string;
 }
 

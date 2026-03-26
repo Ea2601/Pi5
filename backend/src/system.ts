@@ -318,7 +318,8 @@ export async function getCurrentExternalIp(): Promise<{ ip: string; provider: st
 // ─── 10. Speed Test ───
 // Real speedtest — takes 30-60 seconds. Returns null if speedtest-cli not installed.
 export async function runSpeedTest(): Promise<{
-  download_mbps: number; upload_mbps: number; ping_ms: number; server: string;
+  download_mbps: number; upload_mbps: number; ping_ms: number;
+  jitter_ms: number; packet_loss: number; server: string; isp: string;
 } | null> {
   if (!isLinux) return null;
 
@@ -334,7 +335,10 @@ export async function runSpeedTest(): Promise<{
       download_mbps: Math.round((d.download / 1000000) * 10) / 10,
       upload_mbps: Math.round((d.upload / 1000000) * 10) / 10,
       ping_ms: Math.round(d.ping * 10) / 10,
+      jitter_ms: Math.round((d.server?.latency || d.ping) * 10) / 10,
+      packet_loss: d.packetLoss != null ? Math.round(d.packetLoss * 100) / 100 : 0,
       server: d.server?.sponsor ? `${d.server.sponsor} - ${d.server.name}` : 'Unknown',
+      isp: d.client?.isp || 'Unknown',
     };
   } catch {
     return null;

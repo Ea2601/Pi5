@@ -289,9 +289,15 @@ export const initDb = () => {
 
     db.run(`CREATE TABLE IF NOT EXISTS speed_tests (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
-      download_mbps REAL, upload_mbps REAL, ping_ms REAL, server TEXT,
+      download_mbps REAL, upload_mbps REAL, ping_ms REAL,
+      jitter_ms REAL DEFAULT 0, packet_loss REAL DEFAULT 0,
+      server TEXT, isp TEXT DEFAULT '',
       timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
     )`);
+    // Migrate existing DBs
+    db.run(`ALTER TABLE speed_tests ADD COLUMN jitter_ms REAL DEFAULT 0`, () => {});
+    db.run(`ALTER TABLE speed_tests ADD COLUMN packet_loss REAL DEFAULT 0`, () => {});
+    db.run(`ALTER TABLE speed_tests ADD COLUMN isp TEXT DEFAULT ''`, () => {});
 
     db.run(`CREATE TABLE IF NOT EXISTS alerts (
       id INTEGER PRIMARY KEY AUTOINCREMENT,

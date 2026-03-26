@@ -941,30 +941,118 @@ app.post('/api/speedtest/run', async (_req, res) => {
     if (!result) {
       return res.status(503).json({ error: 'speedtest-cli kurulu degil veya gelistirme ortaminda calisiyorsunuz. Pi5 uzerinde: sudo apt install speedtest-cli' });
     }
-    const { download_mbps, upload_mbps, ping_ms, server } = result;
+    const { download_mbps, upload_mbps, ping_ms, jitter_ms, packet_loss, server, isp } = result;
     await dbRun(
-      'INSERT INTO speed_tests (download_mbps, upload_mbps, ping_ms, server) VALUES (?, ?, ?, ?)',
-      [download_mbps, upload_mbps, ping_ms, server]
+      'INSERT INTO speed_tests (download_mbps, upload_mbps, ping_ms, jitter_ms, packet_loss, server, isp) VALUES (?, ?, ?, ?, ?, ?, ?)',
+      [download_mbps, upload_mbps, ping_ms, jitter_ms, packet_loss, server, isp]
     );
-    res.json({ success: true, result: { download_mbps, upload_mbps, ping_ms, server, timestamp: new Date().toISOString() } });
+    res.json({ success: true, result: { download_mbps, upload_mbps, ping_ms, jitter_ms, packet_loss, server, isp, timestamp: new Date().toISOString() } });
   } catch (e: any) {
     res.status(500).json({ error: e.message });
   }
 });
 
-app.get('/api/speedtest/history', async (_req, res) => {
+app.get('/api/speedtest/history', async (req, res) => {
   try {
-    const tests = await dbAll('SELECT * FROM speed_tests ORDER BY timestamp DESC LIMIT 50');
+    const period = (req.query.period as string) || '30d';
+    let daysBack = 30;
+    if (period === '24h') daysBack = 1;
+    else if (period === '7d') daysBack = 7;
+    const tests = await dbAll(
+      `SELECT * FROM speed_tests WHERE timestamp > datetime('now', '-${daysBack} days') ORDER BY timestamp DESC`
+    );
     res.json({ tests });
   } catch (e: any) {
     res.status(500).json({ error: e.message });
   }
 });
 
+// Auto speed test every 10 minutes + cleanup 30+ day old data
+if (isLinux) {
+  setInterval(async () => {
+    try {
+      const result = await runSpeedTest();
+      if (result) {
+        await dbRun(
+          'INSERT INTO speed_tests (download_mbps, upload_mbps, ping_ms, jitter_ms, packet_loss, server, isp) VALUES (?, ?, ?, ?, ?, ?, ?)',
+          [result.download_mbps, result.upload_mbps, result.ping_ms, result.jitter_ms, result.packet_loss, result.server, result.isp]
+        );
+      }
+      // Cleanup old data
+      await dbRun(`DELETE FROM speed_tests WHERE timestamp < datetime('now', '-30 days')`);
+    } catch { /* silent */ }
+  }, 600000); // 10 minutes
+}
+
+// ─── Health Check (every 5 minutes) ───
+if (isLinux) {
+  const healthCheck = async () => {
+    try {
+      const exec = require('util').promisify(require('child_process').exec);
+      const addAlert = async (type: string, severity: string, message: string, source: string) => {
+        // Avoid duplicate alerts within last hour
+        const existing = await dbGet(
+          `SELECT id FROM alerts WHERE type = ? AND message = ? AND created_at > datetime('now', '-1 hour')`,
+          [type, message]
+        );
+        if (!existing) {
+          await dbRun('INSERT INTO alerts (type, severity, message, source) VALUES (?, ?, ?, ?)', [type, severity, message, source]);
+        }
+      };
+
+      // CPU temperature
+      const { stdout: tempStr } = await exec('cat /sys/class/thermal/thermal_zone0/temp', { timeout: 3000 }).catch(() => ({ stdout: '0' }));
+      const cpuTemp = parseInt(tempStr) / 1000;
+      if (cpuTemp > 80) await addAlert('health', 'critical', `CPU sıcaklığı kritik: ${cpuTemp.toFixed(1)}°C`, 'cpu');
+      else if (cpuTemp > 70) await addAlert('health', 'warning', `CPU sıcaklığı yüksek: ${cpuTemp.toFixed(1)}°C`, 'cpu');
+
+      // Memory
+      const { stdout: memStr } = await exec("free -m | awk '/Mem:/{print $3/$2*100}'", { timeout: 3000 }).catch(() => ({ stdout: '0' }));
+      const memPercent = parseFloat(memStr);
+      if (memPercent > 90) await addAlert('health', 'warning', `RAM kullanımı %${memPercent.toFixed(0)} — kritik seviyede`, 'memory');
+
+      // Disk
+      const { stdout: diskStr } = await exec("df / --output=pcent | tail -1 | tr -d ' %'", { timeout: 3000 }).catch(() => ({ stdout: '0' }));
+      const diskPercent = parseInt(diskStr);
+      if (diskPercent > 85) await addAlert('health', 'warning', `Disk kullanımı %${diskPercent} — alan azalıyor`, 'disk');
+
+      // Services
+      const services = ['pihole-FTL', 'unbound', 'wg-quick@wg0', 'nftables', 'fail2ban'];
+      for (const svc of services) {
+        const { stdout: status } = await exec(`systemctl is-active ${svc} 2>/dev/null`, { timeout: 3000 }).catch(() => ({ stdout: 'inactive' }));
+        if (status.trim() === 'failed') {
+          await addAlert('health', 'critical', `Servis çöktü: ${svc}`, 'service');
+        }
+      }
+
+      // DNS check
+      const { stdout: dnsCheck } = await exec('dig @127.0.0.1 -p 5335 google.com +short +time=3', { timeout: 5000 }).catch(() => ({ stdout: '' }));
+      if (!dnsCheck.trim()) await addAlert('health', 'critical', 'DNS çözümleme başarısız — Unbound yanıt vermiyor', 'dns');
+
+      // Internet connectivity
+      const { stdout: pingCheck } = await exec('ping -c 1 -W 3 1.1.1.1 2>/dev/null', { timeout: 5000 }).catch(() => ({ stdout: '' }));
+      if (!pingCheck.includes('1 received')) await addAlert('health', 'critical', 'İnternet bağlantısı kesildi', 'network');
+
+      // Cleanup old alerts (30 days)
+      await dbRun(`DELETE FROM alerts WHERE created_at < datetime('now', '-30 days')`);
+    } catch { /* silent */ }
+  };
+  // Run first check after 30 seconds, then every 5 minutes
+  setTimeout(healthCheck, 30000);
+  setInterval(healthCheck, 300000);
+}
+
 // ─── Alerts ───
+app.get('/api/alerts/unread-count', async (_req, res) => {
+  try {
+    const row = await dbGet('SELECT COUNT(*) as count FROM alerts WHERE acknowledged = 0');
+    res.json({ count: row?.count || 0 });
+  } catch { res.json({ count: 0 }); }
+});
+
 app.get('/api/alerts', async (_req, res) => {
   try {
-    const alerts = await dbAll('SELECT * FROM alerts ORDER BY created_at DESC');
+    const alerts = await dbAll('SELECT * FROM alerts ORDER BY created_at DESC LIMIT 100');
     res.json({ alerts });
   } catch (e: any) {
     res.status(500).json({ error: e.message });
@@ -1601,6 +1689,34 @@ app.post('/api/ddns/check-ip', async (_req, res) => {
         res.json({ changed: false, ip: lastEntry?.ip || '85.102.45.178' });
       }
     }
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ─── Timezone ───
+app.get('/api/system/timezone', async (_req, res) => {
+  try {
+    if (!isLinux) {
+      return res.json({ timezone: Intl.DateTimeFormat().resolvedOptions().timeZone, offset: new Date().getTimezoneOffset() });
+    }
+    const exec = require('util').promisify(require('child_process').exec);
+    const { stdout } = await exec('timedatectl show --property=Timezone --value', { timeout: 5000 }).catch(() => ({ stdout: 'UTC' }));
+    res.json({ timezone: stdout.trim() });
+  } catch (e: any) {
+    res.json({ timezone: 'UTC', error: e.message });
+  }
+});
+
+app.put('/api/system/timezone', async (req, res) => {
+  try {
+    const { timezone } = req.body;
+    if (!timezone) return res.status(400).json({ error: 'timezone gerekli' });
+    if (isLinux) {
+      const exec = require('util').promisify(require('child_process').exec);
+      await exec(`timedatectl set-timezone "${timezone}"`, { timeout: 5000 });
+    }
+    res.json({ success: true, timezone });
   } catch (e: any) {
     res.status(500).json({ error: e.message });
   }

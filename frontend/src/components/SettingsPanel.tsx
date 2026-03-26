@@ -192,6 +192,12 @@ export function SettingsPanel() {
       ),
     },
     {
+      key: 'timezone',
+      label: 'Saat Dilimi',
+      icon: <Clock size={15} />,
+      content: <TimezoneSection />,
+    },
+    {
       key: 'notifications',
       label: 'Bildirimler',
       icon: <Bell size={15} />,
@@ -410,6 +416,95 @@ function UpdateSection() {
         }}>
           {updateResult.success ? <Check size={14} /> : <X size={14} />}
           {updateResult.message}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Timezone Section ───
+const TIMEZONES: { zone: string; label: string; gmt: string }[] = [
+  { zone: 'Pacific/Midway', label: 'Midway Island', gmt: 'GMT-11' },
+  { zone: 'Pacific/Honolulu', label: 'Hawaii', gmt: 'GMT-10' },
+  { zone: 'America/Anchorage', label: 'Alaska', gmt: 'GMT-9' },
+  { zone: 'America/Los_Angeles', label: 'Los Angeles', gmt: 'GMT-8' },
+  { zone: 'America/Denver', label: 'Denver', gmt: 'GMT-7' },
+  { zone: 'America/Chicago', label: 'Chicago', gmt: 'GMT-6' },
+  { zone: 'America/New_York', label: 'New York', gmt: 'GMT-5' },
+  { zone: 'America/Sao_Paulo', label: 'São Paulo', gmt: 'GMT-3' },
+  { zone: 'Atlantic/Azores', label: 'Azores', gmt: 'GMT-1' },
+  { zone: 'UTC', label: 'UTC', gmt: 'GMT+0' },
+  { zone: 'Europe/London', label: 'Londra', gmt: 'GMT+0' },
+  { zone: 'Europe/Berlin', label: 'Berlin', gmt: 'GMT+1' },
+  { zone: 'Europe/Paris', label: 'Paris', gmt: 'GMT+1' },
+  { zone: 'Europe/Athens', label: 'Atina', gmt: 'GMT+2' },
+  { zone: 'Europe/Istanbul', label: 'İstanbul', gmt: 'GMT+3' },
+  { zone: 'Europe/Moscow', label: 'Moskova', gmt: 'GMT+3' },
+  { zone: 'Asia/Dubai', label: 'Dubai', gmt: 'GMT+4' },
+  { zone: 'Asia/Karachi', label: 'Karaçi', gmt: 'GMT+5' },
+  { zone: 'Asia/Kolkata', label: 'Mumbai', gmt: 'GMT+5:30' },
+  { zone: 'Asia/Dhaka', label: 'Dakka', gmt: 'GMT+6' },
+  { zone: 'Asia/Bangkok', label: 'Bangkok', gmt: 'GMT+7' },
+  { zone: 'Asia/Shanghai', label: 'Şangay', gmt: 'GMT+8' },
+  { zone: 'Asia/Singapore', label: 'Singapur', gmt: 'GMT+8' },
+  { zone: 'Asia/Tokyo', label: 'Tokyo', gmt: 'GMT+9' },
+  { zone: 'Australia/Sydney', label: 'Sidney', gmt: 'GMT+10' },
+  { zone: 'Pacific/Auckland', label: 'Auckland', gmt: 'GMT+12' },
+];
+
+function TimezoneSection() {
+  const { data } = useApi<{ timezone: string }>('/system/timezone', { timezone: '' });
+  const [selected, setSelected] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [result, setResult] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (data.timezone && !selected) setSelected(data.timezone);
+  }, [data.timezone]);
+
+  const handleSave = async () => {
+    if (!selected) return;
+    setSaving(true);
+    try {
+      await putApi('/system/timezone', { timezone: selected });
+      setResult('Saat dilimi güncellendi');
+    } catch {
+      setResult('Güncelleme başarısız');
+    }
+    setSaving(false);
+  };
+
+  return (
+    <div className="config-items">
+      <div className="config-item">
+        <div className="config-item-info">
+          <span className="config-item-label">Mevcut Saat Dilimi</span>
+          <span className="config-item-desc">{data.timezone || 'Yükleniyor...'}</span>
+        </div>
+        <div className="config-item-control">
+          <Badge variant="info">{TIMEZONES.find(t => t.zone === data.timezone)?.gmt || 'GMT+3'}</Badge>
+        </div>
+      </div>
+      <div className="config-item">
+        <div className="config-item-info">
+          <span className="config-item-label">Şehir / Bölge</span>
+          <span className="config-item-desc">Sistem saatini değiştir</span>
+        </div>
+        <div className="config-item-control" style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+          <select className="config-select" value={selected} onChange={e => setSelected(e.target.value)}
+            style={{ minWidth: 200 }}>
+            {TIMEZONES.map(tz => (
+              <option key={tz.zone} value={tz.zone}>{tz.gmt} — {tz.label}</option>
+            ))}
+          </select>
+          <button className="btn-primary btn-sm" onClick={handleSave} disabled={saving || selected === data.timezone}>
+            <Save size={12} /> Uygula
+          </button>
+        </div>
+      </div>
+      {result && (
+        <div style={{ padding: '6px 10px', borderRadius: 6, fontSize: 12, color: '#10b981', background: 'rgba(16,185,129,0.1)', marginTop: 4 }}>
+          {result}
         </div>
       )}
     </div>

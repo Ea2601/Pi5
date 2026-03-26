@@ -1,4 +1,4 @@
-import { Bell, User, ShieldCheck, ShieldAlert, Download, RefreshCw, Loader2 } from 'lucide-react';
+import { Bell, User, ShieldCheck, ShieldAlert, Download, Loader2, Clock } from 'lucide-react';
 import { useState, useEffect } from 'react';
 import type { HealthStatus } from '../types';
 import { useApi, postApi } from '../hooks/useApi';
@@ -21,6 +21,22 @@ export function Topbar() {
   const [showUpdateModal, setShowUpdateModal] = useState(false);
   const [updating, setUpdating] = useState(false);
   const [updateResult, setUpdateResult] = useState<string | null>(null);
+  const [clock, setClock] = useState('');
+
+  // Live clock
+  useEffect(() => {
+    const tick = () => {
+      const now = new Date();
+      const time = now.toLocaleTimeString('tr-TR', { hour: '2-digit', minute: '2-digit' });
+      const date = now.toLocaleDateString('tr-TR', { day: '2-digit', month: 'short', year: 'numeric' });
+      const offset = -now.getTimezoneOffset() / 60;
+      const gmt = `GMT${offset >= 0 ? '+' : ''}${offset}`;
+      setClock(`${time} | ${date} | ${gmt}`);
+    };
+    tick();
+    const interval = setInterval(tick, 10000);
+    return () => clearInterval(interval);
+  }, []);
 
   // Check for updates every hour (and on mount)
   useEffect(() => {
@@ -53,8 +69,12 @@ export function Topbar() {
     setUpdating(false);
   };
 
+  // Unread alerts count
+  const { data: alertData } = useApi<{ count: number }>('/alerts/unread-count', { count: 0 }, 30000);
+
   const connected = data.lastCheckResult !== 'failed';
   const hasUpdate = updateInfo?.available ?? false;
+  const totalBadge = (hasUpdate ? updateInfo!.commitCount : 0) + alertData.count;
 
   return (
     <>
@@ -74,6 +94,11 @@ export function Topbar() {
           )}
         </div>
         <div className="topbar-actions">
+          {clock && (
+            <span className="topbar-clock">
+              <Clock size={13} /> {clock}
+            </span>
+          )}
           <button
             className="icon-btn"
             title="Bildirimler"
@@ -81,8 +106,8 @@ export function Topbar() {
             style={{ position: 'relative' }}
           >
             <Bell size={18} />
-            {hasUpdate && (
-              <span className="notification-badge">{updateInfo!.commitCount}</span>
+            {totalBadge > 0 && (
+              <span className="notification-badge">{totalBadge}</span>
             )}
           </button>
           <div className="user-profile">
