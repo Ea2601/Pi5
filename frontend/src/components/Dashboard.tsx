@@ -1,6 +1,6 @@
 import {
   ShieldCheck, Wifi, Activity, BarChart3,
-  Thermometer, Cpu, MemoryStick, HardDrive, Clock, ArrowUpDown, Fan
+  Thermometer, Cpu, MemoryStick, HardDrive, Clock, ArrowUpDown, Fan, Server, Globe
 } from 'lucide-react';
 import {
   LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, Area, AreaChart
@@ -8,7 +8,7 @@ import {
 import { useApi } from '../hooks/useApi';
 import { useMetricHistory } from '../hooks/useMetricHistory';
 import { Panel, StatCard, ProgressMetric, Badge } from './ui';
-import type { SystemStats, ServiceStatus, HealthStatus } from '../types';
+import type { SystemStats, ServiceStatus, HealthStatus, VpsServer } from '../types';
 
 // Her 20. noktada bir zaman etiketi göster (120 nokta → 6 etiket)
 const LABEL_INTERVAL = 20;
@@ -44,6 +44,7 @@ export function Dashboard() {
   const { data: piholeData } = useApi<{ adsBlockedToday: number; dnsQueriesToday: number; uniqueClients: number }>(
     '/pihole/stats', { adsBlockedToday: 0, dnsQueriesToday: 0, uniqueClients: 0 }
   );
+  const { data: vpsData } = useApi<{ servers: VpsServer[] }>('/vps/list', { servers: [] }, 30000);
 
   // 3s aralık, 120 nokta, son 20 verinin hareketli ortalaması uygulanmış
   const history = useMetricHistory(3000);
@@ -198,6 +199,36 @@ export function Dashboard() {
           </div>
         </Panel>
       </div>
+
+      {/* Aktif VPN Tünelleri */}
+      {vpsData.servers.length > 0 && (
+        <div style={{ marginTop: 14 }}>
+          <Panel title="VPN Tünelleri" size="full"
+            badge={<Badge variant="info">{vpsData.servers.filter(s => s.status === 'connected').length} aktif</Badge>}>
+            <div className="vpn-grid">
+              {vpsData.servers.map(vps => {
+                const isConnected = vps.status === 'connected';
+                return (
+                  <div key={vps.id} className={`vpn-card ${isConnected ? 'vpn-connected' : 'vpn-disconnected'}`}>
+                    <div className="vpn-card-header">
+                      <Server size={16} />
+                      <span className={`svc-dot ${isConnected ? 'svc-on' : 'svc-off'}`} />
+                    </div>
+                    <div className="vpn-card-location">
+                      <Globe size={13} />
+                      <strong>{vps.location || 'VPS'}</strong>
+                    </div>
+                    <div className="vpn-card-ip">{vps.ip}</div>
+                    <Badge variant={isConnected ? 'success' : 'neutral'}>
+                      {isConnected ? 'Bağlı' : vps.status === 'error' ? 'Hata' : 'Bağlı Değil'}
+                    </Badge>
+                  </div>
+                );
+              })}
+            </div>
+          </Panel>
+        </div>
+      )}
     </div>
   );
 }

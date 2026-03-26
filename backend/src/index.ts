@@ -1606,6 +1606,39 @@ app.post('/api/ddns/check-ip', async (_req, res) => {
   }
 });
 
+// ─── Update Check (git fetch + compare) ───
+app.get('/api/system/update-check', async (_req, res) => {
+  try {
+    if (!isLinux) {
+      return res.json({ available: false, commits: [], currentVersion: 'v2.0-dev' });
+    }
+    const exec = require('util').promisify(require('child_process').exec);
+    // Fetch latest from remote
+    await exec('cd /opt/pi5-gateway && git fetch origin master', { timeout: 15000 }).catch(() => {});
+    // Compare HEAD with origin/master
+    const { stdout: logOutput } = await exec(
+      'cd /opt/pi5-gateway && git log HEAD..origin/master --format="%h|%s|%cr" 2>/dev/null',
+      { timeout: 5000 }
+    ).catch(() => ({ stdout: '' }));
+    const commits = logOutput.trim().split('\n').filter(Boolean).map((line: string) => {
+      const [hash, message, time] = line.split('|');
+      return { hash, message, time };
+    });
+    // Current version hash
+    const { stdout: currentHash } = await exec(
+      'cd /opt/pi5-gateway && git rev-parse --short HEAD', { timeout: 5000 }
+    ).catch(() => ({ stdout: 'unknown' }));
+    res.json({
+      available: commits.length > 0,
+      commits,
+      currentVersion: `v2.0-${currentHash.trim()}`,
+      commitCount: commits.length,
+    });
+  } catch (e: any) {
+    res.json({ available: false, commits: [], currentVersion: 'v2.0', error: e.message });
+  }
+});
+
 // ─── Quick System Update ───
 app.post('/api/system/update', async (_req, res) => {
   try {

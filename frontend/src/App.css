@@ -172,6 +172,13 @@
   align-items: center;
   gap: 10px;
 }
+.notification-badge {
+  position: absolute; top: -4px; right: -4px;
+  background: var(--danger-color); color: #fff;
+  font-size: 10px; font-weight: 700; min-width: 16px; height: 16px;
+  border-radius: 8px; display: flex; align-items: center; justify-content: center;
+  padding: 0 4px; line-height: 1;
+}
 
 .user-profile {
   display: flex;
@@ -2286,3 +2293,45 @@ select:disabled,
     max-height: 200px;
   }
 }
+
+/* Modal */
+.modal-backdrop {
+  position: fixed; inset: 0; z-index: 1000;
+  background: rgba(0, 0, 0, 0.6);
+  backdrop-filter: blur(4px);
+  display: flex; align-items: center; justify-content: center;
+  animation: fadeIn 0.15s ease;
+}
+.modal-container {
+  background: var(--bg-surface);
+  border: 1px solid var(--panel-border);
+  border-radius: var(--radius-lg);
+  width: 90%; box-shadow: 0 20px 60px rgba(0, 0, 0, 0.4);
+  animation: slideUp 0.2s ease;
+  max-height: 80vh; display: flex; flex-direction: column;
+}
+.modal-header {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 16px 20px; border-bottom: 1px solid var(--panel-border);
+}
+.modal-header h3 { font-size: 15px; font-weight: 600; }
+.modal-body { padding: 16px 20px; overflow-y: auto; flex: 1; }
+.modal-actions {
+  display: flex; justify-content: flex-end; gap: 8px;
+  padding: 12px 20px; border-top: 1px solid var(--panel-border);
+}
+@keyframes fadeIn { from { opacity: 0 } to { opacity: 1 } }
+@keyframes slideUp { from { opacity: 0; transform: translateY(16px) } to { opacity: 1; transform: translateY(0) } }
+
+/* VPN Dashboard Cards */
+.vpn-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 12px; margin-top: 8px; }
+.vpn-card {
+  padding: 14px; border-radius: var(--radius); border: 1px solid var(--panel-border);
+  background: rgba(255,255,255,0.02); display: flex; flex-direction: column; gap: 6px;
+  transition: border-color 0.2s;
+}
+.vpn-card:hover { border-color: var(--panel-border-hover); }
+.vpn-connected { border-color: rgba(34, 197, 94, 0.2); background: rgba(34, 197, 94, 0.03); }
+.vpn-card-header { display: flex; align-items: center; justify-content: space-between; }
+.vpn-card-location { display: flex; align-items: center; gap: 6px; font-size: 13px; }
+.vpn-card-ip { font-family: var(--font-mono); font-size: 12px; color: var(--text-muted); }
