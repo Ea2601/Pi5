@@ -1,7 +1,7 @@
 import { Monitor, Layout, Clock, Save, ExternalLink } from 'lucide-react';
 import { useState, useEffect } from 'react';
 import { useApi, putApi } from '../hooks/useApi';
-import { Panel, Badge } from './ui';
+import { Panel } from './ui';
 
 interface KioskConfig {
   enabled: boolean;
@@ -45,7 +45,7 @@ export function KioskSettingsPanel() {
   const handleSave = async () => {
     setSaving(true);
     try {
-      await putApi('/case/kiosk', config);
+      await putApi('/case/kiosk', config as unknown as Record<string, unknown>);
       setResult('Kiosk ayarları kaydedildi');
     } catch { setResult('Kaydetme başarısız'); }
     setSaving(false);

@@ -203,7 +203,7 @@ export function Dashboard() {
       {/* Aktif VPN Tünelleri */}
       {vpsData.servers.length > 0 && (
         <div style={{ marginTop: 14 }}>
-          <Panel title="VPN Tünelleri" size="full"
+          <Panel title="VPN Tünelleri" size="large"
             badge={<Badge variant="info">{vpsData.servers.filter(s => s.status === 'connected').length} aktif</Badge>}>
             <div className="vpn-grid">
               {vpsData.servers.map(vps => {

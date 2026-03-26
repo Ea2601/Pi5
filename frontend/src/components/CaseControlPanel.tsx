@@ -1,6 +1,6 @@
 import { Lightbulb, Palette, Zap, Type, Save, RotateCcw } from 'lucide-react';
 import { useState, useEffect } from 'react';
-import { useApi, putApi, postApi } from '../hooks/useApi';
+import { useApi, putApi } from '../hooks/useApi';
 import { Panel, Badge } from './ui';
 
 interface LedConfig {
@@ -69,7 +69,7 @@ export function CaseControlPanel() {
   const handleSaveLed = async () => {
     setSaving(true);
     try {
-      await putApi('/case/led', led);
+      await putApi('/case/led', led as unknown as Record<string, unknown>);
       setResult('LED ayarları kaydedildi');
     } catch { setResult('Kaydetme başarısız'); }
     setSaving(false);
