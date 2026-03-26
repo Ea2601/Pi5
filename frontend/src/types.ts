@@ -2,7 +2,7 @@ export type TabId =
   | 'dashboard' | 'topology' | 'pihole' | 'zapret' | 'firewall' | 'routing' | 'vps'
   | 'unbound' | 'fail2ban' | 'maintenance' | 'docs'
   | 'bandwidth' | 'dnslog' | 'speedtest' | 'ddns' | 'alerts' | 'nettools'
-  | 'parental' | 'devicecontrol' | 'trafficcontrol' | 'devicerouting' | 'deviceservices' | 'backup' | 'settings' | 'terminal';
+  | 'parental' | 'devicecontrol' | 'trafficcontrol' | 'deviceservices' | 'backup' | 'settings' | 'terminal';
 
 export interface ServiceStatus {
   name: string;
@@ -17,8 +17,6 @@ export interface Device {
   hostname: string;
   device_type: string;
   route_profile: string;
-  exit_node: string;
-  dpi_bypass: number;
   last_seen: string;
 }
 
@@ -38,6 +36,7 @@ export interface TrafficRule {
   route_type: string;
   exit_node: string;
   dpi_bypass: number;
+  domains: string;
   vps_id: number | null;
   vps_ip: string | null;
   vps_location: string | null;

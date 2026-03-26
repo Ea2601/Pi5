@@ -60,32 +60,43 @@ export const initDb = () => {
       app_name TEXT NOT NULL, category TEXT NOT NULL DEFAULT 'voip',
       route_type TEXT DEFAULT 'direct', vps_id INTEGER, enabled INTEGER DEFAULT 1,
       exit_node TEXT DEFAULT 'isp', dpi_bypass INTEGER DEFAULT 0,
+      domains TEXT DEFAULT '',
       FOREIGN KEY(vps_id) REFERENCES vps_servers(id)
     )`);
     // Migrate existing DBs — empty callback suppresses "duplicate column" errors
     db.run(`ALTER TABLE traffic_routing ADD COLUMN exit_node TEXT DEFAULT 'isp'`, () => {});
     db.run(`ALTER TABLE traffic_routing ADD COLUMN dpi_bypass INTEGER DEFAULT 0`, () => {});
+    db.run(`ALTER TABLE traffic_routing ADD COLUMN domains TEXT DEFAULT ''`, () => {});
 
-    // Default app routing rules (real app list — not mock data)
-    const trafficRules: [number, string, string, string][] = [
-      [1, 'WhatsApp', 'voip', 'direct'],
-      [2, 'Telegram', 'voip', 'direct'],
-      [3, 'Discord', 'voip', 'direct'],
-      [4, 'Signal', 'voip', 'direct'],
-      [5, 'YouTube', 'streaming', 'direct'],
-      [6, 'Netflix', 'streaming', 'direct'],
-      [7, 'Twitch', 'streaming', 'direct'],
-      [8, 'Instagram', 'social', 'direct'],
-      [9, 'Twitter/X', 'social', 'direct'],
-      [10, 'TikTok', 'social', 'direct'],
-      [11, 'Steam', 'gaming', 'direct'],
-      [12, 'Epic Games', 'gaming', 'direct'],
-      [13, 'Spotify', 'streaming', 'direct'],
-      [14, 'Google', 'web', 'direct'],
-      [15, 'GitHub', 'web', 'direct'],
+    // Default app routing rules with known domains
+    const trafficRules: [number, string, string, string, string][] = [
+      [1, 'WhatsApp', 'voip', 'direct', '*.whatsapp.net,*.whatsapp.com,*.wa.me'],
+      [2, 'Telegram', 'voip', 'direct', '*.telegram.org,*.t.me,*.telesco.pe'],
+      [3, 'Discord', 'voip', 'direct', '*.discord.com,*.discord.gg,*.discordapp.com'],
+      [4, 'Signal', 'voip', 'direct', '*.signal.org,*.whispersystems.org'],
+      [5, 'YouTube', 'streaming', 'direct', '*.youtube.com,*.googlevideo.com,*.ytimg.com,*.yt.be'],
+      [6, 'Netflix', 'streaming', 'direct', '*.netflix.com,*.nflxvideo.net,*.nflxso.net,*.nflxext.com'],
+      [7, 'Twitch', 'streaming', 'direct', '*.twitch.tv,*.ttvnw.net,*.jtvnw.net'],
+      [8, 'Instagram', 'social', 'direct', '*.instagram.com,*.cdninstagram.com'],
+      [9, 'Twitter/X', 'social', 'direct', '*.twitter.com,*.x.com,*.twimg.com,*.t.co'],
+      [10, 'TikTok', 'social', 'direct', '*.tiktok.com,*.tiktokv.com,*.tiktokcdn.com,*.musical.ly'],
+      [11, 'Steam', 'gaming', 'direct', '*.steampowered.com,*.steamcommunity.com,*.steamcontent.com'],
+      [12, 'Epic Games', 'gaming', 'direct', '*.epicgames.com,*.unrealengine.com,*.fortnite.com'],
+      [13, 'Spotify', 'streaming', 'direct', '*.spotify.com,*.scdn.co,*.spotifycdn.com'],
+      [14, 'Google', 'web', 'direct', '*.google.com,*.googleapis.com,*.gstatic.com'],
+      [15, 'GitHub', 'web', 'direct', '*.github.com,*.githubusercontent.com,*.githubassets.com'],
+      [16, 'Siri/iCloud', 'apple', 'direct', '*.apple.com,*.icloud.com,*.mzstatic.com,*.apple-dns.net'],
+      [17, 'FaceTime', 'apple', 'direct', '*.facetime.apple.com,*.push.apple.com'],
+      [18, 'Zoom', 'voip', 'direct', '*.zoom.us,*.zoom.com,*.zoomgov.com'],
+      [19, 'Facebook', 'social', 'direct', '*.facebook.com,*.fbcdn.net,*.fb.com,*.fb.me'],
+      [20, 'Snapchat', 'social', 'direct', '*.snapchat.com,*.snap.com,*.sc-cdn.net'],
     ];
-    trafficRules.forEach(([id, app, cat, route]) => {
-      db.run(`INSERT OR IGNORE INTO traffic_routing (id, app_name, category, route_type) VALUES (?, ?, ?, ?)`, [id, app, cat, route]);
+    trafficRules.forEach(([id, app, cat, route, domains]) => {
+      db.run(`INSERT OR IGNORE INTO traffic_routing (id, app_name, category, route_type, domains) VALUES (?, ?, ?, ?, ?)`, [id, app, cat, route, domains]);
+    });
+    // Migrate domains for existing rows that have empty domains
+    trafficRules.forEach(([id, , , , domains]) => {
+      db.run(`UPDATE traffic_routing SET domains = ? WHERE id = ? AND (domains IS NULL OR domains = '')`, [domains, id]);
     });
 
     // Domain-based routing: route specific domains through specific profiles
@@ -105,12 +116,8 @@ export const initDb = () => {
     db.run(`CREATE TABLE IF NOT EXISTS devices (
       mac_address TEXT PRIMARY KEY, ip_address TEXT, hostname TEXT,
       device_type TEXT DEFAULT 'unknown', route_profile TEXT DEFAULT 'default',
-      blocked INTEGER DEFAULT 0, last_seen DATETIME DEFAULT CURRENT_TIMESTAMP,
-      exit_node TEXT DEFAULT 'isp', dpi_bypass INTEGER DEFAULT 0
+      blocked INTEGER DEFAULT 0, last_seen DATETIME DEFAULT CURRENT_TIMESTAMP
     )`);
-    // Migrate existing DBs
-    db.run(`ALTER TABLE devices ADD COLUMN exit_node TEXT DEFAULT 'isp'`, () => {});
-    db.run(`ALTER TABLE devices ADD COLUMN dpi_bypass INTEGER DEFAULT 0`, () => {});
 
     db.run(`CREATE TABLE IF NOT EXISTS service_status (
       name TEXT PRIMARY KEY, enabled INTEGER DEFAULT 0, status TEXT DEFAULT 'stopped',
@@ -364,16 +371,7 @@ export const initDb = () => {
       FOREIGN KEY(vps_id) REFERENCES vps_servers(id)
     )`);
 
-    db.run(`CREATE TABLE IF NOT EXISTS device_routing (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      device_mac TEXT NOT NULL, app_name TEXT NOT NULL,
-      route_type TEXT DEFAULT 'direct', vps_id INTEGER, tunnel_name TEXT DEFAULT '',
-      enabled INTEGER DEFAULT 1,
-      exit_node TEXT DEFAULT 'isp', dpi_bypass INTEGER DEFAULT 0
-    )`);
-    // Migrate existing DBs
-    db.run(`ALTER TABLE device_routing ADD COLUMN exit_node TEXT DEFAULT 'isp'`, () => {});
-    db.run(`ALTER TABLE device_routing ADD COLUMN dpi_bypass INTEGER DEFAULT 0`, () => {});
+    // device_routing removed — all routing is now traffic-based (app + domain)
 
     // Legacy compat
     db.run(`CREATE TABLE IF NOT EXISTS voip_routing (

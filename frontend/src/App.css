@@ -1022,6 +1022,56 @@ select:disabled,
 
 .rule-disabled { opacity: 0.4; }
 
+/* Routing inline rows */
+.routing-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-radius: 8px;
+  transition: background 0.15s, border-color 0.15s;
+  border: 1px solid transparent;
+}
+.routing-row:not(.routing-header-row):hover {
+  background: rgba(255, 255, 255, 0.03);
+  border-color: var(--panel-border-hover);
+}
+.routing-header-row {
+  font-size: 11px;
+  color: var(--text-muted);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  padding: 4px 12px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  margin-bottom: 2px;
+}
+.routing-row-disabled { opacity: 0.4; }
+.routing-row-active { background: rgba(59, 130, 246, 0.06); }
+.routing-col-icon { width: 32px; flex-shrink: 0; display: flex; align-items: center; justify-content: center; }
+.routing-col-name { flex: 2; display: flex; align-items: center; gap: 6px; font-size: 13px; min-width: 0; }
+.routing-col-domain { flex: 3; display: flex; align-items: center; gap: 4px; min-width: 0; }
+.routing-col-vps { flex: 2; min-width: 140px; }
+.routing-col-dpi { width: 70px; flex-shrink: 0; display: flex; align-items: center; justify-content: center; }
+.routing-col-toggle { width: 50px; flex-shrink: 0; display: flex; align-items: center; justify-content: center; }
+.routing-col-delete { width: 36px; flex-shrink: 0; display: flex; align-items: center; justify-content: center; }
+.app-icon-sm {
+  width: 26px; height: 26px; border-radius: 6px; overflow: hidden;
+  background: rgba(255, 255, 255, 0.08);
+  display: flex; align-items: center; justify-content: center;
+}
+.app-icon-sm img { width: 18px; height: 18px; }
+.info-btn {
+  background: none; border: none; cursor: pointer; padding: 2px;
+  color: var(--text-muted); border-radius: 4px; display: flex; align-items: center;
+}
+.info-btn:hover { color: var(--text-primary); background: rgba(255, 255, 255, 0.08); }
+.routing-domains-info {
+  display: flex; gap: 8px; padding: 4px 12px 8px 52px;
+  align-items: center; flex-wrap: wrap;
+}
+.config-select-sm { font-size: 12px; padding: 3px 8px; }
+
 /* Toggle switch */
 .toggle-btn {
   width: 36px;

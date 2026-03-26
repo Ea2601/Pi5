@@ -19,6 +19,11 @@ const domainMap: Record<string, string> = {
   Spotify: 'spotify.com',
   Google: 'google.com',
   GitHub: 'github.com',
+  'Siri/iCloud': 'apple.com',
+  FaceTime: 'apple.com',
+  Zoom: 'zoom.us',
+  Facebook: 'facebook.com',
+  Snapchat: 'snapchat.com',
 };
 
 export function AppLogo({ name }: { name: string; size?: number }) {

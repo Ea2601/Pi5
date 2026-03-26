@@ -415,12 +415,10 @@ app.get('/api/devices', async (_req, res) => {
 
 app.put('/api/devices/:mac/profile', async (req, res) => {
   try {
-    const { profile, exit_node, dpi_bypass } = req.body;
+    const { profile } = req.body;
     const updates: string[] = [];
     const params: any[] = [];
     if (profile !== undefined) { updates.push('route_profile = ?'); params.push(profile); }
-    if (exit_node !== undefined) { updates.push('exit_node = ?'); params.push(exit_node); }
-    if (dpi_bypass !== undefined) { updates.push('dpi_bypass = ?'); params.push(dpi_bypass ? 1 : 0); }
     if (updates.length === 0) return res.json({ success: true });
     params.push(req.params.mac);
     await dbRun(`UPDATE devices SET ${updates.join(', ')} WHERE mac_address = ?`, params);
@@ -623,12 +621,40 @@ app.delete('/api/vps/:id', async (req, res) => {
   }
 });
 
-// ─── Traffic Routing (generalized, replaces VoIP-only) ───
+// ─── Traffic Routing (app-based + domain-based, unified engine) ───
+
+// Helper: collect all routing domains from both tables and apply
+async function applyAllRoutingRules() {
+  if (!isLinux) return;
+  // 1. App routing: expand domains column into individual domain entries
+  const appRules = await dbAll('SELECT app_name, domains, exit_node, dpi_bypass, enabled FROM traffic_routing WHERE enabled = 1 AND domains != ""');
+  const domainRules = await dbAll('SELECT domain, exit_node, dpi_bypass, enabled FROM domain_routing WHERE enabled = 1');
+
+  const allDomains: { domain: string; exit_node: string; dpi_bypass: number; enabled: number }[] = [];
+
+  // App domains (wildcard patterns like *.whatsapp.net → whatsapp.net for dnsmasq)
+  for (const rule of appRules) {
+    const domains = (rule.domains as string).split(',').map((d: string) => d.trim()).filter(Boolean);
+    for (const domain of domains) {
+      // dnsmasq ipset handles subdomains automatically, strip leading *.
+      const clean = domain.replace(/^\*\./, '');
+      allDomains.push({ domain: clean, exit_node: rule.exit_node, dpi_bypass: rule.dpi_bypass, enabled: 1 });
+    }
+  }
+
+  // Custom domain rules
+  for (const rule of domainRules) {
+    allDomains.push({ domain: rule.domain, exit_node: rule.exit_node, dpi_bypass: rule.dpi_bypass, enabled: 1 });
+  }
+
+  await applyDomainRouting(allDomains);
+}
+
 app.get('/api/routing/rules', async (_req, res) => {
   try {
     const rules = await dbAll(`
       SELECT t.id, t.app_name, t.category, t.route_type, t.vps_id, t.enabled,
-             t.exit_node, t.dpi_bypass,
+             t.exit_node, t.dpi_bypass, t.domains,
              s.ip as vps_ip, s.location as vps_location
       FROM traffic_routing t
       LEFT JOIN vps_servers s ON t.vps_id = s.id
@@ -652,6 +678,8 @@ app.put('/api/routing/rules/:id', async (req, res) => {
     if (dpi_bypass !== undefined) { updates.push('dpi_bypass = ?'); params.push(dpi_bypass ? 1 : 0); }
     params.push(req.params.id);
     await dbRun(`UPDATE traffic_routing SET ${updates.join(', ')} WHERE id = ?`, params);
+    // Apply unified routing (app + domain rules together)
+    await applyAllRoutingRules();
     res.json({ success: true });
   } catch (e: any) {
     res.status(500).json({ error: e.message });
@@ -675,10 +703,8 @@ app.post('/api/routing/domains', async (req, res) => {
     const cleanDomain = domain.trim().toLowerCase().replace(/^(https?:\/\/)?(www\.)?/, '').replace(/\/.*$/, '');
     await dbRun('INSERT INTO domain_routing (domain, route_type, description, exit_node, dpi_bypass) VALUES (?, ?, ?, ?, ?)',
       [cleanDomain, route_type || 'direct', description || '', exit_node || 'isp', dpi_bypass ? 1 : 0]);
-    // Apply routing rule on Linux
-    if (isLinux) {
-      await applyDomainRouting(await dbAll('SELECT domain, exit_node, dpi_bypass, enabled FROM domain_routing') as any);
-    }
+    // Apply unified routing (app + domain rules together)
+    await applyAllRoutingRules();
     const domains = await dbAll('SELECT id, domain, route_type, description, enabled, exit_node, dpi_bypass, created_at FROM domain_routing ORDER BY domain');
     res.json({ success: true, domains });
   } catch (e: any) {
@@ -702,7 +728,7 @@ app.put('/api/routing/domains/:id', async (req, res) => {
     if (updates.length === 0) return res.json({ success: true });
     params.push(req.params.id);
     await dbRun(`UPDATE domain_routing SET ${updates.join(', ')} WHERE id = ?`, params);
-    if (isLinux) await applyDomainRouting(await dbAll('SELECT domain, exit_node, dpi_bypass, enabled FROM domain_routing') as any);
+    await applyAllRoutingRules();
     res.json({ success: true });
   } catch (e: any) {
     res.status(500).json({ error: e.message });
@@ -712,7 +738,7 @@ app.put('/api/routing/domains/:id', async (req, res) => {
 app.delete('/api/routing/domains/:id', async (req, res) => {
   try {
     await dbRun('DELETE FROM domain_routing WHERE id = ?', [req.params.id]);
-    if (isLinux) await applyDomainRouting(await dbAll('SELECT domain, exit_node, dpi_bypass, enabled FROM domain_routing') as any);
+    await applyAllRoutingRules();
     res.json({ success: true });
   } catch (e: any) {
     res.status(500).json({ error: e.message });
@@ -1431,59 +1457,7 @@ app.post('/api/terminal/execute', async (req, res) => {
   }
 });
 
-// ─── Per-Device Routing ───
-app.get('/api/devices/:mac/routing', async (req, res) => {
-  try {
-    const rules = await dbAll('SELECT * FROM device_routing WHERE device_mac = ? ORDER BY id', [req.params.mac]);
-    res.json({ rules });
-  } catch (e: any) {
-    res.status(500).json({ error: e.message });
-  }
-});
-
-app.post('/api/devices/:mac/routing', async (req, res) => {
-  try {
-    const { app_name, route_type, vps_id, tunnel_name } = req.body;
-    if (!app_name || !route_type) {
-      return res.status(400).json({ error: 'app_name ve route_type gerekli' });
-    }
-    await dbRun(
-      'INSERT INTO device_routing (device_mac, app_name, route_type, vps_id, tunnel_name) VALUES (?, ?, ?, ?, ?)',
-      [req.params.mac, app_name, route_type, vps_id || null, tunnel_name || '']
-    );
-    res.json({ success: true });
-  } catch (e: any) {
-    res.status(500).json({ error: e.message });
-  }
-});
-
-app.put('/api/devices/:mac/routing/:id', async (req, res) => {
-  try {
-    const { app_name, route_type, vps_id, tunnel_name, enabled } = req.body;
-    const updates: string[] = [];
-    const params: any[] = [];
-    if (app_name !== undefined) { updates.push('app_name = ?'); params.push(app_name); }
-    if (route_type !== undefined) { updates.push('route_type = ?'); params.push(route_type); }
-    if (vps_id !== undefined) { updates.push('vps_id = ?'); params.push(vps_id || null); }
-    if (tunnel_name !== undefined) { updates.push('tunnel_name = ?'); params.push(tunnel_name); }
-    if (enabled !== undefined) { updates.push('enabled = ?'); params.push(enabled ? 1 : 0); }
-    if (updates.length === 0) return res.json({ success: true });
-    params.push(req.params.id);
-    await dbRun(`UPDATE device_routing SET ${updates.join(', ')} WHERE id = ?`, params);
-    res.json({ success: true });
-  } catch (e: any) {
-    res.status(500).json({ error: e.message });
-  }
-});
-
-app.delete('/api/devices/:mac/routing/:id', async (req, res) => {
-  try {
-    await dbRun('DELETE FROM device_routing WHERE id = ?', [req.params.id]);
-    res.json({ success: true });
-  } catch (e: any) {
-    res.status(500).json({ error: e.message });
-  }
-});
+// Per-device routing removed — all routing is now traffic-based (app + domain)
 
 // ─── Device Services ───
 app.get('/api/devices/:mac/services', async (req, res) => {

@@ -1,5 +1,5 @@
 import { Router, Smartphone, Laptop, Tv, CircleDot, Tablet, RefreshCw, Server, Wifi } from 'lucide-react';
-import { useApi, putApi } from '../hooks/useApi';
+import { useApi } from '../hooks/useApi';
 import { useState, useMemo, useRef, useEffect, useCallback } from 'react';
 import { Panel, Badge } from './ui';
 import type { Device } from '../types';
@@ -42,33 +42,6 @@ function getProfileInfo(exitNode: string, dpi: number, vpsList: VpsServer[]): Pr
     : { label: 'ISP', color: 'badge-neutral', desc: 'Direkt ISP', lineColor: '#94a3b8' };
 }
 
-interface ComboOption {
-  exit_node: string;
-  dpi_bypass: number;
-  label: string;
-}
-
-function buildProfileOptions(vpsList: VpsServer[]): ComboOption[] {
-  const options: ComboOption[] = [
-    { exit_node: 'isp', dpi_bypass: 0, label: 'ISP (Direkt)' },
-    { exit_node: 'isp', dpi_bypass: 1, label: 'ISP + DPI' },
-  ];
-  vpsList.forEach(v => {
-    options.push({ exit_node: String(v.id), dpi_bypass: 0, label: `VPS ${v.location}` });
-    options.push({ exit_node: String(v.id), dpi_bypass: 1, label: `VPS ${v.location} + DPI` });
-  });
-  return options;
-}
-
-function encodeCombo(exitNode: string, dpi: number): string {
-  return `${exitNode}|${dpi}`;
-}
-
-function decodeCombo(value: string): { exit_node: string; dpi_bypass: number } {
-  const [exit_node, dpiStr] = value.split('|');
-  return { exit_node, dpi_bypass: Number(dpiStr) };
-}
-
 // Cihazları daire üzerinde konumla
 function getRadialPositions(count: number, cx: number, cy: number, rx: number, ry: number) {
   const positions: { x: number; y: number }[] = [];
@@ -85,12 +58,10 @@ function getRadialPositions(count: number, cx: number, cy: number, rx: number, r
 export function NetworkTopology() {
   const { data, loading, refetch } = useApi<{ devices: Device[] }>('/devices', { devices: [] }, 15000);
   const { data: vpsData } = useApi<{ servers: VpsServer[] }>('/vps/list', { servers: [] });
-  const [editingMac, setEditingMac] = useState<string | null>(null);
   const [meshSize, setMeshSize] = useState({ w: 800, h: 500 });
   const meshRef = useRef<HTMLDivElement>(null);
   const devices = data.devices;
   const vpsList = vpsData.servers;
-  const profileOptions = useMemo(() => buildProfileOptions(vpsList), [vpsList]);
 
   const updateSize = useCallback(() => {
     if (meshRef.current) {
@@ -117,15 +88,6 @@ export function NetworkTopology() {
     });
     return map;
   }, [devices.map(d => d.mac_address).join(',')]);
-
-  const handleProfileChange = async (mac: string, comboValue: string) => {
-    try {
-      const { exit_node, dpi_bypass } = decodeCombo(comboValue);
-      await putApi(`/devices/${encodeURIComponent(mac)}/profile`, { exit_node, dpi_bypass });
-      await refetch();
-      setEditingMac(null);
-    } catch { /* */ }
-  };
 
   const cx = meshSize.w / 2;
   const cy = meshSize.h / 2;
@@ -186,7 +148,7 @@ export function NetworkTopology() {
             {positions.map((pos, i) => {
               const device = devices[i];
               if (!device) return null;
-              const profile = getProfileInfo(device.exit_node || 'isp', device.dpi_bypass || 0, vpsList);
+              const profile = getProfileInfo('isp', 0, vpsList);
               return (
                 <g key={`line-${i}`}>
                   <line
@@ -232,9 +194,7 @@ export function NetworkTopology() {
             const device = devices[i];
             if (!device) return null;
             const speed = speeds[device.mac_address] || { down: 0, up: 0 };
-            const exitNode = device.exit_node || 'isp';
-            const dpi = device.dpi_bypass || 0;
-            const profile = getProfileInfo(exitNode, dpi, vpsList);
+            const profile = getProfileInfo('isp', 0, vpsList);
             return (
               <div key={device.mac_address}
                 className="mesh-device"
@@ -257,26 +217,9 @@ export function NetworkTopology() {
                     <span className="speed-up">↑{speed.up}</span>
                   </div>
                   <div className="mesh-profile-row">
-                    {editingMac === device.mac_address ? (
-                      <select
-                        className="profile-select"
-                        defaultValue={encodeCombo(exitNode, dpi)}
-                        onChange={e => handleProfileChange(device.mac_address, e.target.value)}
-                        onBlur={() => setEditingMac(null)}
-                        autoFocus
-                      >
-                        {profileOptions.map(o => (
-                          <option key={encodeCombo(o.exit_node, o.dpi_bypass)} value={encodeCombo(o.exit_node, o.dpi_bypass)}>
-                            {o.label}
-                          </option>
-                        ))}
-                      </select>
-                    ) : (
-                      <button className={`device-profile-btn badge ${profile.color}`}
-                        onClick={() => setEditingMac(device.mac_address)} title={profile.desc}>
-                        {profile.label}
-                      </button>
-                    )}
+                    <span className={`device-profile-btn badge ${profile.color}`}>
+                      {profile.label}
+                    </span>
                   </div>
                   <span className="mesh-device-mac">{device.mac_address}</span>
                 </div>

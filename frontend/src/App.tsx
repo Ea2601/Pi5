@@ -21,7 +21,6 @@ import { NetworkToolsPanel } from './components/NetworkToolsPanel';
 import { ParentalPanel } from './components/ParentalPanel';
 import { DeviceControlPanel } from './components/DeviceControlPanel';
 import { TrafficControlPanel } from './components/TrafficControlPanel';
-import { DeviceRoutingPanel } from './components/DeviceRoutingPanel';
 import { DeviceServicesPanel } from './components/DeviceServicesPanel';
 import { BackupPanel } from './components/BackupPanel';
 import { SettingsPanel } from './components/SettingsPanel';
@@ -56,7 +55,6 @@ function App() {
       case 'parental': return <ParentalPanel />;
       case 'devicecontrol': return <DeviceControlPanel />;
       case 'trafficcontrol': return <TrafficControlPanel />;
-      case 'devicerouting': return <DeviceRoutingPanel />;
       case 'deviceservices': return <DeviceServicesPanel />;
       case 'backup': return <BackupPanel />;
       case 'settings': return <SettingsPanel />;
