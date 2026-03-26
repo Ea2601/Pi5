@@ -15,22 +15,64 @@ const deviceIcon = (type: string, size = 18) => {
   }
 };
 
-const profileLabels: Record<string, { label: string; color: string; desc: string; lineColor: string }> = {
-  default:     { label: 'Varsayılan',     color: 'badge-neutral',  desc: 'Direkt ISP',              lineColor: '#94a3b8' },
-  adblock:     { label: 'Reklamsız',      color: 'badge-success',  desc: 'Pi-hole + ISP',           lineColor: '#22c55e' },
-  vpn_only:    { label: 'Sadece VPN',     color: 'badge-info',     desc: 'VPN (Pi-hole yok)',       lineColor: '#6366f1' },
-  vpn:         { label: 'VPN',            color: 'badge-info',     desc: 'Pi-hole + VPN',           lineColor: '#3b82f6' },
-  dpi:         { label: 'DPI',            color: 'badge-warning',  desc: 'Zapret DPI',              lineColor: '#f59e0b' },
-  adblock_dpi: { label: 'Reklamsız DPI',  color: 'badge-error',    desc: 'Pi-hole + Zapret DPI',   lineColor: '#ef4444' },
-};
+interface VpsServer { id: number; ip: string; location: string }
 
-const profiles = Object.keys(profileLabels);
+interface ProfileInfo {
+  label: string;
+  color: string;
+  desc: string;
+  lineColor: string;
+}
+
+function getProfileInfo(exitNode: string, dpi: number, vpsList: VpsServer[]): ProfileInfo {
+  const vps = exitNode !== 'isp' ? vpsList.find(v => String(v.id) === exitNode) : null;
+  if (vps) {
+    return dpi
+      ? { label: `VPS ${vps.location} + DPI`, color: 'badge-error', desc: `VPN ${vps.location} + DPI Bypass`, lineColor: '#a855f7' }
+      : { label: `VPS ${vps.location}`, color: 'badge-info', desc: `VPN ${vps.location}`, lineColor: '#3b82f6' };
+  }
+  // exitNode not found as VPS but not 'isp' — generic VPS
+  if (exitNode !== 'isp') {
+    return dpi
+      ? { label: 'VPS + DPI', color: 'badge-error', desc: 'VPN + DPI Bypass', lineColor: '#a855f7' }
+      : { label: 'VPS', color: 'badge-info', desc: 'VPN tüneli', lineColor: '#3b82f6' };
+  }
+  return dpi
+    ? { label: 'ISP + DPI', color: 'badge-warning', desc: 'ISP + DPI Bypass', lineColor: '#f59e0b' }
+    : { label: 'ISP', color: 'badge-neutral', desc: 'Direkt ISP', lineColor: '#94a3b8' };
+}
+
+interface ComboOption {
+  exit_node: string;
+  dpi_bypass: number;
+  label: string;
+}
+
+function buildProfileOptions(vpsList: VpsServer[]): ComboOption[] {
+  const options: ComboOption[] = [
+    { exit_node: 'isp', dpi_bypass: 0, label: 'ISP (Direkt)' },
+    { exit_node: 'isp', dpi_bypass: 1, label: 'ISP + DPI' },
+  ];
+  vpsList.forEach(v => {
+    options.push({ exit_node: String(v.id), dpi_bypass: 0, label: `VPS ${v.location}` });
+    options.push({ exit_node: String(v.id), dpi_bypass: 1, label: `VPS ${v.location} + DPI` });
+  });
+  return options;
+}
+
+function encodeCombo(exitNode: string, dpi: number): string {
+  return `${exitNode}|${dpi}`;
+}
+
+function decodeCombo(value: string): { exit_node: string; dpi_bypass: number } {
+  const [exit_node, dpiStr] = value.split('|');
+  return { exit_node, dpi_bypass: Number(dpiStr) };
+}
 
 // Cihazları daire üzerinde konumla
 function getRadialPositions(count: number, cx: number, cy: number, rx: number, ry: number) {
   const positions: { x: number; y: number }[] = [];
   for (let i = 0; i < count; i++) {
-    // Üstten başla (-PI/2), saat yönünde dağıt
     const angle = -Math.PI / 2 + (2 * Math.PI * i) / count;
     positions.push({
       x: cx + rx * Math.cos(angle),
@@ -42,10 +84,13 @@ function getRadialPositions(count: number, cx: number, cy: number, rx: number, r
 
 export function NetworkTopology() {
   const { data, loading, refetch } = useApi<{ devices: Device[] }>('/devices', { devices: [] }, 15000);
+  const { data: vpsData } = useApi<{ servers: VpsServer[] }>('/vps/list', { servers: [] });
   const [editingMac, setEditingMac] = useState<string | null>(null);
   const [meshSize, setMeshSize] = useState({ w: 800, h: 500 });
   const meshRef = useRef<HTMLDivElement>(null);
   const devices = data.devices;
+  const vpsList = vpsData.servers;
+  const profileOptions = useMemo(() => buildProfileOptions(vpsList), [vpsList]);
 
   const updateSize = useCallback(() => {
     if (meshRef.current) {
@@ -73,9 +118,10 @@ export function NetworkTopology() {
     return map;
   }, [devices.map(d => d.mac_address).join(',')]);
 
-  const handleProfileChange = async (mac: string, profile: string) => {
+  const handleProfileChange = async (mac: string, comboValue: string) => {
     try {
-      await putApi(`/devices/${encodeURIComponent(mac)}/profile`, { profile });
+      const { exit_node, dpi_bypass } = decodeCombo(comboValue);
+      await putApi(`/devices/${encodeURIComponent(mac)}/profile`, { exit_node, dpi_bypass });
       await refetch();
       setEditingMac(null);
     } catch { /* */ }
@@ -87,9 +133,21 @@ export function NetworkTopology() {
   const ry = Math.min(meshSize.h * 0.38, 200);
   const positions = getRadialPositions(devices.length, cx, cy, rx, ry);
 
-  // Mesh hatları — her cihazdan merkeze + cihazlar arası (komşu bağlantıları)
   const cardW = 150;
   const cardH = 130;
+
+  // Build legend items from current unique combos + static base
+  const legendItems = useMemo(() => {
+    const items: ProfileInfo[] = [
+      getProfileInfo('isp', 0, vpsList),
+      getProfileInfo('isp', 1, vpsList),
+    ];
+    vpsList.forEach(v => {
+      items.push(getProfileInfo(String(v.id), 0, vpsList));
+      items.push(getProfileInfo(String(v.id), 1, vpsList));
+    });
+    return items;
+  }, [vpsList]);
 
   return (
     <div className="fade-in">
@@ -101,7 +159,6 @@ export function NetworkTopology() {
           {/* SVG bağlantı çizgileri */}
           <svg className="mesh-svg" width={meshSize.w} height={meshSize.h}>
             <defs>
-              {/* Animated dash for active connections */}
               <filter id="glow">
                 <feGaussianBlur stdDeviation="2" result="coloredBlur" />
                 <feMerge>
@@ -129,10 +186,9 @@ export function NetworkTopology() {
             {positions.map((pos, i) => {
               const device = devices[i];
               if (!device) return null;
-              const profile = profileLabels[device.route_profile] || profileLabels.default;
+              const profile = getProfileInfo(device.exit_node || 'isp', device.dpi_bypass || 0, vpsList);
               return (
                 <g key={`line-${i}`}>
-                  {/* Glow efekti */}
                   <line
                     x1={cx} y1={cy}
                     x2={pos.x} y2={pos.y}
@@ -141,7 +197,6 @@ export function NetworkTopology() {
                     strokeOpacity="0.08"
                     filter="url(#glow)"
                   />
-                  {/* Ana çizgi */}
                   <line
                     x1={cx} y1={cy}
                     x2={pos.x} y2={pos.y}
@@ -149,7 +204,6 @@ export function NetworkTopology() {
                     strokeWidth="1.5"
                     strokeOpacity="0.35"
                   />
-                  {/* Hareket eden nokta (veri akışı animasyonu) */}
                   <circle r="2.5" fill={profile.lineColor} opacity="0.7">
                     <animateMotion
                       dur={`${2 + i * 0.3}s`}
@@ -178,7 +232,9 @@ export function NetworkTopology() {
             const device = devices[i];
             if (!device) return null;
             const speed = speeds[device.mac_address] || { down: 0, up: 0 };
-            const profile = profileLabels[device.route_profile] || profileLabels.default;
+            const exitNode = device.exit_node || 'isp';
+            const dpi = device.dpi_bypass || 0;
+            const profile = getProfileInfo(exitNode, dpi, vpsList);
             return (
               <div key={device.mac_address}
                 className="mesh-device"
@@ -204,13 +260,15 @@ export function NetworkTopology() {
                     {editingMac === device.mac_address ? (
                       <select
                         className="profile-select"
-                        defaultValue={device.route_profile}
+                        defaultValue={encodeCombo(exitNode, dpi)}
                         onChange={e => handleProfileChange(device.mac_address, e.target.value)}
                         onBlur={() => setEditingMac(null)}
                         autoFocus
                       >
-                        {profiles.map(p => (
-                          <option key={p} value={p}>{profileLabels[p].label}</option>
+                        {profileOptions.map(o => (
+                          <option key={encodeCombo(o.exit_node, o.dpi_bypass)} value={encodeCombo(o.exit_node, o.dpi_bypass)}>
+                            {o.label}
+                          </option>
                         ))}
                       </select>
                     ) : (
@@ -232,16 +290,13 @@ export function NetworkTopology() {
       <div className="glass-panel widget-medium" style={{ marginTop: 14 }}>
         <h4 className="widget-title"><Server size={14} /> Rota Profilleri</h4>
         <div className="profile-legend">
-          {profiles.map(p => {
-            const info = profileLabels[p];
-            return (
-              <div key={p} className="profile-legend-item">
-                <span className="profile-legend-line" style={{ background: info.lineColor }} />
-                <Badge variant={info.color.replace('badge-', '') as any}>{info.label}</Badge>
-                <span>{info.desc}</span>
-              </div>
-            );
-          })}
+          {legendItems.map((info, idx) => (
+            <div key={idx} className="profile-legend-item">
+              <span className="profile-legend-line" style={{ background: info.lineColor }} />
+              <Badge variant={info.color.replace('badge-', '') as any}>{info.label}</Badge>
+              <span>{info.desc}</span>
+            </div>
+          ))}
         </div>
       </div>
     </div>

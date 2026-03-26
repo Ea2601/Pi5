@@ -59,8 +59,12 @@ export const initDb = () => {
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       app_name TEXT NOT NULL, category TEXT NOT NULL DEFAULT 'voip',
       route_type TEXT DEFAULT 'direct', vps_id INTEGER, enabled INTEGER DEFAULT 1,
+      exit_node TEXT DEFAULT 'isp', dpi_bypass INTEGER DEFAULT 0,
       FOREIGN KEY(vps_id) REFERENCES vps_servers(id)
     )`);
+    // Migrate existing DBs — empty callback suppresses "duplicate column" errors
+    db.run(`ALTER TABLE traffic_routing ADD COLUMN exit_node TEXT DEFAULT 'isp'`, () => {});
+    db.run(`ALTER TABLE traffic_routing ADD COLUMN dpi_bypass INTEGER DEFAULT 0`, () => {});
 
     // Default app routing rules (real app list — not mock data)
     const trafficRules: [number, string, string, string][] = [
@@ -91,14 +95,22 @@ export const initDb = () => {
       route_type TEXT DEFAULT 'direct',
       description TEXT DEFAULT '',
       enabled INTEGER DEFAULT 1,
+      exit_node TEXT DEFAULT 'isp', dpi_bypass INTEGER DEFAULT 0,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP
     )`);
+    // Migrate existing DBs
+    db.run(`ALTER TABLE domain_routing ADD COLUMN exit_node TEXT DEFAULT 'isp'`, () => {});
+    db.run(`ALTER TABLE domain_routing ADD COLUMN dpi_bypass INTEGER DEFAULT 0`, () => {});
 
     db.run(`CREATE TABLE IF NOT EXISTS devices (
       mac_address TEXT PRIMARY KEY, ip_address TEXT, hostname TEXT,
       device_type TEXT DEFAULT 'unknown', route_profile TEXT DEFAULT 'default',
-      blocked INTEGER DEFAULT 0, last_seen DATETIME DEFAULT CURRENT_TIMESTAMP
+      blocked INTEGER DEFAULT 0, last_seen DATETIME DEFAULT CURRENT_TIMESTAMP,
+      exit_node TEXT DEFAULT 'isp', dpi_bypass INTEGER DEFAULT 0
     )`);
+    // Migrate existing DBs
+    db.run(`ALTER TABLE devices ADD COLUMN exit_node TEXT DEFAULT 'isp'`, () => {});
+    db.run(`ALTER TABLE devices ADD COLUMN dpi_bypass INTEGER DEFAULT 0`, () => {});
 
     db.run(`CREATE TABLE IF NOT EXISTS service_status (
       name TEXT PRIMARY KEY, enabled INTEGER DEFAULT 0, status TEXT DEFAULT 'stopped',
@@ -356,8 +368,12 @@ export const initDb = () => {
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       device_mac TEXT NOT NULL, app_name TEXT NOT NULL,
       route_type TEXT DEFAULT 'direct', vps_id INTEGER, tunnel_name TEXT DEFAULT '',
-      enabled INTEGER DEFAULT 1
+      enabled INTEGER DEFAULT 1,
+      exit_node TEXT DEFAULT 'isp', dpi_bypass INTEGER DEFAULT 0
     )`);
+    // Migrate existing DBs
+    db.run(`ALTER TABLE device_routing ADD COLUMN exit_node TEXT DEFAULT 'isp'`, () => {});
+    db.run(`ALTER TABLE device_routing ADD COLUMN dpi_bypass INTEGER DEFAULT 0`, () => {});
 
     // Legacy compat
     db.run(`CREATE TABLE IF NOT EXISTS voip_routing (

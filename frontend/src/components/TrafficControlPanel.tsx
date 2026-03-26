@@ -1,11 +1,13 @@
 import { useState } from 'react';
 import {
   Clock, Gauge, BarChart3, Plus, Check, X, Trash2, Edit3,
-  ArrowDown, ArrowUp, Activity
+  ArrowDown, ArrowUp, Activity, Shield
 } from 'lucide-react';
 import { useApi, postApi, putApi, deleteApi } from '../hooks/useApi';
 import { Panel, Badge } from './ui';
 import type { TrafficRule, TrafficSchedule, ThrottleRule } from '../types';
+
+interface VpsServer { id: number; ip: string; location: string }
 
 type TrafficTab = 'scheduler' | 'throttle' | 'analytics';
 
@@ -51,18 +53,34 @@ const DAY_LABELS: { key: string; label: string }[] = [
   { key: 'sun', label: 'Paz' },
 ];
 
+function getScheduleLabel(exitNode: string, dpi: number, vpsList: VpsServer[]): string {
+  if (exitNode === 'blocked') return 'Engelli';
+  const vps = exitNode !== 'isp' ? vpsList.find(v => String(v.id) === exitNode) : null;
+  const base = vps ? `VPS ${vps.location}` : 'ISP (Direkt)';
+  return dpi ? `${base} + DPI` : base;
+}
+
+function getScheduleBadgeVariant(exitNode: string, dpi: number): 'neutral' | 'info' | 'warning' | 'error' {
+  if (exitNode === 'blocked') return 'error';
+  if (exitNode === 'isp') return dpi ? 'warning' : 'neutral';
+  return dpi ? 'error' : 'info';
+}
+
 function SchedulerView() {
   const { data, refetch } = useApi<{ schedules: TrafficSchedule[] }>('/routing/schedules', { schedules: [] });
   const { data: rulesData } = useApi<{ rules: TrafficRule[] }>('/routing/rules', { rules: [] });
+  const { data: vpsData } = useApi<{ servers: VpsServer[] }>('/vps/list', { servers: [] });
   const [showAdd, setShowAdd] = useState(false);
   const [newSchedule, setNewSchedule] = useState({
     traffic_routing_id: 0,
-    schedule_route_type: 'direct',
+    schedule_exit_node: 'isp',
+    schedule_dpi_bypass: 0,
     time_start: '09:00',
     time_end: '17:00',
     days_of_week: '',
   });
   const [selectedDays, setSelectedDays] = useState<string[]>([]);
+  const vpsList = vpsData.servers;
 
   const toggleDay = (day: string) => {
     setSelectedDays(prev =>
@@ -75,12 +93,13 @@ function SchedulerView() {
     try {
       await postApi('/routing/schedules', {
         traffic_routing_id: newSchedule.traffic_routing_id,
-        schedule_route_type: newSchedule.schedule_route_type,
+        schedule_exit_node: newSchedule.schedule_exit_node,
+        schedule_dpi_bypass: newSchedule.schedule_dpi_bypass,
         time_start: newSchedule.time_start,
         time_end: newSchedule.time_end,
         days_of_week: selectedDays.join(','),
       });
-      setNewSchedule({ traffic_routing_id: 0, schedule_route_type: 'direct', time_start: '09:00', time_end: '17:00', days_of_week: '' });
+      setNewSchedule({ traffic_routing_id: 0, schedule_exit_node: 'isp', schedule_dpi_bypass: 0, time_start: '09:00', time_end: '17:00', days_of_week: '' });
       setSelectedDays([]);
       setShowAdd(false);
       await refetch();
@@ -118,17 +137,26 @@ function SchedulerView() {
                 </select>
               </div>
               <div className="form-group">
-                <label>Yonlendirme Tipi</label>
-                <select className="config-select" value={newSchedule.schedule_route_type}
-                  onChange={e => setNewSchedule({ ...newSchedule, schedule_route_type: e.target.value })}>
-                  <option value="direct">Direkt ISP</option>
-                  <option value="adblock">Reklamsız (Pi-hole + ISP)</option>
-                  <option value="vpn_only">Sadece VPN</option>
-                  <option value="vpn">VPN (Pi-hole + VPN)</option>
-                  <option value="dpi">DPI (Zapret)</option>
-                  <option value="adblock_dpi">Reklamsız DPI (Pi-hole + Zapret)</option>
+                <label>Çıkış Noktası</label>
+                <select className="config-select" value={newSchedule.schedule_exit_node}
+                  onChange={e => setNewSchedule({ ...newSchedule, schedule_exit_node: e.target.value })}>
+                  <option value="isp">ISP (Direkt)</option>
+                  {vpsList.map(v => (
+                    <option key={v.id} value={String(v.id)}>VPS {v.location} ({v.ip})</option>
+                  ))}
                   <option value="blocked">Engelle</option>
                 </select>
+              </div>
+              <div className="form-group">
+                <label><Shield size={12} /> DPI Bypass</label>
+                <button
+                  className={`btn-sm ${newSchedule.schedule_dpi_bypass ? 'btn-primary' : 'btn-outline'}`}
+                  onClick={() => setNewSchedule({ ...newSchedule, schedule_dpi_bypass: newSchedule.schedule_dpi_bypass ? 0 : 1 })}
+                  style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}
+                >
+                  <Shield size={12} />
+                  DPI {newSchedule.schedule_dpi_bypass ? 'ON' : 'OFF'}
+                </button>
               </div>
               <div className="form-group">
                 <label>Baslangic Saati</label>
@@ -170,6 +198,10 @@ function SchedulerView() {
           {data.schedules.map(schedule => {
             const days = schedule.days_of_week ? schedule.days_of_week.split(',') : [];
             const dayNames = days.map(d => DAY_LABELS.find(dl => dl.key === d)?.label || d).join(', ');
+            const exitNode = (schedule as any).schedule_exit_node || schedule.schedule_route_type || 'isp';
+            const dpi = (schedule as any).schedule_dpi_bypass || 0;
+            const label = getScheduleLabel(exitNode, dpi, vpsList);
+            const badgeVariant = getScheduleBadgeVariant(exitNode, dpi);
             return (
               <div key={schedule.id} className="list-item">
                 <button
@@ -184,22 +216,8 @@ function SchedulerView() {
                     {schedule.time_start} - {schedule.time_end} &middot; {dayNames}
                   </div>
                 </div>
-                <Badge variant={
-                  schedule.schedule_route_type === 'blocked' ? 'error' :
-                  schedule.schedule_route_type === 'vpn' || schedule.schedule_route_type === 'vpn_only' ? 'info' :
-                  schedule.schedule_route_type === 'dpi' ? 'warning' :
-                  schedule.schedule_route_type === 'adblock_dpi' ? 'error' :
-                  schedule.schedule_route_type === 'adblock' ? 'success' : 'neutral'
-                }>
-                  {{
-                    direct: 'Direkt ISP',
-                    adblock: 'Reklamsız',
-                    vpn_only: 'Sadece VPN',
-                    vpn: 'VPN',
-                    dpi: 'DPI',
-                    adblock_dpi: 'Reklamsız DPI',
-                    blocked: 'Engelli',
-                  }[schedule.schedule_route_type] || schedule.schedule_route_type}
+                <Badge variant={badgeVariant}>
+                  {label}
                 </Badge>
                 <button className="icon-btn icon-btn-sm cron-delete" onClick={() => handleDelete(schedule.id)} title="Sil">
                   <Trash2 size={13} />

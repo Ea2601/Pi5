@@ -1,6 +1,6 @@
 import {
   ArrowRightLeft, MessageCircle, Globe, Tv, Gamepad2, Route,
-  Plus, Trash2, Check, X, Search, Link
+  Plus, Trash2, Check, X, Search, Link, Shield
 } from 'lucide-react';
 import { useApi, putApi, postApi, deleteApi } from '../hooks/useApi';
 import { useState } from 'react';
@@ -18,23 +18,47 @@ const categoryMeta: Record<string, { label: string; icon: React.ReactNode; color
   web: { label: 'Web & Geliştirme', icon: <Globe size={16} />, color: 'badge-neutral' },
 };
 
-const routeLabels: Record<string, { label: string; badge: string }> = {
-  direct:      { label: 'Direkt ISP',       badge: 'neutral' },
-  adblock:     { label: 'Reklamsız (Pi-hole + ISP)', badge: 'success' },
-  vpn_only:    { label: 'Sadece VPN',                badge: 'info' },
-  vpn:         { label: 'VPN (Pi-hole + VPN)',       badge: 'info' },
-  dpi:         { label: 'DPI (Zapret)',              badge: 'warning' },
-  adblock_dpi: { label: 'Reklamsız DPI (Pi-hole + Zapret)', badge: 'error' },
-};
+interface VpsServer { id: number; ip: string; location: string }
 
-const ROUTE_OPTIONS = [
-  { value: 'direct', label: 'Direkt ISP' },
-  { value: 'adblock', label: 'Reklamsız (Pi-hole + ISP)' },
-  { value: 'vpn_only', label: 'Sadece VPN' },
-  { value: 'vpn', label: 'VPN (Pi-hole + VPN)' },
-  { value: 'dpi', label: 'DPI (Zapret)' },
-  { value: 'adblock_dpi', label: 'Reklamsız DPI (Pi-hole + Zapret)' },
-];
+function getRouteLabel(exitNode: string, dpiBypas: number, vpsList: VpsServer[]): string {
+  const vps = exitNode !== 'isp' ? vpsList.find(v => String(v.id) === exitNode) : null;
+  const base = vps ? `VPS ${vps.location}` : 'ISP (Direkt)';
+  return dpiBypas ? `${base} + DPI` : base;
+}
+
+function getRouteBadgeVariant(exitNode: string, dpiBypas: number): 'neutral' | 'info' | 'warning' | 'error' {
+  if (exitNode === 'isp') return dpiBypas ? 'warning' : 'neutral';
+  return dpiBypas ? 'error' : 'info';
+}
+
+function ExitNodeSelect({ value, onChange, vpsList, style }: {
+  value: string; onChange: (v: string) => void; vpsList: VpsServer[]; style?: React.CSSProperties;
+}) {
+  return (
+    <select className="config-select" value={value} onChange={e => onChange(e.target.value)} style={style}>
+      <option value="isp">ISP (Direkt)</option>
+      {vpsList.map(v => (
+        <option key={v.id} value={String(v.id)}>VPS {v.location} ({v.ip})</option>
+      ))}
+    </select>
+  );
+}
+
+function DpiToggle({ value, onChange, style }: {
+  value: number; onChange: (v: number) => void; style?: React.CSSProperties;
+}) {
+  return (
+    <button
+      className={`btn-sm ${value ? 'btn-primary' : 'btn-outline'}`}
+      onClick={() => onChange(value ? 0 : 1)}
+      style={{ display: 'inline-flex', alignItems: 'center', gap: 4, whiteSpace: 'nowrap', ...style }}
+      title={value ? 'DPI Bypass aktif' : 'DPI Bypass kapalı'}
+    >
+      <Shield size={12} />
+      DPI {value ? 'ON' : 'OFF'}
+    </button>
+  );
+}
 
 export function RoutingPanel() {
   const [activeTab, setActiveTab] = useState<RoutingTab>('apps');
@@ -64,12 +88,17 @@ export function RoutingPanel() {
 // ─── App Routing (existing) ───
 function AppRoutingView() {
   const { data: rulesData, refetch } = useApi<{ rules: TrafficRule[] }>('/routing/rules', { rules: [] });
+  const { data: vpsData } = useApi<{ servers: VpsServer[] }>('/vps/list', { servers: [] });
   const [editingId, setEditingId] = useState<number | null>(null);
+  const [editExitNode, setEditExitNode] = useState('isp');
+  const [editDpi, setEditDpi] = useState(0);
   const [filterCat, setFilterCat] = useState<string>('all');
 
-  const handleRouteChange = async (id: number, route_type: string, vps_id: number | null) => {
+  const vpsList = vpsData.servers;
+
+  const handleRouteChange = async (id: number) => {
     try {
-      await putApi(`/routing/rules/${id}`, { route_type, vps_id });
+      await putApi(`/routing/rules/${id}`, { exit_node: editExitNode, dpi_bypass: editDpi });
       await refetch();
       setEditingId(null);
     } catch { /* */ }
@@ -80,6 +109,12 @@ function AppRoutingView() {
       await putApi(`/routing/rules/${id}`, { enabled: !enabled });
       await refetch();
     } catch { /* */ }
+  };
+
+  const startEditing = (rule: TrafficRule) => {
+    setEditingId(rule.id);
+    setEditExitNode(rule.exit_node || 'isp');
+    setEditDpi(rule.dpi_bypass || 0);
   };
 
   const rules = rulesData.rules;
@@ -125,7 +160,10 @@ function AppRoutingView() {
               </div>
               <div className="voip-list">
                 {catRules.map(rule => {
-                  const routeInfo = routeLabels[rule.route_type] || routeLabels.direct;
+                  const exitNode = rule.exit_node || 'isp';
+                  const dpi = rule.dpi_bypass || 0;
+                  const label = getRouteLabel(exitNode, dpi, vpsList);
+                  const badgeVariant = getRouteBadgeVariant(exitNode, dpi);
                   return (
                     <div key={rule.id} className={`voip-rule ${!rule.enabled ? 'rule-disabled' : ''}`}>
                       <div className="app-icon-logo">
@@ -134,10 +172,8 @@ function AppRoutingView() {
                       <div className="app-details">
                         <h4>{rule.app_name}</h4>
                         <p>
-                          Rota: <strong>{routeInfo.label}</strong>
-                          <span className={`route-status route-${rule.route_type}`}>
-                            {routeInfo.label}
-                          </span>
+                          Rota: <strong>{label}</strong>
+                          {dpi ? <span style={{ marginLeft: 6 }}><Badge variant="warning">DPI</Badge></span> : null}
                         </p>
                       </div>
                       <button className={`toggle-btn ${rule.enabled ? 'toggle-on' : 'toggle-off'}`}
@@ -145,14 +181,21 @@ function AppRoutingView() {
                         <span className="toggle-knob" />
                       </button>
                       {editingId === rule.id ? (
-                        <div className="voip-edit">
-                          <select defaultValue={rule.route_type}
-                            onChange={e => handleRouteChange(rule.id, e.target.value, null)}>
-                            {ROUTE_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
-                          </select>
+                        <div className="voip-edit" style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                          <ExitNodeSelect value={editExitNode} onChange={setEditExitNode} vpsList={vpsList} />
+                          <DpiToggle value={editDpi} onChange={setEditDpi} />
+                          <button className="btn-primary btn-sm" onClick={() => handleRouteChange(rule.id)}>
+                            <Check size={12} />
+                          </button>
+                          <button className="btn-outline btn-sm" onClick={() => setEditingId(null)}>
+                            <X size={12} />
+                          </button>
                         </div>
                       ) : (
-                        <button className="btn-outline btn-sm" onClick={() => setEditingId(rule.id)}>
+                        <Badge variant={badgeVariant}>{label}</Badge>
+                      )}
+                      {editingId !== rule.id && (
+                        <button className="btn-outline btn-sm" onClick={() => startEditing(rule)}>
                           <ArrowRightLeft size={12} />
                         </button>
                       )}
@@ -172,6 +215,8 @@ function AppRoutingView() {
 interface DomainRule {
   id: number;
   domain: string;
+  exit_node: string;
+  dpi_bypass: number;
   route_type: string;
   description: string;
   enabled: number;
@@ -180,13 +225,16 @@ interface DomainRule {
 
 function DomainRoutingView() {
   const { data, refetch } = useApi<{ domains: DomainRule[] }>('/routing/domains', { domains: [] });
+  const { data: vpsData } = useApi<{ servers: VpsServer[] }>('/vps/list', { servers: [] });
   const [showAdd, setShowAdd] = useState(false);
   const [newDomain, setNewDomain] = useState('');
-  const [newRoute, setNewRoute] = useState('vpn');
+  const [newExitNode, setNewExitNode] = useState('isp');
+  const [newDpi, setNewDpi] = useState(0);
   const [newDesc, setNewDesc] = useState('');
   const [filter, setFilter] = useState('');
   const [error, setError] = useState('');
 
+  const vpsList = vpsData.servers;
   const domains = data.domains;
   const filtered = filter ? domains.filter(d => d.domain.includes(filter.toLowerCase())) : domains;
 
@@ -196,20 +244,21 @@ function DomainRoutingView() {
     try {
       const result = await postApi('/routing/domains', {
         domain: newDomain.trim(),
-        route_type: newRoute,
+        exit_node: newExitNode,
+        dpi_bypass: newDpi,
         description: newDesc.trim(),
       });
       if (result.error) { setError(result.error); return; }
-      setNewDomain(''); setNewDesc(''); setShowAdd(false);
+      setNewDomain(''); setNewDesc(''); setNewExitNode('isp'); setNewDpi(0); setShowAdd(false);
       await refetch();
     } catch (e: any) {
       setError(e.message || 'Eklenemedi');
     }
   };
 
-  const handleRouteChange = async (id: number, route_type: string) => {
+  const handleRouteChange = async (id: number, exit_node: string, dpi_bypass: number) => {
     try {
-      await putApi(`/routing/domains/${id}`, { route_type });
+      await putApi(`/routing/domains/${id}`, { exit_node, dpi_bypass });
       await refetch();
     } catch { /* */ }
   };
@@ -228,14 +277,6 @@ function DomainRoutingView() {
     } catch { /* */ }
   };
 
-  const routeVariant = (rt: string): 'success' | 'info' | 'warning' | 'error' | 'neutral' => {
-    const map: Record<string, any> = {
-      direct: 'neutral', adblock: 'success', vpn_only: 'info', vpn: 'info',
-      dpi: 'warning', adblock_dpi: 'error',
-    };
-    return map[rt] || 'neutral';
-  };
-
   return (
     <div style={{ marginTop: 14 }}>
       <div className="glass-panel widget-large">
@@ -249,7 +290,7 @@ function DomainRoutingView() {
           </div>
         </div>
         <p className="subtitle">
-          Belirli domain/URL'leri farklı rotalara yönlendirin — VPN, DPI bypass veya direkt ISP
+          Belirli domain/URL'leri farklı rotalara yönlendirin — VPS, DPI bypass veya direkt ISP
         </p>
 
         {showAdd && (
@@ -262,11 +303,12 @@ function DomainRoutingView() {
                   onKeyDown={e => e.key === 'Enter' && handleAdd()} />
               </div>
               <div className="form-group">
-                <label><Route size={14} /> Rota Profili</label>
-                <select className="config-select" value={newRoute}
-                  onChange={e => setNewRoute(e.target.value)}>
-                  {ROUTE_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
-                </select>
+                <label><Route size={14} /> Çıkış Noktası</label>
+                <ExitNodeSelect value={newExitNode} onChange={setNewExitNode} vpsList={vpsList} />
+              </div>
+              <div className="form-group">
+                <label><Shield size={14} /> DPI Bypass</label>
+                <DpiToggle value={newDpi} onChange={setNewDpi} />
               </div>
               <div className="form-group">
                 <label>Açıklama (isteğe bağlı)</label>
@@ -302,36 +344,42 @@ function DomainRoutingView() {
               <p>{domains.length === 0 ? 'Henüz domain routing kuralı eklenmedi' : 'Aramayla eşleşen domain bulunamadı'}</p>
             </div>
           )}
-          {filtered.map(d => (
-            <div key={d.id} className={`list-item ${!d.enabled ? 'list-item-disabled' : ''}`}>
-              <button
-                className={`toggle-btn toggle-sm ${d.enabled ? 'toggle-on' : 'toggle-off'}`}
-                onClick={() => handleToggle(d.id, d.enabled)}>
-                <div className="toggle-knob" />
-              </button>
-              <div style={{ flex: 1, minWidth: 0 }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                  <span style={{ fontWeight: 600, fontSize: 13, fontFamily: 'var(--font-mono, monospace)' }}>
-                    {d.domain}
-                  </span>
-                  {d.description && (
-                    <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>— {d.description}</span>
-                  )}
+          {filtered.map(d => {
+            const exitNode = d.exit_node || 'isp';
+            const dpi = d.dpi_bypass || 0;
+            const label = getRouteLabel(exitNode, dpi, vpsList);
+            const badgeVariant = getRouteBadgeVariant(exitNode, dpi);
+            return (
+              <div key={d.id} className={`list-item ${!d.enabled ? 'list-item-disabled' : ''}`}>
+                <button
+                  className={`toggle-btn toggle-sm ${d.enabled ? 'toggle-on' : 'toggle-off'}`}
+                  onClick={() => handleToggle(d.id, d.enabled)}>
+                  <div className="toggle-knob" />
+                </button>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <span style={{ fontWeight: 600, fontSize: 13, fontFamily: 'var(--font-mono, monospace)' }}>
+                      {d.domain}
+                    </span>
+                    {d.description && (
+                      <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>— {d.description}</span>
+                    )}
+                  </div>
                 </div>
+                <ExitNodeSelect value={exitNode}
+                  onChange={v => handleRouteChange(d.id, v, dpi)}
+                  vpsList={vpsList}
+                  style={{ fontSize: 12, padding: '2px 8px', width: 'auto', minWidth: 140 }} />
+                <DpiToggle value={dpi} onChange={v => handleRouteChange(d.id, exitNode, v)} />
+                <Badge variant={badgeVariant}>
+                  {label}
+                </Badge>
+                <button className="icon-btn icon-btn-sm cron-delete" onClick={() => handleDelete(d.id)} title="Sil">
+                  <Trash2 size={13} />
+                </button>
               </div>
-              <select className="config-select" value={d.route_type}
-                onChange={e => handleRouteChange(d.id, e.target.value)}
-                style={{ fontSize: 12, padding: '2px 8px', width: 'auto', minWidth: 140 }}>
-                {ROUTE_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
-              </select>
-              <Badge variant={routeVariant(d.route_type)}>
-                {routeLabels[d.route_type]?.label || d.route_type}
-              </Badge>
-              <button className="icon-btn icon-btn-sm cron-delete" onClick={() => handleDelete(d.id)} title="Sil">
-                <Trash2 size={13} />
-              </button>
-            </div>
-          ))}
+            );
+          })}
         </div>
 
         {domains.length > 0 && (

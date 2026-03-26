@@ -392,40 +392,45 @@ export async function systemctlAction(action: 'start' | 'stop' | 'restart' | 'en
 
 // ─── Domain-Based Routing ───
 // Uses dnsmasq ipset + nftables fwmark + ip rule to route specific domains
+// Pi-hole is ALWAYS global (not a routing option).
+// Each rule has two independent parameters: exit_node (isp or a vps_id) and dpi_bypass (boolean).
 interface DomainRoute {
   domain: string;
-  route_type: string;
+  exit_node: string;   // 'isp' or a vps id (e.g. '1', '2')
+  dpi_bypass: number;  // 0 or 1
   enabled: number;
 }
 
 export async function applyDomainRouting(domains?: DomainRoute[]): Promise<void> {
   if (!isLinux) return;
-
-  // Route types → fwmark values
-  const FWMARK: Record<string, number> = {
-    vpn: 100,
-    vpn_only: 101,
-    dpi: 200,
-    adblock_dpi: 201,
-    direct: 0,
-    adblock: 0,
-  };
-
-  // If no domains passed, this is called from index.ts which will import and pass them
   if (!domains) return;
 
   const enabledDomains = domains.filter(d => d.enabled);
 
+  // fwmark scheme:
+  //   exit_node='isp', dpi_bypass=0 → mark 0 (default, no special routing)
+  //   exit_node='isp', dpi_bypass=1 → mark 200 (DPI bypass via zapret nfqueue)
+  //   exit_node=vps_id, dpi_bypass=0 → mark 100 + vps_id (route through VPS tunnel)
+  //   exit_node=vps_id, dpi_bypass=1 → mark 300 + vps_id (VPS tunnel + DPI bypass)
+  function getFwmark(exit_node: string, dpi_bypass: number): number {
+    const isVps = exit_node !== 'isp';
+    const vpsId = isVps ? parseInt(exit_node, 10) || 0 : 0;
+    if (!isVps && !dpi_bypass) return 0; // default route, nothing to do
+    if (!isVps && dpi_bypass) return 200; // DPI bypass only
+    if (isVps && !dpi_bypass) return 100 + vpsId; // VPS exit only
+    return 300 + vpsId; // VPS exit + DPI bypass
+  }
+
   // 1. Generate dnsmasq ipset config for Pi-hole
-  // Each route type gets its own ipset
+  // Each unique fwmark gets its own ipset
   const ipsetLines: string[] = [];
-  const ipsetNames = new Set<string>();
+  const markSets = new Map<number, string>(); // mark → ipset name
 
   for (const d of enabledDomains) {
-    const mark = FWMARK[d.route_type];
-    if (mark === undefined || mark === 0) continue; // direct/adblock don't need special routing
-    const setName = `rt_${d.route_type}`;
-    ipsetNames.add(setName);
+    const mark = getFwmark(d.exit_node, d.dpi_bypass);
+    if (mark === 0) continue; // default route, no special routing needed
+    const setName = `rt_m${mark}`;
+    if (!markSets.has(mark)) markSets.set(mark, setName);
     ipsetLines.push(`ipset=/${d.domain}/${setName}`);
   }
 
@@ -433,27 +438,21 @@ export async function applyDomainRouting(domains?: DomainRoute[]): Promise<void>
   const dnsmasqConf = ipsetLines.join('\n') + '\n';
   await run(`echo '${dnsmasqConf.replace(/'/g, "\\'")}' > /etc/dnsmasq.d/05-domain-routing.conf`);
 
-  // 2. Create/flush ipsets and nftables rules
-  const nftCmds: string[] = [];
-
-  for (const setName of ipsetNames) {
-    // Create ipset if not exists, flush if exists
+  // 2. Create/flush ipsets
+  for (const [, setName] of markSets) {
     await run(`ipset create ${setName} hash:ip -exist`);
     await run(`ipset flush ${setName}`);
   }
 
   // 3. Create nftables marks based on ipset membership
+  const nftCmds: string[] = [];
   nftCmds.push('#!/usr/sbin/nft -f');
   nftCmds.push('table inet domain_routing {');
   nftCmds.push('  chain prerouting {');
   nftCmds.push('    type filter hook prerouting priority -150; policy accept;');
 
-  for (const setName of ipsetNames) {
-    const routeType = setName.replace('rt_', '');
-    const mark = FWMARK[routeType];
-    if (mark) {
-      nftCmds.push(`    ip daddr @${setName} meta mark set ${mark}`);
-    }
+  for (const [mark, setName] of markSets) {
+    nftCmds.push(`    ip daddr @${setName} meta mark set ${mark}`);
   }
 
   nftCmds.push('  }');
@@ -463,17 +462,17 @@ export async function applyDomainRouting(domains?: DomainRoute[]): Promise<void>
   await run(`echo '${nftConf.replace(/'/g, "\\'")}' > /etc/nftables.d/domain-routing.conf`);
 
   // 4. Setup ip rules for each fwmark → routing table
-  for (const [routeType, mark] of Object.entries(FWMARK)) {
-    if (mark === 0) continue;
-    // Add ip rule if not exists (ignore error if already exists)
+  for (const [mark] of markSets) {
     await run(`ip rule add fwmark ${mark} table ${mark} 2>/dev/null || true`);
 
-    // Set default route for each table based on type
-    if (routeType === 'vpn' || routeType === 'vpn_only') {
-      // Route through WireGuard interface if available
+    if (mark >= 100 && mark < 200) {
+      // VPS exit only (mark = 100 + vpsId) → route through WireGuard
+      await run(`ip route replace default dev wg0 table ${mark} 2>/dev/null || true`);
+    } else if (mark >= 300) {
+      // VPS exit + DPI bypass (mark = 300 + vpsId) → route through WireGuard
       await run(`ip route replace default dev wg0 table ${mark} 2>/dev/null || true`);
     }
-    // DPI routes use default gateway but go through zapret nfqueue
+    // mark 200 = DPI bypass only → uses default gateway but goes through zapret nfqueue
   }
 
   // 5. Reload dnsmasq to pick up ipset config

@@ -1,24 +1,37 @@
 import { useState } from 'react';
-import { GitBranch, Plus, Trash2, Check, X } from 'lucide-react';
+import { GitBranch, Plus, Trash2, Check, X, Shield } from 'lucide-react';
 import { useApi, postApi, putApi, deleteApi } from '../hooks/useApi';
 import { Panel } from './ui';
 import { AppLogo } from './AppLogos';
 import type { Device } from '../types';
 
+interface VpsServer { id: number; ip: string; location: string }
+
 interface DeviceRoutingRule {
   id: number;
   device_mac: string;
   app_name: string;
-  route_type: 'direct' | 'adblock' | 'vpn' | 'dpi' | 'adblock_dpi' | 'blocked';
+  exit_node: string;
+  dpi_bypass: number;
+  route_type: string;
   vps_id: number | null;
   tunnel_name: string;
   enabled: number;
 }
 
+function getRouteLabel(exitNode: string, dpi: number, vpsList: VpsServer[]): string {
+  if (exitNode === 'blocked') return 'Engelli';
+  const vps = exitNode !== 'isp' ? vpsList.find(v => String(v.id) === exitNode) : null;
+  const base = vps ? `VPS ${vps.location}` : 'ISP (Direkt)';
+  return dpi ? `${base} + DPI` : base;
+}
+
 export function DeviceRoutingPanel() {
   const { data: devicesData } = useApi<{ devices: Device[] }>('/devices', { devices: [] });
+  const { data: vpsData } = useApi<{ servers: VpsServer[] }>('/vps/list', { servers: [] });
   const [selectedMac, setSelectedMac] = useState('');
   const selectedDevice = devicesData.devices.find(d => d.mac_address === selectedMac);
+  const vpsList = vpsData.servers;
 
   // Auto-select first device
   if (!selectedMac && devicesData.devices.length > 0) {
@@ -33,7 +46,8 @@ export function DeviceRoutingPanel() {
   const [showAdd, setShowAdd] = useState(false);
   const [newRule, setNewRule] = useState({
     app_name: '',
-    route_type: 'direct' as string,
+    exit_node: 'isp',
+    dpi_bypass: 0,
   });
 
   const handleAdd = async () => {
@@ -41,9 +55,10 @@ export function DeviceRoutingPanel() {
     try {
       await postApi(`/devices/${selectedMac}/routing`, {
         app_name: newRule.app_name,
-        route_type: newRule.route_type,
+        exit_node: newRule.exit_node,
+        dpi_bypass: newRule.dpi_bypass,
       });
-      setNewRule({ app_name: '', route_type: 'direct' });
+      setNewRule({ app_name: '', exit_node: 'isp', dpi_bypass: 0 });
       setShowAdd(false);
       await refetch();
     } catch { /* */ }
@@ -58,10 +73,11 @@ export function DeviceRoutingPanel() {
     } catch { /* */ }
   };
 
-  const handleRouteTypeChange = async (rule: DeviceRoutingRule, newType: string) => {
+  const handleRouteChange = async (rule: DeviceRoutingRule, exit_node: string, dpi_bypass: number) => {
     try {
       await putApi(`/devices/${selectedMac}/routing/${rule.id}`, {
-        route_type: newType,
+        exit_node,
+        dpi_bypass,
       });
       await refetch();
     } catch { /* */ }
@@ -73,6 +89,10 @@ export function DeviceRoutingPanel() {
       await refetch();
     } catch { /* */ }
   };
+
+  const deviceProfileLabel = selectedDevice
+    ? getRouteLabel(selectedDevice.exit_node || 'isp', selectedDevice.dpi_bypass || 0, vpsList)
+    : '';
 
   return (
     <div className="fade-in">
@@ -102,7 +122,7 @@ export function DeviceRoutingPanel() {
         <div style={{ marginTop: 14 }}>
           <Panel
             title={selectedDevice.hostname || selectedDevice.ip_address}
-            subtitle={`IP: ${selectedDevice.ip_address} | MAC: ${selectedDevice.mac_address} | Profil: ${selectedDevice.route_profile}`}
+            subtitle={`IP: ${selectedDevice.ip_address} | MAC: ${selectedDevice.mac_address} | Profil: ${deviceProfileLabel}`}
             actions={
               <button className="btn-primary btn-sm" onClick={() => setShowAdd(!showAdd)}>
                 <Plus size={14} /> Kural Ekle
@@ -119,17 +139,26 @@ export function DeviceRoutingPanel() {
                       onChange={e => setNewRule({ ...newRule, app_name: e.target.value })} />
                   </div>
                   <div className="form-group">
-                    <label>Yonlendirme Tipi</label>
-                    <select className="config-select" value={newRule.route_type}
-                      onChange={e => setNewRule({ ...newRule, route_type: e.target.value })}>
-                      <option value="direct">Direkt ISP</option>
-                      <option value="adblock">Reklamsız (Pi-hole + ISP)</option>
-                      <option value="vpn_only">Sadece VPN</option>
-                      <option value="vpn">VPN (Pi-hole + VPN)</option>
-                      <option value="dpi">DPI (Zapret)</option>
-                      <option value="adblock_dpi">Reklamsız DPI (Pi-hole + Zapret)</option>
+                    <label>Çıkış Noktası</label>
+                    <select className="config-select" value={newRule.exit_node}
+                      onChange={e => setNewRule({ ...newRule, exit_node: e.target.value })}>
+                      <option value="isp">ISP (Direkt)</option>
+                      {vpsList.map(v => (
+                        <option key={v.id} value={String(v.id)}>VPS {v.location} ({v.ip})</option>
+                      ))}
                       <option value="blocked">Engelli</option>
                     </select>
+                  </div>
+                  <div className="form-group">
+                    <label><Shield size={12} /> DPI Bypass</label>
+                    <button
+                      className={`btn-sm ${newRule.dpi_bypass ? 'btn-primary' : 'btn-outline'}`}
+                      onClick={() => setNewRule({ ...newRule, dpi_bypass: newRule.dpi_bypass ? 0 : 1 })}
+                      style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}
+                    >
+                      <Shield size={12} />
+                      DPI {newRule.dpi_bypass ? 'ON' : 'OFF'}
+                    </button>
                   </div>
                 </div>
                 <div className="cron-add-actions" style={{ marginTop: 10 }}>
@@ -147,7 +176,8 @@ export function DeviceRoutingPanel() {
               <div className="ban-row" style={{ opacity: 0.6, fontSize: 12 }}>
                 <span style={{ width: 40 }}></span>
                 <span style={{ flex: 2 }}>Uygulama</span>
-                <span style={{ flex: 2 }}>Yonlendirme Profili</span>
+                <span style={{ flex: 2 }}>Çıkış Noktası</span>
+                <span style={{ width: 60 }}>DPI</span>
                 <span style={{ width: 60 }}>Durum</span>
                 <span style={{ width: 40 }}></span>
               </div>
@@ -157,42 +187,55 @@ export function DeviceRoutingPanel() {
                   <p>Bu cihaz icin henuz routing kurali yok</p>
                 </div>
               )}
-              {routingData.rules.map(rule => (
-                <div key={rule.id} className={`ban-row ${!rule.enabled ? 'cron-row-disabled' : ''}`}>
-                  <span style={{ width: 40, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                    <div style={{ width: 28, height: 28, borderRadius: 6, overflow: 'hidden', background: 'rgba(255,255,255,0.08)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                      <AppLogo name={rule.app_name} size={20} />
-                    </div>
-                  </span>
-                  <span style={{ flex: 2, fontWeight: 500 }}>{rule.app_name}</span>
-                  <span style={{ flex: 2 }}>
-                    <select className="config-select" value={rule.route_type}
-                      onChange={e => handleRouteTypeChange(rule, e.target.value)}
-                      style={{ fontSize: 12, padding: '2px 6px' }}>
-                      <option value="direct">Direkt ISP</option>
-                      <option value="adblock">Reklamsız (Pi-hole + ISP)</option>
-                      <option value="vpn_only">Sadece VPN</option>
-                      <option value="vpn">VPN (Pi-hole + VPN)</option>
-                      <option value="dpi">DPI (Zapret)</option>
-                      <option value="adblock_dpi">Reklamsız DPI (Pi-hole + Zapret)</option>
-                      <option value="blocked">Engelli</option>
-                    </select>
-                  </span>
-                  <span style={{ width: 60 }}>
-                    <button
-                      className={`toggle-btn toggle-sm ${rule.enabled ? 'toggle-on' : 'toggle-off'}`}
-                      onClick={() => handleToggle(rule)}
-                    >
-                      <div className="toggle-knob" />
-                    </button>
-                  </span>
-                  <span style={{ width: 40 }}>
-                    <button className="icon-btn icon-btn-sm cron-delete" onClick={() => handleDelete(rule.id)} title="Sil">
-                      <Trash2 size={13} />
-                    </button>
-                  </span>
-                </div>
-              ))}
+              {routingData.rules.map(rule => {
+                const exitNode = rule.exit_node || 'isp';
+                const dpi = rule.dpi_bypass || 0;
+                return (
+                  <div key={rule.id} className={`ban-row ${!rule.enabled ? 'cron-row-disabled' : ''}`}>
+                    <span style={{ width: 40, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                      <div style={{ width: 28, height: 28, borderRadius: 6, overflow: 'hidden', background: 'rgba(255,255,255,0.08)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                        <AppLogo name={rule.app_name} size={20} />
+                      </div>
+                    </span>
+                    <span style={{ flex: 2, fontWeight: 500 }}>{rule.app_name}</span>
+                    <span style={{ flex: 2 }}>
+                      <select className="config-select" value={exitNode}
+                        onChange={e => handleRouteChange(rule, e.target.value, dpi)}
+                        style={{ fontSize: 12, padding: '2px 6px' }}>
+                        <option value="isp">ISP (Direkt)</option>
+                        {vpsList.map(v => (
+                          <option key={v.id} value={String(v.id)}>VPS {v.location}</option>
+                        ))}
+                        <option value="blocked">Engelli</option>
+                      </select>
+                    </span>
+                    <span style={{ width: 60 }}>
+                      {exitNode !== 'blocked' && (
+                        <button
+                          className={`btn-sm ${dpi ? 'btn-primary' : 'btn-outline'}`}
+                          onClick={() => handleRouteChange(rule, exitNode, dpi ? 0 : 1)}
+                          style={{ fontSize: 10, padding: '2px 6px' }}
+                        >
+                          {dpi ? 'ON' : 'OFF'}
+                        </button>
+                      )}
+                    </span>
+                    <span style={{ width: 60 }}>
+                      <button
+                        className={`toggle-btn toggle-sm ${rule.enabled ? 'toggle-on' : 'toggle-off'}`}
+                        onClick={() => handleToggle(rule)}
+                      >
+                        <div className="toggle-knob" />
+                      </button>
+                    </span>
+                    <span style={{ width: 40 }}>
+                      <button className="icon-btn icon-btn-sm cron-delete" onClick={() => handleDelete(rule.id)} title="Sil">
+                        <Trash2 size={13} />
+                      </button>
+                    </span>
+                  </div>
+                );
+              })}
             </div>
           </Panel>
         </div>

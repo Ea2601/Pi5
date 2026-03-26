@@ -17,6 +17,8 @@ export interface Device {
   hostname: string;
   device_type: string;
   route_profile: string;
+  exit_node: string;
+  dpi_bypass: number;
   last_seen: string;
 }
 
@@ -34,6 +36,8 @@ export interface TrafficRule {
   app_name: string;
   category: string;
   route_type: string;
+  exit_node: string;
+  dpi_bypass: number;
   vps_id: number | null;
   vps_ip: string | null;
   vps_location: string | null;

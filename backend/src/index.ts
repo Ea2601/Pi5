@@ -415,8 +415,15 @@ app.get('/api/devices', async (_req, res) => {
 
 app.put('/api/devices/:mac/profile', async (req, res) => {
   try {
-    const { profile } = req.body;
-    await dbRun('UPDATE devices SET route_profile = ? WHERE mac_address = ?', [profile, req.params.mac]);
+    const { profile, exit_node, dpi_bypass } = req.body;
+    const updates: string[] = [];
+    const params: any[] = [];
+    if (profile !== undefined) { updates.push('route_profile = ?'); params.push(profile); }
+    if (exit_node !== undefined) { updates.push('exit_node = ?'); params.push(exit_node); }
+    if (dpi_bypass !== undefined) { updates.push('dpi_bypass = ?'); params.push(dpi_bypass ? 1 : 0); }
+    if (updates.length === 0) return res.json({ success: true });
+    params.push(req.params.mac);
+    await dbRun(`UPDATE devices SET ${updates.join(', ')} WHERE mac_address = ?`, params);
     res.json({ success: true });
   } catch (e: any) {
     res.status(500).json({ error: e.message });
@@ -621,6 +628,7 @@ app.get('/api/routing/rules', async (_req, res) => {
   try {
     const rules = await dbAll(`
       SELECT t.id, t.app_name, t.category, t.route_type, t.vps_id, t.enabled,
+             t.exit_node, t.dpi_bypass,
              s.ip as vps_ip, s.location as vps_location
       FROM traffic_routing t
       LEFT JOIN vps_servers s ON t.vps_id = s.id
@@ -634,12 +642,14 @@ app.get('/api/routing/rules', async (_req, res) => {
 
 app.put('/api/routing/rules/:id', async (req, res) => {
   try {
-    const { route_type, vps_id, enabled } = req.body;
+    const { route_type, vps_id, enabled, exit_node, dpi_bypass } = req.body;
     const updates: string[] = [];
     const params: any[] = [];
     if (route_type !== undefined) { updates.push('route_type = ?'); params.push(route_type); }
     if (vps_id !== undefined) { updates.push('vps_id = ?'); params.push(vps_id || null); }
     if (enabled !== undefined) { updates.push('enabled = ?'); params.push(enabled ? 1 : 0); }
+    if (exit_node !== undefined) { updates.push('exit_node = ?'); params.push(exit_node); }
+    if (dpi_bypass !== undefined) { updates.push('dpi_bypass = ?'); params.push(dpi_bypass ? 1 : 0); }
     params.push(req.params.id);
     await dbRun(`UPDATE traffic_routing SET ${updates.join(', ')} WHERE id = ?`, params);
     res.json({ success: true });
@@ -651,7 +661,7 @@ app.put('/api/routing/rules/:id', async (req, res) => {
 // ─── Domain-Based Routing ───
 app.get('/api/routing/domains', async (_req, res) => {
   try {
-    const domains = await dbAll('SELECT * FROM domain_routing ORDER BY domain');
+    const domains = await dbAll('SELECT id, domain, route_type, description, enabled, exit_node, dpi_bypass, created_at FROM domain_routing ORDER BY domain');
     res.json({ domains });
   } catch (e: any) {
     res.status(500).json({ error: e.message });
@@ -660,16 +670,16 @@ app.get('/api/routing/domains', async (_req, res) => {
 
 app.post('/api/routing/domains', async (req, res) => {
   try {
-    const { domain, route_type, description } = req.body;
+    const { domain, route_type, description, exit_node, dpi_bypass } = req.body;
     if (!domain) return res.status(400).json({ error: 'Domain gerekli' });
     const cleanDomain = domain.trim().toLowerCase().replace(/^(https?:\/\/)?(www\.)?/, '').replace(/\/.*$/, '');
-    await dbRun('INSERT INTO domain_routing (domain, route_type, description) VALUES (?, ?, ?)',
-      [cleanDomain, route_type || 'direct', description || '']);
+    await dbRun('INSERT INTO domain_routing (domain, route_type, description, exit_node, dpi_bypass) VALUES (?, ?, ?, ?, ?)',
+      [cleanDomain, route_type || 'direct', description || '', exit_node || 'isp', dpi_bypass ? 1 : 0]);
     // Apply routing rule on Linux
     if (isLinux) {
-      await applyDomainRouting(await dbAll('SELECT domain, route_type, enabled FROM domain_routing') as any);
+      await applyDomainRouting(await dbAll('SELECT domain, exit_node, dpi_bypass, enabled FROM domain_routing') as any);
     }
-    const domains = await dbAll('SELECT * FROM domain_routing ORDER BY domain');
+    const domains = await dbAll('SELECT id, domain, route_type, description, enabled, exit_node, dpi_bypass, created_at FROM domain_routing ORDER BY domain');
     res.json({ success: true, domains });
   } catch (e: any) {
     if (e.message?.includes('UNIQUE')) {
@@ -681,16 +691,18 @@ app.post('/api/routing/domains', async (req, res) => {
 
 app.put('/api/routing/domains/:id', async (req, res) => {
   try {
-    const { route_type, enabled, description } = req.body;
+    const { route_type, enabled, description, exit_node, dpi_bypass } = req.body;
     const updates: string[] = [];
     const params: any[] = [];
     if (route_type !== undefined) { updates.push('route_type = ?'); params.push(route_type); }
     if (enabled !== undefined) { updates.push('enabled = ?'); params.push(enabled ? 1 : 0); }
     if (description !== undefined) { updates.push('description = ?'); params.push(description); }
+    if (exit_node !== undefined) { updates.push('exit_node = ?'); params.push(exit_node); }
+    if (dpi_bypass !== undefined) { updates.push('dpi_bypass = ?'); params.push(dpi_bypass ? 1 : 0); }
     if (updates.length === 0) return res.json({ success: true });
     params.push(req.params.id);
     await dbRun(`UPDATE domain_routing SET ${updates.join(', ')} WHERE id = ?`, params);
-    if (isLinux) await applyDomainRouting(await dbAll('SELECT domain, route_type, enabled FROM domain_routing') as any);
+    if (isLinux) await applyDomainRouting(await dbAll('SELECT domain, exit_node, dpi_bypass, enabled FROM domain_routing') as any);
     res.json({ success: true });
   } catch (e: any) {
     res.status(500).json({ error: e.message });
@@ -700,7 +712,7 @@ app.put('/api/routing/domains/:id', async (req, res) => {
 app.delete('/api/routing/domains/:id', async (req, res) => {
   try {
     await dbRun('DELETE FROM domain_routing WHERE id = ?', [req.params.id]);
-    if (isLinux) await applyDomainRouting(await dbAll('SELECT domain, route_type, enabled FROM domain_routing') as any);
+    if (isLinux) await applyDomainRouting(await dbAll('SELECT domain, exit_node, dpi_bypass, enabled FROM domain_routing') as any);
     res.json({ success: true });
   } catch (e: any) {
     res.status(500).json({ error: e.message });

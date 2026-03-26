@@ -450,31 +450,35 @@ function RoutingDoc() {
   return (
     <div className="doc-page">
       <h3>Trafik Yönlendirme</h3>
-      <p>Uygulama bazlı trafik yönlendirme sistemi. Her uygulamayı farklı bir yoldan internete çıkarabilirsiniz.</p>
+      <p>Composable (birleştirilebilir) yönlendirme sistemi. Her kural iki bağımsız ayardan oluşur: çıkış noktası ve DPI bypass.</p>
 
-      <DocBlock title="Yönlendirme Tipleri">
+      <DocBlock title="Sistem Bileşenleri">
         <table className="doc-table">
-          <thead><tr><th>Tip</th><th>Açıklama</th><th>Kullanım</th></tr></thead>
+          <thead><tr><th>Bileşen</th><th>Durum</th><th>Açıklama</th></tr></thead>
           <tbody>
-            <tr><td><Badge variant="neutral">Direct</Badge></td><td>ISP üzerinden doğrudan</td><td>Engelsiz servisler, düşük gecikme</td></tr>
-            <tr><td><Badge variant="success">VPS</Badge></td><td>WireGuard tüneli üzerinden</td><td>Engellenmiş veya gizlilik gerektiren</td></tr>
-            <tr><td><Badge variant="info">Zapret</Badge></td><td>DPI bypass ile doğrudan</td><td>DPI ile engellenen ama VPN gerektirmeyen</td></tr>
+            <tr><td><Badge variant="success">Pi-hole</Badge></td><td>Her zaman aktif (global)</td><td>DNS seviyesinde reklam ve izleyici engelleme — tüm trafiğe uygulanır</td></tr>
+            <tr><td><Badge variant="neutral">Çıkış Noktası</Badge></td><td>ISP veya VPS</td><td>Trafiğin internete hangi yoldan çıkacağı. Birden fazla VPS sunucusu desteklenir</td></tr>
+            <tr><td><Badge variant="warning">DPI Bypass</Badge></td><td>Bağımsız açılıp kapatılabilir</td><td>Zapret ile DPI atlatma — herhangi bir çıkış noktasıyla birlikte kullanılabilir</td></tr>
           </tbody>
         </table>
       </DocBlock>
 
-      <DocBlock title="Cihaz Profilleri">
+      <DocBlock title="Örnek Kombinasyonlar">
         <table className="doc-table">
-          <thead><tr><th>Profil</th><th>Açıklama</th></tr></thead>
+          <thead><tr><th>Çıkış</th><th>DPI</th><th>Sonuç</th><th>Kullanım Senaryosu</th></tr></thead>
           <tbody>
-            <tr><td><strong>Varsayılan</strong></td><td>Direkt ISP — herhangi bir filtreleme veya tünel olmadan doğrudan internet</td></tr>
-            <tr><td><strong>Reklamsız</strong></td><td>Pi-hole + ISP — reklam engelleme aktif, direkt ISP çıkışı</td></tr>
-            <tr><td><strong>Sadece VPN</strong></td><td>VPN — reklam engelleme olmadan sadece VPN tüneli üzerinden çıkış</td></tr>
-            <tr><td><strong>VPN</strong></td><td>Pi-hole + VPN — reklam engelleme + VPN tüneli üzerinden çıkış</td></tr>
-            <tr><td><strong>DPI</strong></td><td>Zapret DPI — DPI atlatma aktif, reklam engelleme yok</td></tr>
-            <tr><td><strong>Reklamsız DPI</strong></td><td>Pi-hole + Zapret DPI — hem reklam engelleme hem DPI atlatma aktif</td></tr>
+            <tr><td><Badge variant="neutral">ISP</Badge></td><td>Kapalı</td><td>Direkt ISP çıkışı</td><td>Engelsiz servisler, düşük gecikme</td></tr>
+            <tr><td><Badge variant="warning">ISP + DPI</Badge></td><td>Açık</td><td>ISP + Zapret DPI bypass</td><td>DPI ile engellenen siteler (VPN gereksiz)</td></tr>
+            <tr><td><Badge variant="info">VPS Frankfurt</Badge></td><td>Kapalı</td><td>VPN tüneli üzerinden</td><td>Coğrafi engel aşma, gizlilik</td></tr>
+            <tr><td><Badge variant="error">VPS Frankfurt + DPI</Badge></td><td>Açık</td><td>VPN + DPI bypass</td><td>Maksimum engel aşma</td></tr>
           </tbody>
         </table>
+      </DocBlock>
+
+      <DocBlock title="Önemli Notlar">
+        <p><strong>Pi-hole:</strong> Tüm trafik Pi-hole üzerinden geçer — ayrıca açıp kapatmaya gerek yoktur.</p>
+        <p><strong>Çıkış noktası:</strong> Her kural veya cihaz için bağımsız olarak ISP veya herhangi bir VPS sunucusu seçilebilir.</p>
+        <p><strong>DPI Bypass:</strong> Çıkış noktasından bağımsız olarak etkinleştirilebilir. ISP ile kullanıldığında direkt bağlantıda DPI atlatma, VPS ile kullanıldığında tünel üzerinde DPI atlatma sağlar.</p>
       </DocBlock>
     </div>
   );
