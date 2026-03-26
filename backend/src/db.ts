@@ -84,6 +84,16 @@ export const initDb = () => {
       db.run(`INSERT OR IGNORE INTO traffic_routing (id, app_name, category, route_type) VALUES (?, ?, ?, ?)`, [id, app, cat, route]);
     });
 
+    // Domain-based routing: route specific domains through specific profiles
+    db.run(`CREATE TABLE IF NOT EXISTS domain_routing (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      domain TEXT NOT NULL UNIQUE,
+      route_type TEXT DEFAULT 'direct',
+      description TEXT DEFAULT '',
+      enabled INTEGER DEFAULT 1,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )`);
+
     db.run(`CREATE TABLE IF NOT EXISTS devices (
       mac_address TEXT PRIMARY KEY, ip_address TEXT, hostname TEXT,
       device_type TEXT DEFAULT 'unknown', route_profile TEXT DEFAULT 'default',

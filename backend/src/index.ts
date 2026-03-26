@@ -11,7 +11,7 @@ import {
   isLinux, getSystemStats, getServiceStatus, getPiholeStats,
   getNetworkDevices, getBandwidthLive, getWireguardStatus,
   getFail2banStatus, getDnsQueries, getCurrentExternalIp,
-  runSpeedTest, executeCommand,
+  runSpeedTest, executeCommand, applyDomainRouting,
 } from './system';
 
 const app = express();
@@ -642,6 +642,65 @@ app.put('/api/routing/rules/:id', async (req, res) => {
     if (enabled !== undefined) { updates.push('enabled = ?'); params.push(enabled ? 1 : 0); }
     params.push(req.params.id);
     await dbRun(`UPDATE traffic_routing SET ${updates.join(', ')} WHERE id = ?`, params);
+    res.json({ success: true });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ─── Domain-Based Routing ───
+app.get('/api/routing/domains', async (_req, res) => {
+  try {
+    const domains = await dbAll('SELECT * FROM domain_routing ORDER BY domain');
+    res.json({ domains });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post('/api/routing/domains', async (req, res) => {
+  try {
+    const { domain, route_type, description } = req.body;
+    if (!domain) return res.status(400).json({ error: 'Domain gerekli' });
+    const cleanDomain = domain.trim().toLowerCase().replace(/^(https?:\/\/)?(www\.)?/, '').replace(/\/.*$/, '');
+    await dbRun('INSERT INTO domain_routing (domain, route_type, description) VALUES (?, ?, ?)',
+      [cleanDomain, route_type || 'direct', description || '']);
+    // Apply routing rule on Linux
+    if (isLinux) {
+      await applyDomainRouting(await dbAll('SELECT domain, route_type, enabled FROM domain_routing') as any);
+    }
+    const domains = await dbAll('SELECT * FROM domain_routing ORDER BY domain');
+    res.json({ success: true, domains });
+  } catch (e: any) {
+    if (e.message?.includes('UNIQUE')) {
+      return res.status(400).json({ error: 'Bu domain zaten ekli' });
+    }
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.put('/api/routing/domains/:id', async (req, res) => {
+  try {
+    const { route_type, enabled, description } = req.body;
+    const updates: string[] = [];
+    const params: any[] = [];
+    if (route_type !== undefined) { updates.push('route_type = ?'); params.push(route_type); }
+    if (enabled !== undefined) { updates.push('enabled = ?'); params.push(enabled ? 1 : 0); }
+    if (description !== undefined) { updates.push('description = ?'); params.push(description); }
+    if (updates.length === 0) return res.json({ success: true });
+    params.push(req.params.id);
+    await dbRun(`UPDATE domain_routing SET ${updates.join(', ')} WHERE id = ?`, params);
+    if (isLinux) await applyDomainRouting(await dbAll('SELECT domain, route_type, enabled FROM domain_routing') as any);
+    res.json({ success: true });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.delete('/api/routing/domains/:id', async (req, res) => {
+  try {
+    await dbRun('DELETE FROM domain_routing WHERE id = ?', [req.params.id]);
+    if (isLinux) await applyDomainRouting(await dbAll('SELECT domain, route_type, enabled FROM domain_routing') as any);
     res.json({ success: true });
   } catch (e: any) {
     res.status(500).json({ error: e.message });

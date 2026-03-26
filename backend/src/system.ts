@@ -389,3 +389,97 @@ export async function systemctlAction(action: 'start' | 'stop' | 'restart' | 'en
   if (!isLinux) return `Gelistirme ortami: ${action} ${service} simulasyonu`;
   return await run(`systemctl ${action} ${service}`) || `${action} ${service} tamamlandi`;
 }
+
+// ─── Domain-Based Routing ───
+// Uses dnsmasq ipset + nftables fwmark + ip rule to route specific domains
+interface DomainRoute {
+  domain: string;
+  route_type: string;
+  enabled: number;
+}
+
+export async function applyDomainRouting(domains?: DomainRoute[]): Promise<void> {
+  if (!isLinux) return;
+
+  // Route types → fwmark values
+  const FWMARK: Record<string, number> = {
+    vpn: 100,
+    vpn_only: 101,
+    dpi: 200,
+    adblock_dpi: 201,
+    direct: 0,
+    adblock: 0,
+  };
+
+  // If no domains passed, this is called from index.ts which will import and pass them
+  if (!domains) return;
+
+  const enabledDomains = domains.filter(d => d.enabled);
+
+  // 1. Generate dnsmasq ipset config for Pi-hole
+  // Each route type gets its own ipset
+  const ipsetLines: string[] = [];
+  const ipsetNames = new Set<string>();
+
+  for (const d of enabledDomains) {
+    const mark = FWMARK[d.route_type];
+    if (mark === undefined || mark === 0) continue; // direct/adblock don't need special routing
+    const setName = `rt_${d.route_type}`;
+    ipsetNames.add(setName);
+    ipsetLines.push(`ipset=/${d.domain}/${setName}`);
+  }
+
+  // Write dnsmasq ipset config
+  const dnsmasqConf = ipsetLines.join('\n') + '\n';
+  await run(`echo '${dnsmasqConf.replace(/'/g, "\\'")}' > /etc/dnsmasq.d/05-domain-routing.conf`);
+
+  // 2. Create/flush ipsets and nftables rules
+  const nftCmds: string[] = [];
+
+  for (const setName of ipsetNames) {
+    // Create ipset if not exists, flush if exists
+    await run(`ipset create ${setName} hash:ip -exist`);
+    await run(`ipset flush ${setName}`);
+  }
+
+  // 3. Create nftables marks based on ipset membership
+  nftCmds.push('#!/usr/sbin/nft -f');
+  nftCmds.push('table inet domain_routing {');
+  nftCmds.push('  chain prerouting {');
+  nftCmds.push('    type filter hook prerouting priority -150; policy accept;');
+
+  for (const setName of ipsetNames) {
+    const routeType = setName.replace('rt_', '');
+    const mark = FWMARK[routeType];
+    if (mark) {
+      nftCmds.push(`    ip daddr @${setName} meta mark set ${mark}`);
+    }
+  }
+
+  nftCmds.push('  }');
+  nftCmds.push('}');
+
+  const nftConf = nftCmds.join('\n');
+  await run(`echo '${nftConf.replace(/'/g, "\\'")}' > /etc/nftables.d/domain-routing.conf`);
+
+  // 4. Setup ip rules for each fwmark → routing table
+  for (const [routeType, mark] of Object.entries(FWMARK)) {
+    if (mark === 0) continue;
+    // Add ip rule if not exists (ignore error if already exists)
+    await run(`ip rule add fwmark ${mark} table ${mark} 2>/dev/null || true`);
+
+    // Set default route for each table based on type
+    if (routeType === 'vpn' || routeType === 'vpn_only') {
+      // Route through WireGuard interface if available
+      await run(`ip route replace default dev wg0 table ${mark} 2>/dev/null || true`);
+    }
+    // DPI routes use default gateway but go through zapret nfqueue
+  }
+
+  // 5. Reload dnsmasq to pick up ipset config
+  await run('pihole restartdns');
+
+  // 6. Apply nftables
+  await run('mkdir -p /etc/nftables.d');
+  await run('nft -f /etc/nftables.d/domain-routing.conf 2>/dev/null || true');
+}
