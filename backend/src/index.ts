@@ -1976,50 +1976,34 @@ app.post('/api/system/update', async (_req, res) => {
       return res.json({ success: false, error: 'Guncelleme sadece Pi5 uzerinde calisir.' });
     }
     const steps: { step: string; output: string; success: boolean }[] = [];
+    const exec = require('util').promisify(require('child_process').exec);
 
-    // 1. Git pull
+    // Run entire update via single script (handles permissions, chown, git, builds)
     try {
-      const { stdout } = await require('util').promisify(require('child_process').exec)(
-        'cd /opt/pi5-gateway && git config --global --add safe.directory /opt/pi5-gateway 2>/dev/null; git fetch origin master && git reset --hard origin/master', { timeout: 30000 }
+      const { stdout, stderr } = await exec(
+        'bash /opt/pi5-gateway/scripts/update.sh 2>&1',
+        { timeout: 300000 } // 5 min total
       );
-      steps.push({ step: 'Git Pull', output: stdout.trim(), success: true });
+      const output = stdout.trim().slice(-500);
+      steps.push({ step: 'Git Pull', output: 'OK', success: true });
+      steps.push({ step: 'Backend Build', output: 'OK', success: true });
+      steps.push({ step: 'Frontend Build', output: output, success: true });
     } catch (e: any) {
-      steps.push({ step: 'Git Pull', output: e.message, success: false });
+      const output = (e.stdout || e.message || '').trim().slice(-500);
+      // Try to determine which step failed from output
+      if (output.includes('Git fetch') || output.includes('fatal:') || output.includes('FETCH_HEAD')) {
+        steps.push({ step: 'Git Pull', output, success: false });
+      } else if (output.includes('Backend build') || output.includes('tsc')) {
+        steps.push({ step: 'Git Pull', output: 'OK', success: true });
+        steps.push({ step: 'Backend Build', output, success: false });
+      } else {
+        steps.push({ step: 'Git Pull', output: 'OK', success: true });
+        steps.push({ step: 'Backend Build', output: 'OK', success: true });
+        steps.push({ step: 'Frontend Build', output, success: false });
+      }
     }
 
-    // 2. Backend build
-    try {
-      const { stdout } = await require('util').promisify(require('child_process').exec)(
-        'cd /opt/pi5-gateway/backend && npm run build', { timeout: 60000 }
-      );
-      steps.push({ step: 'Backend Build', output: stdout.trim().slice(-200), success: true });
-    } catch (e: any) {
-      steps.push({ step: 'Backend Build', output: e.message, success: false });
-    }
-
-    // 3. Post-update script (npm install, deps, permissions)
-    try {
-      const { stdout } = await require('util').promisify(require('child_process').exec)(
-        'cd /opt/pi5-gateway && bash scripts/post-update.sh', { timeout: 120000 }
-      );
-      steps.push({ step: 'Post-Update', output: stdout.trim().slice(-200) || 'Tamamlandı', success: true });
-    } catch (e: any) {
-      steps.push({ step: 'Post-Update', output: e.message, success: false });
-      // Non-critical — continue even if post-update fails
-    }
-
-    // 4. Frontend build
-    try {
-      const { stdout } = await require('util').promisify(require('child_process').exec)(
-        'cd /opt/pi5-gateway/frontend && npm run build', { timeout: 120000 }
-      );
-      steps.push({ step: 'Frontend Build', output: stdout.trim().slice(-200), success: true });
-    } catch (e: any) {
-      steps.push({ step: 'Frontend Build', output: e.message, success: false });
-    }
-
-    // Send response BEFORE restart — otherwise backend kills itself and client gets 502
-    const allSuccess = steps.filter(s => s.step !== 'Post-Update').every(s => s.success);
+    const allSuccess = steps.every(s => s.success);
     steps.push({ step: 'Servis Restart', output: '3 saniye sonra yeniden baslatilacak...', success: true });
     res.json({ success: allSuccess, steps });
 
