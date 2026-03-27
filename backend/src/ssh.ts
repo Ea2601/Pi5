@@ -3,7 +3,6 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 const configDir = path.resolve(__dirname, '../../core');
-const isLinux = process.platform === 'linux';
 
 interface VpsConnectOptions {
   ip: string;
@@ -72,11 +71,7 @@ export async function executeSetupStep(
   opts: VpsConnectOptions,
   step: string
 ): Promise<{ status: 'success' | 'error'; message: string; duration: string }> {
-  if (!isLinux) {
-    // Non-Linux: simulate steps for UI testing
-    return { status: 'success', message: `${step} tamamlandı (simülasyon)`, duration: '0.5s' };
-  }
-
+  // SSH to VPS works from any platform
   const startTime = Date.now();
   try {
     const ssh = await connectSSH(opts);
@@ -187,8 +182,7 @@ WGEOF
 export async function setupWireGuardVPS(
   ip: string, username: string, password?: string, privateKeyPath?: string
 ): Promise<boolean> {
-  if (!isLinux) return false;
-
+  // SSH to VPS works from any platform
   const steps = ['connection', 'update', 'packages', 'maintenance', 'wireguard', 'handshake'];
   for (const step of steps) {
     const result = await executeSetupStep({ ip, username, password, privateKeyPath }, step);
@@ -208,8 +202,7 @@ export async function addWireGuardClient(
   clientName: string,
   clientIndex: number
 ): Promise<{ success: boolean; config: string; qrData: string; publicKey: string; ip: string } | null> {
-  if (!isLinux) return null;
-
+  // SSH to VPS works from any platform — no isLinux check needed here
   try {
     const ssh = await connectSSH(opts);
 
