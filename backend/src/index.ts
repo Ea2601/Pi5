@@ -493,6 +493,22 @@ async function runSetupInBackground(vpsId: number, ip: string, username: string,
 }
 
 // Start setup — test connection, save record, kick off async steps
+// Quick-add VPS without SSH setup (for already-configured servers)
+app.post('/api/vps/add', async (req, res) => {
+  const { ip, username, password, location } = req.body;
+  if (!ip || !username) {
+    return res.status(400).json({ error: 'IP ve kullanıcı adı gerekli' });
+  }
+  try {
+    await dbRun('INSERT INTO vps_servers (ip, username, password, location, status) VALUES (?, ?, ?, ?, ?)',
+      [ip, username, password || '', location || '', 'connected']);
+    const row: any = await dbGet('SELECT last_insert_rowid() as id');
+    res.json({ success: true, id: row.id });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 app.post('/api/vps/setup', async (req, res) => {
   const { ip, username, password, location } = req.body;
   if (!ip || !username) {

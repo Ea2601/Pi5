@@ -303,15 +303,47 @@ export function VpsSetup() {
     } catch { /* */ }
   };
 
+  const [clientError, setClientError] = useState('');
+
   const handleAddClient = async () => {
     if (!newClientName.trim() || !selectedVpsId) return;
     setAddingClient(true);
+    setClientError('');
     try {
-      await postApi(`/vps/${selectedVpsId}/clients`, { name: newClientName.trim() });
-      setNewClientName('');
-      await fetchClients(Number(selectedVpsId));
-    } catch { /* */ }
+      const result = await postApi(`/vps/${selectedVpsId}/clients`, { name: newClientName.trim() });
+      if (result.error) {
+        setClientError(result.error);
+      } else {
+        setNewClientName('');
+        await fetchClients(Number(selectedVpsId));
+      }
+    } catch (e: any) {
+      setClientError(e.message || 'Client eklenemedi');
+    }
     setAddingClient(false);
+  };
+
+  const handleQuickAdd = async () => {
+    if (!ip.trim() || !username.trim()) return;
+    setState('deploying');
+    try {
+      const result = await postApi('/vps/add', {
+        ip: ip.trim(), username: username.trim(),
+        password: password.trim(), location: location.trim(),
+      });
+      if (result.success) {
+        setState('success');
+        setIp(''); setPassword(''); setLocation('');
+        setShowForm(false);
+        await refetch();
+      } else {
+        setState('error');
+        setErrorMsg(result.error || 'Eklenemedi');
+      }
+    } catch (e: any) {
+      setState('error');
+      setErrorMsg(e.message || 'Eklenemedi');
+    }
   };
 
   const tabs: { id: VpsTab; label: string; icon: React.ReactNode }[] = [
@@ -447,9 +479,14 @@ export function VpsSetup() {
                 </div>
               )}
 
-              <button className="btn-primary btn-full" onClick={handleDeploy} disabled={state === 'deploying' || !ip.trim()}>
-                {state === 'deploying' ? <><Loader2 size={16} className="spin" /> Kuruluyor...</> : <><Lock size={16} /> Deploy Secure Tunnel</>}
-              </button>
+              <div style={{ display: 'flex', gap: 8 }}>
+                <button className="btn-primary" style={{ flex: 1 }} onClick={handleDeploy} disabled={state === 'deploying' || !ip.trim()}>
+                  {state === 'deploying' ? <><Loader2 size={16} className="spin" /> Kuruluyor...</> : <><Lock size={16} /> Deploy Secure Tunnel</>}
+                </button>
+                <button className="btn-outline" onClick={handleQuickAdd} disabled={state === 'deploying' || !ip.trim()} title="SSH kurulumu yapmadan sadece kaydet (zaten kurulu VPS'ler icin)">
+                  <Plus size={16} /> Hizli Ekle
+                </button>
+              </div>
             </div>
           )}
         </>
@@ -486,6 +523,12 @@ export function VpsSetup() {
                   {addingClient ? <Loader2 size={13} className="spin" /> : <><Plus size={13} /> Yeni Client Ekle</>}
                 </button>
               </div>
+
+              {clientError && (
+                <div className="alert alert-error" style={{ marginTop: 8 }}>
+                  <AlertTriangle size={14} /><span>{clientError}</span>
+                </div>
+              )}
 
               {clientsLoading ? (
                 <div style={{ textAlign: 'center', padding: 40, color: 'var(--text-muted)' }}>
