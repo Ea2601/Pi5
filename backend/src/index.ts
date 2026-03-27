@@ -2324,39 +2324,28 @@ app.get('/api/case/kiosk', async (_req, res) => {
 app.put('/api/case/kiosk', async (req, res) => {
   try {
     await dbRun("INSERT OR REPLACE INTO app_settings (key, value) VALUES ('kiosk_config', ?)", [JSON.stringify(req.body)]);
-    // Create or remove kiosk autostart on Pi5
     if (isLinux) {
       const exec = require('util').promisify(require('child_process').exec);
-      const fs = require('fs');
-      const autostartDir = '/etc/xdg/autostart';
-      const autostartFile = `${autostartDir}/pi5-kiosk.desktop`;
       if (req.body.enabled) {
-        const desktopEntry = `[Desktop Entry]
-Type=Application
-Name=Pi5 Kiosk
-Exec=bash -c "sleep 5 && chromium-browser --kiosk --noerrdialogs --disable-infobars --disable-session-crashed-bubble --no-first-run http://localhost:3001/kiosk.html"
-Hidden=false
-X-GNOME-Autostart-enabled=true
-`;
         try {
-          await exec(`mkdir -p ${autostartDir}`, { timeout: 3000 });
-          fs.writeFileSync(autostartFile, desktopEntry);
-          res.json({ success: true, applied: true, message: 'Kiosk autostart etkinleştirildi. Yeniden başlatmada otomatik açılacak.' });
+          // Enable and start kiosk systemd service (handles X11 + Chromium)
+          await exec('systemctl enable pi5-kiosk.service 2>/dev/null', { timeout: 5000 });
+          await exec('systemctl start pi5-kiosk.service 2>/dev/null', { timeout: 10000 });
+          res.json({ success: true, applied: true, message: 'Kiosk modu etkinleştirildi. HDMI çıkışında dashboard görünecek.' });
         } catch (e: any) {
-          res.json({ success: true, applied: false, error: `Autostart oluşturulamadı: ${e.message}` });
+          res.json({ success: true, applied: false, error: `Kiosk servisi başlatılamadı: ${e.message}. install.sh çalıştırıldığından emin olun.` });
         }
       } else {
         try {
-          if (fs.existsSync(autostartFile)) fs.unlinkSync(autostartFile);
-          // Kill existing kiosk chromium
-          await exec('pkill -f "chromium.*kiosk" 2>/dev/null', { timeout: 3000 }).catch(() => {});
-          res.json({ success: true, applied: true, message: 'Kiosk autostart devre dışı bırakıldı.' });
+          await exec('systemctl stop pi5-kiosk.service 2>/dev/null', { timeout: 5000 }).catch(() => {});
+          await exec('systemctl disable pi5-kiosk.service 2>/dev/null', { timeout: 5000 }).catch(() => {});
+          res.json({ success: true, applied: true, message: 'Kiosk modu kapatıldı. HDMI çıkışı terminale dönecek.' });
         } catch (e: any) {
           res.json({ success: true, applied: false, error: e.message });
         }
       }
     } else {
-      res.json({ success: true, applied: false, warning: 'Kiosk autostart sadece Pi5 üzerinde çalışır' });
+      res.json({ success: true, applied: false, warning: 'Kiosk modu sadece Pi5 üzerinde çalışır' });
     }
   } catch (e: any) { res.status(500).json({ error: e.message }); }
 });

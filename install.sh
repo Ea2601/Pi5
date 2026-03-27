@@ -202,11 +202,71 @@ else
   log "Zapret kuruldu"
 fi
 
-# ─── Hardware: LED, LCD, Kiosk bağımlılıkları ───
-warn "Pimoroni kasa + kiosk bağımlılıkları kuruluyor..."
+# ─── Hardware: LED, LCD bağımlılıkları ───
+warn "Pimoroni kasa bağımlılıkları kuruluyor..."
 pip3 install --quiet fanshim spidev luma.oled luma.core RPLCD 2>/dev/null || true
-apt install -y -qq chromium-browser 2>/dev/null || true
-log "Hardware bağımlılıkları kuruldu"
+log "Pimoroni bağımlılıkları kuruldu"
+
+# ─── Kiosk: Minimal X11 + Chromium (Lite OS için) ───
+warn "Kiosk modu bağımlılıkları kuruluyor (Lite OS)..."
+apt install -y -qq xserver-xorg x11-xserver-utils xinit openbox chromium-browser 2>/dev/null || true
+
+# Kiosk başlatma script'i
+cat > /opt/pi5-gateway/scripts/kiosk.sh << 'KIOSKEOF'
+#!/bin/bash
+# Pi5 Gateway Kiosk Mode — minimal X11 + Chromium
+export DISPLAY=:0
+
+# Ekran koruyucu ve güç yönetimini kapat
+xset s off
+xset s noblank
+xset -dpms
+
+# Chromium kiosk modunda başlat
+chromium-browser \
+  --kiosk \
+  --noerrdialogs \
+  --disable-infobars \
+  --disable-session-crashed-bubble \
+  --disable-translate \
+  --no-first-run \
+  --disable-features=TranslateUI \
+  --check-for-update-interval=31536000 \
+  --disable-component-update \
+  --overscroll-history-navigation=0 \
+  http://localhost:3001/kiosk.html
+KIOSKEOF
+chmod +x /opt/pi5-gateway/scripts/kiosk.sh
+
+# Openbox autostart — kiosk script'ini çalıştır
+mkdir -p /root/.config/openbox
+cat > /root/.config/openbox/autostart << 'OBEOF'
+/opt/pi5-gateway/scripts/kiosk.sh &
+OBEOF
+
+# Systemd service: X11 + Openbox + Kiosk otomatik başlat
+cat > /etc/systemd/system/pi5-kiosk.service << 'SVCEOF'
+[Unit]
+Description=Pi5 Gateway Kiosk Display
+After=pi5-backend.service network-online.target
+Wants=pi5-backend.service
+
+[Service]
+Type=simple
+User=root
+Environment=DISPLAY=:0
+ExecStartPre=/bin/sleep 5
+ExecStart=/usr/bin/xinit /usr/bin/openbox-session -- :0 vt1 -nocursor
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+SVCEOF
+
+# Kiosk servisini aktifleştirme — panelden kontrol edilecek
+# systemctl enable pi5-kiosk ile aktif edilir
+log "Kiosk modu hazır (pi5-kiosk.service — panelden etkinleştirin)"
 
 # ─── 7. SSD Algılama & Veri Dizini ───
 step "7/10 — SSD Algılama & Veri Dizini"

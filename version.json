@@ -1,6 +1,6 @@
 {
   "version": "2.5.0",
-  "build": 25,
+  "build": 26,
   "date": "2026-03-27",
   "changelog": [
     "Zapret: toggle hata gösterimi + gerçek blockcheck komutu",
