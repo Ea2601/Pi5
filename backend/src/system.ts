@@ -349,11 +349,12 @@ export async function runSpeedTest(): Promise<{
 const ALLOWED_PREFIXES = [
   'ls', 'cat /etc/', 'cat /proc/', 'df', 'free', 'uptime', 'uname', 'whoami', 'date', 'hostname',
   'ip ', 'ss ', 'wg ', 'pihole', 'fail2ban-client',
-  'systemctl status', 'systemctl is-active', 'systemctl restart pi5-backend',
+  'systemctl status', 'systemctl is-active', 'systemctl restart', 'systemctl enable', 'systemctl disable',
   'dig', 'nft list', 'vcgencmd', 'journalctl', 'pwd', 'head', 'tail', 'grep',
   'ping -c', 'traceroute', 'nslookup', 'curl -s',
-  'cd /opt/pi5-gateway', 'git pull', 'npm run build',
-  'apt update', 'apt upgrade',
+  'cd ', 'git pull', 'git log', 'git status', 'npm run build', 'npm install',
+  'apt update', 'apt upgrade', 'apt install',
+  'timedatectl', 'which', 'echo',
 ];
 
 export async function executeCommand(cmd: string): Promise<{ output: string; command: string; timestamp: string }> {
@@ -372,12 +373,16 @@ export async function executeCommand(cmd: string): Promise<{ output: string; com
     return { output: '', command: trimmed, timestamp };
   }
 
-  const isAllowed = ALLOWED_PREFIXES.some(p => trimmed === p || trimmed.startsWith(p + ' ') || trimmed.startsWith(p));
-  if (!isAllowed) {
-    return { output: `Guvenlik: "${trimmed.split(' ')[0]}" komutu izin listesinde degil.\nIzin verilen komutlar icin "help" yazin.`, command: trimmed, timestamp };
+  // Support chained commands (&&, ;) — check each part
+  const parts = trimmed.split(/\s*&&\s*|\s*;\s*/).map(p => p.trim()).filter(Boolean);
+  for (const part of parts) {
+    const partAllowed = ALLOWED_PREFIXES.some(p => part === p || part.startsWith(p + ' ') || part.startsWith(p));
+    if (!partAllowed) {
+      return { output: `Guvenlik: "${part.split(' ')[0]}" komutu izin listesinde degil.\nIzin verilen komutlar icin "help" yazin.`, command: trimmed, timestamp };
+    }
   }
 
-  const output = await run(trimmed, 15000);
+  const output = await run(trimmed, 120000);
   return { output: output || '(bos cikti)', command: trimmed, timestamp };
 }
 
