@@ -124,8 +124,18 @@ export async function executeSetupStep(
 
           SERVER_PRIV=$(wg genkey)
           SERVER_PUB=$(echo "$SERVER_PRIV" | wg pubkey)
-          SERVER_IP=$(curl -s4 --max-time 10 ifconfig.me || curl -s4 --max-time 10 icanhazip.com || curl -s4 --max-time 10 api.ipify.org)
 
+          # Get public IP — try curl, wget, hostname fallback
+          SERVER_IP=""
+          if command -v curl &>/dev/null; then
+            SERVER_IP=$(curl -s4 --max-time 5 ifconfig.me 2>/dev/null || curl -s4 --max-time 5 icanhazip.com 2>/dev/null)
+          fi
+          if [ -z "$SERVER_IP" ] && command -v wget &>/dev/null; then
+            SERVER_IP=$(wget -qO- --timeout=5 ifconfig.me 2>/dev/null || wget -qO- --timeout=5 icanhazip.com 2>/dev/null)
+          fi
+          if [ -z "$SERVER_IP" ]; then
+            SERVER_IP=$(hostname -I | awk '{print $1}')
+          fi
           if [ -z "$SERVER_IP" ]; then echo "HATA: Server IP alinamadi"; exit 1; fi
 
           mkdir -p /etc/wireguard
@@ -238,12 +248,26 @@ export async function addWireGuardClient(
     const serverPubResult = await ssh.execCommand(`echo "${serverPriv}" | wg pubkey`);
     const serverPub = serverPubResult.stdout.trim();
 
-    // Get server public IP
-    const serverIp = await ssh.execCommand('curl -s4 --max-time 10 ifconfig.me || curl -s4 --max-time 10 icanhazip.com || curl -s4 --max-time 10 api.ipify.org');
-    const serverAddr = serverIp.stdout.trim();
+    // Get server public IP — try multiple methods (curl may not be installed)
+    const ipCmd = `
+      IP="";
+      if command -v curl &>/dev/null; then
+        IP=$(curl -s4 --max-time 5 ifconfig.me 2>/dev/null || curl -s4 --max-time 5 icanhazip.com 2>/dev/null)
+      fi;
+      if [ -z "$IP" ] && command -v wget &>/dev/null; then
+        IP=$(wget -qO- --timeout=5 ifconfig.me 2>/dev/null || wget -qO- --timeout=5 icanhazip.com 2>/dev/null)
+      fi;
+      if [ -z "$IP" ]; then
+        IP=$(hostname -I | awk '{print $1}')
+      fi;
+      echo "$IP"
+    `;
+    const serverIp = await ssh.execCommand(ipCmd);
+    // Fallback: use the VPS IP from connection opts (we already know it)
+    const serverAddr = serverIp.stdout.trim() || opts.ip;
     if (!serverAddr) {
       ssh.dispose();
-      throw new Error('Server public IP alınamadı. curl kurulu mu?');
+      throw new Error('Server IP belirlenemedi');
     }
 
     // Add peer to running WireGuard interface
