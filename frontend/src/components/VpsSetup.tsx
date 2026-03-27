@@ -195,11 +195,17 @@ interface InternetStatus {
   wireguard: boolean; nat: boolean; publicIp: string; allGood: boolean;
 }
 
+interface RepairResult {
+  check: string; status: 'ok' | 'fixed' | 'failed'; detail: string;
+}
+
 function VpsCard({ server, onConnect, onDisconnect, onDelete }: {
   server: VpsServer; onConnect: () => Promise<void>; onDisconnect: () => Promise<void>; onDelete: () => void;
 }) {
   const [netStatus, setNetStatus] = useState<InternetStatus | null>(null);
   const [checking, setChecking] = useState(false);
+  const [repairing, setRepairing] = useState(false);
+  const [repairResults, setRepairResults] = useState<RepairResult[] | null>(null);
 
   const checkInternet = async () => {
     setChecking(true);
@@ -252,8 +258,41 @@ function VpsCard({ server, onConnect, onDisconnect, onDelete }: {
         </div>
       )}
       {netStatus && !netStatus.allGood && (
-        <div style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 10, color: 'var(--danger-color)', marginTop: 2 }}>
-          <AlertTriangle size={12} /> Bazı kontroller başarısız
+        <div style={{ marginTop: 2 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 10, color: 'var(--danger-color)' }}>
+            <AlertTriangle size={12} /> Bazı kontroller başarısız
+            <button className="btn-sm btn-primary" style={{ fontSize: 9, padding: '1px 6px', marginLeft: 'auto' }}
+              onClick={async () => {
+                setRepairing(true); setRepairResults(null);
+                try {
+                  const r = await fetch(`/api/vps/${server.id}/auto-repair`, { method: 'POST' });
+                  const data = await r.json();
+                  setRepairResults(data.repairs || []);
+                  // Re-check after repair
+                  setTimeout(checkInternet, 1000);
+                } catch { setRepairResults([{ check: 'Bağlantı', status: 'failed', detail: 'SSH bağlantısı başarısız' }]); }
+                setRepairing(false);
+              }}
+              disabled={repairing}>
+              {repairing ? <><Loader2 size={10} className="spin" /> Onarılıyor...</> : 'Otomatik Onar'}
+            </button>
+          </div>
+          {repairResults && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 3, marginTop: 4 }}>
+              {repairResults.map((r, i) => (
+                <div key={i} style={{
+                  display: 'flex', alignItems: 'center', gap: 6, fontSize: 10,
+                  padding: '3px 6px', borderRadius: 4,
+                  background: r.status === 'ok' ? 'rgba(34,197,94,0.06)' : r.status === 'fixed' ? 'rgba(59,130,246,0.06)' : 'rgba(239,68,68,0.06)',
+                  color: r.status === 'ok' ? 'var(--success-color)' : r.status === 'fixed' ? 'var(--accent-color)' : 'var(--danger-color)',
+                }}>
+                  <span style={{ fontWeight: 600, width: 60 }}>{r.check}</span>
+                  <span style={{ fontWeight: 600 }}>{r.status === 'ok' ? '✓' : r.status === 'fixed' ? '⚡ Düzeltildi' : '✗ Başarısız'}</span>
+                  <span style={{ color: 'var(--text-muted)', flex: 1 }}>{r.detail}</span>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       )}
 

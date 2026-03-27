@@ -703,6 +703,102 @@ app.get('/api/vps/:id/internet-check', async (req, res) => {
   }
 });
 
+// ─── VPS Auto-Repair ───
+app.post('/api/vps/:id/auto-repair', async (req, res) => {
+  try {
+    const server: any = await dbGet('SELECT * FROM vps_servers WHERE id = ?', [req.params.id]);
+    if (!server) return res.status(404).json({ error: 'Sunucu bulunamadı' });
+
+    const { NodeSSH } = require('node-ssh');
+    const ssh = new NodeSSH();
+    await ssh.connect({
+      host: server.ip, username: server.username,
+      password: server.password || undefined, readyTimeout: 15000,
+    });
+
+    const repairs: { check: string; status: 'ok' | 'fixed' | 'failed'; detail: string }[] = [];
+
+    // 1. Internet
+    const ping = await ssh.execCommand('ping -c 1 -W 3 8.8.8.8 2>/dev/null && echo "OK" || echo "FAIL"');
+    if (ping.stdout.includes('OK')) {
+      repairs.push({ check: 'Internet', status: 'ok', detail: 'Bağlantı aktif' });
+    } else {
+      // Fix: add DNS, check default route
+      await ssh.execCommand(`
+        grep -q "nameserver" /etc/resolv.conf 2>/dev/null || echo -e "nameserver 8.8.8.8\\nnameserver 1.1.1.1" > /etc/resolv.conf;
+        ip route show default &>/dev/null || echo "HATA: Default route yok"
+      `);
+      const recheck = await ssh.execCommand('ping -c 1 -W 3 8.8.8.8 2>/dev/null && echo "OK" || echo "FAIL"');
+      repairs.push({ check: 'Internet', status: recheck.stdout.includes('OK') ? 'fixed' : 'failed', detail: recheck.stdout.includes('OK') ? 'DNS eklenerek düzeltildi' : 'Ağ yapılandırması bozuk — VPS sağlayıcıyı kontrol edin' });
+    }
+
+    // 2. DNS
+    const dns = await ssh.execCommand('dig +short google.com @8.8.8.8 2>/dev/null | head -1');
+    if (dns.stdout.trim()) {
+      repairs.push({ check: 'DNS', status: 'ok', detail: 'DNS çözümleme aktif' });
+    } else {
+      await ssh.execCommand('apt-get install -y -qq dnsutils 2>/dev/null; echo "nameserver 8.8.8.8" > /etc/resolv.conf');
+      const recheck = await ssh.execCommand('dig +short google.com @8.8.8.8 2>/dev/null | head -1');
+      repairs.push({ check: 'DNS', status: recheck.stdout.trim() ? 'fixed' : 'failed', detail: recheck.stdout.trim() ? 'dnsutils kuruldu, DNS düzeltildi' : 'DNS çözümlenemiyor' });
+    }
+
+    // 3. IP Forwarding
+    const fwd = await ssh.execCommand('cat /proc/sys/net/ipv4/ip_forward');
+    if (fwd.stdout.trim() === '1') {
+      repairs.push({ check: 'IP Forward', status: 'ok', detail: 'Yönlendirme aktif' });
+    } else {
+      await ssh.execCommand(`
+        echo 1 > /proc/sys/net/ipv4/ip_forward;
+        echo "net.ipv4.ip_forward=1" > /etc/sysctl.d/99-wireguard.conf;
+        sysctl -p /etc/sysctl.d/99-wireguard.conf 2>/dev/null
+      `);
+      const recheck = await ssh.execCommand('cat /proc/sys/net/ipv4/ip_forward');
+      repairs.push({ check: 'IP Forward', status: recheck.stdout.trim() === '1' ? 'fixed' : 'failed', detail: recheck.stdout.trim() === '1' ? 'sysctl ile aktif edildi' : 'Etkinleştirilemedi' });
+    }
+
+    // 4. WireGuard
+    const wg = await ssh.execCommand('wg show wg0 2>/dev/null | head -1');
+    if (wg.stdout.includes('wg0')) {
+      repairs.push({ check: 'WireGuard', status: 'ok', detail: 'wg0 arayüzü aktif' });
+    } else {
+      // Check if config exists, try to bring up
+      const confExists = await ssh.execCommand('test -f /etc/wireguard/wg0.conf && echo "YES" || echo "NO"');
+      if (confExists.stdout.includes('YES')) {
+        await ssh.execCommand('systemctl restart wg-quick@wg0 2>/dev/null; sleep 1');
+        const recheck = await ssh.execCommand('wg show wg0 2>/dev/null | head -1');
+        repairs.push({ check: 'WireGuard', status: recheck.stdout.includes('wg0') ? 'fixed' : 'failed', detail: recheck.stdout.includes('wg0') ? 'wg-quick restart ile düzeltildi' : 'Arayüz başlatılamadı — log: ' + (await ssh.execCommand('journalctl -u wg-quick@wg0 --no-pager -n 3 2>/dev/null')).stdout.trim().slice(-100) });
+      } else {
+        // WireGuard not installed or config missing
+        await ssh.execCommand('apt-get install -y -qq wireguard wireguard-tools 2>/dev/null');
+        repairs.push({ check: 'WireGuard', status: 'failed', detail: 'wg0.conf bulunamadı — VPS kurulumunu yeniden yapın' });
+      }
+    }
+
+    // 5. NAT Masquerade
+    const nat = await ssh.execCommand('iptables -t nat -L POSTROUTING -n 2>/dev/null | grep -i masq');
+    if (nat.stdout.toLowerCase().includes('masquerade')) {
+      repairs.push({ check: 'NAT', status: 'ok', detail: 'Masquerade aktif' });
+    } else {
+      const iface = (await ssh.execCommand("ip -o -4 route show to default | awk '{print $5}' | head -1")).stdout.trim() || 'eth0';
+      await ssh.execCommand(`
+        iptables -t nat -A POSTROUTING -o ${iface} -j MASQUERADE;
+        iptables -A FORWARD -i wg0 -j ACCEPT;
+        iptables -A FORWARD -o wg0 -j ACCEPT;
+        netfilter-persistent save 2>/dev/null || iptables-save > /etc/iptables/rules.v4 2>/dev/null || true
+      `);
+      const recheck = await ssh.execCommand('iptables -t nat -L POSTROUTING -n 2>/dev/null | grep -i masq');
+      repairs.push({ check: 'NAT', status: recheck.stdout.toLowerCase().includes('masquerade') ? 'fixed' : 'failed', detail: recheck.stdout.toLowerCase().includes('masquerade') ? `Masquerade eklendi: ${iface}` : 'iptables kuralı eklenemedi' });
+    }
+
+    ssh.dispose();
+
+    const allFixed = repairs.every(r => r.status !== 'failed');
+    res.json({ success: allFixed, repairs });
+  } catch (e: any) {
+    res.status(500).json({ success: false, error: e.message, repairs: [] });
+  }
+});
+
 // ─── Delete WireGuard Client (from DB + VPS) ───
 app.delete('/api/vps/:id/clients/:clientId', async (req, res) => {
   try {
