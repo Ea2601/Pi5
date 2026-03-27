@@ -429,11 +429,24 @@ function AboutSection() {
         </div>
       )}
       {data.changelog.length > 0 && (
-        <div style={{ marginTop: 8 }}>
-          <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-secondary)' }}>Değişiklik Geçmişi:</span>
-          <ul style={{ fontSize: 12, color: 'var(--text-muted)', margin: '6px 0 0 16px', lineHeight: 1.8 }}>
-            {data.changelog.map((item, i) => <li key={i}>{item}</li>)}
-          </ul>
+        <div className="config-item" style={{ flexDirection: 'column', alignItems: 'flex-start', gap: 8 }}>
+          <div className="config-item-info">
+            <span className="config-item-label">Değişiklik Geçmişi</span>
+            <span className="config-item-desc">v{data.version} ile gelen özellikler</span>
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 4, width: '100%' }}>
+            {data.changelog.map((item, i) => (
+              <div key={i} style={{
+                display: 'flex', alignItems: 'center', gap: 8,
+                padding: '5px 10px', borderRadius: 6,
+                background: 'rgba(255,255,255,0.02)', border: '1px solid var(--panel-border)',
+                fontSize: 12, color: 'var(--text-primary)',
+              }}>
+                <span style={{ color: 'var(--success-color)', flexShrink: 0 }}>+</span>
+                {item}
+              </div>
+            ))}
+          </div>
         </div>
       )}
     </div>
