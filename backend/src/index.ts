@@ -1980,7 +1980,7 @@ app.post('/api/system/update', async (_req, res) => {
     // 1. Git pull
     try {
       const { stdout } = await require('util').promisify(require('child_process').exec)(
-        'cd /opt/pi5-gateway && git pull --rebase', { timeout: 30000 }
+        'cd /opt/pi5-gateway && git fetch origin master && git reset --hard origin/master', { timeout: 30000 }
       );
       steps.push({ step: 'Git Pull', output: stdout.trim(), success: true });
     } catch (e: any) {
