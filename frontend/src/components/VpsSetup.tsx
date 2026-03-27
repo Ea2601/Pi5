@@ -233,7 +233,11 @@ function VpsCard({ server, onConnect, onDisconnect, onDelete, onRefresh }: {
     <div className="vps-card">
       <div className="vps-card-header">
         <Server size={18} />
+        <span style={{ flex: 1 }} />
         <span className={`svc-dot ${server.status === 'connected' ? 'svc-on' : 'svc-off'}`} />
+        <button className="icon-btn icon-btn-sm" onClick={onDelete} title="VPS Sil" style={{ marginLeft: 4, opacity: 0.5 }}>
+          <Trash2 size={11} />
+        </button>
       </div>
       <div className="vps-card-body">
         <span className="vps-ip">{server.ip}</span>
@@ -314,9 +318,6 @@ function VpsCard({ server, onConnect, onDisconnect, onDelete, onRefresh }: {
         ) : null}
         <button className="btn-outline btn-sm" style={{ fontSize: 11 }} onClick={checkInternet} disabled={checking} title="VPS internet kontrol">
           {checking ? <Loader2 size={12} className="spin" /> : <Signal size={12} />}
-        </button>
-        <button className="icon-btn icon-btn-sm vps-delete" onClick={onDelete}>
-          <Trash2 size={12} />
         </button>
       </div>
     </div>
