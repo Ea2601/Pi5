@@ -207,6 +207,36 @@ function VpsCard({ server, onConnect, onDisconnect, onDelete, onRefresh }: {
   const [repairing, setRepairing] = useState(false);
   const [repairResults, setRepairResults] = useState<RepairResult[] | null>(null);
 
+  // Client management
+  const [showClients, setShowClients] = useState(false);
+  const [clients, setClients] = useState<WgClient[]>([]);
+  const [newName, setNewName] = useState('');
+  const [adding, setAdding] = useState(false);
+  const [addError, setAddError] = useState('');
+  const [configClient, setConfigClient] = useState<WgClient | null>(null);
+  const [qrClient, setQrClient] = useState<WgClient | null>(null);
+
+  const loadClients = async () => {
+    try {
+      const r = await fetch(`/api/vps/${server.id}/clients`);
+      const data = await r.json();
+      setClients(data.clients || []);
+    } catch { setClients([]); }
+  };
+
+  useEffect(() => { loadClients(); }, [server.id]);
+
+  const handleAdd = async () => {
+    if (!newName.trim()) return;
+    setAdding(true); setAddError('');
+    try {
+      const r = await postApi(`/vps/${server.id}/clients`, { name: newName.trim() });
+      if (r.error) { setAddError(r.error); }
+      else { setNewName(''); await loadClients(); }
+    } catch (e: any) { setAddError(e.message || 'Eklenemedi'); }
+    setAdding(false);
+  };
+
   const checkInternet = async () => {
     setChecking(true);
     try {
@@ -311,7 +341,7 @@ function VpsCard({ server, onConnect, onDisconnect, onDelete, onRefresh }: {
           </button>
         ) : server.status !== 'installing' ? (
           <button className="btn-primary btn-sm" style={{ flex: 1, fontSize: 11 }} onClick={async () => {
-            try { await onConnect(); } catch { /* Pi5 tunnel may fail on non-Linux but VPS is still usable */ }
+            try { await onConnect(); } catch { /* */ }
           }}>
             Tünel Bağla
           </button>
@@ -319,7 +349,66 @@ function VpsCard({ server, onConnect, onDisconnect, onDelete, onRefresh }: {
         <button className="btn-outline btn-sm" style={{ fontSize: 11 }} onClick={checkInternet} disabled={checking} title="VPS internet kontrol">
           {checking ? <Loader2 size={12} className="spin" /> : <Signal size={12} />}
         </button>
+        <button className="btn-outline btn-sm" style={{ fontSize: 11 }} onClick={() => setShowClients(!showClients)} title="Client listesi">
+          <Users size={12} /> {clients.length > 0 ? clients.length : ''}
+        </button>
       </div>
+
+      {/* Inline client management */}
+      {showClients && (
+        <div style={{ marginTop: 6, borderTop: '1px solid var(--panel-border)', paddingTop: 6 }}>
+          <div style={{ display: 'flex', gap: 4, alignItems: 'center', marginBottom: 6 }}>
+            <input className="config-input" type="text" placeholder="Client adı..."
+              value={newName} onChange={e => setNewName(e.target.value)}
+              onKeyDown={e => e.key === 'Enter' && handleAdd()}
+              style={{ flex: 1, fontSize: 11, padding: '3px 6px' }} />
+            <button className="btn-primary btn-sm" style={{ fontSize: 10, padding: '2px 6px' }}
+              onClick={handleAdd} disabled={adding || !newName.trim()}>
+              {adding ? <Loader2 size={10} className="spin" /> : <><Plus size={10} /> Ekle</>}
+            </button>
+          </div>
+          {addError && <div style={{ fontSize: 10, color: 'var(--danger-color)', marginBottom: 4 }}>{addError}</div>}
+          {clients.length === 0 ? (
+            <div style={{ fontSize: 11, color: 'var(--text-muted)', textAlign: 'center', padding: 8 }}>Client yok</div>
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+              {clients.map(c => (
+                <div key={c.id} style={{
+                  display: 'flex', alignItems: 'center', gap: 6, padding: '4px 6px',
+                  borderRadius: 4, background: 'rgba(255,255,255,0.02)', border: '1px solid var(--panel-border)',
+                  fontSize: 11,
+                }}>
+                  <Users size={10} style={{ color: 'var(--accent-color)', flexShrink: 0 }} />
+                  <span style={{ fontWeight: 500, flex: 1 }}>{c.name}</span>
+                  <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--text-muted)' }}>{c.ip}</span>
+                  <button className="btn-outline btn-sm" style={{ fontSize: 9, padding: '1px 4px' }}
+                    onClick={() => setConfigClient(c)} title="Config">
+                    <Lock size={9} />
+                  </button>
+                  {c.qr_data && (
+                    <button className="btn-outline btn-sm" style={{ fontSize: 9, padding: '1px 4px' }}
+                      onClick={() => setQrClient(c)} title="QR">
+                      <QrCode size={9} />
+                    </button>
+                  )}
+                  <button className="icon-btn icon-btn-sm" style={{ opacity: 0.5 }}
+                    onClick={async () => {
+                      try {
+                        await deleteApi(`/vps/${server.id}/clients/${c.id}`);
+                        loadClients();
+                      } catch { /* */ }
+                    }} title="Sil">
+                    <Trash2 size={9} />
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {configClient && <ConfigModal client={configClient} onClose={() => setConfigClient(null)} />}
+      {qrClient && <QrModal client={qrClient} onClose={() => setQrClient(null)} />}
     </div>
   );
 }
