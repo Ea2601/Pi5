@@ -667,9 +667,11 @@ app.get('/api/vps/:id/internet-check', async (req, res) => {
     const ping = await ssh.execCommand('ping -c 1 -W 3 8.8.8.8 2>/dev/null && echo "PING_OK" || echo "PING_FAIL"');
     const hasInternet = ping.stdout.includes('PING_OK');
 
-    // Check DNS
-    const dns = await ssh.execCommand('dig +short google.com @8.8.8.8 2>/dev/null | head -1');
-    const hasDns = dns.stdout.trim().length > 0;
+    // Check DNS (try multiple methods — dig may not be installed)
+    const dns = await ssh.execCommand(`
+      (dig +short google.com @8.8.8.8 2>/dev/null || nslookup google.com 8.8.8.8 2>/dev/null | grep -i address | tail -1 || ping -c 1 -W 2 google.com 2>/dev/null | head -1) | head -1
+    `);
+    const hasDns = dns.stdout.trim().length > 0 && !dns.stdout.includes('NXDOMAIN');
 
     // Check IP forwarding
     const fwd = await ssh.execCommand('cat /proc/sys/net/ipv4/ip_forward 2>/dev/null');
@@ -733,13 +735,29 @@ app.post('/api/vps/:id/auto-repair', async (req, res) => {
     }
 
     // 2. DNS
-    const dns = await ssh.execCommand('dig +short google.com @8.8.8.8 2>/dev/null | head -1');
-    if (dns.stdout.trim()) {
+    const dnsCheck = await ssh.execCommand('ping -c 1 -W 2 google.com 2>/dev/null && echo "DNS_OK" || echo "DNS_FAIL"');
+    if (dnsCheck.stdout.includes('DNS_OK')) {
       repairs.push({ check: 'DNS', status: 'ok', detail: 'DNS çözümleme aktif' });
     } else {
-      await ssh.execCommand('apt-get install -y -qq dnsutils 2>/dev/null; echo "nameserver 8.8.8.8" > /etc/resolv.conf');
-      const recheck = await ssh.execCommand('dig +short google.com @8.8.8.8 2>/dev/null | head -1');
-      repairs.push({ check: 'DNS', status: recheck.stdout.trim() ? 'fixed' : 'failed', detail: recheck.stdout.trim() ? 'dnsutils kuruldu, DNS düzeltildi' : 'DNS çözümlenemiyor' });
+      // Fix: write proper resolv.conf, install dnsutils, disable systemd-resolved if it conflicts
+      await ssh.execCommand(`
+        # Stop systemd-resolved if it's blocking port 53
+        systemctl stop systemd-resolved 2>/dev/null || true;
+        systemctl disable systemd-resolved 2>/dev/null || true;
+        # Remove symlink if exists
+        rm -f /etc/resolv.conf 2>/dev/null || true;
+        # Write fresh resolv.conf
+        echo "nameserver 8.8.8.8" > /etc/resolv.conf;
+        echo "nameserver 1.1.1.1" >> /etc/resolv.conf;
+        echo "nameserver 8.8.4.4" >> /etc/resolv.conf;
+        # Protect from being overwritten
+        chattr +i /etc/resolv.conf 2>/dev/null || true;
+        # Install dig/nslookup
+        export DEBIAN_FRONTEND=noninteractive;
+        apt-get install -y -qq dnsutils 2>/dev/null || true;
+      `);
+      const recheck = await ssh.execCommand('ping -c 1 -W 3 google.com 2>/dev/null && echo "DNS_OK" || echo "DNS_FAIL"');
+      repairs.push({ check: 'DNS', status: recheck.stdout.includes('DNS_OK') ? 'fixed' : 'failed', detail: recheck.stdout.includes('DNS_OK') ? 'resolv.conf düzeltildi, systemd-resolved devre dışı' : 'DNS hâlâ çözümlenemiyor — resolv.conf: ' + (await ssh.execCommand('cat /etc/resolv.conf 2>/dev/null')).stdout.trim().slice(0, 80) });
     }
 
     // 3. IP Forwarding
