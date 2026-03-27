@@ -132,7 +132,12 @@ server:
     prefer-ip6: no
     harden-glue: yes
     harden-dnssec-stripped: yes
-    use-caps-for-id: no
+    harden-additional-queries: yes
+    aggressive-nsec: yes
+    use-caps-for-id: yes
+    hide-identity: yes
+    hide-version: yes
+    auto-trust-anchor-file: "/var/lib/unbound/root.key"
     edns-buffer-size: 1232
     prefetch: yes
     num-threads: 1
@@ -196,6 +201,12 @@ else
   fi
   log "Zapret kuruldu"
 fi
+
+# ─── Hardware: LED, LCD, Kiosk bağımlılıkları ───
+warn "Pimoroni kasa + kiosk bağımlılıkları kuruluyor..."
+pip3 install --quiet fanshim spidev luma.oled luma.core RPLCD 2>/dev/null || true
+apt install -y -qq chromium-browser 2>/dev/null || true
+log "Hardware bağımlılıkları kuruldu"
 
 # ─── 7. SSD Algılama & Veri Dizini ───
 step "7/10 — SSD Algılama & Veri Dizini"

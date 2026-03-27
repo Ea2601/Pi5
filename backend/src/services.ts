@@ -25,11 +25,16 @@ export const systemServices = {
         return execAsync(piholeBash, { timeout: 300000 });
     },
 
-    async installZapret(_testDomain: string) {
+    async installZapret(testDomain: string) {
         if (!isLinux) throw new Error('Zapret kurulumu sadece Pi5 üzerinde çalışır');
+        const domain = testDomain || 'discord.com';
+        // First install if not present, then run blockcheck for the domain
         const zapretBash = `
-            git clone --depth=1 https://github.com/bol-van/zapret.git /tmp/zapret 2>/dev/null || true
-            cd /tmp/zapret && sudo ./install_easy.sh
+            if [ ! -d /opt/zapret ]; then
+                git clone --depth=1 https://github.com/bol-van/zapret.git /opt/zapret 2>/dev/null
+                cd /opt/zapret && sudo ./install_easy.sh
+            fi
+            cd /opt/zapret && sudo ./blockcheck.sh --domain=${domain} 2>&1 | tail -50
         `;
         return execAsync(zapretBash, { timeout: 120000 });
     },

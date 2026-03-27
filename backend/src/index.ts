@@ -1292,33 +1292,46 @@ if (isLinux) {
       const cpuTemp = parseInt(tempStr) / 1000;
       if (cpuTemp > 80) await addAlert('health', 'critical', `CPU sıcaklığı kritik: ${cpuTemp.toFixed(1)}°C`, 'cpu');
       else if (cpuTemp > 70) await addAlert('health', 'warning', `CPU sıcaklığı yüksek: ${cpuTemp.toFixed(1)}°C`, 'cpu');
+      else if (cpuTemp > 0) await addAlert('health', 'info', `CPU sıcaklığı normal: ${cpuTemp.toFixed(1)}°C`, 'cpu');
 
       // Memory
       const { stdout: memStr } = await exec("free -m | awk '/Mem:/{print $3/$2*100}'", { timeout: 3000 }).catch(() => ({ stdout: '0' }));
       const memPercent = parseFloat(memStr);
       if (memPercent > 90) await addAlert('health', 'warning', `RAM kullanımı %${memPercent.toFixed(0)} — kritik seviyede`, 'memory');
+      else if (memPercent > 0) await addAlert('health', 'info', `RAM kullanımı normal: %${memPercent.toFixed(0)}`, 'memory');
 
       // Disk
       const { stdout: diskStr } = await exec("df / --output=pcent | tail -1 | tr -d ' %'", { timeout: 3000 }).catch(() => ({ stdout: '0' }));
       const diskPercent = parseInt(diskStr);
       if (diskPercent > 85) await addAlert('health', 'warning', `Disk kullanımı %${diskPercent} — alan azalıyor`, 'disk');
+      else if (diskPercent > 0) await addAlert('health', 'info', `Disk kullanımı normal: %${diskPercent}`, 'disk');
 
       // Services
       const services = ['pihole-FTL', 'unbound', 'wg-quick@wg0', 'nftables', 'fail2ban'];
+      const runningServices: string[] = [];
+      const failedServices: string[] = [];
       for (const svc of services) {
         const { stdout: status } = await exec(`systemctl is-active ${svc} 2>/dev/null`, { timeout: 3000 }).catch(() => ({ stdout: 'inactive' }));
         if (status.trim() === 'failed') {
+          failedServices.push(svc);
           await addAlert('health', 'critical', `Servis çöktü: ${svc}`, 'service');
+        } else if (status.trim() === 'active') {
+          runningServices.push(svc);
         }
+      }
+      if (runningServices.length > 0) {
+        await addAlert('health', 'info', `${runningServices.length}/${services.length} servis çalışıyor`, 'service');
       }
 
       // DNS check
       const { stdout: dnsCheck } = await exec('dig @127.0.0.1 -p 5335 google.com +short +time=3', { timeout: 5000 }).catch(() => ({ stdout: '' }));
       if (!dnsCheck.trim()) await addAlert('health', 'critical', 'DNS çözümleme başarısız — Unbound yanıt vermiyor', 'dns');
+      else await addAlert('health', 'info', 'DNS çözümleme çalışıyor', 'dns');
 
       // Internet connectivity
       const { stdout: pingCheck } = await exec('ping -c 1 -W 3 1.1.1.1 2>/dev/null', { timeout: 5000 }).catch(() => ({ stdout: '' }));
       if (!pingCheck.includes('1 received')) await addAlert('health', 'critical', 'İnternet bağlantısı kesildi', 'network');
+      else await addAlert('health', 'info', 'İnternet bağlantısı aktif', 'network');
 
       // Cleanup old alerts (30 days)
       await dbRun(`DELETE FROM alerts WHERE created_at < datetime('now', '-30 days')`);
@@ -1739,7 +1752,7 @@ app.get('/api/devices/:mac/history', async (req, res) => {
       'SELECT * FROM connection_history WHERE device_mac = ? ORDER BY timestamp DESC LIMIT 50',
       [req.params.mac]
     );
-    res.json({ history });
+    res.json({ events: history });
   } catch (e: any) {
     res.status(500).json({ error: e.message });
   }
@@ -1845,7 +1858,7 @@ app.put('/api/settings', async (req, res) => {
   }
 });
 
-// ─── SSH Terminal (with whitelist security) ───
+// ─── SSH Terminal (unrestricted — login will be added at app level) ───
 app.post('/api/terminal/execute', async (req, res) => {
   const { command } = req.body;
   if (!command || typeof command !== 'string') {
@@ -2227,12 +2240,12 @@ app.put('/api/case/led', async (req, res) => {
       const exec = require('util').promisify(require('child_process').exec);
       try {
         const { stdout, stderr } = await exec(cmd, { timeout: 10000 });
-        res.json({ success: true, output: stdout.trim(), error: stderr.trim() || undefined });
+        res.json({ success: true, applied: true, output: stdout.trim(), error: stderr.trim() || undefined });
       } catch (cmdErr: any) {
-        res.json({ success: true, warning: `LED script: ${cmdErr.message}` });
+        res.json({ success: true, applied: false, error: `LED script hatası: ${cmdErr.message}. 'pip3 install fanshim spidev' kurulumu gerekebilir.` });
       }
     } else {
-      res.json({ success: true });
+      res.json({ success: true, applied: false, warning: 'LED kontrolü sadece Pi5 üzerinde çalışır' });
     }
   } catch (e: any) { res.status(500).json({ error: e.message }); }
 });
@@ -2251,12 +2264,16 @@ app.put('/api/case/lcd', async (req, res) => {
     await dbRun("INSERT OR REPLACE INTO app_settings (key, value) VALUES ('lcd_pages', ?)", [JSON.stringify(pages)]);
     // Restart LCD daemon to pick up new config
     if (isLinux) {
-      require('child_process').exec(
-        'python3 /opt/pi5-gateway/scripts/lcd_display.py stop && python3 /opt/pi5-gateway/scripts/lcd_display.py start',
-        { timeout: 5000 }, () => {}
-      );
+      const exec = require('util').promisify(require('child_process').exec);
+      try {
+        await exec('python3 /opt/pi5-gateway/scripts/lcd_display.py stop 2>/dev/null; python3 /opt/pi5-gateway/scripts/lcd_display.py start &', { timeout: 10000 });
+        res.json({ success: true, applied: true });
+      } catch (cmdErr: any) {
+        res.json({ success: true, applied: false, error: `LCD script hatası: ${cmdErr.message}. 'pip3 install luma.oled luma.core RPLCD' kurulumu gerekebilir.` });
+      }
+    } else {
+      res.json({ success: true, applied: false, warning: 'LCD kontrolü sadece Pi5 üzerinde çalışır' });
     }
-    res.json({ success: true });
   } catch (e: any) { res.status(500).json({ error: e.message }); }
 });
 
@@ -2271,7 +2288,40 @@ app.get('/api/case/kiosk', async (_req, res) => {
 app.put('/api/case/kiosk', async (req, res) => {
   try {
     await dbRun("INSERT OR REPLACE INTO app_settings (key, value) VALUES ('kiosk_config', ?)", [JSON.stringify(req.body)]);
-    res.json({ success: true });
+    // Create or remove kiosk autostart on Pi5
+    if (isLinux) {
+      const exec = require('util').promisify(require('child_process').exec);
+      const fs = require('fs');
+      const autostartDir = '/etc/xdg/autostart';
+      const autostartFile = `${autostartDir}/pi5-kiosk.desktop`;
+      if (req.body.enabled) {
+        const desktopEntry = `[Desktop Entry]
+Type=Application
+Name=Pi5 Kiosk
+Exec=bash -c "sleep 5 && chromium-browser --kiosk --noerrdialogs --disable-infobars --disable-session-crashed-bubble --no-first-run http://localhost:3001/kiosk.html"
+Hidden=false
+X-GNOME-Autostart-enabled=true
+`;
+        try {
+          await exec(`mkdir -p ${autostartDir}`, { timeout: 3000 });
+          fs.writeFileSync(autostartFile, desktopEntry);
+          res.json({ success: true, applied: true, message: 'Kiosk autostart etkinleştirildi. Yeniden başlatmada otomatik açılacak.' });
+        } catch (e: any) {
+          res.json({ success: true, applied: false, error: `Autostart oluşturulamadı: ${e.message}` });
+        }
+      } else {
+        try {
+          if (fs.existsSync(autostartFile)) fs.unlinkSync(autostartFile);
+          // Kill existing kiosk chromium
+          await exec('pkill -f "chromium.*kiosk" 2>/dev/null', { timeout: 3000 }).catch(() => {});
+          res.json({ success: true, applied: true, message: 'Kiosk autostart devre dışı bırakıldı.' });
+        } catch (e: any) {
+          res.json({ success: true, applied: false, error: e.message });
+        }
+      }
+    } else {
+      res.json({ success: true, applied: false, warning: 'Kiosk autostart sadece Pi5 üzerinde çalışır' });
+    }
   } catch (e: any) { res.status(500).json({ error: e.message }); }
 });
 

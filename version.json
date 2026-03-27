@@ -1,14 +1,16 @@
 {
-  "version": "2.4.0",
-  "build": 22,
+  "version": "2.5.0",
+  "build": 23,
   "date": "2026-03-27",
   "changelog": [
-    "DDNS gerçek provider güncellemesi (DuckDNS, No-IP, Cloudflare, Dynu, Custom)",
-    "DDNS otomatik cron: 5dk aralık IP kontrolü + provider güncelleme",
-    "Fail2Ban: mock veri kaldırıldı, gerçek jail + ban verileri API'den",
-    "Unbound: mock veri kaldırıldı, gerçek stats + güvenlik kontrolleri API'den",
-    "NetworkTopology: sahte hız verileri kaldırıldı",
-    "Yeni endpoint: GET /api/fail2ban/status",
-    "Yeni endpoint: GET /api/unbound/status"
+    "Zapret: toggle hata gösterimi + gerçek blockcheck komutu",
+    "Bağlantı geçmişi: cihaz seçim hatası düzeltildi (events field mismatch)",
+    "Trafik analizi: tüm mock data kaldırıldı",
+    "Uyarı merkezi: healthcheck bilgi sekmesine normal durum alertleri",
+    "SSH terminal: komut kısıtlaması yok, tüm komutlar çalışır",
+    "Unbound: install.sh güvenlik ayarları eklendi (DNSSEC, hide-identity, caps-for-id)",
+    "LED/LCD: hata feedback düzeltildi, bağımlılık kurulum uyarıları",
+    "Kiosk: autostart mekanizması eklendi (chromium-browser --kiosk)",
+    "install.sh: fanshim, luma.oled, RPLCD, chromium kurulumu"
   ]
 }

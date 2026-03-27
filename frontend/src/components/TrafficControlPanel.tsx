@@ -430,125 +430,14 @@ function ThrottleView() {
 }
 
 function AnalyticsView() {
-  const topDevices = [
-    { name: 'MacBook Pro', bandwidth: 4200 },
-    { name: 'iPhone 15', bandwidth: 2800 },
-    { name: 'Smart TV', bandwidth: 2100 },
-    { name: 'iPad Air', bandwidth: 1500 },
-    { name: 'Raspberry Pi', bandwidth: 900 },
-  ];
-
-  const topApps = [
-    { name: 'YouTube', bandwidth: 3500 },
-    { name: 'Netflix', bandwidth: 2900 },
-    { name: 'Steam', bandwidth: 1800 },
-    { name: 'Spotify', bandwidth: 800 },
-    { name: 'Discord', bandwidth: 400 },
-  ];
-
-  const hourlyTraffic = Array.from({ length: 24 }, (_, i) => ({
-    hour: i,
-    volume: Math.floor(Math.random() * 800 + (i >= 9 && i <= 23 ? 400 : 50))
-  }));
-  const maxHourly = Math.max(...hourlyTraffic.map(h => h.volume));
-
-  const maxDeviceBw = Math.max(...topDevices.map(d => d.bandwidth));
-  const maxAppBw = Math.max(...topApps.map(a => a.bandwidth));
-
   return (
     <div style={{ marginTop: 14 }}>
-      <div className="stats-grid stats-grid-4" style={{ marginBottom: 14 }}>
-        <div className="glass-panel stat-card">
-          <ArrowDown size={20} style={{ color: '#3b82f6' }} />
-          <div className="stat-value" style={{ fontSize: 20 }}>12.4 GB</div>
-          <div className="stat-label">Toplam Indirme</div>
-        </div>
-        <div className="glass-panel stat-card">
-          <ArrowUp size={20} style={{ color: '#8b5cf6' }} />
-          <div className="stat-value" style={{ fontSize: 20 }}>3.2 GB</div>
-          <div className="stat-label">Toplam Yukleme</div>
-        </div>
-        <div className="glass-panel stat-card">
-          <Activity size={20} style={{ color: '#10b981' }} />
-          <div className="stat-value" style={{ fontSize: 20 }}>48,291</div>
-          <div className="stat-label">Toplam Sorgu</div>
-        </div>
-        <div className="glass-panel stat-card">
-          <BarChart3 size={20} style={{ color: '#f59e0b' }} />
-          <div className="stat-value" style={{ fontSize: 20 }}>14:00-16:00</div>
-          <div className="stat-label">Pik Saat</div>
-        </div>
-      </div>
-
-      <div className="panel-row">
-        <div className="glass-panel widget-medium">
-          <div className="widget-header">
-            <h3><ArrowDown size={16} style={{ marginRight: 6 }} />En Cok Bant Genisligi Kullanan Cihazlar</h3>
-          </div>
-          <div style={{ padding: '12px 0' }}>
-            {topDevices.map((device, i) => (
-              <div key={device.name} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '6px 0' }}>
-                <span style={{ width: 20, textAlign: 'right', fontSize: 12, color: '#94a3b8' }}>{i + 1}</span>
-                <div style={{ flex: 1 }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 3, fontSize: 13 }}>
-                    <span>{device.name}</span>
-                    <span className="text-muted">{(device.bandwidth / 1000).toFixed(1)} GB</span>
-                  </div>
-                  <div style={{ height: 8, borderRadius: 4, background: 'rgba(255,255,255,0.06)', overflow: 'hidden' }}>
-                    <div style={{
-                      height: '100%', borderRadius: 4, background: 'linear-gradient(90deg, #3b82f6, #60a5fa)',
-                      width: `${(device.bandwidth / maxDeviceBw) * 100}%`, transition: 'width 0.5s ease'
-                    }} />
-                  </div>
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-
-        <div className="glass-panel widget-medium">
-          <div className="widget-header">
-            <h3><BarChart3 size={16} style={{ marginRight: 6 }} />En Cok Bant Genisligi Kullanan Uygulamalar</h3>
-          </div>
-          <div style={{ padding: '12px 0' }}>
-            {topApps.map((app, i) => (
-              <div key={app.name} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '6px 0' }}>
-                <span style={{ width: 20, textAlign: 'right', fontSize: 12, color: '#94a3b8' }}>{i + 1}</span>
-                <div style={{ flex: 1 }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 3, fontSize: 13 }}>
-                    <span>{app.name}</span>
-                    <span className="text-muted">{(app.bandwidth / 1000).toFixed(1)} GB</span>
-                  </div>
-                  <div style={{ height: 8, borderRadius: 4, background: 'rgba(255,255,255,0.06)', overflow: 'hidden' }}>
-                    <div style={{
-                      height: '100%', borderRadius: 4, background: 'linear-gradient(90deg, #8b5cf6, #a78bfa)',
-                      width: `${(app.bandwidth / maxAppBw) * 100}%`, transition: 'width 0.5s ease'
-                    }} />
-                  </div>
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-      </div>
-
-      <div className="glass-panel widget-large" style={{ marginTop: 14 }}>
-        <div className="widget-header">
-          <h3><Clock size={16} style={{ marginRight: 6 }} />Saatlik Trafik Dagilimi</h3>
-        </div>
-        <div style={{ display: 'flex', alignItems: 'flex-end', gap: 2, height: 120, padding: '12px 0' }}>
-          {hourlyTraffic.map(h => (
-            <div key={h.hour} style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4 }}>
-              <div style={{
-                width: '100%', borderRadius: '3px 3px 0 0',
-                background: h.volume > maxHourly * 0.7 ? '#ef4444' : h.volume > maxHourly * 0.4 ? '#f59e0b' : '#10b981',
-                height: `${(h.volume / maxHourly) * 100}%`, minHeight: 2,
-                opacity: 0.8, transition: 'height 0.3s ease'
-              }} />
-              <span style={{ fontSize: 9, color: '#64748b' }}>{h.hour.toString().padStart(2, '0')}</span>
-            </div>
-          ))}
-        </div>
+      <div className="empty-state" style={{ padding: 50 }}>
+        <BarChart3 size={40} />
+        <p>Trafik analizi Pi5 gateway modunda aktif olduğunda gerçek verilerle doldurulacaktır.</p>
+        <span className="text-muted" style={{ fontSize: 12 }}>
+          Pi5 router olarak çalıştığında cihaz bazlı bant genişliği, uygulama trafiği ve saatlik dağılım burada gösterilecek.
+        </span>
       </div>
     </div>
   );

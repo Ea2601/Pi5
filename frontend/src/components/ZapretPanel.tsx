@@ -26,8 +26,14 @@ export function ZapretPanel() {
     setInstalling(false);
   };
 
+  const [toggleError, setToggleError] = useState('');
   const handleToggle = async () => {
-    try { await postApi('/services/toggle', { name: 'zapret', enabled: !isEnabled }); await refetch(); } catch { /* */ }
+    setToggleError('');
+    try {
+      const r = await postApi('/services/toggle', { name: 'zapret', enabled: !isEnabled });
+      if (r.error) setToggleError(r.error);
+      await refetch();
+    } catch (e: any) { setToggleError(e.message || 'Toggle başarısız'); }
   };
 
   const tabs: { id: ZapretTab; label: string; icon: React.ReactNode }[] = [
@@ -85,6 +91,8 @@ export function ZapretPanel() {
           ))}
         </div>
       </Panel>
+
+      {toggleError && <Alert type="error" message={toggleError} />}
 
       {activeTab === 'overview' && (
         <>
