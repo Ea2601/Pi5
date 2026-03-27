@@ -127,9 +127,7 @@ app.post('/api/services/toggle', async (req, res) => {
         [actuallyRunning ? 1 : 0, newStatus, name]);
       res.json({ success: true, name, enabled: actuallyRunning, status: newStatus });
     } else {
-      await dbRun('UPDATE service_status SET enabled = ?, status = ?, last_check = CURRENT_TIMESTAMP WHERE name = ?',
-        [enabled ? 1 : 0, enabled ? 'running' : 'stopped', name]);
-      res.json({ success: true, name, enabled });
+      res.status(400).json({ success: false, error: 'Servis kontrolü sadece Pi5 üzerinde çalışır' });
     }
   } catch (e: any) {
     res.status(500).json({ success: false, error: e.message });
@@ -649,6 +647,43 @@ app.get('/api/vps/:id/clients', async (req, res) => {
     res.json({ clients });
   } catch (e: any) {
     res.json({ clients: [] });
+  }
+});
+
+// ─── Delete WireGuard Client (from DB + VPS) ───
+app.delete('/api/vps/:id/clients/:clientId', async (req, res) => {
+  try {
+    const server: any = await dbGet('SELECT * FROM vps_servers WHERE id = ?', [req.params.id]);
+    const client: any = await dbGet('SELECT * FROM wg_clients WHERE id = ? AND vps_id = ?', [req.params.clientId, req.params.id]);
+    if (!client) return res.status(404).json({ error: 'Client bulunamadı' });
+
+    // Remove peer from VPS via SSH
+    if (server && client.public_key) {
+      try {
+        const { NodeSSH } = require('node-ssh');
+        const ssh = new NodeSSH();
+        await ssh.connect({
+          host: server.ip, username: server.username,
+          password: server.password || undefined, readyTimeout: 10000,
+        });
+        // Remove peer from running WireGuard
+        await ssh.execCommand(`wg set wg0 peer ${client.public_key} remove 2>/dev/null || true`);
+        // Remove peer from config file
+        await ssh.execCommand(`sed -i '/# ${client.name}/,/^$/d' /etc/wireguard/wg0.conf 2>/dev/null || true`);
+        // Also try removing by public key pattern
+        await ssh.execCommand(`sed -i '/PublicKey = ${client.public_key.replace(/[/\\]/g, '\\$&')}/,/^$/d' /etc/wireguard/wg0.conf 2>/dev/null || true`);
+        ssh.dispose();
+      } catch (sshErr: any) {
+        console.error('VPS peer removal failed:', sshErr.message);
+        // Continue with DB deletion even if VPS removal fails
+      }
+    }
+
+    // Delete from DB
+    await dbRun('DELETE FROM wg_clients WHERE id = ?', [req.params.clientId]);
+    res.json({ success: true });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
   }
 });
 

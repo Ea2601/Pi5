@@ -74,11 +74,13 @@ function StepIndicator({ step }: { step: SetupStep }) {
   );
 }
 
-function ClientCard({ client, onShowConfig, onShowQr }: {
+function ClientCard({ client, onShowConfig, onShowQr, onDelete }: {
   client: WgClient;
   onShowConfig: () => void;
   onShowQr: () => void;
+  onDelete: () => void;
 }) {
+  const [deleting, setDeleting] = useState(false);
   return (
     <div style={{
       padding: 16, borderRadius: 'var(--radius)',
@@ -88,7 +90,12 @@ function ClientCard({ client, onShowConfig, onShowQr }: {
     }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
         <Users size={16} style={{ color: 'var(--accent-color)' }} />
-        <span style={{ fontWeight: 600, fontSize: 14, color: '#f8fafc' }}>{client.name}</span>
+        <span style={{ fontWeight: 600, fontSize: 14, color: '#f8fafc', flex: 1 }}>{client.name}</span>
+        <button className="icon-btn icon-btn-sm cron-delete" title="Client'ı sil (VPS'ten de kaldırır)"
+          disabled={deleting}
+          onClick={async () => { setDeleting(true); await onDelete(); setDeleting(false); }}>
+          <Trash2 size={12} />
+        </button>
       </div>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 12 }}>
         <div style={{ display: 'flex', justifyContent: 'space-between' }}>
@@ -104,10 +111,10 @@ function ClientCard({ client, onShowConfig, onShowQr }: {
       </div>
       <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
         <button className="btn-outline btn-sm" style={{ flex: 1 }} onClick={onShowConfig}>
-          <Lock size={12} /> Config Goster
+          <Lock size={12} /> Config
         </button>
         <button className="btn-outline btn-sm" style={{ flex: 1 }} onClick={onShowQr}>
-          <QrCode size={12} /> QR Goster
+          <QrCode size={12} /> QR
         </button>
       </div>
     </div>
@@ -557,7 +564,13 @@ export function VpsSetup() {
                   {clients.map(client => (
                     <ClientCard key={client.id} client={client}
                       onShowConfig={() => setConfigClient(client)}
-                      onShowQr={() => setQrClient(client)} />
+                      onShowQr={() => setQrClient(client)}
+                      onDelete={async () => {
+                        try {
+                          await deleteApi(`/vps/${selectedVpsId}/clients/${client.id}`);
+                          await fetchClients(Number(selectedVpsId));
+                        } catch { /* */ }
+                      }} />
                   ))}
                 </div>
               )}

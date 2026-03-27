@@ -90,31 +90,88 @@ export async function executeSetupStep(
         break;
       case 'packages':
         cmd = `export DEBIAN_FRONTEND=noninteractive && \
-          apt-get install -y -qq wireguard wireguard-tools qrencode iptables curl resolvconf 2>&1 | tail -5 && \
+          apt-get install -y -qq wireguard wireguard-tools qrencode iptables curl resolvconf iptables-persistent 2>&1 | tail -5 && \
           echo "--- Paket kontrol ---" && \
           which wg && which qrencode && which curl && echo "Tum paketler kurulu"`;
         successMsg = 'WireGuard ve bağımlılıklar kuruldu';
         break;
       case 'maintenance':
         cmd = `
-          # IP forwarding
-          echo "net.ipv4.ip_forward=1" > /etc/sysctl.d/99-wireguard.conf
-          sysctl -p /etc/sysctl.d/99-wireguard.conf 2>&1
+          set -e
 
-          # UFW varsa WireGuard portunu aç veya kapat
+          # 1. Verify internet connectivity
+          echo "--- Internet baglanti kontrolu ---"
+          if ! ping -c 1 -W 3 8.8.8.8 &>/dev/null; then
+            echo "UYARI: VPS internete cikamıyor! Ağ ayarları kontrol ediliyor..."
+            # Check and fix DNS
+            if ! grep -q "nameserver" /etc/resolv.conf 2>/dev/null; then
+              echo "nameserver 8.8.8.8" >> /etc/resolv.conf
+              echo "nameserver 1.1.1.1" >> /etc/resolv.conf
+              echo "DNS eklendi"
+            fi
+            # Check default route
+            if ! ip route show default &>/dev/null; then
+              echo "HATA: Default route yok — VPS ağ yapılandırması bozuk"
+            fi
+          else
+            echo "Internet baglantisi OK"
+          fi
+
+          # 2. IP forwarding (critical for VPN traffic)
+          echo "--- IP forwarding ---"
+          echo "net.ipv4.ip_forward=1" > /etc/sysctl.d/99-wireguard.conf
+          echo "net.ipv6.conf.all.forwarding=1" >> /etc/sysctl.d/99-wireguard.conf
+          sysctl -p /etc/sysctl.d/99-wireguard.conf 2>&1
+          # Verify
+          FWD=$(cat /proc/sys/net/ipv4/ip_forward)
+          echo "ip_forward=$FWD"
+          if [ "$FWD" != "1" ]; then
+            echo 1 > /proc/sys/net/ipv4/ip_forward
+          fi
+
+          # 3. NAT / Masquerade (ensure iptables rules exist)
+          PRIMARY_IFACE=$(ip -o -4 route show to default | awk '{print $5}' | head -1)
+          if [ -z "$PRIMARY_IFACE" ]; then PRIMARY_IFACE="eth0"; fi
+          echo "Primary interface: $PRIMARY_IFACE"
+
+          # Add masquerade if not already present
+          if ! iptables -t nat -C POSTROUTING -o "$PRIMARY_IFACE" -j MASQUERADE 2>/dev/null; then
+            iptables -t nat -A POSTROUTING -o "$PRIMARY_IFACE" -j MASQUERADE
+            echo "NAT masquerade eklendi: $PRIMARY_IFACE"
+          else
+            echo "NAT masquerade zaten aktif"
+          fi
+
+          # Forward rules
+          iptables -A FORWARD -i wg0 -j ACCEPT 2>/dev/null || true
+          iptables -A FORWARD -o wg0 -j ACCEPT 2>/dev/null || true
+
+          # 4. Firewall (UFW)
           if command -v ufw &>/dev/null; then
             ufw allow 51820/udp 2>/dev/null || true
-          fi
-
-          # Firewall'da forward izni
-          if command -v ufw &>/dev/null; then
+            ufw allow OpenSSH 2>/dev/null || true
             sed -i 's/DEFAULT_FORWARD_POLICY="DROP"/DEFAULT_FORWARD_POLICY="ACCEPT"/' /etc/default/ufw 2>/dev/null || true
+            # Ensure NAT rules in UFW before.rules
+            if ! grep -q "POSTROUTING.*MASQUERADE" /etc/ufw/before.rules 2>/dev/null; then
+              sed -i '/^# End required lines/a\\n# NAT for WireGuard\\n*nat\\n:POSTROUTING ACCEPT [0:0]\\n-A POSTROUTING -o '"$PRIMARY_IFACE"' -j MASQUERADE\\nCOMMIT' /etc/ufw/before.rules 2>/dev/null || true
+            fi
+            ufw --force enable 2>/dev/null || true
             ufw reload 2>/dev/null || true
+            echo "UFW yapılandırıldı"
+          else
+            echo "UFW yok, iptables kullanılıyor"
           fi
 
-          echo "IP forwarding ve firewall ayarlandi"
+          # 5. Make iptables rules persistent
+          if command -v netfilter-persistent &>/dev/null; then
+            netfilter-persistent save 2>/dev/null || true
+          elif command -v iptables-save &>/dev/null; then
+            iptables-save > /etc/iptables/rules.v4 2>/dev/null || true
+          fi
+
+          echo "--- Tüm ayarlar tamamlandı ---"
         `;
-        successMsg = 'IP forwarding aktif, firewall ayarlandı';
+        successMsg = 'Internet, IP forwarding, NAT ve firewall ayarlandı';
         break;
       case 'wireguard':
         cmd = `
