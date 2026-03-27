@@ -75,8 +75,9 @@ function StepIndicator({ step }: { step: SetupStep }) {
   );
 }
 
-function ClientCard({ client, onShowConfig, onShowQr, onDelete }: {
+function ClientCard({ client, vpsLabel, onShowConfig, onShowQr, onDelete }: {
   client: WgClient;
+  vpsLabel: string;
   onShowConfig: () => void;
   onShowQr: () => void;
   onDelete: () => void;
@@ -92,13 +93,18 @@ function ClientCard({ client, onShowConfig, onShowQr, onDelete }: {
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
         <Users size={16} style={{ color: 'var(--accent-color)' }} />
         <span style={{ fontWeight: 600, fontSize: 14, color: '#f8fafc', flex: 1 }}>{client.name}</span>
-        <button className="icon-btn icon-btn-sm" style={{ opacity: 0.6 }} title="Client'ı sil (VPS'ten de kaldırır)"
+        <button className="btn-outline btn-sm" style={{ fontSize: 10, padding: '2px 6px', color: 'var(--danger-color)', borderColor: 'var(--danger-color)' }}
+          title="Client'ı sil (VPS'ten de kaldırır)"
           disabled={deleting}
           onClick={async () => { setDeleting(true); await onDelete(); setDeleting(false); }}>
-          {deleting ? <Loader2 size={12} className="spin" /> : <Trash2 size={12} />}
+          {deleting ? <Loader2 size={11} className="spin" /> : <Trash2 size={11} />}
         </button>
       </div>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 12 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+          <span style={{ color: 'var(--text-muted)' }}>VPS</span>
+          <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--text-secondary)', fontSize: 11 }}>{vpsLabel}</span>
+        </div>
         <div style={{ display: 'flex', justifyContent: 'space-between' }}>
           <span style={{ color: 'var(--text-muted)' }}>IP</span>
           <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--text-primary)' }}>{client.ip}</span>
@@ -763,6 +769,7 @@ export function VpsSetup() {
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))', gap: 12, marginTop: 16 }}>
                   {clients.map(client => (
                     <ClientCard key={client.id} client={client}
+                      vpsLabel={data.servers.find(s => s.id === Number(selectedVpsId))?.ip + ' (' + (data.servers.find(s => s.id === Number(selectedVpsId))?.location || data.servers.find(s => s.id === Number(selectedVpsId))?.username || '') + ')'}
                       onShowConfig={() => setConfigClient(client)}
                       onShowQr={() => setQrClient(client)}
                       onDelete={async () => {
