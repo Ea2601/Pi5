@@ -1,25 +1,16 @@
 {
-  "version": "2.2.0",
-  "build": 20,
+  "version": "2.3.0",
+  "build": 21,
   "date": "2026-03-27",
   "changelog": [
-    "Trafik bazlı routing sistemi (app + domain)",
-    "Tema/accent renk anında uygulama + light tema",
-    "Otomatik hız testi (10dk) + jitter/packet_loss + 30 gün saklama",
-    "Saat dilimi ayarı + Topbar canlı saat",
-    "Health check sistemi (5dk) + bildirim merkezi",
-    "Güncelleme modal ile changelog gösterimi",
-    "Dashboard VPN widget",
-    "Pimoroni LED kontrol + LCD ekran döngüsü",
-    "HDMI kiosk modu + dokunmatik/swipe destek",
-    "Pi5 WireGuard tünel bağlantısı (wg_vpsX)",
-    "VPS internet kontrolü + NAT + firewall otomatik",
-    "WireGuard client silme (panel + VPS)",
-    "Gerçek WoL magic packet + TCP port tarama",
-    "Tüm mock data kaldırıldı — sıfır simülasyon",
-    "Versiyon sistemi + otomatik post-update",
-    "Toggle switch tüm panellerde standart",
-    "Terminal tüm komutlara açık",
-    "Git güncelleme izin sorunları çözüldü"
+    "VPS kartlarına inline WireGuard client yönetimi",
+    "Client ekleme, silme, config görüntüleme, QR kod",
+    "Client kartında VPS etiketi gösterimi",
+    "VPS silme ikonu kart başlığına taşındı",
+    "VPS durum badge otomatik senkronizasyonu",
+    "VPS health check: tek SSH script, güvenilir DNS kontrolü",
+    "VPS DNS otomatik onarım (resolv.conf + systemd-resolved)",
+    "VPS internet/DNS/forwarding/WG/NAT otomatik tamir",
+    "VPS internet sağlık badge'leri"
   ]
 }
