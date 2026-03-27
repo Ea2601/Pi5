@@ -76,18 +76,7 @@ export function NetworkTopology() {
     return () => window.removeEventListener('resize', updateSize);
   }, [updateSize]);
 
-  const speeds = useMemo(() => {
-    const map: Record<string, { down: number; up: number }> = {};
-    devices.forEach(d => {
-      if (!map[d.mac_address]) {
-        map[d.mac_address] = {
-          down: Math.round(Math.random() * 200 + 5),
-          up: Math.round(Math.random() * 50 + 1),
-        };
-      }
-    });
-    return map;
-  }, [devices.map(d => d.mac_address).join(',')]);
+  // No mock speeds — only show real data if available from backend
 
   const cx = meshSize.w / 2;
   const cy = meshSize.h / 2;
@@ -193,7 +182,7 @@ export function NetworkTopology() {
           {positions.map((pos, i) => {
             const device = devices[i];
             if (!device) return null;
-            const speed = speeds[device.mac_address] || { down: 0, up: 0 };
+            const speed = { down: 0, up: 0 }; // Real speed data not available yet
             const profile = getProfileInfo('isp', 0, vpsList);
             return (
               <div key={device.mac_address}

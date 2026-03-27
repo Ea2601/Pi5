@@ -1,4 +1,4 @@
-import { Globe, Server, Gauge, Shield, Settings, Activity } from 'lucide-react';
+import { Globe, Server, Gauge, Shield, Settings, Activity, RefreshCw, Loader2 } from 'lucide-react';
 import { useApi, postApi } from '../hooks/useApi';
 import { useState } from 'react';
 import { Panel, StatCard, Badge } from './ui';
@@ -7,21 +7,41 @@ import type { ServiceStatus } from '../types';
 
 type UnboundTab = 'overview' | 'settings';
 
+interface SecurityCheck {
+  label: string;
+  status: boolean;
+}
+
+interface UnboundStatus {
+  listenAddr: string;
+  threads: string;
+  cacheEntries: string;
+  totalQueries: string;
+  security: SecurityCheck[];
+  error?: string;
+}
+
 export function UnboundPanel() {
   const [activeTab, setActiveTab] = useState<UnboundTab>('overview');
   const { data: svcData, refetch } = useApi<{ services: ServiceStatus[] }>('/services', { services: [] });
+  const { data: ubData, loading, refetch: refetchUb } = useApi<UnboundStatus>(
+    '/unbound/status', { listenAddr: '-', threads: '-', cacheEntries: '-', totalQueries: '-', security: [] }
+  );
   const unboundSvc = svcData.services.find(s => s.name === 'unbound');
   const isEnabled = unboundSvc?.enabled === 1;
+  const [refreshing, setRefreshing] = useState(false);
 
   const handleToggle = async () => {
     try {
-      if (!isEnabled) {
-        await postApi('/services/toggle', { name: 'unbound', enabled: true });
-      } else {
-        await postApi('/services/toggle', { name: 'unbound', enabled: false });
-      }
+      await postApi('/services/toggle', { name: 'unbound', enabled: !isEnabled });
       await refetch();
     } catch { /* */ }
+  };
+
+  const handleRefresh = async () => {
+    setRefreshing(true);
+    await refetchUb();
+    setRefreshing(false);
   };
 
   const tabs: { id: UnboundTab; label: string; icon: React.ReactNode }[] = [
@@ -47,9 +67,14 @@ export function UnboundPanel() {
         subtitle="Özyinelemeli DNS çözücü — Pi-hole ile entegre, gizlilik odaklı"
         badge={<Badge variant={isEnabled ? 'success' : 'neutral'}>{isEnabled ? 'Aktif' : 'Pasif'}</Badge>}
         actions={
-          <button className={`toggle-btn ${isEnabled ? 'toggle-on' : 'toggle-off'}`} onClick={handleToggle} title={isEnabled ? 'Durdur' : 'Başlat'}>
-            <div className="toggle-knob" />
-          </button>
+          <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+            <button className="btn-outline btn-sm" onClick={handleRefresh} disabled={refreshing} title="Yenile">
+              {refreshing ? <Loader2 size={13} className="spin" /> : <RefreshCw size={13} />}
+            </button>
+            <button className={`toggle-btn ${isEnabled ? 'toggle-on' : 'toggle-off'}`} onClick={handleToggle} title={isEnabled ? 'Durdur' : 'Başlat'}>
+              <div className="toggle-knob" />
+            </button>
+          </div>
         }>
         <div className="service-tabs">
           {tabs.map(tab => (
@@ -65,17 +90,17 @@ export function UnboundPanel() {
       {activeTab === 'overview' && (
         <>
           <div className="stats-grid stats-grid-4" style={{ marginTop: 14 }}>
-            <StatCard icon={<Globe size={20} />} label="Dinleme" value="127.0.0.1:5335" color="blue" />
-            <StatCard icon={<Shield size={20} />} label="DNSSEC" value="Aktif" color="green" />
-            <StatCard icon={<Gauge size={20} />} label="Önbellek" value="50MB" color="purple" />
-            <StatCard icon={<Server size={20} />} label="Thread" value="2" color="cyan" />
+            <StatCard icon={<Globe size={20} />} label="Dinleme" value={loading ? '...' : ubData.listenAddr} color="blue" />
+            <StatCard icon={<Shield size={20} />} label="Toplam Sorgu" value={loading ? '...' : ubData.totalQueries} color="green" />
+            <StatCard icon={<Gauge size={20} />} label="Önbellek" value={loading ? '...' : `${ubData.cacheEntries} kayıt`} color="purple" />
+            <StatCard icon={<Server size={20} />} label="Thread" value={loading ? '...' : ubData.threads} color="cyan" />
           </div>
           <div className="panel-row" style={{ marginTop: 14 }}>
             <Panel title="Nasıl Çalışır?" size="medium">
               <div className="info-list">
                 <div className="info-item">
                   <span className="info-num">1</span>
-                  <div><strong>Pi-hole → Unbound</strong><p>Pi-hole DNS sorgularını 127.0.0.1:5335'e yönlendirir</p></div>
+                  <div><strong>Pi-hole → Unbound</strong><p>Pi-hole DNS sorgularını {ubData.listenAddr}'e yönlendirir</p></div>
                 </div>
                 <div className="info-item">
                   <span className="info-num">2</span>
@@ -92,22 +117,23 @@ export function UnboundPanel() {
               </div>
             </Panel>
             <Panel title="Güvenlik Durumu" size="medium">
-              <div className="security-checks">
-                {[
-                  { label: 'DNSSEC Doğrulama', status: true },
-                  { label: 'Kimlik Gizleme', status: true },
-                  { label: 'Sürüm Gizleme', status: true },
-                  { label: 'Glue Sıkılaştırma', status: true },
-                  { label: 'Caps-for-ID (0x20)', status: true },
-                  { label: 'Ek Kayıt Temizleme', status: true },
-                ].map(check => (
-                  <div key={check.label} className="security-check-row">
-                    <span className={`svc-dot ${check.status ? 'svc-on' : 'svc-off'}`} />
-                    <span>{check.label}</span>
-                    <Badge variant={check.status ? 'success' : 'neutral'}>{check.status ? 'Aktif' : 'Pasif'}</Badge>
-                  </div>
-                ))}
-              </div>
+              {loading ? (
+                <div style={{ textAlign: 'center', padding: 30, color: 'var(--text-muted)' }}><Loader2 size={20} className="spin" /></div>
+              ) : ubData.security.length === 0 ? (
+                <div style={{ textAlign: 'center', padding: 30, color: 'var(--text-muted)', fontSize: 13 }}>
+                  {isEnabled ? 'Güvenlik bilgisi alınamadı' : 'Unbound pasif'}
+                </div>
+              ) : (
+                <div className="security-checks">
+                  {ubData.security.map(check => (
+                    <div key={check.label} className="security-check-row">
+                      <span className={`svc-dot ${check.status ? 'svc-on' : 'svc-off'}`} />
+                      <span>{check.label}</span>
+                      <Badge variant={check.status ? 'success' : 'neutral'}>{check.status ? 'Aktif' : 'Pasif'}</Badge>
+                    </div>
+                  ))}
+                </div>
+              )}
             </Panel>
           </div>
         </>
