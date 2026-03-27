@@ -397,7 +397,7 @@ function VpsCard({ server, onConnect, onDisconnect, onDelete, onRefresh }: {
                       <QrCode size={9} />
                     </button>
                   )}
-                  <button className="icon-btn icon-btn-sm" style={{ opacity: 0.5 }}
+                  <button className="btn-outline btn-sm" style={{ fontSize: 9, padding: '1px 4px', color: 'var(--danger-color)', borderColor: 'var(--danger-color)' }}
                     onClick={async () => {
                       try {
                         await deleteApi(`/vps/${server.id}/clients/${c.id}`);
