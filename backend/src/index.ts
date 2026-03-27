@@ -1784,11 +1784,18 @@ app.put('/api/case/led', async (req, res) => {
     if (isLinux) {
       const { color, brightness, animation, enabled } = req.body;
       const cmd = enabled
-        ? `python3 /opt/pi5-gateway/scripts/led_control.py set "${color}" ${brightness} "${animation}"`
+        ? `python3 /opt/pi5-gateway/scripts/led_control.py set "${color}" ${Math.round(brightness)} "${animation}"`
         : 'python3 /opt/pi5-gateway/scripts/led_control.py off';
-      require('child_process').exec(cmd, { timeout: 5000 }, () => {});
+      const exec = require('util').promisify(require('child_process').exec);
+      try {
+        const { stdout, stderr } = await exec(cmd, { timeout: 10000 });
+        res.json({ success: true, output: stdout.trim(), error: stderr.trim() || undefined });
+      } catch (cmdErr: any) {
+        res.json({ success: true, warning: `LED script: ${cmdErr.message}` });
+      }
+    } else {
+      res.json({ success: true });
     }
-    res.json({ success: true });
   } catch (e: any) { res.status(500).json({ error: e.message }); }
 });
 
@@ -1804,6 +1811,13 @@ app.put('/api/case/lcd', async (req, res) => {
   try {
     const { pages } = req.body;
     await dbRun("INSERT OR REPLACE INTO app_settings (key, value) VALUES ('lcd_pages', ?)", [JSON.stringify(pages)]);
+    // Restart LCD daemon to pick up new config
+    if (isLinux) {
+      require('child_process').exec(
+        'python3 /opt/pi5-gateway/scripts/lcd_display.py stop && python3 /opt/pi5-gateway/scripts/lcd_display.py start',
+        { timeout: 5000 }, () => {}
+      );
+    }
     res.json({ success: true });
   } catch (e: any) { res.status(500).json({ error: e.message }); }
 });
