@@ -345,41 +345,17 @@ export async function runSpeedTest(): Promise<{
   }
 }
 
-// ─── 11. Terminal (whitelist) ───
-const ALLOWED_PREFIXES = [
-  'ls', 'cat /etc/', 'cat /proc/', 'df', 'free', 'uptime', 'uname', 'whoami', 'date', 'hostname',
-  'ip ', 'ss ', 'wg ', 'pihole', 'fail2ban-client',
-  'systemctl status', 'systemctl is-active', 'systemctl restart', 'systemctl enable', 'systemctl disable',
-  'dig', 'nft list', 'vcgencmd', 'journalctl', 'pwd', 'head', 'tail', 'grep',
-  'ping -c', 'traceroute', 'nslookup', 'curl -s',
-  'cd ', 'git pull', 'git log', 'git status', 'npm run build', 'npm install',
-  'apt update', 'apt upgrade', 'apt install',
-  'timedatectl', 'which', 'echo',
-];
-
+// ─── 11. Terminal (unrestricted) ───
 export async function executeCommand(cmd: string): Promise<{ output: string; command: string; timestamp: string }> {
   const trimmed = cmd.trim();
   const timestamp = new Date().toISOString();
 
   if (!isLinux) {
-    return { output: 'Terminal sadece Pi5 uzerinde calisir. Gelistirme ortaminda kullanilamaz.', command: trimmed, timestamp };
-  }
-
-  if (trimmed === 'help') {
-    return { output: 'Izin verilen komutlar:\n' + ALLOWED_PREFIXES.join('\n'), command: trimmed, timestamp };
+    return { output: 'Terminal sadece Pi5 uzerinde calisir.', command: trimmed, timestamp };
   }
 
   if (trimmed === 'clear') {
     return { output: '', command: trimmed, timestamp };
-  }
-
-  // Support chained commands (&&, ;) — check each part
-  const parts = trimmed.split(/\s*&&\s*|\s*;\s*/).map(p => p.trim()).filter(Boolean);
-  for (const part of parts) {
-    const partAllowed = ALLOWED_PREFIXES.some(p => part === p || part.startsWith(p + ' ') || part.startsWith(p));
-    if (!partAllowed) {
-      return { output: `Guvenlik: "${part.split(' ')[0]}" komutu izin listesinde degil.\nIzin verilen komutlar icin "help" yazin.`, command: trimmed, timestamp };
-    }
   }
 
   const output = await run(trimmed, 120000);
