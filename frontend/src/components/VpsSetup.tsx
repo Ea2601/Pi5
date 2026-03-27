@@ -243,58 +243,61 @@ function VpsCard({ server, onConnect, onDisconnect, onDelete }: {
       </div>
 
       {/* Internet status badges */}
-      {netStatus && (
-        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 6, padding: '6px 0', borderTop: '1px solid var(--panel-border)' }}>
-          <StatusDot ok={netStatus.internet} label="Internet" />
-          <StatusDot ok={netStatus.dns} label="DNS" />
-          <StatusDot ok={netStatus.forwarding} label="Forward" />
-          <StatusDot ok={netStatus.wireguard} label="WG" />
-          <StatusDot ok={netStatus.nat} label="NAT" />
-        </div>
-      )}
-      {netStatus && netStatus.allGood && (
-        <div style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 10, color: 'var(--success-color)', marginTop: 2 }}>
-          <ShieldCheck size={12} /> Trafik aktif — {netStatus.publicIp}
-        </div>
-      )}
-      {netStatus && !netStatus.allGood && (
-        <div style={{ marginTop: 2 }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 10, color: 'var(--danger-color)' }}>
-            <AlertTriangle size={12} /> Bazı kontroller başarısız
-            <button className="btn-sm btn-primary" style={{ fontSize: 9, padding: '1px 6px', marginLeft: 'auto' }}
-              onClick={async () => {
-                setRepairing(true); setRepairResults(null);
-                try {
-                  const r = await fetch(`/api/vps/${server.id}/auto-repair`, { method: 'POST' });
-                  const data = await r.json();
-                  setRepairResults(data.repairs || []);
-                  // Re-check after repair
-                  setTimeout(checkInternet, 1000);
-                } catch { setRepairResults([{ check: 'Bağlantı', status: 'failed', detail: 'SSH bağlantısı başarısız' }]); }
-                setRepairing(false);
-              }}
-              disabled={repairing}>
-              {repairing ? <><Loader2 size={10} className="spin" /> Onarılıyor...</> : 'Otomatik Onar'}
-            </button>
-          </div>
-          {repairResults && (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 3, marginTop: 4 }}>
-              {repairResults.map((r, i) => (
-                <div key={i} style={{
-                  display: 'flex', alignItems: 'center', gap: 6, fontSize: 10,
-                  padding: '3px 6px', borderRadius: 4,
-                  background: r.status === 'ok' ? 'rgba(34,197,94,0.06)' : r.status === 'fixed' ? 'rgba(59,130,246,0.06)' : 'rgba(239,68,68,0.06)',
-                  color: r.status === 'ok' ? 'var(--success-color)' : r.status === 'fixed' ? 'var(--accent-color)' : 'var(--danger-color)',
-                }}>
-                  <span style={{ fontWeight: 600, width: 60 }}>{r.check}</span>
-                  <span style={{ fontWeight: 600 }}>{r.status === 'ok' ? '✓' : r.status === 'fixed' ? '⚡ Düzeltildi' : '✗ Başarısız'}</span>
-                  <span style={{ color: 'var(--text-muted)', flex: 1 }}>{r.detail}</span>
-                </div>
-              ))}
+      {netStatus && (() => {
+        const allGood = netStatus.internet && netStatus.dns && netStatus.forwarding && netStatus.wireguard && netStatus.nat;
+        return (
+          <>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 6, padding: '6px 0', borderTop: '1px solid var(--panel-border)' }}>
+              <StatusDot ok={netStatus.internet} label="Internet" />
+              <StatusDot ok={netStatus.dns} label="DNS" />
+              <StatusDot ok={netStatus.forwarding} label="Forward" />
+              <StatusDot ok={netStatus.wireguard} label="WG" />
+              <StatusDot ok={netStatus.nat} label="NAT" />
             </div>
-          )}
-        </div>
-      )}
+            {allGood ? (
+              <div style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 10, color: 'var(--success-color)', marginTop: 2 }}>
+                <ShieldCheck size={12} /> Trafik aktif{netStatus.publicIp ? ` — ${netStatus.publicIp}` : ''}
+              </div>
+            ) : (
+              <div style={{ marginTop: 2 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 10, color: 'var(--danger-color)' }}>
+                  <AlertTriangle size={12} /> Bazı kontroller başarısız
+                  <button className="btn-sm btn-primary" style={{ fontSize: 9, padding: '1px 6px', marginLeft: 'auto' }}
+                    onClick={async () => {
+                      setRepairing(true); setRepairResults(null);
+                      try {
+                        const r = await fetch(`/api/vps/${server.id}/auto-repair`, { method: 'POST' });
+                        const data = await r.json();
+                        setRepairResults(data.repairs || []);
+                        setTimeout(checkInternet, 2000);
+                      } catch { setRepairResults([{ check: 'Bağlantı', status: 'failed', detail: 'SSH bağlantısı başarısız' }]); }
+                      setRepairing(false);
+                    }}
+                    disabled={repairing}>
+                    {repairing ? <><Loader2 size={10} className="spin" /> Onarılıyor...</> : 'Otomatik Onar'}
+                  </button>
+                </div>
+                {repairResults && (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 3, marginTop: 4 }}>
+                    {repairResults.map((r, i) => (
+                      <div key={i} style={{
+                        display: 'flex', alignItems: 'center', gap: 6, fontSize: 10,
+                        padding: '3px 6px', borderRadius: 4,
+                        background: r.status === 'ok' ? 'rgba(34,197,94,0.06)' : r.status === 'fixed' ? 'rgba(59,130,246,0.06)' : 'rgba(239,68,68,0.06)',
+                        color: r.status === 'ok' ? 'var(--success-color)' : r.status === 'fixed' ? 'var(--accent-color)' : 'var(--danger-color)',
+                      }}>
+                        <span style={{ fontWeight: 600, width: 60 }}>{r.check}</span>
+                        <span style={{ fontWeight: 600 }}>{r.status === 'ok' ? '✓' : r.status === 'fixed' ? '⚡' : '✗'}</span>
+                        <span style={{ color: 'var(--text-muted)', flex: 1 }}>{r.detail}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+          </>
+        );
+      })()}
 
       <div style={{ display: 'flex', gap: 4, marginTop: 6 }}>
         {server.status === 'connected' ? (
