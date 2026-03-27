@@ -841,12 +841,29 @@ app.post('/api/vps/:id/connect', async (req, res) => {
   try {
     const server: any = await dbGet('SELECT * FROM vps_servers WHERE id = ?', [req.params.id]);
     if (!server) return res.status(404).json({ error: 'Sunucu bulunamadı' });
-    const result = await connectPi5ToVps(
-      { ip: server.ip, username: server.username, password: server.password || undefined },
-      server.id
-    );
+
+    // First verify VPS is reachable via SSH
+    const connTest = await testSSHConnection({ ip: server.ip, username: server.username, password: server.password || undefined });
+    if (!connTest.success) {
+      return res.status(500).json({ error: `VPS erişilemiyor: ${connTest.message}` });
+    }
+
+    // Mark as connected (VPS is reachable)
     await dbRun('UPDATE vps_servers SET status = ? WHERE id = ?', ['connected', req.params.id]);
-    res.json(result);
+
+    // Try Pi5 WireGuard tunnel (may fail on non-Linux — that's OK)
+    let tunnelResult: any = null;
+    try {
+      tunnelResult = await connectPi5ToVps(
+        { ip: server.ip, username: server.username, password: server.password || undefined },
+        server.id
+      );
+    } catch (tunnelErr: any) {
+      // Pi5 tunnel failed but VPS itself is connected
+      console.log('Pi5 tunnel not established:', tunnelErr.message);
+    }
+
+    res.json({ success: true, tunnel: tunnelResult ? true : false, message: tunnelResult ? 'VPS bağlı + tünel aktif' : 'VPS bağlı (tünel Pi5 üzerinde kurulacak)' });
   } catch (e: any) {
     await dbRun('UPDATE vps_servers SET status = ? WHERE id = ?', ['error', req.params.id]);
     res.status(500).json({ error: e.message || 'Bağlantı başarısız' });

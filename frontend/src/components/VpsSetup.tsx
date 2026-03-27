@@ -216,10 +216,10 @@ function VpsCard({ server, onConnect, onDisconnect, onDelete }: {
     setChecking(false);
   };
 
-  // Auto-check on mount if connected
+  // Auto-check on mount (any status — VPS may still be reachable)
   useEffect(() => {
-    if (server.status === 'connected') checkInternet();
-  }, [server.status]);
+    checkInternet();
+  }, [server.id]);
 
   const StatusDot = ({ ok, label }: { ok: boolean; label: string }) => (
     <span title={label} style={{ display: 'inline-flex', alignItems: 'center', gap: 3, fontSize: 10, color: ok ? 'var(--success-color)' : 'var(--danger-color)' }}>
@@ -298,19 +298,19 @@ function VpsCard({ server, onConnect, onDisconnect, onDelete }: {
 
       <div style={{ display: 'flex', gap: 4, marginTop: 6 }}>
         {server.status === 'connected' ? (
-          <>
-            <button className="btn-outline btn-sm" style={{ flex: 1, fontSize: 11 }} onClick={onDisconnect}>
-              Bağlantıyı Kes
-            </button>
-            <button className="btn-outline btn-sm" style={{ fontSize: 11 }} onClick={checkInternet} disabled={checking} title="Internet kontrol">
-              {checking ? <Loader2 size={12} className="spin" /> : <Signal size={12} />}
-            </button>
-          </>
+          <button className="btn-outline btn-sm" style={{ flex: 1, fontSize: 11 }} onClick={onDisconnect}>
+            Tünel Kes
+          </button>
         ) : server.status !== 'installing' ? (
-          <button className="btn-primary btn-sm" style={{ flex: 1, fontSize: 11 }} onClick={onConnect}>
-            Bağlan
+          <button className="btn-primary btn-sm" style={{ flex: 1, fontSize: 11 }} onClick={async () => {
+            try { await onConnect(); } catch { /* Pi5 tunnel may fail on non-Linux but VPS is still usable */ }
+          }}>
+            Tünel Bağla
           </button>
         ) : null}
+        <button className="btn-outline btn-sm" style={{ fontSize: 11 }} onClick={checkInternet} disabled={checking} title="VPS internet kontrol">
+          {checking ? <Loader2 size={12} className="spin" /> : <Signal size={12} />}
+        </button>
         <button className="icon-btn icon-btn-sm vps-delete" onClick={onDelete}>
           <Trash2 size={12} />
         </button>
