@@ -1951,13 +1951,123 @@ app.delete('/api/ddns/configs/:id', async (req, res) => {
   }
 });
 
+// ─── DDNS Provider Update Functions ───
+async function updateDdnsProvider(config: any, ip: string): Promise<{ success: boolean; message: string }> {
+  const exec = require('util').promisify(require('child_process').exec);
+  const provider = (config.provider || '').toLowerCase();
+
+  try {
+    if (provider === 'duckdns') {
+      // DuckDNS: https://www.duckdns.org/spec.jsp
+      const subdomain = config.hostname.replace('.duckdns.org', '');
+      const url = `https://www.duckdns.org/update?domains=${subdomain}&token=${config.token}&ip=${ip}`;
+      const { stdout } = await exec(`curl -s --max-time 10 "${url}"`, { timeout: 15000 });
+      const result = stdout.trim();
+      if (result === 'OK') return { success: true, message: 'DuckDNS güncellendi' };
+      return { success: false, message: `DuckDNS yanıtı: ${result}` };
+
+    } else if (provider === 'noip' || provider === 'no-ip') {
+      // No-IP: HTTP Basic Auth
+      const url = `https://dynupdate.no-ip.com/nic/update?hostname=${config.hostname}&myip=${ip}`;
+      const auth = Buffer.from(`${config.username}:${config.password}`).toString('base64');
+      const { stdout } = await exec(`curl -s --max-time 10 -H "Authorization: Basic ${auth}" "${url}"`, { timeout: 15000 });
+      const result = stdout.trim();
+      if (result.startsWith('good') || result.startsWith('nochg')) return { success: true, message: `No-IP: ${result}` };
+      return { success: false, message: `No-IP yanıtı: ${result}` };
+
+    } else if (provider === 'cloudflare') {
+      // Cloudflare: DNS record update via API
+      const zoneId = config.domain; // Zone ID stored in domain field
+      const { stdout: listOut } = await exec(`curl -s --max-time 10 -H "Authorization: Bearer ${config.token}" -H "Content-Type: application/json" "https://api.cloudflare.com/client/v4/zones/${zoneId}/dns_records?type=A&name=${config.hostname}"`, { timeout: 15000 });
+      const listData = JSON.parse(listOut);
+      if (!listData.success || !listData.result?.[0]) return { success: false, message: 'Cloudflare DNS kaydı bulunamadı' };
+      const recordId = listData.result[0].id;
+      const { stdout: updateOut } = await exec(`curl -s --max-time 10 -X PUT -H "Authorization: Bearer ${config.token}" -H "Content-Type: application/json" -d '{"type":"A","name":"${config.hostname}","content":"${ip}","ttl":300}' "https://api.cloudflare.com/client/v4/zones/${zoneId}/dns_records/${recordId}"`, { timeout: 15000 });
+      const updateData = JSON.parse(updateOut);
+      if (updateData.success) return { success: true, message: 'Cloudflare güncellendi' };
+      return { success: false, message: `Cloudflare hatası: ${JSON.stringify(updateData.errors)}` };
+
+    } else if (provider === 'dynu') {
+      // Dynu: HTTP Basic Auth
+      const url = `https://api.dynu.com/nic/update?hostname=${config.hostname}&myip=${ip}`;
+      const auth = Buffer.from(`${config.username}:${config.password}`).toString('base64');
+      const { stdout } = await exec(`curl -s --max-time 10 -H "Authorization: Basic ${auth}" "${url}"`, { timeout: 15000 });
+      const result = stdout.trim();
+      if (result.startsWith('good') || result.startsWith('nochg')) return { success: true, message: `Dynu: ${result}` };
+      return { success: false, message: `Dynu yanıtı: ${result}` };
+
+    } else if (provider === 'custom') {
+      // Custom URL with placeholders
+      let url = config.domain || '';
+      url = url.replace('{ip}', ip).replace('{hostname}', config.hostname);
+      if (config.username && config.password) {
+        const auth = Buffer.from(`${config.username}:${config.password}`).toString('base64');
+        const { stdout } = await exec(`curl -s --max-time 10 -H "Authorization: Basic ${auth}" "${url}"`, { timeout: 15000 });
+        return { success: true, message: `Custom: ${stdout.trim().slice(0, 100)}` };
+      }
+      const { stdout } = await exec(`curl -s --max-time 10 "${url}"`, { timeout: 15000 });
+      return { success: true, message: `Custom: ${stdout.trim().slice(0, 100)}` };
+
+    } else {
+      return { success: false, message: `Bilinmeyen provider: ${provider}` };
+    }
+  } catch (e: any) {
+    return { success: false, message: e.message || 'Bağlantı hatası' };
+  }
+}
+
+// DDNS auto-update: check IP and update all enabled configs
+async function ddnsAutoUpdate(): Promise<void> {
+  try {
+    const configs: any[] = await dbAll('SELECT * FROM ddns_configs WHERE enabled = 1');
+    if (configs.length === 0) return;
+
+    const { ip: currentIp } = await getCurrentExternalIp();
+    if (!currentIp) return;
+
+    // Track IP changes
+    const lastEntry: any = await dbGet('SELECT * FROM ddns_ip_history ORDER BY detected_at DESC LIMIT 1');
+    if (lastEntry?.ip !== currentIp) {
+      await dbRun('INSERT INTO ddns_ip_history (ip, source) VALUES (?, ?)', [currentIp, 'auto']);
+    }
+
+    const now = new Date();
+    for (const config of configs) {
+      // Check if update interval has elapsed
+      const lastUpdate = config.last_update ? new Date(config.last_update) : new Date(0);
+      const intervalMs = (config.update_interval_min || 5) * 60 * 1000;
+      if (now.getTime() - lastUpdate.getTime() < intervalMs && config.last_ip === currentIp) continue;
+
+      // IP changed or interval elapsed — update provider
+      const result = await updateDdnsProvider(config, currentIp);
+      await dbRun(
+        'UPDATE ddns_configs SET status = ?, last_ip = ?, last_update = datetime(?) WHERE id = ?',
+        [result.success ? 'active' : 'error', currentIp, now.toISOString(), config.id]
+      );
+      console.log(`[DDNS] ${config.provider}/${config.hostname}: ${result.message}`);
+    }
+  } catch (e: any) {
+    console.error('[DDNS] Auto-update hatası:', e.message);
+  }
+}
+
+// Start DDNS cron: every 5 minutes
+setInterval(ddnsAutoUpdate, 5 * 60 * 1000);
+// Run once at startup after 30s
+setTimeout(ddnsAutoUpdate, 30000);
+
 app.post('/api/ddns/configs/:id/test', async (req, res) => {
   try {
     const { ip: currentIp } = await getCurrentExternalIp();
-    await dbRun('UPDATE ddns_configs SET status = ?, last_ip = ?, last_update = datetime(?) WHERE id = ?',
-      ['active', currentIp, new Date().toISOString(), req.params.id]);
     const config = await dbGet('SELECT * FROM ddns_configs WHERE id = ?', [req.params.id]);
-    res.json({ success: true, config, detected_ip: currentIp });
+    if (!config) return res.status(404).json({ error: 'Config bulunamadı' });
+
+    // Actually call the provider
+    const result = await updateDdnsProvider(config, currentIp);
+    await dbRun('UPDATE ddns_configs SET status = ?, last_ip = ?, last_update = datetime(?) WHERE id = ?',
+      [result.success ? 'active' : 'error', currentIp, new Date().toISOString(), req.params.id]);
+    const updated = await dbGet('SELECT * FROM ddns_configs WHERE id = ?', [req.params.id]);
+    res.json({ success: result.success, message: result.message, config: updated, detected_ip: currentIp });
   } catch (e: any) {
     res.status(500).json({ error: e.message });
   }
@@ -1983,31 +2093,19 @@ app.get('/api/ddns/ip-history', async (_req, res) => {
 
 app.post('/api/ddns/check-ip', async (_req, res) => {
   try {
+    const { ip: currentIp } = await getCurrentExternalIp();
     const lastEntry = await dbGet('SELECT * FROM ddns_ip_history ORDER BY detected_at DESC LIMIT 1');
-    if (isLinux) {
-      const { ip: currentIp } = await getCurrentExternalIp();
-      const oldIp = lastEntry?.ip || '';
-      if (currentIp !== oldIp && currentIp !== '85.102.45.178') {
-        await dbRun('INSERT INTO ddns_ip_history (ip, source) VALUES (?, ?)', [currentIp, 'auto']);
-        res.json({ changed: true, old_ip: oldIp, new_ip: currentIp });
-      } else {
-        res.json({ changed: false, ip: currentIp });
-      }
-    } else {
-      // Non-Linux: try to detect IP via fetch
-      try {
-        const { ip: currentIp } = await getCurrentExternalIp();
-        const oldIp = lastEntry?.ip || '';
-        if (currentIp && currentIp !== oldIp) {
-          await dbRun('INSERT INTO ddns_ip_history (ip, source) VALUES (?, ?)', [currentIp, 'auto']);
-          res.json({ changed: true, old_ip: oldIp, new_ip: currentIp });
-        } else {
-          res.json({ changed: false, ip: currentIp || oldIp });
-        }
-      } catch {
-        res.json({ changed: false, ip: lastEntry?.ip || '', error: 'IP tespiti başarısız' });
-      }
+    const oldIp = lastEntry?.ip || '';
+    const changed = currentIp && currentIp !== oldIp;
+
+    if (changed) {
+      await dbRun('INSERT INTO ddns_ip_history (ip, source) VALUES (?, ?)', [currentIp, 'manual']);
     }
+
+    // Trigger provider updates for all enabled configs
+    await ddnsAutoUpdate();
+
+    res.json({ changed: !!changed, old_ip: oldIp, new_ip: currentIp || oldIp });
   } catch (e: any) {
     res.status(500).json({ error: e.message });
   }
