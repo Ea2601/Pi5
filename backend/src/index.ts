@@ -650,6 +650,59 @@ app.get('/api/vps/:id/clients', async (req, res) => {
   }
 });
 
+// ─── VPS Internet Health Check ───
+app.get('/api/vps/:id/internet-check', async (req, res) => {
+  try {
+    const server: any = await dbGet('SELECT * FROM vps_servers WHERE id = ?', [req.params.id]);
+    if (!server) return res.status(404).json({ error: 'Sunucu bulunamadı' });
+
+    const { NodeSSH } = require('node-ssh');
+    const ssh = new NodeSSH();
+    await ssh.connect({
+      host: server.ip, username: server.username,
+      password: server.password || undefined, readyTimeout: 10000,
+    });
+
+    // Check internet connectivity
+    const ping = await ssh.execCommand('ping -c 1 -W 3 8.8.8.8 2>/dev/null && echo "PING_OK" || echo "PING_FAIL"');
+    const hasInternet = ping.stdout.includes('PING_OK');
+
+    // Check DNS
+    const dns = await ssh.execCommand('dig +short google.com @8.8.8.8 2>/dev/null | head -1');
+    const hasDns = dns.stdout.trim().length > 0;
+
+    // Check IP forwarding
+    const fwd = await ssh.execCommand('cat /proc/sys/net/ipv4/ip_forward 2>/dev/null');
+    const hasForwarding = fwd.stdout.trim() === '1';
+
+    // Check WireGuard
+    const wg = await ssh.execCommand('wg show wg0 2>/dev/null | head -3');
+    const hasWg = wg.stdout.includes('wg0');
+
+    // Check NAT masquerade
+    const nat = await ssh.execCommand('iptables -t nat -L POSTROUTING -n 2>/dev/null | grep -i masq');
+    const hasNat = nat.stdout.toLowerCase().includes('masquerade');
+
+    // Get public IP
+    const ipCmd = await ssh.execCommand('curl -s4 --max-time 5 ifconfig.me 2>/dev/null || wget -qO- --timeout=5 ifconfig.me 2>/dev/null || echo ""');
+    const publicIp = ipCmd.stdout.trim();
+
+    ssh.dispose();
+
+    res.json({
+      internet: hasInternet,
+      dns: hasDns,
+      forwarding: hasForwarding,
+      wireguard: hasWg,
+      nat: hasNat,
+      publicIp,
+      allGood: hasInternet && hasDns && hasForwarding && hasWg && hasNat,
+    });
+  } catch (e: any) {
+    res.json({ internet: false, dns: false, forwarding: false, wireguard: false, nat: false, publicIp: '', allGood: false, error: e.message });
+  }
+});
+
 // ─── Delete WireGuard Client (from DB + VPS) ───
 app.delete('/api/vps/:id/clients/:clientId', async (req, res) => {
   try {

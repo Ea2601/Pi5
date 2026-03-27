@@ -1,6 +1,7 @@
 import {
   Server, Lock, Globe, Loader2, CheckCircle, AlertTriangle, Trash2, Plus,
-  Wifi, Settings, Activity, Network, Eye, EyeOff, Copy, X, QrCode, Users
+  Wifi, Settings, Activity, Network, Eye, EyeOff, Copy, X, QrCode, Users,
+  Signal, ShieldCheck
 } from 'lucide-react';
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { useApi, postApi, deleteApi } from '../hooks/useApi';
@@ -184,6 +185,96 @@ function QrModal({ client, onClose }: { client: WgClient; onClose: () => void })
         <p style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 12 }}>
           Bu QR kodu WireGuard mobil uygulamasinda taratarak baglanabilirsiniz.
         </p>
+      </div>
+    </div>
+  );
+}
+
+interface InternetStatus {
+  internet: boolean; dns: boolean; forwarding: boolean;
+  wireguard: boolean; nat: boolean; publicIp: string; allGood: boolean;
+}
+
+function VpsCard({ server, onConnect, onDisconnect, onDelete }: {
+  server: VpsServer; onConnect: () => Promise<void>; onDisconnect: () => Promise<void>; onDelete: () => void;
+}) {
+  const [netStatus, setNetStatus] = useState<InternetStatus | null>(null);
+  const [checking, setChecking] = useState(false);
+
+  const checkInternet = async () => {
+    setChecking(true);
+    try {
+      const res = await fetch(`/api/vps/${server.id}/internet-check`);
+      setNetStatus(await res.json());
+    } catch { setNetStatus(null); }
+    setChecking(false);
+  };
+
+  // Auto-check on mount if connected
+  useEffect(() => {
+    if (server.status === 'connected') checkInternet();
+  }, [server.status]);
+
+  const StatusDot = ({ ok, label }: { ok: boolean; label: string }) => (
+    <span title={label} style={{ display: 'inline-flex', alignItems: 'center', gap: 3, fontSize: 10, color: ok ? 'var(--success-color)' : 'var(--danger-color)' }}>
+      <span style={{ width: 6, height: 6, borderRadius: 3, background: ok ? 'var(--success-color)' : 'var(--danger-color)', display: 'inline-block' }} />
+      {label}
+    </span>
+  );
+
+  return (
+    <div className="vps-card">
+      <div className="vps-card-header">
+        <Server size={18} />
+        <span className={`svc-dot ${server.status === 'connected' ? 'svc-on' : 'svc-off'}`} />
+      </div>
+      <div className="vps-card-body">
+        <span className="vps-ip">{server.ip}</span>
+        <span className="vps-location">{server.location || server.username}</span>
+        <span className={`badge ${server.status === 'connected' ? 'badge-success' : server.status === 'error' ? 'badge-error' : 'badge-neutral'}`}>
+          {server.status === 'connected' ? 'Bağlı' : server.status === 'installing' ? 'Kuruluyor' : server.status === 'error' ? 'Hata' : 'Bağlı Değil'}
+        </span>
+      </div>
+
+      {/* Internet status badges */}
+      {netStatus && (
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 6, padding: '6px 0', borderTop: '1px solid var(--panel-border)' }}>
+          <StatusDot ok={netStatus.internet} label="Internet" />
+          <StatusDot ok={netStatus.dns} label="DNS" />
+          <StatusDot ok={netStatus.forwarding} label="Forward" />
+          <StatusDot ok={netStatus.wireguard} label="WG" />
+          <StatusDot ok={netStatus.nat} label="NAT" />
+        </div>
+      )}
+      {netStatus && netStatus.allGood && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 10, color: 'var(--success-color)', marginTop: 2 }}>
+          <ShieldCheck size={12} /> Trafik aktif — {netStatus.publicIp}
+        </div>
+      )}
+      {netStatus && !netStatus.allGood && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 10, color: 'var(--danger-color)', marginTop: 2 }}>
+          <AlertTriangle size={12} /> Bazı kontroller başarısız
+        </div>
+      )}
+
+      <div style={{ display: 'flex', gap: 4, marginTop: 6 }}>
+        {server.status === 'connected' ? (
+          <>
+            <button className="btn-outline btn-sm" style={{ flex: 1, fontSize: 11 }} onClick={onDisconnect}>
+              Bağlantıyı Kes
+            </button>
+            <button className="btn-outline btn-sm" style={{ fontSize: 11 }} onClick={checkInternet} disabled={checking} title="Internet kontrol">
+              {checking ? <Loader2 size={12} className="spin" /> : <Signal size={12} />}
+            </button>
+          </>
+        ) : server.status !== 'installing' ? (
+          <button className="btn-primary btn-sm" style={{ flex: 1, fontSize: 11 }} onClick={onConnect}>
+            Bağlan
+          </button>
+        ) : null}
+        <button className="icon-btn icon-btn-sm vps-delete" onClick={onDelete}>
+          <Trash2 size={12} />
+        </button>
       </div>
     </div>
   );
@@ -409,35 +500,10 @@ export function VpsSetup() {
             <div className="glass-panel widget-large" style={{ marginTop: 14 }}>
               <div className="vps-grid">
                 {data.servers.map(server => (
-                  <div key={server.id} className="vps-card">
-                    <div className="vps-card-header">
-                      <Server size={18} />
-                      <span className={`svc-dot ${server.status === 'connected' ? 'svc-on' : 'svc-off'}`} />
-                    </div>
-                    <div className="vps-card-body">
-                      <span className="vps-ip">{server.ip}</span>
-                      <span className="vps-location">{server.location || server.username}</span>
-                      <span className={`badge ${server.status === 'connected' ? 'badge-success' : server.status === 'error' ? 'badge-error' : 'badge-neutral'}`}>
-                        {server.status === 'connected' ? 'Bağlı' : server.status === 'installing' ? 'Kuruluyor' : server.status === 'error' ? 'Hata' : 'Bağlı Değil'}
-                      </span>
-                    </div>
-                    <div style={{ display: 'flex', gap: 4, marginTop: 4 }}>
-                      {server.status === 'connected' ? (
-                        <button className="btn-outline btn-sm" style={{ flex: 1, fontSize: 11 }}
-                          onClick={async () => { await postApi(`/vps/${server.id}/disconnect`, {}); await refetch(); }}>
-                          Bağlantıyı Kes
-                        </button>
-                      ) : server.status !== 'installing' ? (
-                        <button className="btn-primary btn-sm" style={{ flex: 1, fontSize: 11 }}
-                          onClick={async () => { await postApi(`/vps/${server.id}/connect`, {}); await refetch(); }}>
-                          Bağlan
-                        </button>
-                      ) : null}
-                      <button className="icon-btn icon-btn-sm vps-delete" onClick={() => handleDelete(server.id)}>
-                        <Trash2 size={12} />
-                      </button>
-                    </div>
-                  </div>
+                  <VpsCard key={server.id} server={server}
+                    onConnect={async () => { await postApi(`/vps/${server.id}/connect`, {}); await refetch(); }}
+                    onDisconnect={async () => { await postApi(`/vps/${server.id}/disconnect`, {}); await refetch(); }}
+                    onDelete={() => handleDelete(server.id)} />
                 ))}
               </div>
             </div>
