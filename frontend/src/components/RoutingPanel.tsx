@@ -202,6 +202,7 @@ interface DomainRule {
   route_type: string;
   description: string;
   enabled: number;
+  redirect_url?: string;
   created_at: string;
 }
 
@@ -213,6 +214,7 @@ function DomainRoutingView() {
   const [newExitNode, setNewExitNode] = useState('isp');
   const [newDpi, setNewDpi] = useState(0);
   const [newDesc, setNewDesc] = useState('');
+  const [newRedirectUrl, setNewRedirectUrl] = useState('');
   const [filter, setFilter] = useState('');
   const [error, setError] = useState('');
 
@@ -226,12 +228,13 @@ function DomainRoutingView() {
     try {
       const result = await postApi('/routing/domains', {
         domain: newDomain.trim(),
-        exit_node: newExitNode,
-        dpi_bypass: newDpi,
+        exit_node: newRedirectUrl ? 'isp' : newExitNode,
+        dpi_bypass: newRedirectUrl ? 0 : newDpi,
         description: newDesc.trim(),
+        redirect_url: newRedirectUrl.trim(),
       });
       if (result.error) { setError(result.error); return; }
-      setNewDomain(''); setNewDesc(''); setNewExitNode('isp'); setNewDpi(0); setShowAdd(false);
+      setNewDomain(''); setNewDesc(''); setNewExitNode('isp'); setNewDpi(0); setNewRedirectUrl(''); setShowAdd(false);
       await refetch();
     } catch (e: any) {
       setError(e.message || 'Eklenemedi');
@@ -302,6 +305,13 @@ function DomainRoutingView() {
                   value={newDesc} onChange={e => setNewDesc(e.target.value)}
                   onKeyDown={e => e.key === 'Enter' && handleAdd()} />
               </div>
+              <div className="form-group" style={{ gridColumn: '1 / -1' }}>
+                <label><Route size={14} /> Yönlendirme URL'si (opsiyonel)</label>
+                <input className="config-input" type="text" placeholder="https://example.com/blocked — boş bırakılırsa VPS/ISP routing uygulanır"
+                  value={newRedirectUrl} onChange={e => setNewRedirectUrl(e.target.value)}
+                  onKeyDown={e => e.key === 'Enter' && handleAdd()} />
+                {newRedirectUrl && <span style={{ fontSize: 11, color: 'var(--accent-color)', marginTop: 4, display: 'block' }}>Bu domain'e erişildiğinde kullanıcı otomatik olarak bu URL'ye yönlendirilecek</span>}
+              </div>
             </div>
             {error && <div style={{ color: 'var(--danger-color)', fontSize: 12, marginTop: 6 }}>{error}</div>}
             <div className="cron-add-actions" style={{ marginTop: 10 }}>
@@ -366,9 +376,14 @@ function DomainRoutingView() {
                   {d.domain.startsWith('*.') && (
                     <span style={{ marginLeft: 6 }}><Badge variant="info">wildcard</Badge></span>
                   )}
-                  {d.description && (
-                    <span style={{ fontSize: 11, color: 'var(--text-muted)', marginLeft: 8 }}>— {d.description}</span>
+                  {d.redirect_url && (
+                    <span style={{ marginLeft: 6 }}><Badge variant="warning">redirect</Badge></span>
                   )}
+                  {d.redirect_url ? (
+                    <span style={{ fontSize: 10, color: 'var(--accent-color)', marginLeft: 8, fontFamily: 'var(--font-mono)' }}>→ {d.redirect_url}</span>
+                  ) : d.description ? (
+                    <span style={{ fontSize: 11, color: 'var(--text-muted)', marginLeft: 8 }}>— {d.description}</span>
+                  ) : null}
                 </span>
 
                 <span className="routing-col-vps">

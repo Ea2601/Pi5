@@ -384,6 +384,7 @@ interface DomainRoute {
   exit_node: string;   // 'isp' or a vps id (e.g. '1', '2')
   dpi_bypass: number;  // 0 or 1
   enabled: number;
+  redirect_url?: string; // if set, DNS-redirect domain to Pi5 IP → HTTP redirect to this URL
 }
 
 export async function applyDomainRouting(domains?: DomainRoute[]): Promise<void> {
@@ -391,6 +392,37 @@ export async function applyDomainRouting(domains?: DomainRoute[]): Promise<void>
   if (!domains) return;
 
   const enabledDomains = domains.filter(d => d.enabled);
+
+  // Separate redirect rules from routing rules
+  const redirectDomains = enabledDomains.filter(d => d.redirect_url);
+  const routingDomains = enabledDomains.filter(d => !d.redirect_url);
+
+  // Generate dnsmasq address= lines for redirect domains (point to Pi5 local IP)
+  const addressLines: string[] = [];
+  for (const d of redirectDomains) {
+    const domain = d.domain.startsWith('*.') ? d.domain.replace('*.', '') : d.domain;
+    // Point domain to Pi5 IP — the redirect HTTP server will handle the actual redirect
+    addressLines.push(`address=/${domain}/192.168.1.1`);
+  }
+
+  // Write redirect config (separate from routing config)
+  if (addressLines.length > 0) {
+    const redirectConf = '# Auto-generated redirect rules\n' + addressLines.join('\n') + '\n';
+    await run(`echo '${redirectConf.replace(/'/g, "\\'")}' > /etc/dnsmasq.d/06-domain-redirect.conf`);
+  } else {
+    await run('echo "" > /etc/dnsmasq.d/06-domain-redirect.conf 2>/dev/null');
+  }
+
+  // Write redirect URL map for the HTTP redirect server
+  const redirectMap: Record<string, string> = {};
+  for (const d of redirectDomains) {
+    const domain = d.domain.startsWith('*.') ? d.domain.replace('*.', '') : d.domain;
+    redirectMap[domain] = d.redirect_url!;
+  }
+  const fs = require('fs');
+  try {
+    fs.writeFileSync('/opt/pi5-gateway/core/redirect-map.json', JSON.stringify(redirectMap, null, 2));
+  } catch { /* may fail on non-Linux */ }
 
   // fwmark scheme:
   //   exit_node='isp', dpi_bypass=0 → mark 0 (default, no special routing)
@@ -411,7 +443,7 @@ export async function applyDomainRouting(domains?: DomainRoute[]): Promise<void>
   const ipsetLines: string[] = [];
   const markSets = new Map<number, string>(); // mark → ipset name
 
-  for (const d of enabledDomains) {
+  for (const d of routingDomains) {
     const mark = getFwmark(d.exit_node, d.dpi_bypass);
     if (mark === 0) continue; // default route, no special routing needed
     const setName = `rt_m${mark}`;

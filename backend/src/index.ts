@@ -17,6 +17,41 @@ import {
 const app = express();
 const port = process.env.PORT || 3001;
 
+// ─── Domain Redirect Handler ───
+// If a request comes from a DNS-redirected domain (via dnsmasq address=),
+// check redirect-map.json and send 302 redirect to target URL
+app.use((req, res, next) => {
+  const host = (req.hostname || req.headers.host || '').split(':')[0].toLowerCase();
+  if (!host || host === 'localhost' || host.startsWith('192.168.') || host.startsWith('10.') || host.startsWith('127.')) {
+    return next();
+  }
+  try {
+    const fs = require('fs');
+    const mapPath = '/opt/pi5-gateway/core/redirect-map.json';
+    if (fs.existsSync(mapPath)) {
+      const map = JSON.parse(fs.readFileSync(mapPath, 'utf8'));
+      // Check exact match first, then keyword match
+      let targetUrl = map[host];
+      if (!targetUrl) {
+        for (const [pattern, url] of Object.entries(map)) {
+          if (!pattern.includes('.') && host.includes(pattern)) {
+            targetUrl = url as string;
+            break;
+          }
+          if (host.endsWith('.' + pattern) || host === pattern) {
+            targetUrl = url as string;
+            break;
+          }
+        }
+      }
+      if (targetUrl) {
+        return res.redirect(302, targetUrl as string);
+      }
+    }
+  } catch { /* redirect-map not found or invalid */ }
+  next();
+});
+
 // ─── Security & Performance Middleware ───
 app.use(helmet({ contentSecurityPolicy: false }));
 app.use(cors({
@@ -994,7 +1029,7 @@ app.put('/api/routing/rules/:id', async (req, res) => {
 // ─── Domain-Based Routing ───
 app.get('/api/routing/domains', async (_req, res) => {
   try {
-    const domains = await dbAll('SELECT id, domain, route_type, description, enabled, exit_node, dpi_bypass, created_at FROM domain_routing ORDER BY domain');
+    const domains = await dbAll('SELECT id, domain, route_type, description, enabled, exit_node, dpi_bypass, redirect_url, created_at FROM domain_routing ORDER BY domain');
     res.json({ domains });
   } catch (e: any) {
     res.status(500).json({ error: e.message });
@@ -1003,14 +1038,14 @@ app.get('/api/routing/domains', async (_req, res) => {
 
 app.post('/api/routing/domains', async (req, res) => {
   try {
-    const { domain, route_type, description, exit_node, dpi_bypass } = req.body;
+    const { domain, route_type, description, exit_node, dpi_bypass, redirect_url } = req.body;
     if (!domain) return res.status(400).json({ error: 'Domain gerekli' });
     const cleanDomain = domain.trim().toLowerCase().replace(/^(https?:\/\/)?(www\.)?/, '').replace(/\/.*$/, '');
-    await dbRun('INSERT INTO domain_routing (domain, route_type, description, exit_node, dpi_bypass) VALUES (?, ?, ?, ?, ?)',
-      [cleanDomain, route_type || 'direct', description || '', exit_node || 'isp', dpi_bypass ? 1 : 0]);
+    await dbRun('INSERT INTO domain_routing (domain, route_type, description, exit_node, dpi_bypass, redirect_url) VALUES (?, ?, ?, ?, ?, ?)',
+      [cleanDomain, route_type || 'direct', description || '', exit_node || 'isp', dpi_bypass ? 1 : 0, redirect_url || '']);
     // Apply unified routing (app + domain rules together)
     await applyAllRoutingRules();
-    const domains = await dbAll('SELECT id, domain, route_type, description, enabled, exit_node, dpi_bypass, created_at FROM domain_routing ORDER BY domain');
+    const domains = await dbAll('SELECT id, domain, route_type, description, enabled, exit_node, dpi_bypass, redirect_url, created_at FROM domain_routing ORDER BY domain');
     res.json({ success: true, domains });
   } catch (e: any) {
     if (e.message?.includes('UNIQUE')) {
@@ -1022,7 +1057,7 @@ app.post('/api/routing/domains', async (req, res) => {
 
 app.put('/api/routing/domains/:id', async (req, res) => {
   try {
-    const { route_type, enabled, description, exit_node, dpi_bypass } = req.body;
+    const { route_type, enabled, description, exit_node, dpi_bypass, redirect_url } = req.body;
     const updates: string[] = [];
     const params: any[] = [];
     if (route_type !== undefined) { updates.push('route_type = ?'); params.push(route_type); }
@@ -1030,6 +1065,7 @@ app.put('/api/routing/domains/:id', async (req, res) => {
     if (description !== undefined) { updates.push('description = ?'); params.push(description); }
     if (exit_node !== undefined) { updates.push('exit_node = ?'); params.push(exit_node); }
     if (dpi_bypass !== undefined) { updates.push('dpi_bypass = ?'); params.push(dpi_bypass ? 1 : 0); }
+    if (redirect_url !== undefined) { updates.push('redirect_url = ?'); params.push(redirect_url); }
     if (updates.length === 0) return res.json({ success: true });
     params.push(req.params.id);
     await dbRun(`UPDATE domain_routing SET ${updates.join(', ')} WHERE id = ?`, params);
