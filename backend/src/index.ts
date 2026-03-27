@@ -212,12 +212,23 @@ app.delete('/api/cron/jobs/:id', async (req, res) => {
 
 app.post('/api/cron/jobs/:id/run', async (req, res) => {
   try {
+    const job: any = await dbGet('SELECT * FROM cron_jobs WHERE id = ?', [req.params.id]);
+    if (!job) return res.status(404).json({ error: 'Görev bulunamadı' });
     await dbRun("UPDATE cron_jobs SET status = 'running', last_run = datetime('now') WHERE id = ?", [req.params.id]);
-    // Simulate execution
-    setTimeout(async () => {
-      await dbRun("UPDATE cron_jobs SET status = 'success' WHERE id = ?", [req.params.id]);
-    }, 2000);
-    res.json({ success: true, message: 'Görev çalıştırılıyor...' });
+    if (isLinux) {
+      const exec = require('util').promisify(require('child_process').exec);
+      try {
+        const { stdout } = await exec(job.command, { timeout: 60000 });
+        await dbRun("UPDATE cron_jobs SET status = 'success' WHERE id = ?", [req.params.id]);
+        res.json({ success: true, output: stdout.trim().slice(-500) });
+      } catch (cmdErr: any) {
+        await dbRun("UPDATE cron_jobs SET status = 'error' WHERE id = ?", [req.params.id]);
+        res.json({ success: false, error: cmdErr.message });
+      }
+    } else {
+      await dbRun("UPDATE cron_jobs SET status = 'error' WHERE id = ?", [req.params.id]);
+      res.json({ success: false, error: 'Cron görevleri sadece Pi5 üzerinde çalışır' });
+    }
   } catch (e: any) {
     res.status(500).json({ error: e.message });
   }
@@ -347,15 +358,8 @@ app.delete('/api/zapret/domains/:id', async (req, res) => {
 app.post('/api/services/:name/restart', async (req, res) => {
   try {
     await dbRun("UPDATE service_status SET status='restarting', last_check=CURRENT_TIMESTAMP WHERE name=?", [req.params.name]);
-    if (isLinux) {
-      await systemServices.restartService(req.params.name);
-      await dbRun("UPDATE service_status SET status='running', last_check=CURRENT_TIMESTAMP WHERE name=?", [req.params.name]);
-    } else {
-      // Simulate restart delay on non-Linux
-      setTimeout(async () => {
-        await dbRun("UPDATE service_status SET status='running', last_check=CURRENT_TIMESTAMP WHERE name=?", [req.params.name]);
-      }, 2000);
-    }
+    await systemServices.restartService(req.params.name);
+    await dbRun("UPDATE service_status SET status='running', last_check=CURRENT_TIMESTAMP WHERE name=?", [req.params.name]);
     res.json({ success: true, message: `${req.params.name} yeniden başlatılıyor...` });
   } catch (e: any) {
     res.status(500).json({ error: e.message });
@@ -898,7 +902,7 @@ app.get('/api/bandwidth/live', async (_req, res) => {
     const devices = await dbAll('SELECT mac_address, hostname FROM devices');
     if (isLinux) {
       const bw = await getBandwidthLive();
-      // Return per-interface bandwidth data alongside per-device mock
+      // Distribute interface bandwidth proportionally across devices
       // Real per-device bandwidth requires iptables counters (complex), so provide interface-level data
       const liveData = (devices as any[]).map((d: any) => ({
         device_mac: d.mac_address,
@@ -924,16 +928,13 @@ app.get('/api/bandwidth/live', async (_req, res) => {
       });
       res.json({ live: liveData, interfaces: bw.interfaces });
     } else {
+      // Non-Linux: return zeroed data (no mock)
       const liveData = (devices as any[]).map((d: any) => ({
-        device_mac: d.mac_address,
-        hostname: d.hostname,
-        bytes_in: Math.floor(Math.random() * 5000000) + 100000,
-        bytes_out: Math.floor(Math.random() * 2000000) + 50000,
-        speed_in_kbps: Math.floor(Math.random() * 50000) + 500,
-        speed_out_kbps: Math.floor(Math.random() * 20000) + 200,
+        device_mac: d.mac_address, hostname: d.hostname,
+        bytes_in: 0, bytes_out: 0, speed_in_kbps: 0, speed_out_kbps: 0,
         timestamp: new Date().toISOString(),
       }));
-      res.json({ live: liveData });
+      res.json({ live: liveData, warning: 'Bant genişliği izleme sadece Pi5 üzerinde çalışır' });
     }
   } catch (e: any) {
     res.status(500).json({ error: e.message });
@@ -946,21 +947,6 @@ app.get('/api/bandwidth/history/:mac', async (req, res) => {
       'SELECT * FROM bandwidth_usage WHERE device_mac = ? ORDER BY timestamp DESC LIMIT 100',
       [req.params.mac]
     );
-    // If no real data, generate mock history
-    if (rows.length === 0) {
-      const mockHistory = [];
-      const now = Date.now();
-      for (let i = 0; i < 24; i++) {
-        mockHistory.push({
-          device_mac: req.params.mac,
-          timestamp: new Date(now - i * 3600000).toISOString(),
-          bytes_in: Math.floor(Math.random() * 50000000) + 1000000,
-          bytes_out: Math.floor(Math.random() * 20000000) + 500000,
-          interval_sec: 3600,
-        });
-      }
-      return res.json({ history: mockHistory });
-    }
     res.json({ history: rows });
   } catch (e: any) {
     res.status(500).json({ error: e.message });
@@ -1754,7 +1740,7 @@ app.get('/api/ddns/current-ip', async (_req, res) => {
     const result = await getCurrentExternalIp();
     res.json({ ip: result.ip, provider: result.provider, checked_at: new Date().toISOString() });
   } catch (e: any) {
-    res.json({ ip: '85.102.45.178', provider: 'mock', checked_at: new Date().toISOString() });
+    res.status(500).json({ error: 'IP tespiti başarısız: ' + e.message });
   }
 });
 
@@ -1780,13 +1766,18 @@ app.post('/api/ddns/check-ip', async (_req, res) => {
         res.json({ changed: false, ip: currentIp });
       }
     } else {
-      const changed = Math.random() > 0.5;
-      if (changed) {
-        const newIp = `85.102.${Math.floor(Math.random() * 255)}.${Math.floor(Math.random() * 255)}`;
-        await dbRun('INSERT INTO ddns_ip_history (ip, source) VALUES (?, ?)', [newIp, 'manual']);
-        res.json({ changed: true, old_ip: lastEntry?.ip || '85.102.45.178', new_ip: newIp });
-      } else {
-        res.json({ changed: false, ip: lastEntry?.ip || '85.102.45.178' });
+      // Non-Linux: try to detect IP via fetch
+      try {
+        const { ip: currentIp } = await getCurrentExternalIp();
+        const oldIp = lastEntry?.ip || '';
+        if (currentIp && currentIp !== oldIp) {
+          await dbRun('INSERT INTO ddns_ip_history (ip, source) VALUES (?, ?)', [currentIp, 'auto']);
+          res.json({ changed: true, old_ip: oldIp, new_ip: currentIp });
+        } else {
+          res.json({ changed: false, ip: currentIp || oldIp });
+        }
+      } catch {
+        res.json({ changed: false, ip: lastEntry?.ip || '', error: 'IP tespiti başarısız' });
       }
     }
   } catch (e: any) {

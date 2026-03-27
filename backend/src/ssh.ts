@@ -326,9 +326,7 @@ export async function connectPi5ToVps(
   vpsId: number
 ): Promise<{ success: boolean; interfaceName: string; pi5Ip: string; config: string }> {
   if (!isLinux) {
-    // Dev mode — save config file but don't bring up interface
-    const fakeConfig = `# Dev mode — would connect to ${opts.ip}`;
-    return { success: true, interfaceName: `wg_vps${vpsId}`, pi5Ip: '10.66.66.2/32', config: fakeConfig };
+    throw new Error('Pi5 VPN tüneli sadece Pi5 (Linux) üzerinde kurulabilir');
   }
 
   const interfaceName = `wg_vps${vpsId}`;

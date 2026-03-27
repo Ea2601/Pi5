@@ -1,6 +1,6 @@
 {
-  "version": "2.1.1",
-  "build": 13,
+  "version": "2.1.2",
+  "build": 14,
   "date": "2026-03-27",
   "changelog": [
     "Trafik bazlı routing sistemi (app + domain)",

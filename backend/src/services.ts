@@ -16,42 +16,27 @@ const SERVICE_NAME_MAP: Record<string, string> = {
 
 export const systemServices = {
     async installPihole() {
-        if (isLinux) {
-            // Real headless Pi-hole installation
-            const piholeBash = `
-                curl -sSL https://install.pi-hole.net > /tmp/pihole_install.sh
-                chmod +x /tmp/pihole_install.sh
-                sudo PIHOLE_SKIP_OS_CHECK=true bash /tmp/pihole_install.sh --unattended
-            `;
-            return execAsync(piholeBash, { timeout: 300000 }); // 5 min timeout
-        }
-        // Mock
+        if (!isLinux) throw new Error('Pi-hole kurulumu sadece Pi5 üzerinde çalışır');
         const piholeBash = `
-            echo 'Installing Pi-Hole headlessly...'
+            curl -sSL https://install.pi-hole.net > /tmp/pihole_install.sh
+            chmod +x /tmp/pihole_install.sh
+            sudo PIHOLE_SKIP_OS_CHECK=true bash /tmp/pihole_install.sh --unattended
         `;
-        return execAsync(piholeBash);
+        return execAsync(piholeBash, { timeout: 300000 });
     },
 
-    async installZapret(testDomain: string) {
-        if (isLinux) {
-            const zapretBash = `
-                git clone --depth=1 https://github.com/bol-van/zapret.git /tmp/zapret 2>/dev/null || true
-                cd /tmp/zapret && sudo ./install_easy.sh
-            `;
-            return execAsync(zapretBash, { timeout: 120000 });
-        }
-        // Mock
+    async installZapret(_testDomain: string) {
+        if (!isLinux) throw new Error('Zapret kurulumu sadece Pi5 üzerinde çalışır');
         const zapretBash = `
-            echo 'Cloning Zapret engine...'
-            echo 'Running blockcheck for domain: ${testDomain}'
-            echo 'Applied Zapret DPI bypass rules.'
+            git clone --depth=1 https://github.com/bol-van/zapret.git /tmp/zapret 2>/dev/null || true
+            cd /tmp/zapret && sudo ./install_easy.sh
         `;
-        return execAsync(zapretBash);
+        return execAsync(zapretBash, { timeout: 120000 });
     },
 
     async configureNftables() {
-        if (isLinux) {
-            const nftablesConfig = `#!/usr/sbin/nft -f
+        if (!isLinux) throw new Error('nftables yapılandırması sadece Pi5 üzerinde çalışır');
+        const nftablesConfig = `#!/usr/sbin/nft -f
 flush ruleset
 
 table inet filter {
@@ -81,32 +66,23 @@ table ip nat {
         oifname "wlan0" masquerade
     }
 }`;
-            // Write config and apply
-            const fs = await import('fs');
-            fs.writeFileSync('/tmp/nftables.conf', nftablesConfig);
-            await execAsync('sudo cp /tmp/nftables.conf /etc/nftables.conf');
-            await execAsync('sudo systemctl restart nftables');
-            return { stdout: 'nftables configuration applied successfully.', stderr: '' };
-        }
-        // Mock
-        return { stdout: 'Mocked nftables config generated and ready for deployment.', stderr: '' };
+        const fs = await import('fs');
+        fs.writeFileSync('/tmp/nftables.conf', nftablesConfig);
+        await execAsync('sudo cp /tmp/nftables.conf /etc/nftables.conf');
+        await execAsync('sudo systemctl restart nftables');
+        return { stdout: 'nftables yapılandırması uygulandı.', stderr: '' };
     },
 
     async toggleService(name: string, enable: boolean) {
-        if (isLinux) {
-            const action = enable ? 'start' : 'stop';
-            const svcName = SERVICE_NAME_MAP[name] || name;
-            const result = await systemctlAction(action, svcName);
-            return result;
-        }
-        return `Mock: ${enable ? 'started' : 'stopped'} ${name}`;
+        if (!isLinux) throw new Error('Servis kontrolü sadece Pi5 üzerinde çalışır');
+        const action = enable ? 'start' : 'stop';
+        const svcName = SERVICE_NAME_MAP[name] || name;
+        return await systemctlAction(action, svcName);
     },
 
     async restartService(name: string) {
-        if (isLinux) {
-            const svcName = SERVICE_NAME_MAP[name] || name;
-            return await systemctlAction('restart', svcName);
-        }
-        return `Mock: restarted ${name}`;
+        if (!isLinux) throw new Error('Servis kontrolü sadece Pi5 üzerinde çalışır');
+        const svcName = SERVICE_NAME_MAP[name] || name;
+        return await systemctlAction('restart', svcName);
     },
 };

@@ -395,7 +395,7 @@ export async function checkDnsHealth(): Promise<boolean> {
 
 // ─── Service Control ───
 export async function systemctlAction(action: 'start' | 'stop' | 'restart' | 'enable' | 'disable', service: string): Promise<string> {
-  if (!isLinux) return `Gelistirme ortami: ${action} ${service} simulasyonu`;
+  if (!isLinux) throw new Error(`systemctl sadece Pi5 üzerinde çalışır: ${action} ${service}`);
   return await run(`systemctl ${action} ${service}`) || `${action} ${service} tamamlandi`;
 }
 
