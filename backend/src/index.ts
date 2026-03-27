@@ -1936,7 +1936,7 @@ app.get('/api/system/update-check', async (_req, res) => {
     }
     const exec = require('util').promisify(require('child_process').exec);
     // Fetch latest from remote
-    await exec('cd /opt/pi5-gateway && git fetch origin master', { timeout: 15000 }).catch(() => {});
+    await exec('cd /opt/pi5-gateway && git config --global --add safe.directory /opt/pi5-gateway 2>/dev/null; git fetch origin master', { timeout: 15000 }).catch(() => {});
     // Compare HEAD with origin/master
     const { stdout: logOutput } = await exec(
       'cd /opt/pi5-gateway && git log HEAD..origin/master --format="%h|%s|%cr" 2>/dev/null',
@@ -1980,7 +1980,7 @@ app.post('/api/system/update', async (_req, res) => {
     // 1. Git pull
     try {
       const { stdout } = await require('util').promisify(require('child_process').exec)(
-        'cd /opt/pi5-gateway && git fetch origin master && git reset --hard origin/master', { timeout: 30000 }
+        'cd /opt/pi5-gateway && git config --global --add safe.directory /opt/pi5-gateway 2>/dev/null; git fetch origin master && git reset --hard origin/master', { timeout: 30000 }
       );
       steps.push({ step: 'Git Pull', output: stdout.trim(), success: true });
     } catch (e: any) {
