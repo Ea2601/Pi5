@@ -416,7 +416,22 @@ export async function applyDomainRouting(domains?: DomainRoute[]): Promise<void>
     if (mark === 0) continue; // default route, no special routing needed
     const setName = `rt_m${mark}`;
     if (!markSets.has(mark)) markSets.set(mark, setName);
-    ipsetLines.push(`ipset=/${d.domain}/${setName}`);
+
+    let domain = d.domain;
+    // Keyword filter: if no dots, treat as substring match for all domains containing this word
+    // dnsmasq doesn't support regex, but we can match subdomains with /keyword/ syntax
+    if (!domain.includes('.')) {
+      // Keyword: matches any domain containing this word (dnsmasq server= wildcard)
+      // dnsmasq ipset line: ipset=/keyword/ matches domains containing 'keyword'
+      ipsetLines.push(`ipset=/${domain}/${setName}`);
+    } else if (domain.startsWith('*.')) {
+      // Wildcard: *.example.com → match example.com and all subdomains
+      const baseDomain = domain.replace('*.', '');
+      ipsetLines.push(`ipset=/${baseDomain}/${setName}`);
+    } else {
+      // Exact domain match
+      ipsetLines.push(`ipset=/${domain}/${setName}`);
+    }
   }
 
   // Write dnsmasq ipset config

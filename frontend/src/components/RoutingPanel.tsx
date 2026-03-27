@@ -265,15 +265,15 @@ function DomainRoutingView() {
           </div>
         </div>
         <p className="subtitle">
-          Belirli domain'leri farklı VPS'ler üzerinden yönlendirin
+          Belirli domain'leri farklı VPS'ler üzerinden yönlendirin. Wildcard desteklenir: <code style={{ fontSize: 11, background: 'rgba(255,255,255,0.06)', padding: '1px 4px', borderRadius: 3 }}>*.example.com</code> veya kelime filtresi: <code style={{ fontSize: 11, background: 'rgba(255,255,255,0.06)', padding: '1px 4px', borderRadius: 3 }}>video</code> (video geçen tüm domain'ler)
         </p>
 
         {showAdd && (
           <div className="cron-add-form">
             <div className="cron-add-grid">
               <div className="form-group">
-                <label><Globe size={14} /> Domain</label>
-                <input className="config-input" type="text" placeholder="example.com"
+                <label><Globe size={14} /> Domain / Kelime</label>
+                <input className="config-input" type="text" placeholder="example.com veya *.video.com veya streaming"
                   value={newDomain} onChange={e => setNewDomain(e.target.value)}
                   onKeyDown={e => e.key === 'Enter' && handleAdd()} />
               </div>
@@ -360,6 +360,12 @@ function DomainRoutingView() {
                   <span style={{ fontWeight: 600, fontSize: 13, fontFamily: 'var(--font-mono, monospace)' }}>
                     {d.domain}
                   </span>
+                  {!d.domain.includes('.') && (
+                    <span style={{ marginLeft: 6 }}><Badge variant="warning">kelime</Badge></span>
+                  )}
+                  {d.domain.startsWith('*.') && (
+                    <span style={{ marginLeft: 6 }}><Badge variant="info">wildcard</Badge></span>
+                  )}
                   {d.description && (
                     <span style={{ fontSize: 11, color: 'var(--text-muted)', marginLeft: 8 }}>— {d.description}</span>
                   )}
