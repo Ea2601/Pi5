@@ -32,7 +32,12 @@
       "Bash(node -e \":*)",
       "Bash(ls -la *.ts)",
       "Bash(grep -n \"createInterface\\\\|ip link\\\\|wg-quick\\\\|connect.*vps\\\\|configure.*wireguard\" *.ts)",
-      "Bash(grep -n \"systemctl.*wg\\\\|wg-quick.*up\\\\|wg-quick.*down\\\\|wg set\\\\|ip link.*add\\\\|ip tuntap\" *.ts)"
+      "Bash(grep -n \"systemctl.*wg\\\\|wg-quick.*up\\\\|wg-quick.*down\\\\|wg set\\\\|ip link.*add\\\\|ip tuntap\" *.ts)",
+      "Bash(grep -r \"useApi\\\\|postApi\\\\|putApi\\\\|deleteApi\\\\|fetch\" C:/Users/akane/Desktop/Pi5/frontend/src/components/*.tsx)",
+      "Bash(for panel:*)",
+      "Bash(do echo:*)",
+      "Bash(/tmp/check_endpoints.txt:*)",
+      "Read(//tmp/**)"
     ]
   }
 }

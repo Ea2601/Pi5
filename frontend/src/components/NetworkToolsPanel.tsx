@@ -56,7 +56,7 @@ export function NetworkToolsPanel() {
     setWolSending(true);
     setWolResult('');
     try {
-      await postApi('/wol/wake', { mac: wolTarget });
+      await postApi('/wol/send', { mac: wolTarget });
       setWolResult('Wake-on-LAN paketi gonderildi!');
     } catch {
       setWolResult('Gonderim basarisiz oldu.');
@@ -69,7 +69,7 @@ export function NetworkToolsPanel() {
     setScanning(true);
     setScanResults([]);
     try {
-      const result = await postApi('/portscan/scan', { ip: scanIp });
+      const result = await postApi('/network/portscan', { ip: scanIp });
       setScanResults(result.ports || []);
     } catch {
       setScanResults([]);
@@ -81,7 +81,7 @@ export function NetworkToolsPanel() {
     if (!newResMac || !newResIp) return;
     setAddingRes(true);
     try {
-      await postApi('/dhcp/reservations', {
+      await postApi('/dhcp/static', {
         mac: newResMac,
         ip: newResIp,
         hostname: newResHostname,
