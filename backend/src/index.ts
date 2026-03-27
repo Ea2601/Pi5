@@ -1142,47 +1142,74 @@ app.post('/api/alerts/acknowledge/:id', async (req, res) => {
 });
 
 // ─── Wake-on-LAN ───
-app.post('/api/wol/send', (req, res) => {
+app.post('/api/wol/send', async (req, res) => {
   const { mac_address } = req.body;
   if (!mac_address) {
     return res.status(400).json({ error: 'mac_address gerekli' });
   }
-  // Simulate WoL magic packet
-  console.log(`[WoL] Magic packet gönderildi: ${mac_address}`);
-  res.json({ success: true, message: `Wake-on-LAN magic packet ${mac_address} adresine gönderildi.` });
+  try {
+    if (isLinux) {
+      // Real WoL magic packet via etherwake or wakeonlan
+      const exec = require('util').promisify(require('child_process').exec);
+      // Try etherwake first, then wakeonlan
+      try {
+        await exec(`etherwake ${mac_address}`, { timeout: 5000 });
+      } catch {
+        await exec(`wakeonlan ${mac_address}`, { timeout: 5000 });
+      }
+      res.json({ success: true, message: `WoL magic packet gönderildi: ${mac_address}` });
+    } else {
+      // Dev mode — UDP broadcast magic packet via Node.js
+      const dgram = require('dgram');
+      const mac = mac_address.replace(/[:-]/g, '');
+      const macBuf = Buffer.from(mac, 'hex');
+      const payload = Buffer.alloc(102);
+      payload.fill(0xFF, 0, 6);
+      for (let i = 0; i < 16; i++) macBuf.copy(payload, 6 + i * 6);
+      const socket = dgram.createSocket('udp4');
+      socket.once('listening', () => { socket.setBroadcast(true); });
+      socket.send(payload, 0, payload.length, 9, '255.255.255.255', () => {
+        socket.close();
+        res.json({ success: true, message: `WoL magic packet gönderildi: ${mac_address}` });
+      });
+    }
+  } catch (e: any) {
+    res.status(500).json({ error: e.message || 'WoL gönderilemedi' });
+  }
 });
 
-// ─── Port Scanner ───
-app.post('/api/network/portscan', (req, res) => {
+// ─── Port Scanner (real TCP connect check) ───
+app.post('/api/network/portscan', async (req, res) => {
   const { ip } = req.body;
   if (!ip) {
     return res.status(400).json({ error: 'ip adresi gerekli' });
   }
-  // Simulate port scan with realistic results
+  const net = require('net');
   const commonPorts = [
-    { port: 22, service: 'SSH', state: 'open' },
-    { port: 53, service: 'DNS', state: 'open' },
-    { port: 80, service: 'HTTP', state: 'open' },
-    { port: 443, service: 'HTTPS', state: 'open' },
-    { port: 445, service: 'SMB', state: 'closed' },
-    { port: 3306, service: 'MySQL', state: 'closed' },
-    { port: 5432, service: 'PostgreSQL', state: 'closed' },
-    { port: 8080, service: 'HTTP-Proxy', state: 'closed' },
-    { port: 8443, service: 'HTTPS-Alt', state: 'closed' },
-    { port: 3000, service: 'Node.js', state: 'open' },
+    { port: 22, service: 'SSH' }, { port: 53, service: 'DNS' },
+    { port: 80, service: 'HTTP' }, { port: 443, service: 'HTTPS' },
+    { port: 445, service: 'SMB' }, { port: 3306, service: 'MySQL' },
+    { port: 5432, service: 'PostgreSQL' }, { port: 8080, service: 'HTTP-Proxy' },
+    { port: 8443, service: 'HTTPS-Alt' }, { port: 3000, service: 'Node.js' },
+    { port: 51820, service: 'WireGuard' }, { port: 5335, service: 'Unbound' },
   ];
-  // Randomly open/close some ports
-  const results = commonPorts.map(p => ({
-    ...p,
-    state: Math.random() > 0.6 ? 'open' : 'closed',
-  }));
-  // Always keep SSH and HTTP open for realism
-  results[0].state = 'open';
-  results[2].state = 'open';
-
+  const startTime = Date.now();
+  const checkPort = (port: number): Promise<'open' | 'closed'> => {
+    return new Promise(resolve => {
+      const socket = new net.Socket();
+      socket.setTimeout(1500);
+      socket.once('connect', () => { socket.destroy(); resolve('open'); });
+      socket.once('timeout', () => { socket.destroy(); resolve('closed'); });
+      socket.once('error', () => { socket.destroy(); resolve('closed'); });
+      socket.connect(port, ip);
+    });
+  };
+  const results = await Promise.all(commonPorts.map(async p => ({
+    ...p, state: await checkPort(p.port),
+  })));
   res.json({
     ip,
-    scan_time_ms: Math.floor(Math.random() * 3000) + 500,
+    scan_time_ms: Date.now() - startTime,
     ports: results,
     open_count: results.filter(p => p.state === 'open').length,
   });
@@ -1712,11 +1739,11 @@ app.delete('/api/ddns/configs/:id', async (req, res) => {
 
 app.post('/api/ddns/configs/:id/test', async (req, res) => {
   try {
-    const randomIp = `85.102.${Math.floor(Math.random() * 255)}.${Math.floor(Math.random() * 255)}`;
+    const { ip: currentIp } = await getCurrentExternalIp();
     await dbRun('UPDATE ddns_configs SET status = ?, last_ip = ?, last_update = datetime(?) WHERE id = ?',
-      ['active', randomIp, new Date().toISOString(), req.params.id]);
+      ['active', currentIp, new Date().toISOString(), req.params.id]);
     const config = await dbGet('SELECT * FROM ddns_configs WHERE id = ?', [req.params.id]);
-    res.json({ success: true, config });
+    res.json({ success: true, config, detected_ip: currentIp });
   } catch (e: any) {
     res.status(500).json({ error: e.message });
   }

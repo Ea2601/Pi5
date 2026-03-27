@@ -37,7 +37,8 @@
       "Bash(for panel:*)",
       "Bash(do echo:*)",
       "Bash(/tmp/check_endpoints.txt:*)",
-      "Read(//tmp/**)"
+      "Read(//tmp/**)",
+      "Bash(find /c/Users/akane/Desktop/Pi5/frontend/src -type f -name *.tsx -o -name *.ts)"
     ]
   }
 }
