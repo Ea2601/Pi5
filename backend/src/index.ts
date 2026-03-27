@@ -694,16 +694,19 @@ app.get('/api/vps/:id/internet-check', async (req, res) => {
     const natCount = parseInt(section('NAT')) || 0;
     const hasNat = natCount > 0;
     const publicIp = section('IP');
+    const allGood = hasInternet && hasDns && hasForwarding && hasWg && hasNat;
 
-    res.json({
-      internet: hasInternet,
-      dns: hasDns,
-      forwarding: hasForwarding,
-      wireguard: hasWg,
-      nat: hasNat,
-      publicIp,
-      allGood: hasInternet && hasDns && hasForwarding && hasWg && hasNat,
-    });
+    // Auto-update DB status based on check results
+    if (allGood) {
+      await dbRun('UPDATE vps_servers SET status = ? WHERE id = ?', ['connected', req.params.id]);
+    } else if (hasInternet) {
+      // VPS reachable but some services down
+      await dbRun('UPDATE vps_servers SET status = ? WHERE id = ?', ['connected', req.params.id]);
+    } else {
+      await dbRun('UPDATE vps_servers SET status = ? WHERE id = ?', ['error', req.params.id]);
+    }
+
+    res.json({ internet: hasInternet, dns: hasDns, forwarding: hasForwarding, wireguard: hasWg, nat: hasNat, publicIp, allGood });
   } catch (e: any) {
     res.json({ internet: false, dns: false, forwarding: false, wireguard: false, nat: false, publicIp: '', allGood: false, error: e.message });
   }
@@ -815,6 +818,8 @@ app.post('/api/vps/:id/auto-repair', async (req, res) => {
     ssh.dispose();
 
     const allFixed = repairs.every(r => r.status !== 'failed');
+    // Update DB status
+    await dbRun('UPDATE vps_servers SET status = ? WHERE id = ?', [allFixed ? 'connected' : 'error', req.params.id]);
     res.json({ success: allFixed, repairs });
   } catch (e: any) {
     res.status(500).json({ success: false, error: e.message, repairs: [] });

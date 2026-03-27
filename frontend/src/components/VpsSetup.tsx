@@ -199,8 +199,8 @@ interface RepairResult {
   check: string; status: 'ok' | 'fixed' | 'failed'; detail: string;
 }
 
-function VpsCard({ server, onConnect, onDisconnect, onDelete }: {
-  server: VpsServer; onConnect: () => Promise<void>; onDisconnect: () => Promise<void>; onDelete: () => void;
+function VpsCard({ server, onConnect, onDisconnect, onDelete, onRefresh }: {
+  server: VpsServer; onConnect: () => Promise<void>; onDisconnect: () => Promise<void>; onDelete: () => void; onRefresh: () => void;
 }) {
   const [netStatus, setNetStatus] = useState<InternetStatus | null>(null);
   const [checking, setChecking] = useState(false);
@@ -212,6 +212,7 @@ function VpsCard({ server, onConnect, onDisconnect, onDelete }: {
     try {
       const res = await fetch(`/api/vps/${server.id}/internet-check`);
       setNetStatus(await res.json());
+      onRefresh(); // DB status updated by backend, refetch VPS list
     } catch { setNetStatus(null); }
     setChecking(false);
   };
@@ -545,7 +546,8 @@ export function VpsSetup() {
                   <VpsCard key={server.id} server={server}
                     onConnect={async () => { await postApi(`/vps/${server.id}/connect`, {}); await refetch(); }}
                     onDisconnect={async () => { await postApi(`/vps/${server.id}/disconnect`, {}); await refetch(); }}
-                    onDelete={() => handleDelete(server.id)} />
+                    onDelete={() => handleDelete(server.id)}
+                    onRefresh={refetch} />
                 ))}
               </div>
             </div>
