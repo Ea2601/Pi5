@@ -433,7 +433,7 @@ app.put('/api/devices/:mac/profile', async (req, res) => {
 // ─── VPS Servers ───
 app.get('/api/vps/list', async (_req, res) => {
   try {
-    const servers = await dbAll('SELECT * FROM vps_servers ORDER BY id');
+    const servers = await dbAll('SELECT id, ip, username, location, status, created_at FROM vps_servers ORDER BY id');
     res.json({ servers });
   } catch (e: any) {
     res.status(500).json({ error: e.message });
@@ -663,33 +663,37 @@ app.get('/api/vps/:id/internet-check', async (req, res) => {
       password: server.password || undefined, readyTimeout: 10000,
     });
 
-    // Check internet connectivity
-    const ping = await ssh.execCommand('ping -c 1 -W 3 8.8.8.8 2>/dev/null && echo "PING_OK" || echo "PING_FAIL"');
-    const hasInternet = ping.stdout.includes('PING_OK');
-
-    // Check DNS (try multiple methods — dig may not be installed)
-    const dns = await ssh.execCommand(`
-      (dig +short google.com @8.8.8.8 2>/dev/null || nslookup google.com 8.8.8.8 2>/dev/null | grep -i address | tail -1 || ping -c 1 -W 2 google.com 2>/dev/null | head -1) | head -1
-    `);
-    const hasDns = dns.stdout.trim().length > 0 && !dns.stdout.includes('NXDOMAIN');
-
-    // Check IP forwarding
-    const fwd = await ssh.execCommand('cat /proc/sys/net/ipv4/ip_forward 2>/dev/null');
-    const hasForwarding = fwd.stdout.trim() === '1';
-
-    // Check WireGuard
-    const wg = await ssh.execCommand('wg show wg0 2>/dev/null | head -3');
-    const hasWg = wg.stdout.includes('wg0');
-
-    // Check NAT masquerade
-    const nat = await ssh.execCommand('iptables -t nat -L POSTROUTING -n 2>/dev/null | grep -i masq');
-    const hasNat = nat.stdout.toLowerCase().includes('masquerade');
-
-    // Get public IP
-    const ipCmd = await ssh.execCommand('curl -s4 --max-time 5 ifconfig.me 2>/dev/null || wget -qO- --timeout=5 ifconfig.me 2>/dev/null || echo ""');
-    const publicIp = ipCmd.stdout.trim();
-
+    // Run all checks in a single script for speed and reliability
+    const checkScript = `
+      echo "---INTERNET---"
+      ping -c 1 -W 3 8.8.8.8 &>/dev/null && echo "OK" || echo "FAIL"
+      echo "---DNS---"
+      ping -c 1 -W 3 google.com &>/dev/null && echo "OK" || echo "FAIL"
+      echo "---FORWARD---"
+      cat /proc/sys/net/ipv4/ip_forward 2>/dev/null
+      echo "---WG---"
+      wg show wg0 2>/dev/null | head -1 || echo "FAIL"
+      echo "---NAT---"
+      iptables -t nat -L POSTROUTING -n 2>/dev/null | grep -ci masq || echo "0"
+      echo "---IP---"
+      curl -s4 --max-time 3 ifconfig.me 2>/dev/null || wget -qO- --timeout=3 ifconfig.me 2>/dev/null || hostname -I | awk '{print $1}' || echo ""
+    `;
+    const result = await ssh.execCommand(checkScript, { execOptions: { timeout: 20000 } });
     ssh.dispose();
+
+    const out = result.stdout;
+    const section = (tag: string) => {
+      const re = new RegExp(`---${tag}---\\n(.*)`, 'm');
+      return re.exec(out)?.[1]?.trim() || '';
+    };
+
+    const hasInternet = section('INTERNET') === 'OK';
+    const hasDns = section('DNS') === 'OK';
+    const hasForwarding = section('FORWARD') === '1';
+    const hasWg = section('WG').includes('wg0') || section('WG').includes('interface');
+    const natCount = parseInt(section('NAT')) || 0;
+    const hasNat = natCount > 0;
+    const publicIp = section('IP');
 
     res.json({
       internet: hasInternet,
