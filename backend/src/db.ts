@@ -376,6 +376,8 @@ export const initDb = () => {
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY(vps_id) REFERENCES vps_servers(id)
     )`);
+    // Migrate existing DBs
+    db.run(`ALTER TABLE wg_clients ADD COLUMN qr_data TEXT DEFAULT ''`, () => {});
 
     // device_routing removed — all routing is now traffic-based (app + domain)
 
