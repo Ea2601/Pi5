@@ -92,10 +92,10 @@ function ClientCard({ client, onShowConfig, onShowQr, onDelete }: {
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
         <Users size={16} style={{ color: 'var(--accent-color)' }} />
         <span style={{ fontWeight: 600, fontSize: 14, color: '#f8fafc', flex: 1 }}>{client.name}</span>
-        <button className="icon-btn icon-btn-sm cron-delete" title="Client'ı sil (VPS'ten de kaldırır)"
+        <button className="icon-btn icon-btn-sm" style={{ opacity: 0.6 }} title="Client'ı sil (VPS'ten de kaldırır)"
           disabled={deleting}
           onClick={async () => { setDeleting(true); await onDelete(); setDeleting(false); }}>
-          <Trash2 size={12} />
+          {deleting ? <Loader2 size={12} className="spin" /> : <Trash2 size={12} />}
         </button>
       </div>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 12 }}>
