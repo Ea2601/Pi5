@@ -1,0 +1,19 @@
+{
+  "version": "2.1.0",
+  "build": 12,
+  "date": "2026-03-27",
+  "changelog": [
+    "Trafik bazlı routing sistemi (app + domain)",
+    "Tema/accent renk anında uygulama + light tema",
+    "Otomatik hız testi (10dk) + jitter/packet_loss",
+    "Saat dilimi ayarı + Topbar canlı saat",
+    "Health check sistemi (5dk) + bildirim merkezi",
+    "Güncelleme modal ile changelog gösterimi",
+    "Dashboard VPN widget",
+    "Pimoroni LED kontrol + LCD ekran döngüsü",
+    "HDMI kiosk modu",
+    "Pi5 WireGuard tünel bağlantısı",
+    "Toggle switch standardize",
+    "Ağ araçları endpoint düzeltmeleri"
+  ]
+}

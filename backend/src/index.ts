@@ -1866,6 +1866,16 @@ app.put('/api/system/timezone', async (req, res) => {
 });
 
 // ─── Update Check (git fetch + compare) ───
+app.get('/api/system/version', async (_req, res) => {
+  try {
+    const versionPath = require('path').resolve(__dirname, '../../version.json');
+    const data = JSON.parse(require('fs').readFileSync(versionPath, 'utf8'));
+    res.json(data);
+  } catch {
+    res.json({ version: '2.1.0', build: 0, date: 'unknown', changelog: [] });
+  }
+});
+
 app.get('/api/system/update-check', async (_req, res) => {
   try {
     if (!isLinux) {
@@ -1883,14 +1893,22 @@ app.get('/api/system/update-check', async (_req, res) => {
       const [hash, message, time] = line.split('|');
       return { hash, message, time };
     });
-    // Current version hash
-    const { stdout: currentHash } = await exec(
-      'cd /opt/pi5-gateway && git rev-parse --short HEAD', { timeout: 5000 }
-    ).catch(() => ({ stdout: 'unknown' }));
+    // Read version from version.json
+    let currentVersion = 'v2.0';
+    try {
+      const versionFile = require('fs').readFileSync('/opt/pi5-gateway/version.json', 'utf8');
+      const ver = JSON.parse(versionFile);
+      currentVersion = `v${ver.version} (build ${ver.build})`;
+    } catch {
+      const { stdout: currentHash } = await exec(
+        'cd /opt/pi5-gateway && git rev-parse --short HEAD', { timeout: 5000 }
+      ).catch(() => ({ stdout: 'unknown' }));
+      currentVersion = `v2.0-${currentHash.trim()}`;
+    }
     res.json({
       available: commits.length > 0,
       commits,
-      currentVersion: `v2.0-${currentHash.trim()}`,
+      currentVersion,
       commitCount: commits.length,
     });
   } catch (e: any) {
@@ -1926,7 +1944,18 @@ app.post('/api/system/update', async (_req, res) => {
       steps.push({ step: 'Backend Build', output: e.message, success: false });
     }
 
-    // 3. Frontend build
+    // 3. Post-update script (npm install, deps, permissions)
+    try {
+      const { stdout } = await require('util').promisify(require('child_process').exec)(
+        'cd /opt/pi5-gateway && bash scripts/post-update.sh', { timeout: 120000 }
+      );
+      steps.push({ step: 'Post-Update', output: stdout.trim().slice(-200) || 'Tamamlandı', success: true });
+    } catch (e: any) {
+      steps.push({ step: 'Post-Update', output: e.message, success: false });
+      // Non-critical — continue even if post-update fails
+    }
+
+    // 4. Frontend build
     try {
       const { stdout } = await require('util').promisify(require('child_process').exec)(
         'cd /opt/pi5-gateway/frontend && npm run build', { timeout: 120000 }
@@ -1937,7 +1966,7 @@ app.post('/api/system/update', async (_req, res) => {
     }
 
     // Send response BEFORE restart — otherwise backend kills itself and client gets 502
-    const allSuccess = steps.every(s => s.success);
+    const allSuccess = steps.filter(s => s.step !== 'Post-Update').every(s => s.success);
     steps.push({ step: 'Servis Restart', output: '3 saniye sonra yeniden baslatilacak...', success: true });
     res.json({ success: allSuccess, steps });
 

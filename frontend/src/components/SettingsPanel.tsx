@@ -284,37 +284,8 @@ export function SettingsPanel() {
       key: 'about',
       label: 'Hakkında',
       icon: <Info size={15} />,
-      content: (
-        <div className="config-items">
+      content: <AboutSection />,
           <div className="config-item">
-            <div className="config-item-info">
-              <span className="config-item-label">Versiyon</span>
-              <span className="config-item-desc">Pi5 Secure Gateway Panel</span>
-            </div>
-            <div className="config-item-control">
-              <Badge variant="info">v2.0</Badge>
-            </div>
-          </div>
-          <div className="config-item">
-            <div className="config-item-info">
-              <span className="config-item-label">Platform</span>
-              <span className="config-item-desc">Raspberry Pi 5 - React 19 + Vite 8</span>
-            </div>
-            <div className="config-item-control">
-              <Badge variant="neutral">Pi 5</Badge>
-            </div>
-          </div>
-          <div className="config-item">
-            <div className="config-item-info">
-              <span className="config-item-label">Geliştirici</span>
-              <span className="config-item-desc">Pi5 Ağ Geçidi Yönetim Paneli</span>
-            </div>
-            <div className="config-item-control">
-              <Monitor size={14} />
-            </div>
-          </div>
-        </div>
-      ),
     },
   ];
 
@@ -359,6 +330,7 @@ export function SettingsPanel() {
 
 // ─── Update Section ───
 function UpdateSection() {
+  const { data: versionData } = useApi<{ version: string; build: number }>('/system/version', { version: '2.1.0', build: 0 });
   const [updating, setUpdating] = useState(false);
   const [updateResult, setUpdateResult] = useState<{ success: boolean; message: string } | null>(null);
 
@@ -388,7 +360,7 @@ function UpdateSection() {
           <span className="config-item-desc">Pi5 Secure Gateway Panel</span>
         </div>
         <div className="config-item-control">
-          <Badge variant="info">v2.0</Badge>
+          <Badge variant="info">v{versionData.version} (build {versionData.build})</Badge>
         </div>
       </div>
       <div className="config-item">
@@ -416,6 +388,53 @@ function UpdateSection() {
         }}>
           {updateResult.success ? <Check size={14} /> : <X size={14} />}
           {updateResult.message}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── About Section ───
+function AboutSection() {
+  const { data } = useApi<{ version: string; build: number; date: string; changelog: string[] }>(
+    '/system/version', { version: '2.1.0', build: 0, date: '', changelog: [] }
+  );
+
+  return (
+    <div className="config-items">
+      <div className="config-item">
+        <div className="config-item-info">
+          <span className="config-item-label">Versiyon</span>
+          <span className="config-item-desc">Pi5 Secure Gateway Panel</span>
+        </div>
+        <div className="config-item-control">
+          <Badge variant="info">v{data.version}</Badge>
+          <Badge variant="neutral" >Build {data.build}</Badge>
+        </div>
+      </div>
+      <div className="config-item">
+        <div className="config-item-info">
+          <span className="config-item-label">Platform</span>
+          <span className="config-item-desc">Raspberry Pi 5 — React 19 + Vite 8 + Express 5</span>
+        </div>
+        <div className="config-item-control">
+          <Badge variant="neutral">Pi 5</Badge>
+        </div>
+      </div>
+      {data.date && (
+        <div className="config-item">
+          <div className="config-item-info">
+            <span className="config-item-label">Son Güncelleme</span>
+            <span className="config-item-desc">{data.date}</span>
+          </div>
+        </div>
+      )}
+      {data.changelog.length > 0 && (
+        <div style={{ marginTop: 8 }}>
+          <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-secondary)' }}>Değişiklik Geçmişi:</span>
+          <ul style={{ fontSize: 12, color: 'var(--text-muted)', margin: '6px 0 0 16px', lineHeight: 1.8 }}>
+            {data.changelog.map((item, i) => <li key={i}>{item}</li>)}
+          </ul>
         </div>
       )}
     </div>
