@@ -476,10 +476,21 @@ export async function applyDomainRouting(domains?: DomainRoute[]): Promise<void>
 
     if (mark >= 100 && mark < 200) {
       // VPS exit only (mark = 100 + vpsId) → route through WireGuard
-      await run(`ip route replace default dev wg0 table ${mark} 2>/dev/null || true`);
+      const vpsId = mark - 100;
+      const iface = `wg_vps${vpsId}`;
+      // Verify interface exists before adding route
+      const ifaceCheck = await run(`ip link show ${iface} 2>/dev/null`);
+      if (ifaceCheck) {
+        await run(`ip route replace default dev ${iface} table ${mark} 2>/dev/null || true`);
+      }
     } else if (mark >= 300) {
       // VPS exit + DPI bypass (mark = 300 + vpsId) → route through WireGuard
-      await run(`ip route replace default dev wg0 table ${mark} 2>/dev/null || true`);
+      const vpsId = mark - 300;
+      const iface = `wg_vps${vpsId}`;
+      const ifaceCheck = await run(`ip link show ${iface} 2>/dev/null`);
+      if (ifaceCheck) {
+        await run(`ip route replace default dev ${iface} table ${mark} 2>/dev/null || true`);
+      }
     }
     // mark 200 = DPI bypass only → uses default gateway but goes through zapret nfqueue
   }

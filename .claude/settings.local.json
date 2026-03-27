@@ -30,7 +30,9 @@
       "Bash(git push:*)",
       "Bash(xargs grep:*)",
       "Bash(node -e \":*)",
-      "Bash(node -e \":*\n,)"
+      "Bash(ls -la *.ts)",
+      "Bash(grep -n \"createInterface\\\\|ip link\\\\|wg-quick\\\\|connect.*vps\\\\|configure.*wireguard\" *.ts)",
+      "Bash(grep -n \"systemctl.*wg\\\\|wg-quick.*up\\\\|wg-quick.*down\\\\|wg set\\\\|ip link.*add\\\\|ip tuntap\" *.ts)"
     ]
   }
 }

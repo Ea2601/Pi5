@@ -3,7 +3,7 @@ import cors from 'cors';
 import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
 import { initDb, dbAll, dbRun, dbGet } from './db';
-import { setupWireGuardVPS, testSSHConnection, executeSetupStep, addWireGuardClient } from './ssh';
+import { setupWireGuardVPS, testSSHConnection, executeSetupStep, addWireGuardClient, connectPi5ToVps, disconnectPi5FromVps, isPi5ConnectedToVps } from './ssh';
 import { systemServices } from './services';
 import { startHealthMonitor, getHealthStatus } from './monitor';
 import { startCronJobs, getSystemLogs } from './maintenance';
@@ -487,7 +487,16 @@ async function runSetupInBackground(vpsId: number, ip: string, username: string,
   }
 
   progress.overall = 'success';
-  await dbRun('UPDATE vps_servers SET status = ? WHERE id = ?', ['connected', vpsId]);
+
+  // Auto-connect Pi5 as gateway client to VPS
+  try {
+    await connectPi5ToVps({ ip, username, password }, vpsId);
+    await dbRun('UPDATE vps_servers SET status = ? WHERE id = ?', ['connected', vpsId]);
+  } catch (err: any) {
+    console.error('Pi5 auto-connect failed:', err.message);
+    await dbRun('UPDATE vps_servers SET status = ? WHERE id = ?', ['connected', vpsId]); // VPS is up, just Pi5 tunnel failed
+  }
+
   // Clean up after 5 minutes
   setTimeout(() => setupJobs.delete(vpsId), 5 * 60 * 1000);
 }
@@ -593,9 +602,16 @@ app.post('/api/vps/:id/clients', async (req, res) => {
     const server: any = await dbGet('SELECT * FROM vps_servers WHERE id = ?', [req.params.id]);
     if (!server) return res.status(404).json({ error: 'Sunucu bulunamadı' });
 
-    // Count existing clients to determine next IP index
-    const existing: any[] = await dbAll('SELECT * FROM wg_clients WHERE vps_id = ?', [req.params.id]);
-    const clientIndex = existing.length;
+    // Find next available IP index (avoid collisions after deletions)
+    const existing: any[] = await dbAll('SELECT ip FROM wg_clients WHERE vps_id = ?', [req.params.id]);
+    const usedIndices = existing.map((c: any) => {
+      const match = c.ip?.match(/10\.66\.66\.(\d+)/);
+      return match ? parseInt(match[1]) : 0;
+    });
+    // Pi5 gateway uses index 2 (10.66.66.2), clients start from 3
+    let clientIndex = 1; // +2 = 10.66.66.3
+    while (usedIndices.includes(clientIndex + 2)) clientIndex++;
+    if (clientIndex + 2 > 254) return res.status(400).json({ error: 'IP adresi tükendi (max 253 client)' });
 
     let result;
     try {
@@ -632,8 +648,44 @@ app.get('/api/vps/:id/clients', async (req, res) => {
   }
 });
 
+// ─── Pi5 ↔ VPS Connection (Gateway Tunnel) ───
+app.post('/api/vps/:id/connect', async (req, res) => {
+  try {
+    const server: any = await dbGet('SELECT * FROM vps_servers WHERE id = ?', [req.params.id]);
+    if (!server) return res.status(404).json({ error: 'Sunucu bulunamadı' });
+    const result = await connectPi5ToVps(
+      { ip: server.ip, username: server.username, password: server.password || undefined },
+      server.id
+    );
+    await dbRun('UPDATE vps_servers SET status = ? WHERE id = ?', ['connected', req.params.id]);
+    res.json(result);
+  } catch (e: any) {
+    await dbRun('UPDATE vps_servers SET status = ? WHERE id = ?', ['error', req.params.id]);
+    res.status(500).json({ error: e.message || 'Bağlantı başarısız' });
+  }
+});
+
+app.post('/api/vps/:id/disconnect', async (req, res) => {
+  try {
+    await disconnectPi5FromVps(Number(req.params.id));
+    await dbRun('UPDATE vps_servers SET status = ? WHERE id = ?', ['disconnected', req.params.id]);
+    res.json({ success: true });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get('/api/vps/:id/tunnel-status', async (req, res) => {
+  try {
+    const connected = await isPi5ConnectedToVps(Number(req.params.id));
+    res.json({ connected });
+  } catch { res.json({ connected: false }); }
+});
+
 app.delete('/api/vps/:id', async (req, res) => {
   try {
+    // Disconnect Pi5 tunnel before deleting
+    await disconnectPi5FromVps(Number(req.params.id));
     await dbRun('DELETE FROM wg_clients WHERE vps_id = ?', [req.params.id]);
     await dbRun('DELETE FROM vps_servers WHERE id = ?', [req.params.id]);
     res.json({ success: true });

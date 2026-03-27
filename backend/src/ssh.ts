@@ -3,6 +3,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 const configDir = path.resolve(__dirname, '../../core');
+const isLinux = process.platform === 'linux';
 
 interface VpsConnectOptions {
   ip: string;
@@ -282,10 +283,10 @@ PublicKey = ${clientPub}
 AllowedIPs = ${clientIp}
 PEEREOF`);
 
-    // Build client config
+    // Build client config (Address must be /32 for point-to-point WireGuard)
     const clientConfig = `[Interface]
 PrivateKey = ${clientPriv}
-Address = ${clientIp.replace('/32', '/24')}
+Address = ${clientIp}
 DNS = 1.1.1.1, 8.8.8.8
 
 [Peer]
@@ -313,5 +314,137 @@ PersistentKeepalive = 25`;
   } catch (err: any) {
     console.error('Add client error:', err.message);
     throw err; // Re-throw so endpoint can return the actual error message
+  }
+}
+
+/**
+ * Connect Pi5 to VPS as a WireGuard client (gateway peer)
+ * Creates wg_vpsX interface on Pi5 that routes traffic to VPS
+ */
+export async function connectPi5ToVps(
+  opts: VpsConnectOptions,
+  vpsId: number
+): Promise<{ success: boolean; interfaceName: string; pi5Ip: string; config: string }> {
+  if (!isLinux) {
+    // Dev mode — save config file but don't bring up interface
+    const fakeConfig = `# Dev mode — would connect to ${opts.ip}`;
+    return { success: true, interfaceName: `wg_vps${vpsId}`, pi5Ip: '10.66.66.2/32', config: fakeConfig };
+  }
+
+  const interfaceName = `wg_vps${vpsId}`;
+  const pi5Ip = '10.66.66.2/32'; // Pi5 gateway always gets .2
+  const confPath = `/etc/wireguard/${interfaceName}.conf`;
+
+  try {
+    const ssh = await connectSSH(opts);
+
+    // Verify WireGuard is running on VPS
+    const wgCheck = await ssh.execCommand('test -f /etc/wireguard/wg0.conf && wg show wg0 2>/dev/null && echo "OK"');
+    if (!wgCheck.stdout.includes('OK')) {
+      ssh.dispose();
+      throw new Error('VPS WireGuard aktif değil. Önce VPS kurulumunu tamamlayın.');
+    }
+
+    // Generate Pi5 client keys locally
+    const { execSync } = require('child_process');
+    const pi5Priv = execSync('wg genkey').toString().trim();
+    const pi5Pub = execSync(`echo "${pi5Priv}" | wg pubkey`).toString().trim();
+
+    // Get server public key
+    const serverPrivResult = await ssh.execCommand("grep PrivateKey /etc/wireguard/wg0.conf | head -1 | cut -d'=' -f2- | tr -d ' '");
+    const serverPub = (await ssh.execCommand(`echo "${serverPrivResult.stdout.trim()}" | wg pubkey`)).stdout.trim();
+
+    // Check if Pi5 peer already exists on VPS (avoid duplicates)
+    const existingPeers = await ssh.execCommand(`wg show wg0 allowed-ips 2>/dev/null`);
+    const pi5Already = existingPeers.stdout.includes('10.66.66.2');
+
+    if (!pi5Already) {
+      // Add Pi5 as peer on VPS
+      await ssh.execCommand(`wg set wg0 peer ${pi5Pub} allowed-ips ${pi5Ip}`);
+      await ssh.execCommand(`cat >> /etc/wireguard/wg0.conf << 'PEEREOF'
+
+# Pi5-Gateway
+[Peer]
+PublicKey = ${pi5Pub}
+AllowedIPs = ${pi5Ip}
+PEEREOF`);
+    } else {
+      // Update existing peer with new key
+      const oldKey = (await ssh.execCommand(`wg show wg0 allowed-ips | grep '10.66.66.2' | awk '{print $1}'`)).stdout.trim();
+      if (oldKey) {
+        await ssh.execCommand(`wg set wg0 peer ${oldKey} remove 2>/dev/null || true`);
+      }
+      await ssh.execCommand(`wg set wg0 peer ${pi5Pub} allowed-ips ${pi5Ip}`);
+      // Rewrite config to replace old peer
+      await ssh.execCommand(`sed -i '/# Pi5-Gateway/,/^$/d' /etc/wireguard/wg0.conf`);
+      await ssh.execCommand(`cat >> /etc/wireguard/wg0.conf << 'PEEREOF'
+
+# Pi5-Gateway
+[Peer]
+PublicKey = ${pi5Pub}
+AllowedIPs = ${pi5Ip}
+PEEREOF`);
+    }
+
+    ssh.dispose();
+
+    // Build Pi5 client config
+    const serverAddr = opts.ip;
+    const pi5Config = `[Interface]
+PrivateKey = ${pi5Priv}
+Address = ${pi5Ip}
+
+[Peer]
+PublicKey = ${serverPub}
+Endpoint = ${serverAddr}:51820
+AllowedIPs = 0.0.0.0/0
+PersistentKeepalive = 25`;
+
+    // Write config on Pi5
+    fs.writeFileSync(confPath, pi5Config, { mode: 0o600 });
+
+    // Bring down old interface if exists, then bring up new
+    const { exec } = require('child_process');
+    const execP = require('util').promisify(exec);
+    await execP(`wg-quick down ${interfaceName} 2>/dev/null || true`, { timeout: 10000 });
+    await execP(`wg-quick up ${interfaceName}`, { timeout: 15000 });
+
+    // Verify interface is up
+    const verify = await execP(`wg show ${interfaceName} 2>/dev/null`, { timeout: 5000 }).catch(() => ({ stdout: '' }));
+    if (!verify.stdout.includes('endpoint')) {
+      throw new Error(`${interfaceName} arayüzü başlatılamadı`);
+    }
+
+    return { success: true, interfaceName, pi5Ip, config: pi5Config };
+  } catch (err: any) {
+    console.error('Pi5 VPN connect error:', err.message);
+    throw err;
+  }
+}
+
+/**
+ * Disconnect Pi5 from a VPS (bring down wg interface)
+ */
+export async function disconnectPi5FromVps(vpsId: number): Promise<void> {
+  if (!isLinux) return;
+  const interfaceName = `wg_vps${vpsId}`;
+  const { exec } = require('child_process');
+  const execP = require('util').promisify(exec);
+  await execP(`wg-quick down ${interfaceName} 2>/dev/null || true`, { timeout: 10000 });
+}
+
+/**
+ * Check if Pi5 is connected to a VPS
+ */
+export async function isPi5ConnectedToVps(vpsId: number): Promise<boolean> {
+  if (!isLinux) return false;
+  const interfaceName = `wg_vps${vpsId}`;
+  try {
+    const { exec } = require('child_process');
+    const execP = require('util').promisify(exec);
+    const result = await execP(`wg show ${interfaceName} 2>/dev/null`, { timeout: 5000 });
+    return result.stdout.includes('endpoint');
+  } catch {
+    return false;
   }
 }

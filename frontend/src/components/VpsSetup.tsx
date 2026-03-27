@@ -411,12 +411,25 @@ export function VpsSetup() {
                       <span className="vps-ip">{server.ip}</span>
                       <span className="vps-location">{server.location || server.username}</span>
                       <span className={`badge ${server.status === 'connected' ? 'badge-success' : server.status === 'error' ? 'badge-error' : 'badge-neutral'}`}>
-                        {server.status}
+                        {server.status === 'connected' ? 'Bağlı' : server.status === 'installing' ? 'Kuruluyor' : server.status === 'error' ? 'Hata' : 'Bağlı Değil'}
                       </span>
                     </div>
-                    <button className="icon-btn icon-btn-sm vps-delete" onClick={() => handleDelete(server.id)}>
-                      <Trash2 size={12} />
-                    </button>
+                    <div style={{ display: 'flex', gap: 4, marginTop: 4 }}>
+                      {server.status === 'connected' ? (
+                        <button className="btn-outline btn-sm" style={{ flex: 1, fontSize: 11 }}
+                          onClick={async () => { await postApi(`/vps/${server.id}/disconnect`, {}); await refetch(); }}>
+                          Bağlantıyı Kes
+                        </button>
+                      ) : server.status !== 'installing' ? (
+                        <button className="btn-primary btn-sm" style={{ flex: 1, fontSize: 11 }}
+                          onClick={async () => { await postApi(`/vps/${server.id}/connect`, {}); await refetch(); }}>
+                          Bağlan
+                        </button>
+                      ) : null}
+                      <button className="icon-btn icon-btn-sm vps-delete" onClick={() => handleDelete(server.id)}>
+                        <Trash2 size={12} />
+                      </button>
+                    </div>
                   </div>
                 ))}
               </div>
