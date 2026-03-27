@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import {
   Settings, Palette, Globe, Bell, Zap, Info, Save, ChevronDown, ChevronRight,
-  Sun, Moon, Volume2, VolumeX, Monitor, Clock, RefreshCw, Download, Check, X, Loader2
+  Sun, Moon, Volume2, VolumeX, Clock, RefreshCw, Download, Check, X, Loader2
 } from 'lucide-react';
 import { useApi, putApi, postApi } from '../hooks/useApi';
 import { Panel, Badge } from './ui';
@@ -285,7 +285,6 @@ export function SettingsPanel() {
       label: 'Hakkında',
       icon: <Info size={15} />,
       content: <AboutSection />,
-          <div className="config-item">
     },
   ];
 
