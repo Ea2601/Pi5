@@ -61,7 +61,7 @@ export function Sidebar({ activeTab, onTabChange }: SidebarProps) {
           );
         })}
       </ul>
-      <div className="sidebar-footer"><div className="version-badge">Pi5 Router v2.3</div></div>
+      <div className="sidebar-footer"><div className="version-badge">Pi5 Router v2.4</div></div>
     </nav>
   );
 }

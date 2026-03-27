@@ -1,16 +1,14 @@
 {
-  "version": "2.3.0",
-  "build": 21,
+  "version": "2.4.0",
+  "build": 22,
   "date": "2026-03-27",
   "changelog": [
-    "VPS kartlarına inline WireGuard client yönetimi",
-    "Client ekleme, silme, config görüntüleme, QR kod",
-    "Client kartında VPS etiketi gösterimi",
-    "VPS silme ikonu kart başlığına taşındı",
-    "VPS durum badge otomatik senkronizasyonu",
-    "VPS health check: tek SSH script, güvenilir DNS kontrolü",
-    "VPS DNS otomatik onarım (resolv.conf + systemd-resolved)",
-    "VPS internet/DNS/forwarding/WG/NAT otomatik tamir",
-    "VPS internet sağlık badge'leri"
+    "DDNS gerçek provider güncellemesi (DuckDNS, No-IP, Cloudflare, Dynu, Custom)",
+    "DDNS otomatik cron: 5dk aralık IP kontrolü + provider güncelleme",
+    "Fail2Ban: mock veri kaldırıldı, gerçek jail + ban verileri API'den",
+    "Unbound: mock veri kaldırıldı, gerçek stats + güvenlik kontrolleri API'den",
+    "NetworkTopology: sahte hız verileri kaldırıldı",
+    "Yeni endpoint: GET /api/fail2ban/status",
+    "Yeni endpoint: GET /api/unbound/status"
   ]
 }
