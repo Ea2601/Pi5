@@ -166,6 +166,73 @@ export async function getSystemStats() {
   };
 }
 
+// ─── 1b. Metric History Sampler ───
+// One backend snapshot per tick, stored to disk (see index.ts recorder) so the dashboard
+// chart survives page refreshes. Network/disk rates use their OWN counter baselines here so
+// they stay consistent regardless of how often the live /system/stats & /bandwidth/live
+// endpoints are polled (those keep separate baselines).
+export interface MetricSample {
+  cpuTemp: number; cpuUsage: number; memoryUsage: number;
+  networkIn: number; networkOut: number; diskRead: number; diskWrite: number; fanSpeed: number;
+}
+let samplerNet: { time: number; rx: number; tx: number } | null = null;
+let samplerDisk: { time: number; read: number; write: number } | null = null;
+
+export async function sampleMetrics(): Promise<MetricSample | null> {
+  if (!isLinux) return null;
+  const stats = await getSystemStats(); // cpuTemp/cpuUsage/mem/fan (self-contained deltas)
+
+  // Network throughput (Mbps) — sum of all non-lo interfaces, sampler-local baseline.
+  let networkIn = 0, networkOut = 0;
+  try {
+    const c = await fs.promises.readFile('/proc/net/dev', 'utf8');
+    let rx = 0, tx = 0;
+    for (const line of c.split('\n').slice(2)) {
+      const m = line.trim().match(/^(\w+):\s*(\d+)\s+\d+\s+\d+\s+\d+\s+\d+\s+\d+\s+\d+\s+\d+\s+(\d+)/);
+      if (m && m[1] !== 'lo') { rx += parseInt(m[2]); tx += parseInt(m[3]); }
+    }
+    const now = Date.now();
+    if (samplerNet) {
+      const el = (now - samplerNet.time) / 1000;
+      if (el > 0) {
+        networkIn = Math.max(0, Math.round(((rx - samplerNet.rx) * 8 / 1e6 / el) * 100) / 100);
+        networkOut = Math.max(0, Math.round(((tx - samplerNet.tx) * 8 / 1e6 / el) * 100) / 100);
+      }
+    }
+    samplerNet = { time: now, rx, tx };
+  } catch { /* */ }
+
+  // Disk I/O (MB/s) — sampler-local baseline.
+  let diskRead = 0, diskWrite = 0;
+  try {
+    const content = await fs.promises.readFile('/proc/diskstats', 'utf8');
+    let sr = 0, sw = 0;
+    for (const line of content.split('\n')) {
+      const f = line.trim().split(/\s+/);
+      if (f.length < 10) continue;
+      if (!/^(mmcblk\d+|nvme\d+n\d+|sd[a-z])$/.test(f[2])) continue;
+      sr += parseInt(f[5]) || 0; sw += parseInt(f[9]) || 0;
+    }
+    const now = Date.now();
+    if (samplerDisk) {
+      const el = (now - samplerDisk.time) / 1000;
+      if (el > 0) {
+        diskRead = Math.max(0, ((sr - samplerDisk.read) * 512) / 1048576 / el);
+        diskWrite = Math.max(0, ((sw - samplerDisk.write) * 512) / 1048576 / el);
+      }
+    }
+    samplerDisk = { time: now, read: sr, write: sw };
+  } catch { /* */ }
+
+  const memoryUsage = stats.memoryTotal > 0 ? Math.round((stats.memoryUsed / stats.memoryTotal) * 1000) / 10 : 0;
+  return {
+    cpuTemp: stats.cpuTemp, cpuUsage: stats.cpuUsage, memoryUsage,
+    networkIn, networkOut,
+    diskRead: Math.round(diskRead * 100) / 100, diskWrite: Math.round(diskWrite * 100) / 100,
+    fanSpeed: stats.fanSpeed || 0,
+  };
+}
+
 // ─── 2. Service Status ───
 // DB name → actual systemd unit name
 const SYSTEMD_NAME_MAP: Record<string, string> = {

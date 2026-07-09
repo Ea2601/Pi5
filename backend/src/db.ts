@@ -401,7 +401,18 @@ export const initDb = () => {
       app_name TEXT NOT NULL, route_type TEXT DEFAULT 'vps', vps_id INTEGER
     )`);
 
+    // Dashboard metrik geçmişi — backend her ~5sn örnekler, ~11 dk saklanır (10 dk pencere için).
+    // Böylece sayfa yenilense de son 10 dk diskten okunur.
+    db.run(`CREATE TABLE IF NOT EXISTS metric_history (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      ts INTEGER NOT NULL,
+      cpu_temp REAL, cpu_usage REAL, memory_usage REAL,
+      network_in REAL, network_out REAL,
+      disk_read REAL, disk_write REAL, fan_speed REAL
+    )`);
+
     // ═══════════════════ INDEXLER (sık sorgulanan/büyüyen tablolar) ═══════════════════
+    db.run(`CREATE INDEX IF NOT EXISTS idx_metric_history_ts ON metric_history(ts)`);
     db.run(`CREATE INDEX IF NOT EXISTS idx_alerts_ack ON alerts(acknowledged)`);
     db.run(`CREATE INDEX IF NOT EXISTS idx_alerts_created ON alerts(created_at)`);
     db.run(`CREATE INDEX IF NOT EXISTS idx_alerts_dedup ON alerts(type, message, created_at)`);

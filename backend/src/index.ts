@@ -12,6 +12,7 @@ import {
   getNetworkDevices, getBandwidthLive, getWireguardStatus,
   getFail2banStatus, getDnsQueries, getCurrentExternalIp,
   runSpeedTest, executeCommand, applyDomainRouting, applyBlockedDevices,
+  sampleMetrics,
 } from './system';
 import {
   shq, sedEscape, isValidMac, isValidDomain, isValidTimezone,
@@ -88,6 +89,26 @@ app.get('/api/system/stats', async (_req, res) => {
     res.json(stats);
   } catch (e: any) {
     res.status(500).json({ error: e.message });
+  }
+});
+
+// Persisted metric history — backend samples every ~5s to disk (see recorder below), so the
+// dashboard chart survives page refreshes and shows the last N minutes read from the DB.
+app.get('/api/system/metrics/history', async (req, res) => {
+  try {
+    const minutes = Math.min(60, Math.max(1, Number(req.query.minutes) || 10));
+    const since = Date.now() - minutes * 60 * 1000;
+    const rows = await dbAll('SELECT ts, cpu_temp, cpu_usage, memory_usage, network_in, network_out, disk_read, disk_write, fan_speed FROM metric_history WHERE ts >= ? ORDER BY ts ASC', [since]);
+    res.json({
+      history: rows.map((r: any) => ({
+        ts: r.ts,
+        cpuTemp: r.cpu_temp ?? 0, cpuUsage: r.cpu_usage ?? 0, memoryUsage: r.memory_usage ?? 0,
+        networkIn: r.network_in ?? 0, networkOut: r.network_out ?? 0,
+        diskRead: r.disk_read ?? 0, diskWrite: r.disk_write ?? 0, fanSpeed: r.fan_speed ?? 0,
+      })),
+    });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message, history: [] });
   }
 });
 
@@ -1291,6 +1312,27 @@ if (isLinux) {
       await dbRun(`DELETE FROM ddns_ip_history WHERE detected_at < datetime('now', '-90 days')`);
     } catch { /* silent */ }
   }, stMin * 60 * 1000);
+}
+
+// ─── Metric history recorder — sample every 5s, keep ~11 min (10-min window + margin) ───
+// Runs independent of any client so history accumulates continuously; the dashboard reads it
+// from /api/system/metrics/history and no longer resets on page refresh.
+if (isLinux) {
+  const METRIC_SAMPLE_MS = 5000;
+  const METRIC_RETENTION_MS = 11 * 60 * 1000;
+  const recordMetric = async () => {
+    try {
+      const s = await sampleMetrics();
+      if (!s) return;
+      await dbRun(
+        'INSERT INTO metric_history (ts, cpu_temp, cpu_usage, memory_usage, network_in, network_out, disk_read, disk_write, fan_speed) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        [Date.now(), s.cpuTemp, s.cpuUsage, s.memoryUsage, s.networkIn, s.networkOut, s.diskRead, s.diskWrite, s.fanSpeed]
+      );
+      await dbRun('DELETE FROM metric_history WHERE ts < ?', [Date.now() - METRIC_RETENTION_MS]);
+    } catch { /* silent */ }
+  };
+  setTimeout(recordMetric, 2000);
+  setInterval(recordMetric, METRIC_SAMPLE_MS);
 }
 
 // ─── Health Check (every 5 minutes) ───

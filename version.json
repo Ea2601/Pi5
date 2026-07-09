@@ -1,13 +1,10 @@
 {
-  "version": "2.7.0",
-  "build": 29,
+  "version": "2.7.1",
+  "build": 30,
   "date": "2026-07-10",
   "changelog": [
-    "Pi-hole v6: istatistik + DNS sorgu logu artık FTL veritabanından doğrudan okunuyor (admin/api.php kaldırıldığı için panel kartları boştu)",
-    "Kasa LED: Pironman 5 / WS2812 desteği (Pi5-uyumlu SPI kodlama; rpi_ws281x Pi5'te çalışmaz). Ayar: PI5_LED_TYPE/COUNT/SPI",
-    "Kasa OLED/LED: SunFounder pironman5 servis çakışması tespiti — panel uygulanamadığında net uyarı gösterir",
-    "Kiosk: chromium binary otomatik-tespit (Bookworm 'chromium'); gerçek ağ-trafiği sayfası (eskiden sistem sayfasının kopyasıydı)",
-    "UI: premium glassmorphism tema — renkler korunarak; badge dahil tüm köşe radiusları 8px",
-    "UI: Kasa kaydet-sonucu artık uyarı/hata durumunu doğru renkte gösteriyor (yeşil 'başarılı' yanılgısı düzeltildi)"
+    "Dashboard metrikleri artık diske yazılıyor: backend her ~5sn örnekler, son 10 dk saklanır — sayfa yenilense de grafik sıfırlanmaz, geçmiş görüntülenir",
+    "Yeni uç: /api/system/metrics/history (son N dakika); useMetricHistory bunu okur (client-side birikim kaldırıldı)",
+    "Metrik örnekleyici ağ/disk hızlarını kendi bağımsız sayaç-temeliyle hesaplar (canlı uçların deltalarını bozmaz)"
   ]
 }
