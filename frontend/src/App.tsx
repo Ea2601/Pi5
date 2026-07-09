@@ -84,17 +84,19 @@ function App() {
   };
 
   return (
-    <div className="app-container">
-      <Sidebar activeTab={activeTab} onTabChange={setActiveTab} />
-      <main className="main-content">
-        <Topbar />
-        <div className="dashboard-content" key={activeTab}>
-          <ErrorBoundary>
-            {renderTab()}
-          </ErrorBoundary>
-        </div>
-      </main>
-    </div>
+    <ErrorBoundary>
+      <div className="app-container">
+        <Sidebar activeTab={activeTab} onTabChange={setActiveTab} />
+        <main className="main-content">
+          <Topbar onShowAlerts={() => setActiveTab('alerts')} />
+          <div className="dashboard-content" key={activeTab}>
+            <ErrorBoundary>
+              {renderTab()}
+            </ErrorBoundary>
+          </div>
+        </main>
+      </div>
+    </ErrorBoundary>
   );
 }
 

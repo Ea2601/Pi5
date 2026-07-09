@@ -9,9 +9,10 @@ LOG="$BASE/core/update.log"
 echo "$(date '+%Y-%m-%d %H:%M:%S') — Post-update başlatıldı" >> "$LOG"
 
 # 1. Backend npm install (if package.json changed)
+# NOT: --production KULLANMA — tsc (typescript) devDependencies'te; --production onu siler ve build kırılır.
 if git diff HEAD@{1} --name-only 2>/dev/null | grep -q "backend/package"; then
   echo "  Backend bağımlılıkları güncelleniyor..." >> "$LOG"
-  cd "$BASE/backend" && npm install --production 2>&1 | tail -3 >> "$LOG"
+  cd "$BASE/backend" && npm install 2>&1 | tail -3 >> "$LOG"
 fi
 
 # 2. Frontend npm install (if package.json changed)
@@ -27,14 +28,14 @@ chmod +x "$BASE/scripts/"*.py "$BASE/scripts/"*.sh 2>/dev/null || true
 if [ -f "$BASE/scripts/led_control.py" ]; then
   python3 -c "import fanshim" 2>/dev/null || python3 -c "import spidev" 2>/dev/null || {
     echo "  LED Python bağımlılıkları kuruluyor..." >> "$LOG"
-    pip3 install fanshim spidev 2>/dev/null >> "$LOG" || true
+    pip3 install --break-system-packages fanshim spidev 2>/dev/null >> "$LOG" || pip3 install fanshim spidev 2>/dev/null >> "$LOG" || true
   }
 fi
 
 if [ -f "$BASE/scripts/lcd_display.py" ]; then
   python3 -c "from luma.oled.device import ssd1306" 2>/dev/null || {
     echo "  LCD Python bağımlılıkları kuruluyor..." >> "$LOG"
-    pip3 install luma.oled luma.core RPLCD 2>/dev/null >> "$LOG" || true
+    pip3 install --break-system-packages luma.oled luma.core RPLCD 2>/dev/null >> "$LOG" || pip3 install luma.oled luma.core RPLCD 2>/dev/null >> "$LOG" || true
   }
 fi
 
@@ -66,7 +67,7 @@ chromium-browser \
   --check-for-update-interval=31536000 \
   --disable-component-update \
   --overscroll-history-navigation=0 \
-  http://localhost:3001/kiosk.html
+  http://localhost/kiosk.html
 KIOSKEOF
 chmod +x "$BASE/scripts/kiosk.sh"
 
@@ -80,8 +81,9 @@ if [ ! -f /etc/systemd/system/pi5-kiosk.service ]; then
   cat > /etc/systemd/system/pi5-kiosk.service << 'SVCEOF'
 [Unit]
 Description=Pi5 Gateway Kiosk Display
-After=pi5-backend.service network-online.target
-Wants=pi5-backend.service
+After=pi5-backend.service network-online.target getty@tty1.service
+Wants=pi5-backend.service network-online.target
+Conflicts=getty@tty1.service
 
 [Service]
 Type=simple

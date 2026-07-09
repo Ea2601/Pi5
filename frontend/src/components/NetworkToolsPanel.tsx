@@ -13,11 +13,11 @@ interface PortScanResult {
 }
 
 interface DhcpLease {
-  mac: string;
-  ip: string;
+  mac_address: string;
+  ip_address: string;
   hostname: string;
-  expires: string;
-  static: boolean;
+  lease_end: string;
+  is_static: number;
 }
 
 interface DhcpData {
@@ -56,7 +56,7 @@ export function NetworkToolsPanel() {
     setWolSending(true);
     setWolResult('');
     try {
-      await postApi('/wol/send', { mac: wolTarget });
+      await postApi('/wol/send', { mac_address: wolTarget });
       setWolResult('Wake-on-LAN paketi gonderildi!');
     } catch {
       setWolResult('Gonderim basarisiz oldu.');
@@ -82,8 +82,8 @@ export function NetworkToolsPanel() {
     setAddingRes(true);
     try {
       await postApi('/dhcp/static', {
-        mac: newResMac,
-        ip: newResIp,
+        mac_address: newResMac,
+        ip_address: newResIp,
         hostname: newResHostname,
       });
       setNewResMac('');
@@ -214,16 +214,16 @@ export function NetworkToolsPanel() {
                 <div className="empty-state" style={{ padding: '20px' }}>DHCP kiralamalari bulunamadi.</div>
               )}
               {dhcpData.leases.map(lease => (
-                <div key={lease.mac} className="ban-row">
-                  <span style={{ flex: 1, fontFamily: 'monospace', fontSize: '0.8rem' }}>{lease.mac}</span>
-                  <span style={{ flex: 1, fontFamily: 'monospace', fontSize: '0.8rem' }}>{lease.ip}</span>
+                <div key={lease.mac_address} className="ban-row">
+                  <span style={{ flex: 1, fontFamily: 'monospace', fontSize: '0.8rem' }}>{lease.mac_address}</span>
+                  <span style={{ flex: 1, fontFamily: 'monospace', fontSize: '0.8rem' }}>{lease.ip_address}</span>
                   <span style={{ flex: 1 }}>{lease.hostname || '-'}</span>
                   <span style={{ flex: 1, fontSize: '0.75rem' }} className="text-muted">
-                    {lease.static ? 'Statik' : new Date(lease.expires).toLocaleString('tr-TR')}
+                    {lease.is_static ? 'Statik' : (lease.lease_end ? new Date(lease.lease_end).toLocaleString('tr-TR') : '-')}
                   </span>
                   <span style={{ flex: 0.5 }}>
-                    <Badge variant={lease.static ? 'info' : 'neutral'}>
-                      {lease.static ? 'Statik' : 'Dinamik'}
+                    <Badge variant={lease.is_static ? 'info' : 'neutral'}>
+                      {lease.is_static ? 'Statik' : 'Dinamik'}
                     </Badge>
                   </span>
                 </div>

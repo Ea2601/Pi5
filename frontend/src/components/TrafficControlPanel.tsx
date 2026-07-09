@@ -113,6 +113,13 @@ function SchedulerView() {
     } catch { /* */ }
   };
 
+  const handleToggle = async (schedule: TrafficSchedule) => {
+    try {
+      await putApi(`/routing/schedules/${schedule.id}`, { enabled: schedule.enabled ? 0 : 1 });
+      await refetch();
+    } catch { /* */ }
+  };
+
   return (
     <div style={{ marginTop: 14 }}>
       <div className="glass-panel widget-large">
@@ -206,7 +213,7 @@ function SchedulerView() {
               <div key={schedule.id} className="list-item">
                 <button
                   className={`toggle-btn toggle-sm ${schedule.enabled ? 'toggle-on' : 'toggle-off'}`}
-                  onClick={() => { /* read-only toggle display */ }}
+                  onClick={() => handleToggle(schedule)}
                 >
                   <div className="toggle-knob" />
                 </button>

@@ -66,8 +66,9 @@ export function BandwidthPanel() {
     setSaving(true);
     try {
       await putApi(`/bandwidth/limits/${mac}`, {
-        daily_limit_mb: Number(edit.daily) || current.daily_limit_mb,
-        monthly_limit_mb: Number(edit.monthly) || current.monthly_limit_mb,
+        // 0 (sınırsız/kapalı) geçerli bir değer — falsy diye eski değere düşme
+        daily_limit_mb: edit.daily !== undefined && edit.daily !== '' ? Number(edit.daily) : current.daily_limit_mb,
+        monthly_limit_mb: edit.monthly !== undefined && edit.monthly !== '' ? Number(edit.monthly) : current.monthly_limit_mb,
         enabled: current.enabled,
       });
       setEditingLimits(prev => {

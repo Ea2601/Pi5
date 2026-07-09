@@ -11,7 +11,7 @@ interface UpdateInfo {
   commitCount: number;
 }
 
-export function Topbar() {
+export function Topbar({ onShowAlerts }: { onShowAlerts?: () => void }) {
   const { data } = useApi<HealthStatus>('/system/health', {
     isFailOpen: false, lastCheckTime: '', lastCheckResult: 'pending',
     checksTotal: 0, checksFailed: 0, uptimePercent: 100,
@@ -102,7 +102,7 @@ export function Topbar() {
           <button
             className="icon-btn"
             title="Bildirimler"
-            onClick={() => hasUpdate && setShowUpdateModal(true)}
+            onClick={() => { if (hasUpdate) setShowUpdateModal(true); else onShowAlerts?.(); }}
             style={{ position: 'relative' }}
           >
             <Bell size={18} />

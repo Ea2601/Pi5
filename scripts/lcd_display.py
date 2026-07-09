@@ -168,14 +168,17 @@ def get_display():
     except:
         pass
 
-    # Fallback: console output (for testing)
+    # Fallback: console output (for testing). Daemon olarak fork edilince stdout kapalı olabilir →
+    # BrokenPipeError'ı yut, daemon sessizce ölmesin.
     class ConsoleDisplay:
         def show(self, lines):
-            os.system('clear' if os.name == 'posix' else 'cls')
-            print("┌──────────────────┐")
-            for line in lines[:2]:
-                print(f"│ {str(line)[:16]:16} │")
-            print("└──────────────────┘")
+            try:
+                print("┌──────────────────┐")
+                for line in lines[:2]:
+                    print(f"│ {str(line)[:16]:16} │")
+                print("└──────────────────┘", flush=True)
+            except (BrokenPipeError, OSError):
+                pass
 
         def clear(self):
             pass

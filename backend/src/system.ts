@@ -2,9 +2,13 @@ import { exec } from 'child_process';
 import { promisify } from 'util';
 import fs from 'fs';
 import os from 'os';
+import { shq } from './util';
 
 const execAsync = promisify(exec);
 export const isLinux = os.platform() === 'linux';
+
+// systemd unit names: letters, digits, and @ . _ - only. Blocks shell metacharacters.
+const VALID_UNIT = /^[A-Za-z0-9@._-]+$/;
 
 // Safe exec — returns stdout or empty string on error. Never returns fake data.
 async function run(cmd: string, timeout: number = 10000): Promise<string> {
@@ -18,11 +22,14 @@ async function run(cmd: string, timeout: number = 10000): Promise<string> {
 
 // ─── 1. System Stats ───
 // Always real on Linux. On non-Linux returns zeros (frontend handles empty state).
+let lastDiskReading: { time: number; read: number; write: number } | null = null;
+
 export async function getSystemStats() {
   if (!isLinux) {
     return {
       cpuTemp: 0, cpuUsage: 0, memoryTotal: 0, memoryUsed: 0,
       diskTotal: 0, diskUsed: 0, disks: [], uptime: 0, loadAvg: [0, 0, 0],
+      diskRead: 0, diskWrite: 0, fanSpeed: 0,
     };
   }
 
@@ -81,7 +88,47 @@ export async function getSystemStats() {
     loadAvg = [parseFloat(l[0]), parseFloat(l[1]), parseFloat(l[2])];
   } catch { /* */ }
 
-  return { cpuTemp, cpuUsage, memoryTotal, memoryUsed, diskTotal, diskUsed, disks, uptime, loadAvg };
+  // Disk I/O (MB/s) — delta of sectors read/written across physical disks
+  let diskRead = 0, diskWrite = 0;
+  try {
+    const now = Date.now();
+    const content = await fs.promises.readFile('/proc/diskstats', 'utf8');
+    let sectorsRead = 0, sectorsWritten = 0;
+    for (const line of content.split('\n')) {
+      const f = line.trim().split(/\s+/);
+      if (f.length < 10) continue;
+      const dev = f[2];
+      if (!/^(mmcblk\d+|nvme\d+n\d+|sd[a-z])$/.test(dev)) continue; // whole disks only
+      sectorsRead += parseInt(f[5]) || 0;   // sectors read
+      sectorsWritten += parseInt(f[9]) || 0; // sectors written
+    }
+    if (lastDiskReading) {
+      const elapsed = (now - lastDiskReading.time) / 1000;
+      if (elapsed > 0) {
+        diskRead = Math.max(0, ((sectorsRead - lastDiskReading.read) * 512) / 1048576 / elapsed);
+        diskWrite = Math.max(0, ((sectorsWritten - lastDiskReading.write) * 512) / 1048576 / elapsed);
+      }
+    }
+    lastDiskReading = { time: now, read: sectorsRead, write: sectorsWritten };
+  } catch { /* */ }
+
+  // Fan speed (RPM) — Pi5 cooling fan hwmon, best-effort
+  let fanSpeed = 0;
+  try {
+    const hwmonDirs = await fs.promises.readdir('/sys/class/hwmon');
+    for (const d of hwmonDirs) {
+      try {
+        const rpm = await fs.promises.readFile(`/sys/class/hwmon/${d}/fan1_input`, 'utf8');
+        const v = parseInt(rpm.trim(), 10);
+        if (!isNaN(v)) { fanSpeed = v; break; }
+      } catch { /* */ }
+    }
+  } catch { /* */ }
+
+  return {
+    cpuTemp, cpuUsage, memoryTotal, memoryUsed, diskTotal, diskUsed, disks, uptime, loadAvg,
+    diskRead: Math.round(diskRead * 100) / 100, diskWrite: Math.round(diskWrite * 100) / 100, fanSpeed,
+  };
 }
 
 // ─── 2. Service Status ───
@@ -369,14 +416,58 @@ export async function checkDnsHealth(): Promise<boolean> {
   return r.includes('NOERROR') || r.includes('ANSWER SECTION');
 }
 
+// ─── Device Blocking (real nftables enforcement) ───
+// Maintains a dedicated `inet pi5_block` table with a forward-hook drop rule per blocked MAC.
+export async function applyBlockedDevices(macs: string[]): Promise<void> {
+  if (!isLinux) return;
+  const clean = macs.filter(m => /^[0-9a-fA-F]{2}(:[0-9a-fA-F]{2}){5}$/.test(m));
+  // Idempotent (boş-tanımla → sil → yeniden-tanımla): boot'ta include ile güvenli, reload'da çoğaltmaz.
+  const lines = [
+    'table inet pi5_block {}',
+    'delete table inet pi5_block',
+    'table inet pi5_block {',
+    '  chain forward {',
+    '    type filter hook forward priority -10; policy accept;',
+    ...clean.map(m => `    ether saddr ${m} drop`),
+    '  }',
+    '}',
+  ];
+  try { fs.mkdirSync('/etc/nftables.d', { recursive: true }); } catch { /* */ }
+  try { fs.writeFileSync('/etc/nftables.d/device-block.conf', lines.join('\n') + '\n'); } catch { /* */ }
+  await run('nft -f /etc/nftables.d/device-block.conf 2>/dev/null || true');
+}
+
 // ─── Service Control ───
 export async function systemctlAction(action: 'start' | 'stop' | 'restart' | 'enable' | 'disable', service: string): Promise<string> {
   if (!isLinux) throw new Error(`systemctl sadece Pi5 üzerinde çalışır: ${action} ${service}`);
+  const allowed = ['start', 'stop', 'restart', 'enable', 'disable'];
+  if (!allowed.includes(action)) throw new Error(`Geçersiz systemctl aksiyonu: ${action}`);
+  if (!VALID_UNIT.test(service)) throw new Error(`Geçersiz servis adı: ${service}`);
   return await run(`systemctl ${action} ${service}`) || `${action} ${service} tamamlandi`;
 }
 
+// ─── Interface / IP detection (supports both eth0=WAN and wlan0=WAN topologies) ───
+export async function detectInterfaces(): Promise<{ wan: string; lan: string }> {
+  const wan = (await run(`ip -o -4 route show to default | awk '{print $5}' | head -1`)).trim() || 'eth0';
+  const links = (await run('ls /sys/class/net 2>/dev/null')).split(/\s+/).filter(Boolean);
+  const lan = links.find(l =>
+    l !== 'lo' && l !== wan && !l.startsWith('wg') && !l.startsWith('docker') && !l.startsWith('veth') && !l.startsWith('br-')
+  ) || (wan === 'eth0' ? 'wlan0' : 'eth0');
+  return { wan, lan };
+}
+
+// Pi5'in LAN tarafındaki IP'si (redirect hedefi için). Bulunamazsa boş döner.
+export async function getPi5LanIp(): Promise<string> {
+  const { lan } = await detectInterfaces();
+  const ip = (await run(`ip -o -4 addr show ${lan} 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | head -1`)).trim();
+  if (/^\d+\.\d+\.\d+\.\d+$/.test(ip)) return ip;
+  const first = (await run(`hostname -I 2>/dev/null | awk '{print $1}'`)).trim();
+  return /^\d+\.\d+\.\d+\.\d+$/.test(first) ? first : '';
+}
+
 // ─── Domain-Based Routing ───
-// Uses dnsmasq ipset + nftables fwmark + ip rule to route specific domains
+// dnsmasq kernel ipset + iptables mangle (fwmark) + ip rule ile domain bazlı yönlendirme.
+// ÖNEMLI: marklama iptables `-m set` ile yapılır çünkü nft `@set` kernel ipset'lerini OKUYAMAZ.
 // Pi-hole is ALWAYS global (not a routing option).
 // Each rule has two independent parameters: exit_node (isp or a vps_id) and dpi_bypass (boolean).
 interface DomainRoute {
@@ -397,32 +488,47 @@ export async function applyDomainRouting(domains?: DomainRoute[]): Promise<void>
   const redirectDomains = enabledDomains.filter(d => d.redirect_url);
   const routingDomains = enabledDomains.filter(d => !d.redirect_url);
 
-  // Generate dnsmasq address= lines for redirect domains (point to Pi5 local IP)
+  // Generate dnsmasq address= lines for redirect domains (point to Pi5 local IP — detected, not hardcoded)
+  const pi5Ip = (await getPi5LanIp()) || '192.168.1.1';
   const addressLines: string[] = [];
   for (const d of redirectDomains) {
     const domain = d.domain.startsWith('*.') ? d.domain.replace('*.', '') : d.domain;
-    // Point domain to Pi5 IP — the redirect HTTP server will handle the actual redirect
-    addressLines.push(`address=/${domain}/192.168.1.1`);
+    // Point domain to Pi5 IP — nginx (:80) serves the redirect via /etc/nginx redirect map
+    addressLines.push(`address=/${domain}/${pi5Ip}`);
   }
 
-  // Write redirect config (separate from routing config)
-  if (addressLines.length > 0) {
-    const redirectConf = '# Auto-generated redirect rules\n' + addressLines.join('\n') + '\n';
-    await run(`echo '${redirectConf.replace(/'/g, "\\'")}' > /etc/dnsmasq.d/06-domain-redirect.conf`);
-  } else {
-    await run('echo "" > /etc/dnsmasq.d/06-domain-redirect.conf 2>/dev/null');
-  }
+  // Write redirect config (separate from routing config) — fs.writeFileSync, no shell interpolation
+  try {
+    const redirectConf = addressLines.length > 0
+      ? '# Auto-generated redirect rules\n' + addressLines.join('\n') + '\n'
+      : '';
+    fs.writeFileSync('/etc/dnsmasq.d/06-domain-redirect.conf', redirectConf);
+  } catch { /* */ }
 
-  // Write redirect URL map for the HTTP redirect server
+  // Write redirect URL map for the HTTP redirect server (backward-compat / diagnostics)
   const redirectMap: Record<string, string> = {};
   for (const d of redirectDomains) {
     const domain = d.domain.startsWith('*.') ? d.domain.replace('*.', '') : d.domain;
     redirectMap[domain] = d.redirect_url!;
   }
-  const fs = require('fs');
   try {
+    fs.mkdirSync('/opt/pi5-gateway/core', { recursive: true });
     fs.writeFileSync('/opt/pi5-gateway/core/redirect-map.json', JSON.stringify(redirectMap, null, 2));
   } catch { /* may fail on non-Linux */ }
+
+  // Redirect'i DOĞRU katmanda yap: nginx (:80). dnsmasq domaini Pi5'e yönlendirir, nginx 302 döner.
+  // (Backend'in eski 302 middleware'ine nginx trafiği hiç ulaşmıyordu — C1.)
+  const mapLines = ['map $host $pi5_redirect {', '    default "";'];
+  for (const [domain, url] of Object.entries(redirectMap)) {
+    const safeHost = domain.replace(/[^a-zA-Z0-9._-]/g, '');
+    const safeUrl = String(url).replace(/["\r\n\\]/g, '').trim();
+    if (safeHost && /^https?:\/\//i.test(safeUrl)) mapLines.push(`    "${safeHost}" "${safeUrl}";`);
+  }
+  mapLines.push('}');
+  try {
+    fs.writeFileSync('/etc/nginx/conf.d/pi5-redirect-map.conf', mapLines.join('\n') + '\n');
+    await run('nginx -t 2>/dev/null && (nginx -s reload 2>/dev/null || systemctl reload nginx 2>/dev/null) || true');
+  } catch { /* */ }
 
   // fwmark scheme:
   //   exit_node='isp', dpi_bypass=0 → mark 0 (default, no special routing)
@@ -438,8 +544,7 @@ export async function applyDomainRouting(domains?: DomainRoute[]): Promise<void>
     return 300 + vpsId; // VPS exit + DPI bypass
   }
 
-  // 1. Generate dnsmasq ipset config for Pi-hole
-  // Each unique fwmark gets its own ipset
+  // 1. dnsmasq ipset config — Pi-hole/dnsmasq, çözülen IP'leri kernel ipset'lerine yazar.
   const ipsetLines: string[] = [];
   const markSets = new Map<number, string>(); // mark → ipset name
 
@@ -448,80 +553,47 @@ export async function applyDomainRouting(domains?: DomainRoute[]): Promise<void>
     if (mark === 0) continue; // default route, no special routing needed
     const setName = `rt_m${mark}`;
     if (!markSets.has(mark)) markSets.set(mark, setName);
-
-    let domain = d.domain;
-    // Keyword filter: if no dots, treat as substring match for all domains containing this word
-    // dnsmasq doesn't support regex, but we can match subdomains with /keyword/ syntax
-    if (!domain.includes('.')) {
-      // Keyword: matches any domain containing this word (dnsmasq server= wildcard)
-      // dnsmasq ipset line: ipset=/keyword/ matches domains containing 'keyword'
-      ipsetLines.push(`ipset=/${domain}/${setName}`);
-    } else if (domain.startsWith('*.')) {
-      // Wildcard: *.example.com → match example.com and all subdomains
-      const baseDomain = domain.replace('*.', '');
-      ipsetLines.push(`ipset=/${baseDomain}/${setName}`);
-    } else {
-      // Exact domain match
-      ipsetLines.push(`ipset=/${domain}/${setName}`);
-    }
+    // Keyword (nokta yok) ve *.example.com → dnsmasq suffix eşleşmesi (substring DEĞİL — dnsmasq sınırı).
+    const base = d.domain.startsWith('*.') ? d.domain.slice(2) : d.domain;
+    ipsetLines.push(`ipset=/${base}/${setName}`);
   }
 
-  // Write dnsmasq ipset config
-  const dnsmasqConf = ipsetLines.join('\n') + '\n';
-  await run(`echo '${dnsmasqConf.replace(/'/g, "\\'")}' > /etc/dnsmasq.d/05-domain-routing.conf`);
+  try { fs.writeFileSync('/etc/dnsmasq.d/05-domain-routing.conf', ipsetLines.join('\n') + '\n'); } catch { /* */ }
 
-  // 2. Create/flush ipsets
+  // Eski nft tabanlı (bozuk) marklama dosyasını temizle
+  await run('rm -f /etc/nftables.d/domain-routing.conf 2>/dev/null || true');
+  await run('nft delete table inet domain_routing 2>/dev/null || true');
+
+  // 2. Kernel ipset'lerini oluştur/temizle (dnsmasq doldurur).
   for (const [, setName] of markSets) {
-    await run(`ipset create ${setName} hash:ip -exist`);
+    await run(`ipset create ${setName} hash:ip family inet -exist`);
     await run(`ipset flush ${setName}`);
   }
 
-  // 3. Create nftables marks based on ipset membership
-  const nftCmds: string[] = [];
-  nftCmds.push('#!/usr/sbin/nft -f');
-  nftCmds.push('table inet domain_routing {');
-  nftCmds.push('  chain prerouting {');
-  nftCmds.push('    type filter hook prerouting priority -150; policy accept;');
-
+  // 3. iptables mangle ile marklama — `-m set` kernel ipset'lerini DOĞRU okur (nft @set okuyamaz).
+  await run('iptables -t mangle -N PI5_ROUTING 2>/dev/null || true');
+  await run('iptables -t mangle -F PI5_ROUTING 2>/dev/null || true');
+  await run('iptables -t mangle -C PREROUTING -j PI5_ROUTING 2>/dev/null || iptables -t mangle -A PREROUTING -j PI5_ROUTING');
+  await run('iptables -t mangle -C OUTPUT -j PI5_ROUTING 2>/dev/null || iptables -t mangle -A OUTPUT -j PI5_ROUTING');
   for (const [mark, setName] of markSets) {
-    nftCmds.push(`    ip daddr @${setName} meta mark set ${mark}`);
+    await run(`iptables -t mangle -A PI5_ROUTING -m set --match-set ${setName} dst -j CONNMARK --restore-mark`);
+    await run(`iptables -t mangle -A PI5_ROUTING -m set --match-set ${setName} dst -j MARK --set-mark ${mark}`);
+    await run(`iptables -t mangle -A PI5_ROUTING -m set --match-set ${setName} dst -j CONNMARK --save-mark`);
   }
 
-  nftCmds.push('  }');
-  nftCmds.push('}');
-
-  const nftConf = nftCmds.join('\n');
-  await run(`echo '${nftConf.replace(/'/g, "\\'")}' > /etc/nftables.d/domain-routing.conf`);
-
-  // 4. Setup ip rules for each fwmark → routing table
+  // 4. VPS-çıkış markları (≥100) için ip rule + routing tablosu.
+  //    mark 200 (yalnız DPI bypass) ISP ana tablosunu kullanır — zapret trafiği kendi hook'uyla işler.
   for (const [mark] of markSets) {
+    if (mark < 100) continue;
+    const vpsId = mark >= 300 ? mark - 300 : mark - 100;
+    const iface = `wg_vps${vpsId}`;
     await run(`ip rule add fwmark ${mark} table ${mark} 2>/dev/null || true`);
-
-    if (mark >= 100 && mark < 200) {
-      // VPS exit only (mark = 100 + vpsId) → route through WireGuard
-      const vpsId = mark - 100;
-      const iface = `wg_vps${vpsId}`;
-      // Verify interface exists before adding route
-      const ifaceCheck = await run(`ip link show ${iface} 2>/dev/null`);
-      if (ifaceCheck) {
-        await run(`ip route replace default dev ${iface} table ${mark} 2>/dev/null || true`);
-      }
-    } else if (mark >= 300) {
-      // VPS exit + DPI bypass (mark = 300 + vpsId) → route through WireGuard
-      const vpsId = mark - 300;
-      const iface = `wg_vps${vpsId}`;
-      const ifaceCheck = await run(`ip link show ${iface} 2>/dev/null`);
-      if (ifaceCheck) {
-        await run(`ip route replace default dev ${iface} table ${mark} 2>/dev/null || true`);
-      }
+    const ifaceCheck = await run(`ip link show ${iface} 2>/dev/null`);
+    if (ifaceCheck) {
+      await run(`ip route replace default dev ${iface} table ${mark} 2>/dev/null || true`);
     }
-    // mark 200 = DPI bypass only → uses default gateway but goes through zapret nfqueue
   }
 
-  // 5. Reload dnsmasq to pick up ipset config
-  await run('pihole restartdns');
-
-  // 6. Apply nftables
-  await run('mkdir -p /etc/nftables.d');
-  await run('nft -f /etc/nftables.d/domain-routing.conf 2>/dev/null || true');
+  // 5. dnsmasq'i yeniden yükle (ipset config'i alsın)
+  await run('pihole restartdns 2>/dev/null || systemctl reload pihole-FTL 2>/dev/null || systemctl restart dnsmasq 2>/dev/null || true');
 }

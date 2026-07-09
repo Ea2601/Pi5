@@ -8,29 +8,28 @@ type FilterType = 'all' | 'blocked' | 'allowed';
 interface DnsQuery {
   id: number;
   timestamp: string;
-  clientIp: string;
+  client_ip: string;
   domain: string;
-  queryType: string;
+  type: string;
   status: 'blocked' | 'allowed';
 }
 
 interface DnsQueryData {
   queries: DnsQuery[];
-  totalBlocked: number;
-  totalAllowed: number;
 }
 
 export function DnsQueryLog() {
-  const { data } = useApi<DnsQueryData>('/dns/queries', {
-    queries: [], totalBlocked: 0, totalAllowed: 0,
-  }, 3000);
+  const { data } = useApi<DnsQueryData>('/dns/queries', { queries: [] }, 3000);
 
   const [filter, setFilter] = useState<FilterType>('all');
   const [searchTerm, setSearchTerm] = useState('');
   const [deviceFilter, setDeviceFilter] = useState('');
 
+  const totalBlocked = useMemo(() => data.queries.filter(q => q.status === 'blocked').length, [data.queries]);
+  const totalAllowed = useMemo(() => data.queries.filter(q => q.status === 'allowed').length, [data.queries]);
+
   const uniqueClients = useMemo(() => {
-    const ips = new Set(data.queries.map(q => q.clientIp));
+    const ips = new Set(data.queries.map(q => q.client_ip));
     return Array.from(ips).sort();
   }, [data.queries]);
 
@@ -38,7 +37,7 @@ export function DnsQueryLog() {
     return data.queries.filter(q => {
       if (filter === 'blocked' && q.status !== 'blocked') return false;
       if (filter === 'allowed' && q.status !== 'allowed') return false;
-      if (deviceFilter && q.clientIp !== deviceFilter) return false;
+      if (deviceFilter && q.client_ip !== deviceFilter) return false;
       if (searchTerm && !q.domain.toLowerCase().includes(searchTerm.toLowerCase())) return false;
       return true;
     });
@@ -56,8 +55,8 @@ export function DnsQueryLog() {
         subtitle="Gercek zamanli DNS sorgu izleme"
         badge={
           <>
-            <Badge variant="error">{data.totalBlocked} engellenen</Badge>
-            <Badge variant="success">{data.totalAllowed} izin verilen</Badge>
+            <Badge variant="error">{totalBlocked} engellenen</Badge>
+            <Badge variant="success">{totalAllowed} izin verilen</Badge>
           </>
         }>
         <div className="service-tabs">
@@ -103,9 +102,9 @@ export function DnsQueryLog() {
                   <span className="text-muted" style={{ fontSize: '0.7rem', minWidth: '70px' }}>
                     {new Date(query.timestamp).toLocaleTimeString('tr-TR')}
                   </span>
-                  <span className="ban-ip" style={{ minWidth: '110px' }}>{query.clientIp}</span>
+                  <span className="ban-ip" style={{ minWidth: '110px' }}>{query.client_ip}</span>
                   <span style={{ flex: 2, fontFamily: 'monospace', fontSize: '0.8rem' }}>{query.domain}</span>
-                  <Badge variant="neutral">{query.queryType}</Badge>
+                  <Badge variant="neutral">{query.type}</Badge>
                   <Badge variant={query.status === 'blocked' ? 'error' : 'success'}>
                     {query.status === 'blocked' ? 'Engellendi' : 'Izin Verildi'}
                   </Badge>

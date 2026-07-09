@@ -18,6 +18,7 @@ export interface Device {
   hostname: string;
   device_type: string;
   route_profile: string;
+  blocked?: number;
   last_seen: string;
 }
 
@@ -75,6 +76,9 @@ export interface SystemStats {
   diskUsed: number;
   uptime: number;
   loadAvg: number[];
+  diskRead?: number;
+  diskWrite?: number;
+  fanSpeed?: number;
 }
 
 export interface HealthStatus {

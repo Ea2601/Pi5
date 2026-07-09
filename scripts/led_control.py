@@ -68,7 +68,8 @@ def get_led():
         from fanshim import FanShim
         fs = FanShim()
         return fs
-    except ImportError:
+    except Exception:
+        # ImportError (paket yok) VEYA donanım/SPI hatası (paket var ama donanım yok) — spidev fallback'e düş
         pass
 
     # Fallback: direct APA102 via SPI

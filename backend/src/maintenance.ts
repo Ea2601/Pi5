@@ -1,9 +1,6 @@
-import { exec } from 'child_process';
-import util from 'util';
 import fs from 'fs';
 import path from 'path';
 
-const execAsync = util.promisify(exec);
 // Core directory must exist
 const coreDir = path.resolve(__dirname, '../../core');
 if (!fs.existsSync(coreDir)) fs.mkdirSync(coreDir, { recursive: true });
@@ -11,40 +8,16 @@ const logPath = path.resolve(coreDir, 'system.log');
 
 function writeLog(message: string) {
   const entry = `[${new Date().toISOString()}] ${message}\n`;
-  fs.appendFileSync(logPath, entry);
+  try { fs.appendFileSync(logPath, entry); } catch { /* */ }
   console.log(message);
 }
 
-export async function runMaintenance() {
-  writeLog('MAINTENANCE: Starting daily apt update & upgrade loop...');
-  try {
-    // In real environment, this runs apt update & -y upgrade
-    await execAsync('echo "sudo apt update -qq && sudo apt upgrade -y -qq"');
-    writeLog('MAINTENANCE: OS packages updated successfully.');
-    
-    // Pi-hole / Zapret updates
-    await execAsync('echo "pihole -up && pihole -g"');
-    writeLog('MAINTENANCE: AdBlock Gravity lists updated.');
-    
-  } catch (err: any) {
-    writeLog(`MAINTENANCE ERROR: ${err.message}`);
-  }
-}
-
+// NOT: Gerçek bakım (apt update/upgrade, git pull, build, log temizliği) install.sh'in kurduğu
+// /etc/cron.d/pi5-maintenance ile yapılır. Buradaki eski `runMaintenance` sadece komutları `echo`layan
+// bir stub'dı (sahte "başarılı" logu üretiyordu) ve her gece 04:00'te gizlice `sudo reboot` çağırıyordu —
+// ikisi de kaldırıldı. Cron zamanlaması tek noktada (cron.d) yönetilir.
 export function startCronJobs() {
-  writeLog('CRON: Cron jobs engine initialized.');
-  
-  // Every 24 hours (86400000 ms), run runMaintenance()
-  setInterval(runMaintenance, 86400000);
-  
-  // Simulated daily restart: Node can schedule a reboot at 04:00 AM every day
-  setInterval(() => {
-    const now = new Date();
-    if (now.getHours() === 4 && now.getMinutes() === 0) {
-       writeLog('CRON: Scheduling daily system reboot...');
-       exec('sudo reboot');
-    }
-  }, 60000); // Check every minute
+  writeLog('CRON: Bakım zamanlaması işletim sistemi cron.d üzerinden yönetiliyor (pi5-maintenance).');
 }
 
 export function getSystemLogs(): string[] {
@@ -54,6 +27,12 @@ export function getSystemLogs(): string[] {
   } catch {
     return ['No logs available yet.'];
   }
+}
+
+export function clearSystemLogs(): void {
+  try {
+    fs.writeFileSync(logPath, `[${new Date().toISOString()}] LOG: Loglar temizlendi\n`);
+  } catch { /* */ }
 }
 
 // Write initial startup log

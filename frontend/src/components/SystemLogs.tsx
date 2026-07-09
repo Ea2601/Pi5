@@ -80,7 +80,7 @@ function LogsView() {
       <div className="maintenance-row">
         <div className="maintenance-actions">
           <button className="btn-primary btn-sm" disabled={actionLoading !== null}
-            onClick={() => handleAction('update', '/services/setup', { action: 'pihole' })}>
+            onClick={() => handleAction('update', '/system/update', {})}>
             <RefreshCw size={14} className={actionLoading === 'update' ? 'spin' : ''} />
             <span>OS Update</span>
           </button>
@@ -90,7 +90,7 @@ function LogsView() {
             <span>Zapret Güncelle</span>
           </button>
           <button className="btn-outline btn-sm" disabled={actionLoading !== null}
-            onClick={() => handleAction('reboot', '/services/setup', { action: 'firewall' })}>
+            onClick={() => { if (confirm('Pi 5 yeniden başlatılsın mı?')) handleAction('reboot', '/system/reboot', {}); }}>
             <Power size={14} />
             <span>Reboot Pi 5</span>
           </button>
@@ -98,7 +98,8 @@ function LogsView() {
             <Download size={14} />
             <span>Yenile</span>
           </button>
-          <button className="btn-ghost btn-sm">
+          <button className="btn-ghost btn-sm" disabled={actionLoading !== null}
+            onClick={() => handleAction('clear', '/logs/clear', {})}>
             <Trash2 size={14} />
             <span>Temizle</span>
           </button>
@@ -156,11 +157,13 @@ function CronView() {
 
   const handleRun = async (id: number) => {
     setRunning(id);
-    await postApi(`/cron/jobs/${id}/run`, {});
-    setTimeout(async () => {
+    try {
+      await postApi(`/cron/jobs/${id}/run`, {});
+    } catch { /* hata durumunda da butonu serbest bırak */ }
+    finally {
       setRunning(null);
       await refetch();
-    }, 2500);
+    }
   };
 
   const startEdit = (job: CronJob) => {

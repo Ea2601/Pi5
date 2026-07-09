@@ -268,7 +268,7 @@ function DomainRoutingView() {
           </div>
         </div>
         <p className="subtitle">
-          Belirli domain'leri farklı VPS'ler üzerinden yönlendirin. Wildcard desteklenir: <code style={{ fontSize: 11, background: 'rgba(255,255,255,0.06)', padding: '1px 4px', borderRadius: 3 }}>*.example.com</code> veya kelime filtresi: <code style={{ fontSize: 11, background: 'rgba(255,255,255,0.06)', padding: '1px 4px', borderRadius: 3 }}>video</code> (video geçen tüm domain'ler)
+          Belirli domain'leri farklı VPS'ler üzerinden yönlendirin. Wildcard desteklenir: <code style={{ fontSize: 11, background: 'rgba(255,255,255,0.06)', padding: '1px 4px', borderRadius: 3 }}>*.example.com</code> veya kelime (alan-adı son eki): <code style={{ fontSize: 11, background: 'rgba(255,255,255,0.06)', padding: '1px 4px', borderRadius: 3 }}>youtube</code> (youtube.com ve tüm alt alan adları — DNS son-ek eşleşmesi)
         </p>
 
         {showAdd && (

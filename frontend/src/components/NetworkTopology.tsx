@@ -183,7 +183,9 @@ export function NetworkTopology() {
             const device = devices[i];
             if (!device) return null;
             const speed = { down: 0, up: 0 }; // Real speed data not available yet
-            const profile = getProfileInfo('isp', 0, vpsList);
+            const rp = device.route_profile;
+            const exitNode = device.blocked ? 'blocked' : (rp && /^\d+$/.test(rp) ? rp : 'isp');
+            const profile = getProfileInfo(exitNode, 0, vpsList);
             return (
               <div key={device.mac_address}
                 className="mesh-device"

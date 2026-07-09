@@ -49,8 +49,9 @@ step "2/10 — Bağımlılıklar Kuruluyor"
 apt install -y -qq \
   curl git build-essential \
   sqlite3 libsqlite3-dev \
-  nginx certbot python3-certbot-nginx \
-  qrencode speedtest-cli vnstat
+  nginx certbot python3-certbot-nginx apache2-utils \
+  qrencode speedtest-cli vnstat \
+  ipset iptables
 
 # Node.js 22 LTS
 if ! command -v node &>/dev/null || [ "$(node -v | cut -d. -f1 | tr -d v)" -lt 20 ]; then
@@ -77,8 +78,12 @@ log "Proje dosyaları hazır: $INSTALL_DIR"
 step "4/10 — Backend Kuruluyor"
 cd "$INSTALL_DIR/backend"
 npm ci --production=false 2>/dev/null || npm install
-npm run build 2>/dev/null || warn "Backend build uyarısı (devam ediyor)"
-log "Backend bağımlılıkları kuruldu"
+npm run build || warn "Backend build hata verdi"
+# Build çıktısı yoksa servisi başlatma — dist/index.js olmadan pi5-backend sonsuz crash-loop'a girer
+if [ ! -f "$INSTALL_DIR/backend/dist/index.js" ]; then
+  err "Backend build başarısız (dist/index.js yok). Kurulum durduruldu — crash-loop önlendi. Logları kontrol edin."
+fi
+log "Backend derlendi"
 
 # ─── 5. Frontend Kurulumu ───
 step "5/10 — Frontend Kuruluyor"
@@ -98,8 +103,9 @@ else
   mkdir -p /etc/pihole
   cat > /etc/pihole/setupVars.conf << 'PHEOF'
 PIHOLE_INTERFACE=eth0
+# Gizlilik: TEK upstream = Unbound (recursive). 1.1.1.1 gibi ikinci upstream eklemek
+# sorguların yarısını Unbound'u atlayıp dış sağlayıcıya sızdırır — kasıtlı olarak eklenmedi.
 PIHOLE_DNS_1=127.0.0.1#5335
-PIHOLE_DNS_2=1.1.1.1
 QUERY_LOGGING=true
 INSTALL_WEB_SERVER=false
 INSTALL_WEB_INTERFACE=false
@@ -163,12 +169,13 @@ else
 bantime = 3600
 findtime = 600
 maxretry = 5
+# journald-only sistemlerde (Bookworm) /var/log/auth.log olmayabilir — systemd backend journal'ı okur
+backend = systemd
 
 [sshd]
 enabled = true
 port = ssh
 filter = sshd
-logpath = /var/log/auth.log
 maxretry = 3
 bantime = 7200
 F2BEOF
@@ -203,9 +210,12 @@ else
 fi
 
 # ─── Hardware: LED, LCD bağımlılıkları ───
+# Bookworm (PEP 668) externally-managed-environment: --break-system-packages gerekir, yoksa sessiz başarısızlık.
 warn "Pimoroni kasa bağımlılıkları kuruluyor..."
-pip3 install --quiet fanshim spidev luma.oled luma.core RPLCD 2>/dev/null || true
-log "Pimoroni bağımlılıkları kuruldu"
+pip3 install --break-system-packages --quiet fanshim spidev luma.oled luma.core RPLCD 2>/dev/null \
+  || pip3 install --quiet fanshim spidev luma.oled luma.core RPLCD 2>/dev/null \
+  || warn "Pimoroni pip bağımlılıkları kurulamadı (donanım yoksa normal)"
+log "Pimoroni bağımlılık adımı tamamlandı"
 
 # ─── Kiosk: Minimal X11 + Chromium (Lite OS için) ───
 warn "Kiosk modu bağımlılıkları kuruluyor (Lite OS)..."
@@ -234,7 +244,7 @@ chromium-browser \
   --check-for-update-interval=31536000 \
   --disable-component-update \
   --overscroll-history-navigation=0 \
-  http://localhost:3001/kiosk.html
+  http://localhost/kiosk.html
 KIOSKEOF
 chmod +x /opt/pi5-gateway/scripts/kiosk.sh
 
@@ -248,8 +258,9 @@ OBEOF
 cat > /etc/systemd/system/pi5-kiosk.service << 'SVCEOF'
 [Unit]
 Description=Pi5 Gateway Kiosk Display
-After=pi5-backend.service network-online.target
-Wants=pi5-backend.service
+After=pi5-backend.service network-online.target getty@tty1.service
+Wants=pi5-backend.service network-online.target
+Conflicts=getty@tty1.service
 
 [Service]
 Type=simple
@@ -282,52 +293,70 @@ if lsblk -dno NAME,TYPE | grep -q "nvme.*disk"; then
   SSD_MOUNT=$(lsblk -no MOUNTPOINT /dev/${SSD_DEV}p1 2>/dev/null | head -1)
 
   if [ -z "$SSD_MOUNT" ]; then
-    warn "SSD mount edilmemiş. /mnt/ssd olarak hazırlanıyor..."
-
-    # Partition yoksa oluştur
-    if ! lsblk -no NAME /dev/$SSD_DEV | grep -q "p1"; then
-      warn "SSD bölümlendiriliyor..."
-      echo -e "g\nn\n\n\n\nw" | fdisk /dev/$SSD_DEV 2>/dev/null
-      sleep 2
-    fi
-
-    # Filesystem yoksa oluştur
     PART="/dev/${SSD_DEV}p1"
-    if ! blkid "$PART" | grep -q "ext4"; then
-      warn "SSD ext4 formatlanıyor..."
-      mkfs.ext4 -F "$PART"
-    fi
+    HAS_PART=false
+    lsblk -no NAME /dev/$SSD_DEV | grep -q "p1" && HAS_PART=true
+    HAS_FS=false
+    { blkid "$PART" 2>/dev/null | grep -q "TYPE="; } && HAS_FS=true
 
-    # Mount
-    SSD_MOUNT="/mnt/ssd"
-    mkdir -p "$SSD_MOUNT"
-    mount "$PART" "$SSD_MOUNT"
+    # GÜVENLİK: Disk üzerinde bölüm/dosya sistemi varsa ASLA otomatik formatlama (veri kaybını önle).
+    # Boş diski formatlamak için açık onay gerekir: PI5_FORMAT_SSD=1 sudo ./install.sh
+    if { [ "$HAS_PART" = true ] || [ "$HAS_FS" = true ]; } && [ "${PI5_FORMAT_SSD:-0}" != "1" ]; then
+      warn "SSD'de mevcut bölüm/veri tespit edildi — otomatik formatlama ATLANDI (veri korundu)."
+      warn "Diski sıfırlayıp kullanmak isterseniz: PI5_FORMAT_SSD=1 ile yeniden çalıştırın."
+      warn "SD kart üzerinde devam ediliyor."
+      SSD_DETECTED=false
+      mkdir -p "$INSTALL_DIR/core"
+    else
+      warn "SSD mount edilmemiş. /mnt/ssd olarak hazırlanıyor..."
+      if [ "$HAS_PART" = false ]; then
+        warn "SSD bölümlendiriliyor..."
+        echo -e "g\nn\n\n\n\nw" | fdisk /dev/$SSD_DEV 2>/dev/null
+        sleep 2
+      fi
+      if [ "$HAS_FS" = false ] || [ "${PI5_FORMAT_SSD:-0}" = "1" ]; then
+        warn "SSD ext4 formatlanıyor..."
+        mkfs.ext4 -F "$PART"
+      fi
 
-    # fstab'a ekle (kalıcı mount)
-    UUID=$(blkid -s UUID -o value "$PART")
-    if ! grep -q "$UUID" /etc/fstab; then
-      echo "UUID=$UUID /mnt/ssd ext4 defaults,noatime,discard 0 2" >> /etc/fstab
-      log "SSD /etc/fstab'a eklendi (kalıcı mount)"
+      SSD_MOUNT="/mnt/ssd"
+      mkdir -p "$SSD_MOUNT"
+      mount "$PART" "$SSD_MOUNT"
+
+      UUID=$(blkid -s UUID -o value "$PART")
+      if ! grep -q "$UUID" /etc/fstab; then
+        echo "UUID=$UUID /mnt/ssd ext4 defaults,noatime,discard 0 2" >> /etc/fstab
+        log "SSD /etc/fstab'a eklendi (kalıcı mount)"
+      fi
+      SSD_DETECTED=true
+      log "SSD mount noktası: $SSD_MOUNT"
     fi
+  else
+    SSD_DETECTED=true
+    log "SSD mount noktası: $SSD_MOUNT"
   fi
-
-  SSD_DETECTED=true
-  log "SSD mount noktası: $SSD_MOUNT"
 
   # Core ve DB dizinini SSD'ye taşı (performans için)
   if [ -n "$SSD_MOUNT" ]; then
     SSD_DATA="$SSD_MOUNT/pi5-data"
     mkdir -p "$SSD_DATA"
 
-    # Mevcut core dizinini SSD'ye taşı
+    # Mevcut core dizinini SSD'ye taşı — SADECE kopyalama başarılıysa sil (veri kaybını önle)
+    CORE_MOVED=true
     if [ -d "$INSTALL_DIR/core" ] && [ ! -L "$INSTALL_DIR/core" ]; then
-      cp -a "$INSTALL_DIR/core/"* "$SSD_DATA/" 2>/dev/null || true
-      rm -rf "$INSTALL_DIR/core"
+      if cp -a "$INSTALL_DIR/core/." "$SSD_DATA/" 2>/dev/null; then
+        rm -rf "$INSTALL_DIR/core"
+      else
+        CORE_MOVED=false
+        warn "core/ SSD'ye kopyalanamadı — taşıma atlandı, veri korundu (core/ yerinde kaldı, SD kart kullanılıyor)"
+      fi
     fi
 
-    # Symlink oluştur: core → SSD
-    ln -sfn "$SSD_DATA" "$INSTALL_DIR/core"
-    log "Veri dizini SSD'ye taşındı: $SSD_DATA → $INSTALL_DIR/core"
+    # Symlink oluştur: core → SSD (yalnızca gerçek core dizini kaldıysa/taşındıysa)
+    if [ "$CORE_MOVED" = true ] && [ ! -e "$INSTALL_DIR/core" -o -L "$INSTALL_DIR/core" ]; then
+      ln -sfn "$SSD_DATA" "$INSTALL_DIR/core"
+      log "Veri dizini SSD'ye taşındı: $SSD_DATA → $INSTALL_DIR/core"
+    fi
   fi
 else
   warn "NVMe SSD algılanamadı, SD kart üzerinde çalışılacak"
@@ -361,6 +390,12 @@ StandardError=journal
 WantedBy=multi-user.target
 SVCEOF
 
+# Domain redirect map (backend applyDomainRouting tarafından yönetilir; başlangıçta boş)
+mkdir -p /etc/nginx/conf.d
+if [ ! -f /etc/nginx/conf.d/pi5-redirect-map.conf ]; then
+  printf 'map $host $pi5_redirect {\n    default "";\n}\n' > /etc/nginx/conf.d/pi5-redirect-map.conf
+fi
+
 # Nginx reverse proxy (frontend + API)
 cat > /etc/nginx/sites-available/pi5-gateway << 'NGXEOF'
 server {
@@ -368,11 +403,16 @@ server {
     listen [::]:80 default_server;
     server_name _;
 
+    # Panel erişim koruması (opt-in Basic Auth — localhost/kiosk muaf). İçerik pi5-auth.conf'tan gelir.
+    include /etc/nginx/snippets/pi5-auth.conf;
+
     # Frontend (statik dosyalar)
     root /opt/pi5-gateway/frontend/dist;
     index index.html;
 
     location / {
+        # DNS ile Pi5'e yönlendirilen domain'ler için 302 (pi5_redirect map'ten gelir)
+        if ($pi5_redirect) { return 302 $pi5_redirect; }
         try_files $uri $uri/ /index.html;
     }
 
@@ -396,6 +436,29 @@ server {
     add_header Referrer-Policy "strict-origin-when-cross-origin" always;
 }
 NGXEOF
+
+# ─── Panel Erişim Koruması (Basic Auth — opt-in) ───
+# PI5_ADMIN_PASSWORD verildiyse Basic Auth etkinleşir (localhost/kiosk muaf tutulur).
+# Verilmediyse koruma kapalı kalır (kişisel/güvenilir LAN varsayımı) ama /api/terminal/execute gibi
+# uç noktalar açıkta kalır — üretim/uzaktan erişimde MUTLAKA ayarlanmalı.
+mkdir -p /etc/nginx/snippets
+if [ -n "${PI5_ADMIN_PASSWORD:-}" ]; then
+  PI5_ADMIN_USER="${PI5_ADMIN_USER:-admin}"
+  htpasswd -bc /etc/nginx/.htpasswd "$PI5_ADMIN_USER" "$PI5_ADMIN_PASSWORD" 2>/dev/null
+  cat > /etc/nginx/snippets/pi5-auth.conf << 'AUTHEOF'
+satisfy any;
+allow 127.0.0.1;
+allow ::1;
+deny all;
+auth_basic "Pi5 Gateway";
+auth_basic_user_file /etc/nginx/.htpasswd;
+AUTHEOF
+  log "Panel Basic Auth etkin (kullanıcı: $PI5_ADMIN_USER, localhost muaf)"
+else
+  echo "# Basic Auth kapalı — etkinleştirmek için PI5_ADMIN_PASSWORD ile yeniden çalıştırın" \
+    > /etc/nginx/snippets/pi5-auth.conf
+  warn "Panel erişim koruması KAPALI. Uzaktan/üretim için: PI5_ADMIN_PASSWORD=... sudo ./install.sh"
+fi
 
 # Nginx aktifleştir
 ln -sf /etc/nginx/sites-available/pi5-gateway /etc/nginx/sites-enabled/
@@ -425,8 +488,8 @@ step "10/10 — Otomatik Bakım Ayarlanıyor"
 cat > /etc/cron.d/pi5-maintenance << 'CRONEOF'
 # Pi5 Gateway günlük bakım
 0 3 * * * root apt update -qq && apt upgrade -y -qq >> /opt/pi5-gateway/core/system.log 2>&1
-30 3 * * * root cd /opt/pi5-gateway && git pull --rebase && cd frontend && npm run build && cd ../backend && npm run build >> /opt/pi5-gateway/core/system.log 2>&1
-0 4 * * * root systemctl restart pi5-backend >> /opt/pi5-gateway/core/system.log 2>&1
+# Güncelleme+build tek scriptte; backend restart YALNIZCA build başarılıysa (&&) yapılır — bozuk build'i canlıya almaz
+30 3 * * * root /bin/bash /opt/pi5-gateway/scripts/update.sh >> /opt/pi5-gateway/core/system.log 2>&1 && systemctl restart pi5-backend >> /opt/pi5-gateway/core/system.log 2>&1
 0 2 * * 1 root journalctl --vacuum-time=7d && find /var/log -name "*.gz" -mtime +30 -delete >> /opt/pi5-gateway/core/system.log 2>&1
 CRONEOF
 chmod 644 /etc/cron.d/pi5-maintenance

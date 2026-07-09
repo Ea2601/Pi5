@@ -2,20 +2,20 @@
 # System update script — called by backend update endpoint
 # Handles all permission issues automatically
 set -e
+set -o pipefail  # `npm run build | tail` gibi pipeline'larda build hatası maskelenmesin
 
 BASE="/opt/pi5-gateway"
 LOGFILE="$BASE/core/update.log"
 
-log() { echo "$(date '+%H:%M:%S') $1" | tee -a "$LOGFILE" 2>/dev/null; }
+# Log yazılamazsa (core salt-okunur vb.) set -e ile scripti öldürme
+log() { echo "$(date '+%H:%M:%S') $1" | tee -a "$LOGFILE" 2>/dev/null || echo "$(date '+%H:%M:%S') $1"; }
 
 log "=== Güncelleme başlatıldı ==="
 log "Kullanıcı: $(whoami), UID: $(id -u)"
 
 # Fix ALL permission issues upfront
-# Make entire repo writable by current user
-chmod -R u+rwX "$BASE" 2>/dev/null || sudo chmod -R a+rwX "$BASE" 2>/dev/null || true
-# Fix .git specifically
-chmod -R 777 "$BASE/.git" 2>/dev/null || true
+# Make entire repo writable by current user (777 yerine u+rwX — dünya-yazılabilir yapma)
+chmod -R u+rwX "$BASE" 2>/dev/null || sudo chmod -R u+rwX "$BASE" 2>/dev/null || true
 
 # Safe directory (both for current user and root)
 git config --global --add safe.directory "$BASE" 2>/dev/null || true

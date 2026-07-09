@@ -19,10 +19,10 @@ interface DeviceGroup {
 }
 
 interface ConnectionEvent {
+  id?: number;
+  device_mac: string;
   timestamp: string;
-  type: 'connect' | 'disconnect';
-  ip_address: string;
-  hostname: string;
+  event_type: 'connect' | 'disconnect';
 }
 
 interface UnknownDevice {
@@ -93,7 +93,7 @@ function GroupsView() {
   const handleAddMember = async (groupId: number) => {
     if (!selectedMac) return;
     try {
-      await postApi(`/devices/groups/${groupId}/members`, { mac_address: selectedMac });
+      await postApi(`/devices/groups/${groupId}/members`, { device_mac: selectedMac });
       setAddingMember(null);
       setSelectedMac('');
       await refetch();
@@ -255,7 +255,7 @@ function BlockingView() {
     setBlocking(null);
   };
 
-  const isBlocked = (device: Device) => device.route_profile === 'blocked';
+  const isBlocked = (device: Device) => !!device.blocked;
 
   return (
     <div style={{ marginTop: 14 }}>
@@ -337,19 +337,18 @@ function HistoryView() {
         {selectedMac ? (
           <div className="list-items">
             {historyData.events.map((event, i) => (
-              <div key={i} className="list-item" style={{ gap: 12 }}>
+              <div key={event.id ?? i} className="list-item" style={{ gap: 12 }}>
                 <span style={{
                   width: 10, height: 10, borderRadius: '50%',
-                  background: event.type === 'connect' ? '#10b981' : '#ef4444',
+                  background: event.event_type === 'connect' ? '#10b981' : '#ef4444',
                   flexShrink: 0
                 }} />
                 <div style={{ flex: 1 }}>
-                  <strong>{event.type === 'connect' ? 'Bağlandı' : 'Bağlantı Kesildi'}</strong>
-                  <div className="text-muted" style={{ fontSize: 12 }}>
-                    {event.ip_address} &middot; {event.hostname}
-                  </div>
+                  <strong>{event.event_type === 'connect' ? 'Bağlandı' : 'Bağlantı Kesildi'}</strong>
                 </div>
-                <span className="text-muted" style={{ fontSize: 12 }}>{event.timestamp}</span>
+                <span className="text-muted" style={{ fontSize: 12 }}>
+                  {event.timestamp ? new Date(/[zZ]|[+]/.test(event.timestamp) ? event.timestamp : event.timestamp.replace(' ', 'T') + 'Z').toLocaleString('tr-TR') : ''}
+                </span>
               </div>
             ))}
             {historyData.events.length === 0 && (

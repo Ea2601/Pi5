@@ -11,3 +11,9 @@ core/vps-wg.conf
 *.log
 .DS_Store
 Thumbs.db
+
+# Tooling / generated artifacts
+.agent/
+graphify-out/
+__pycache__/
+*.pyc

@@ -1,6 +1,8 @@
 import { exec } from 'child_process';
 import util from 'util';
-import { isLinux, systemctlAction } from './system';
+import fs from 'fs';
+import { isLinux, systemctlAction, detectInterfaces } from './system';
+import { shq, isValidDomain } from './util';
 
 const execAsync = util.promisify(exec);
 
@@ -28,54 +30,77 @@ export const systemServices = {
     async installZapret(testDomain: string) {
         if (!isLinux) throw new Error('Zapret kurulumu sadece Pi5 üzerinde çalışır');
         const domain = testDomain || 'discord.com';
-        // First install if not present, then run blockcheck for the domain
+        if (!isValidDomain(domain)) throw new Error('Geçersiz domain');
+        // First install if not present, then run blockcheck for the domain (domain shell-quoted)
         const zapretBash = `
             if [ ! -d /opt/zapret ]; then
                 git clone --depth=1 https://github.com/bol-van/zapret.git /opt/zapret 2>/dev/null
                 cd /opt/zapret && sudo ./install_easy.sh
             fi
-            cd /opt/zapret && sudo ./blockcheck.sh --domain=${domain} 2>&1 | tail -50
+            cd /opt/zapret && sudo ./blockcheck.sh --domain=${shq(domain)} 2>&1 | tail -50
         `;
         return execAsync(zapretBash, { timeout: 120000 });
     },
 
-    async configureNftables() {
+    async configureNftables(ifaces?: { lan?: string; wan?: string }) {
         if (!isLinux) throw new Error('nftables yapılandırması sadece Pi5 üzerinde çalışır');
-        const nftablesConfig = `#!/usr/sbin/nft -f
-flush ruleset
+        // Arayüz rollerini DB config'ten al; geçersiz/var olmayan arayüzde otomatik algılamaya düş
+        // (böylece hem eth0=WAN hem wlan0=WAN topolojileri doğru çalışır).
+        const detected = await detectInterfaces();
+        const exists = (n?: string) => !!n && fs.existsSync(`/sys/class/net/${n}`);
+        const wan = exists(ifaces?.wan) ? ifaces!.wan! : detected.wan;
+        const lan = exists(ifaces?.lan) ? ifaces!.lan! : detected.lan;
 
-table inet filter {
+        // ÖNEMLI: `flush ruleset` KULLANILMAZ — yalnızca kendi tablolarımızı idempotent yönetiriz.
+        // Böylece zapret NFQUEUE, domain_routing ve pi5_block tabloları korunur.
+        // Boş-tanımla → sil → yeniden-tanımla deseni her yüklemede (boot/reload) idempotent çalışır.
+        const nftablesConfig = `#!/usr/sbin/nft -f
+table inet pi5_filter {}
+delete table inet pi5_filter
+table inet pi5_filter {
     chain input {
         type filter hook input priority 0; policy drop;
         iif lo accept
         ct state established,related accept
+        ip protocol icmp accept
+        ip6 nexthdr ipv6-icmp accept
         tcp dport 22 accept
         tcp dport 53 accept
         udp dport 53 accept
         tcp dport 80 accept
         udp dport 51820 accept
-        tcp dport 3000 accept
-        drop
     }
     chain forward {
         type filter hook forward priority 0; policy drop;
+        ct state established,related accept
+        # PMTU kara deliğini önlemek için tünel yolunda MSS clamp
+        tcp flags syn tcp option maxseg size set rt mtu
         iifname "wg0" accept
         oifname "wg0" accept
-        iifname "eth0" oifname "wlan0" accept
-        iifname "wlan0" oifname "eth0" ct state related,established accept
+        iifname "wg_vps*" accept
+        oifname "wg_vps*" accept
+        iifname "${lan}" accept
+        iifname "${wan}" oifname "${lan}" ct state related,established accept
     }
 }
-table ip nat {
+table ip pi5_nat {}
+delete table ip pi5_nat
+table ip pi5_nat {
     chain postrouting {
         type nat hook postrouting priority 100;
-        oifname "wlan0" masquerade
+        # WAN çıkışı + VPS tünel çıkışı (Pi5-tarafı SNAT: LAN kaynaklı paketler tünelden doğru dönebilsin)
+        oifname "${wan}" masquerade
+        oifname "wg_vps*" masquerade
     }
-}`;
-        const fs = await import('fs');
-        fs.writeFileSync('/tmp/nftables.conf', nftablesConfig);
-        await execAsync('sudo cp /tmp/nftables.conf /etc/nftables.conf');
-        await execAsync('sudo systemctl restart nftables');
-        return { stdout: 'nftables yapılandırması uygulandı.', stderr: '' };
+}
+
+# Kalıcılık: domain-routing/device-block/zapret gibi ek tablolar boot'ta yüklensin
+include "/etc/nftables.d/*.conf"`;
+        fs.mkdirSync('/etc/nftables.d', { recursive: true });
+        fs.writeFileSync('/etc/nftables.conf', nftablesConfig);
+        await execAsync('nft -f /etc/nftables.conf');
+        await execAsync('systemctl enable nftables 2>/dev/null || true');
+        return { stdout: `nftables yapılandırıldı (WAN=${wan}, LAN=${lan}).`, stderr: '' };
     },
 
     async toggleService(name: string, enable: boolean) {

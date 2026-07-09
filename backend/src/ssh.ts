@@ -271,8 +271,9 @@ export async function addWireGuardClient(
   clientIndex: number
 ): Promise<{ success: boolean; config: string; qrData: string; publicKey: string; ip: string } | null> {
   // SSH to VPS works from any platform — no isLinux check needed here
+  let ssh: NodeSSH | null = null;
   try {
-    const ssh = await connectSSH(opts);
+    ssh = await connectSSH(opts);
 
     // Verify WireGuard is installed and running
     const wgCheck = await ssh.execCommand('which wg && test -f /etc/wireguard/wg0.conf && echo "OK"');
@@ -371,6 +372,8 @@ PersistentKeepalive = 25`;
   } catch (err: any) {
     console.error('Add client error:', err.message);
     throw err; // Re-throw so endpoint can return the actual error message
+  } finally {
+    try { ssh?.dispose(); } catch { /* */ }
   }
 }
 
@@ -390,8 +393,9 @@ export async function connectPi5ToVps(
   const pi5Ip = '10.66.66.2/32'; // Pi5 gateway always gets .2
   const confPath = `/etc/wireguard/${interfaceName}.conf`;
 
+  let ssh: NodeSSH | null = null;
   try {
-    const ssh = await connectSSH(opts);
+    ssh = await connectSSH(opts);
 
     // Verify WireGuard is running on VPS
     const wgCheck = await ssh.execCommand('test -f /etc/wireguard/wg0.conf && wg show wg0 2>/dev/null && echo "OK"');
@@ -443,11 +447,15 @@ PEEREOF`);
 
     ssh.dispose();
 
-    // Build Pi5 client config
+    // Build Pi5 client config.
+    // Table = off: wg-quick otomatik varsayılan-rota/fwmark kurallarını EKLEMEZ; böylece policy routing
+    // (applyDomainRouting'in fwmark tabloları) ezilmez. AllowedIPs=0.0.0.0/0 kalır ki tünel internet
+    // trafiğini de taşıyabilsin — hangi trafiğin tünele gireceğine bizim ip rule'larımız karar verir.
     const serverAddr = opts.ip;
     const pi5Config = `[Interface]
 PrivateKey = ${pi5Priv}
 Address = ${pi5Ip}
+Table = off
 
 [Peer]
 PublicKey = ${serverPub}
@@ -474,6 +482,8 @@ PersistentKeepalive = 25`;
   } catch (err: any) {
     console.error('Pi5 VPN connect error:', err.message);
     throw err;
+  } finally {
+    try { ssh?.dispose(); } catch { /* */ }
   }
 }
 

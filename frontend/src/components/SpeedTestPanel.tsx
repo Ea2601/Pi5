@@ -182,7 +182,7 @@ export function SpeedTestPanel() {
               {data.tests.slice(0, 100).map(t => (
                 <div key={t.id} className="routing-row" style={{ fontSize: 12 }}>
                   <span style={{ flex: 1, fontFamily: 'var(--font-mono)', fontSize: 11 }}>
-                    {new Date(t.timestamp).toLocaleString('tr-TR')}
+                    {new Date(/[zZ]|[+]/.test(t.timestamp) ? t.timestamp : t.timestamp.replace(' ', 'T') + 'Z').toLocaleString('tr-TR')}
                   </span>
                   <span style={{ width: 80, color: '#3b82f6', fontWeight: 600 }}>{t.download_mbps.toFixed(1)}</span>
                   <span style={{ width: 80, color: '#10b981', fontWeight: 600 }}>{t.upload_mbps.toFixed(1)}</span>

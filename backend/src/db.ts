@@ -29,6 +29,16 @@ export function dbRun(sql: string, params: any[] = []): Promise<void> {
   });
 }
 
+// INSERT için güvenli id dönüşü — last_insert_rowid() yarışını önler (this.lastID aynı ifadeye ait).
+export function dbInsert(sql: string, params: any[] = []): Promise<number> {
+  return new Promise((resolve, reject) => {
+    db.run(sql, params, function (this: { lastID: number }, err) {
+      if (err) reject(err);
+      else resolve(this.lastID);
+    });
+  });
+}
+
 export function dbGet(sql: string, params: any[] = []): Promise<any> {
   return new Promise((resolve, reject) => {
     db.get(sql, params, (err, row) => {
@@ -324,6 +334,9 @@ export const initDb = () => {
       traffic_routing_id INTEGER, schedule_route_type TEXT, schedule_vps_id INTEGER,
       time_start TEXT, time_end TEXT, days_of_week TEXT, enabled INTEGER DEFAULT 1
     )`);
+    // Migrate to exit_node/dpi_bypass model (aligned with traffic_routing/domain_routing)
+    db.run(`ALTER TABLE traffic_schedules ADD COLUMN schedule_exit_node TEXT DEFAULT 'isp'`, () => {});
+    db.run(`ALTER TABLE traffic_schedules ADD COLUMN schedule_dpi_bypass INTEGER DEFAULT 0`, () => {});
 
     db.run(`CREATE TABLE IF NOT EXISTS device_groups (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -387,6 +400,16 @@ export const initDb = () => {
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       app_name TEXT NOT NULL, route_type TEXT DEFAULT 'vps', vps_id INTEGER
     )`);
+
+    // ═══════════════════ INDEXLER (sık sorgulanan/büyüyen tablolar) ═══════════════════
+    db.run(`CREATE INDEX IF NOT EXISTS idx_alerts_ack ON alerts(acknowledged)`);
+    db.run(`CREATE INDEX IF NOT EXISTS idx_alerts_created ON alerts(created_at)`);
+    db.run(`CREATE INDEX IF NOT EXISTS idx_alerts_dedup ON alerts(type, message, created_at)`);
+    db.run(`CREATE INDEX IF NOT EXISTS idx_bandwidth_mac_ts ON bandwidth_usage(device_mac, timestamp)`);
+    db.run(`CREATE INDEX IF NOT EXISTS idx_conn_hist_mac_ts ON connection_history(device_mac, timestamp)`);
+    db.run(`CREATE INDEX IF NOT EXISTS idx_speedtests_ts ON speed_tests(timestamp)`);
+    db.run(`CREATE INDEX IF NOT EXISTS idx_ddns_iphist_ts ON ddns_ip_history(detected_at)`);
+    db.run(`CREATE INDEX IF NOT EXISTS idx_wg_clients_vps ON wg_clients(vps_id)`);
 
   });
 };

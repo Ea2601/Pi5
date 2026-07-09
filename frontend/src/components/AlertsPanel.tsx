@@ -9,7 +9,7 @@ interface AlertItem {
   id: number;
   severity: 'critical' | 'warning' | 'info';
   message: string;
-  timestamp: string;
+  created_at: string;
   acknowledged: boolean;
   source: string;
 }
@@ -116,7 +116,7 @@ export function AlertsPanel() {
                   <span style={{ fontSize: '0.85rem' }}>{alert.message}</span>
                   <br />
                   <span className="text-muted" style={{ fontSize: '0.7rem' }}>
-                    {alert.source} &middot; {new Date(alert.timestamp).toLocaleString('tr-TR')}
+                    {alert.source} &middot; {alert.created_at ? new Date(alert.created_at.replace(' ', 'T') + 'Z').toLocaleString('tr-TR') : '-'}
                   </span>
                 </div>
                 {!alert.acknowledged && (

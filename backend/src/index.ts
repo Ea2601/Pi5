@@ -2,60 +2,38 @@ import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
-import { initDb, dbAll, dbRun, dbGet } from './db';
+import { initDb, dbAll, dbRun, dbGet, dbInsert } from './db';
 import { setupWireGuardVPS, testSSHConnection, executeSetupStep, addWireGuardClient, connectPi5ToVps, disconnectPi5FromVps, isPi5ConnectedToVps } from './ssh';
 import { systemServices } from './services';
 import { startHealthMonitor, getHealthStatus } from './monitor';
-import { startCronJobs, getSystemLogs } from './maintenance';
+import { startCronJobs, getSystemLogs, clearSystemLogs } from './maintenance';
 import {
   isLinux, getSystemStats, getServiceStatus, getPiholeStats,
   getNetworkDevices, getBandwidthLive, getWireguardStatus,
   getFail2banStatus, getDnsQueries, getCurrentExternalIp,
-  runSpeedTest, executeCommand, applyDomainRouting,
+  runSpeedTest, executeCommand, applyDomainRouting, applyBlockedDevices,
 } from './system';
+import {
+  shq, sedEscape, isValidMac, isValidDomain, isValidTimezone,
+  isValidHexColor, isValidAnimation, sanitizeName,
+} from './util';
+import { promisify } from 'util';
+import { execFile as _execFile } from 'child_process';
+const execFileP = promisify(_execFile);
 
 const app = express();
 const port = process.env.PORT || 3001;
 
-// ─── Domain Redirect Handler ───
-// If a request comes from a DNS-redirected domain (via dnsmasq address=),
-// check redirect-map.json and send 302 redirect to target URL
-app.use((req, res, next) => {
-  const host = (req.hostname || req.headers.host || '').split(':')[0].toLowerCase();
-  if (!host || host === 'localhost' || host.startsWith('192.168.') || host.startsWith('10.') || host.startsWith('127.')) {
-    return next();
-  }
-  try {
-    const fs = require('fs');
-    const mapPath = '/opt/pi5-gateway/core/redirect-map.json';
-    if (fs.existsSync(mapPath)) {
-      const map = JSON.parse(fs.readFileSync(mapPath, 'utf8'));
-      // Check exact match first, then keyword match
-      let targetUrl = map[host];
-      if (!targetUrl) {
-        for (const [pattern, url] of Object.entries(map)) {
-          if (!pattern.includes('.') && host.includes(pattern)) {
-            targetUrl = url as string;
-            break;
-          }
-          if (host.endsWith('.' + pattern) || host === pattern) {
-            targetUrl = url as string;
-            break;
-          }
-        }
-      }
-      if (targetUrl) {
-        return res.redirect(302, targetUrl as string);
-      }
-    }
-  } catch { /* redirect-map not found or invalid */ }
-  next();
-});
+// Not: DNS-redirect edilen domain'ler için 302 yönlendirme artık NGINX (:80) katmanında yapılır
+// (bkz. /etc/nginx/conf.d/pi5-redirect-map.conf + applyDomainRouting). Backend'e o trafik hiç ulaşmıyordu.
 
 // ─── Security & Performance Middleware ───
 app.use(helmet({ contentSecurityPolicy: false }));
+// Uygulama same-origin sunulur (nginx :80 statik + /api proxy; dev'de vite /api proxy).
+// origin=false → cross-origin tarayıcı yanıtı OKUYAMAZ ve JSON POST'lar preflight'ta bloklanır (CSRF savunması).
+// Belirli bir origin gerekiyorsa CORS_ORIGIN env ile verilir.
 app.use(cors({
-  origin: process.env.CORS_ORIGIN || '*',
+  origin: process.env.CORS_ORIGIN || false,
   methods: ['GET', 'POST', 'PUT', 'DELETE'],
   maxAge: 86400,
 }));
@@ -80,12 +58,6 @@ const writeLimiter = rateLimit({
 app.use('/api/vps/setup', writeLimiter);
 app.use('/api/backup/import', writeLimiter);
 app.use('/api/terminal/execute', writeLimiter);
-
-// Input sanitization helper
-function sanitize(val: unknown): string {
-  if (typeof val !== 'string') return String(val || '');
-  return val.replace(/[<>]/g, '').trim();
-}
 
 // Graceful shutdown
 process.on('SIGTERM', () => {
@@ -122,6 +94,21 @@ app.get('/api/system/stats', async (_req, res) => {
 // ─── Logs ───
 app.get('/api/logs', (_req, res) => {
   res.json({ logs: getSystemLogs() });
+});
+
+app.post('/api/logs/clear', (_req, res) => {
+  clearSystemLogs();
+  res.json({ success: true });
+});
+
+// ─── Reboot ───
+app.post('/api/system/reboot', (_req, res) => {
+  if (!isLinux) {
+    return res.status(400).json({ success: false, error: 'Yeniden başlatma sadece Pi5 üzerinde çalışır' });
+  }
+  res.json({ success: true, message: 'Pi 5 yeniden başlatılıyor...' });
+  // Respond first, then reboot after a short delay
+  setTimeout(() => { _execFile('reboot', [], () => {}); }, 1500);
 });
 
 // ─── Services ───
@@ -178,11 +165,18 @@ app.post('/api/services/setup', async (req, res) => {
       await dbRun("UPDATE service_status SET enabled=1, status='running' WHERE name='pihole'");
     }
     if (action === 'zapret') {
-      result = await systemServices.installZapret(req.body.domain || 'discord.com');
+      const domain = req.body.domain || 'discord.com';
+      if (!isValidDomain(domain)) {
+        return res.status(400).json({ success: false, error: 'Geçersiz domain' });
+      }
+      result = await systemServices.installZapret(domain);
       await dbRun("UPDATE service_status SET enabled=1, status='running' WHERE name='zapret'");
     }
     if (action === 'firewall') {
-      result = await systemServices.configureNftables();
+      const cfg = await dbAll("SELECT key, value FROM service_config WHERE service = 'nftables' AND key IN ('lan_iface', 'wan_iface')");
+      const m: Record<string, string> = {};
+      (cfg as any[]).forEach(r => { m[r.key] = r.value; });
+      result = await systemServices.configureNftables({ lan: m.lan_iface, wan: m.wan_iface });
       await dbRun("UPDATE service_status SET enabled=1, status='running' WHERE name='nftables'");
     }
     res.json({ success: true, message: `Action ${action} executed.`, log: result });
@@ -420,30 +414,21 @@ app.get('/api/pihole/stats', async (_req, res) => {
 // ─── Devices ───
 app.get('/api/devices', async (_req, res) => {
   try {
-    const dbDevices = await dbAll('SELECT * FROM devices ORDER BY last_seen DESC');
-    // On Linux, merge with real network scan
+    // On Linux, persist the live scan into the DB so profile/block updates target real rows.
     if (isLinux) {
       const liveDevices = await getNetworkDevices();
-      const dbMacs = new Set((dbDevices as any[]).map((d: any) => d.mac_address?.toLowerCase()));
-      // Update existing devices with current IP, mark as online
       for (const live of liveDevices) {
-        const existing = (dbDevices as any[]).find((d: any) => d.mac_address?.toLowerCase() === live.mac);
-        if (existing) {
-          existing.ip_address = live.ip;
-          existing.last_seen = new Date().toISOString();
-        } else if (!dbMacs.has(live.mac)) {
-          // New device discovered on network — add to results
-          (dbDevices as any[]).push({
-            mac_address: live.mac,
-            ip_address: live.ip,
-            hostname: '',
-            device_type: 'unknown',
-            route_profile: 'default',
-            last_seen: new Date().toISOString(),
-          });
-        }
+        // Upsert into devices (keep existing hostname/profile/blocked; refresh ip + last_seen)
+        await dbRun(
+          `INSERT INTO devices (mac_address, ip_address, last_seen) VALUES (?, ?, CURRENT_TIMESTAMP)
+           ON CONFLICT(mac_address) DO UPDATE SET ip_address = excluded.ip_address, last_seen = CURRENT_TIMESTAMP`,
+          [live.mac, live.ip]
+        );
+        // Track first-seen for the "unknown devices" alert (approved defaults to 0)
+        await dbRun('INSERT OR IGNORE INTO known_devices (mac_address) VALUES (?)', [live.mac]);
       }
     }
+    const dbDevices = await dbAll('SELECT * FROM devices ORDER BY last_seen DESC');
     res.json({ devices: dbDevices });
   } catch (e: any) {
     res.status(500).json({ error: e.message });
@@ -546,10 +531,9 @@ app.post('/api/vps/add', async (req, res) => {
     return res.status(400).json({ error: 'IP ve kullanıcı adı gerekli' });
   }
   try {
-    await dbRun('INSERT INTO vps_servers (ip, username, password, location, status) VALUES (?, ?, ?, ?, ?)',
+    const id = await dbInsert('INSERT INTO vps_servers (ip, username, password, location, status) VALUES (?, ?, ?, ?, ?)',
       [ip, username, password || '', location || '', 'connected']);
-    const row: any = await dbGet('SELECT last_insert_rowid() as id');
-    res.json({ success: true, id: row.id });
+    res.json({ success: true, id });
   } catch (e: any) {
     res.status(500).json({ error: e.message });
   }
@@ -565,10 +549,8 @@ app.post('/api/vps/setup', async (req, res) => {
     if (!connTest.success) {
       return res.status(400).json({ success: false, error: `SSH bağlantısı başarısız: ${connTest.message}` });
     }
-    await dbRun('INSERT INTO vps_servers (ip, username, password, location, status) VALUES (?, ?, ?, ?, ?)',
+    const vpsId = await dbInsert('INSERT INTO vps_servers (ip, username, password, location, status) VALUES (?, ?, ?, ?, ?)',
       [ip, username, password || '', location || '', 'installing']);
-    const row: any = await dbGet('SELECT last_insert_rowid() as id');
-    const vpsId = row.id;
 
     // Start setup in background — returns immediately
     runSetupInBackground(vpsId, ip, username, password || undefined);
@@ -631,9 +613,9 @@ app.post('/api/vps/:id/steps', async (req, res) => {
 
 // VPS clients — add new WireGuard peer
 app.post('/api/vps/:id/clients', async (req, res) => {
-  const { name } = req.body;
+  const name = sanitizeName(req.body.name);
   if (!name) {
-    return res.status(400).json({ error: 'Client adı gerekli' });
+    return res.status(400).json({ error: 'Client adı gerekli (yalnızca harf, rakam, boşluk, . _ -)' });
   }
   try {
     const server: any = await dbGet('SELECT * FROM vps_servers WHERE id = ?', [req.params.id]);
@@ -877,12 +859,12 @@ app.delete('/api/vps/:id/clients/:clientId', async (req, res) => {
           host: server.ip, username: server.username,
           password: server.password || undefined, readyTimeout: 10000,
         });
-        // Remove peer from running WireGuard
-        await ssh.execCommand(`wg set wg0 peer ${client.public_key} remove 2>/dev/null || true`);
-        // Remove peer from config file
-        await ssh.execCommand(`sed -i '/# ${client.name}/,/^$/d' /etc/wireguard/wg0.conf 2>/dev/null || true`);
+        // Remove peer from running WireGuard (public key is base64 — shell-quote it)
+        await ssh.execCommand(`wg set wg0 peer ${shq(client.public_key)} remove 2>/dev/null || true`);
+        // Remove peer from config file — shell-quote the whole sed script, sed-escape the interpolated values
+        await ssh.execCommand(`sed -i ${shq(`/# ${sedEscape(sanitizeName(client.name))}/,/^$/d`)} /etc/wireguard/wg0.conf 2>/dev/null || true`);
         // Also try removing by public key pattern
-        await ssh.execCommand(`sed -i '/PublicKey = ${client.public_key.replace(/[/\\]/g, '\\$&')}/,/^$/d' /etc/wireguard/wg0.conf 2>/dev/null || true`);
+        await ssh.execCommand(`sed -i ${shq(`/PublicKey = ${sedEscape(client.public_key)}/,/^$/d`)} /etc/wireguard/wg0.conf 2>/dev/null || true`);
         ssh.dispose();
       } catch (sshErr: any) {
         console.error('VPS peer removal failed:', sshErr.message);
@@ -968,9 +950,9 @@ async function applyAllRoutingRules() {
   if (!isLinux) return;
   // 1. App routing: expand domains column into individual domain entries
   const appRules = await dbAll('SELECT app_name, domains, exit_node, dpi_bypass, enabled FROM traffic_routing WHERE enabled = 1 AND domains != ""');
-  const domainRules = await dbAll('SELECT domain, exit_node, dpi_bypass, enabled FROM domain_routing WHERE enabled = 1');
+  const domainRules = await dbAll('SELECT domain, exit_node, dpi_bypass, enabled, redirect_url FROM domain_routing WHERE enabled = 1');
 
-  const allDomains: { domain: string; exit_node: string; dpi_bypass: number; enabled: number }[] = [];
+  const allDomains: { domain: string; exit_node: string; dpi_bypass: number; enabled: number; redirect_url?: string }[] = [];
 
   // App domains (wildcard patterns like *.whatsapp.net → whatsapp.net for dnsmasq)
   for (const rule of appRules) {
@@ -982,9 +964,9 @@ async function applyAllRoutingRules() {
     }
   }
 
-  // Custom domain rules
+  // Custom domain rules — redirect_url dahil (yoksa DNS-redirect kuralları kaybolur)
   for (const rule of domainRules) {
-    allDomains.push({ domain: rule.domain, exit_node: rule.exit_node, dpi_bypass: rule.dpi_bypass, enabled: 1 });
+    allDomains.push({ domain: rule.domain, exit_node: rule.exit_node, dpi_bypass: rule.dpi_bypass, enabled: 1, redirect_url: rule.redirect_url || undefined });
   }
 
   await applyDomainRouting(allDomains);
@@ -1290,8 +1272,10 @@ app.get('/api/speedtest/history', async (req, res) => {
   }
 });
 
-// Auto speed test every 10 minutes + cleanup 30+ day old data
+// Otomatik hız testi — 6 saatte bir (10 dk çok agresifti: her seferinde hattı ~30-60sn doyuruyordu).
+// Ayarlanabilir: SPEEDTEST_INTERVAL_MIN env (dakika).
 if (isLinux) {
+  const stMin = Number(process.env.SPEEDTEST_INTERVAL_MIN) || 360;
   setInterval(async () => {
     try {
       const result = await runSpeedTest();
@@ -1303,8 +1287,10 @@ if (isLinux) {
       }
       // Cleanup old data
       await dbRun(`DELETE FROM speed_tests WHERE timestamp < datetime('now', '-30 days')`);
+      // ddns_ip_history retention (sınırsız büyümeyi önle)
+      await dbRun(`DELETE FROM ddns_ip_history WHERE detected_at < datetime('now', '-90 days')`);
     } catch { /* silent */ }
-  }, 600000); // 10 minutes
+  }, stMin * 60 * 1000);
 }
 
 // ─── Health Check (every 5 minutes) ───
@@ -1313,10 +1299,13 @@ if (isLinux) {
     try {
       const exec = require('util').promisify(require('child_process').exec);
       const addAlert = async (type: string, severity: string, message: string, source: string) => {
-        // Avoid duplicate alerts within last hour
+        // "info" (normal durum) alertleri kalıcılaştırma — her 5 dk değişen mesajla tabloyu şişiriyor,
+        // dedup çalışmıyor ve okunmamış sayacı sürekli artıyordu. Yalnızca warning/critical kaydedilir.
+        if (severity === 'info') return;
+        // Aynı kaynak+tip için 1 saat içindeki tekrarları önle (mesaj değişse bile, örn. sıcaklık değeri)
         const existing = await dbGet(
-          `SELECT id FROM alerts WHERE type = ? AND message = ? AND created_at > datetime('now', '-1 hour')`,
-          [type, message]
+          `SELECT id FROM alerts WHERE type = ? AND source = ? AND severity = ? AND created_at > datetime('now', '-1 hour')`,
+          [type, source, severity]
         );
         if (!existing) {
           await dbRun('INSERT INTO alerts (type, severity, message, source) VALUES (?, ?, ?, ?)', [type, severity, message, source]);
@@ -1410,15 +1399,16 @@ app.post('/api/wol/send', async (req, res) => {
   if (!mac_address) {
     return res.status(400).json({ error: 'mac_address gerekli' });
   }
+  if (!isValidMac(mac_address)) {
+    return res.status(400).json({ error: 'Geçersiz MAC adresi formatı' });
+  }
   try {
     if (isLinux) {
-      // Real WoL magic packet via etherwake or wakeonlan
-      const exec = require('util').promisify(require('child_process').exec);
-      // Try etherwake first, then wakeonlan
+      // Real WoL magic packet via etherwake or wakeonlan — execFile (no shell), arg passed safely
       try {
-        await exec(`etherwake ${mac_address}`, { timeout: 5000 });
+        await execFileP('etherwake', [mac_address], { timeout: 5000 });
       } catch {
-        await exec(`wakeonlan ${mac_address}`, { timeout: 5000 });
+        await execFileP('wakeonlan', [mac_address], { timeout: 5000 });
       }
       res.json({ success: true, message: `WoL magic packet gönderildi: ${mac_address}` });
     } else {
@@ -1515,27 +1505,40 @@ app.delete('/api/dhcp/static/:mac', async (req, res) => {
 });
 
 // ─── Backup & Restore ───
+// Tek kaynak: hem export hem import bu listeyi kullanır (import/export uyuşmazlığı = veri kaybı).
+// Sır içeren tablolar (vps_servers/wg_clients — SSH parolası, WG özel anahtarı) kasıtlı hariç.
+const BACKUP_TABLES = [
+  'service_config', 'service_status', 'traffic_routing', 'domain_routing', 'routing_rules',
+  'pihole_lists', 'zapret_domains', 'bandwidth_limits', 'parental_rules', 'traffic_schedules',
+  'device_groups', 'device_group_members', 'throttle_rules', 'app_settings', 'cron_jobs', 'dhcp_leases',
+];
+const BACKUP_TABLE_SET = new Set(BACKUP_TABLES);
+
+async function restoreTable(table: string, rows: any[]): Promise<number> {
+  if (!Array.isArray(rows) || rows.length === 0) return 0;
+  let n = 0;
+  for (const row of rows) {
+    if (!row || typeof row !== 'object') continue;
+    const cols = Object.keys(row).filter(c => /^[a-zA-Z0-9_]+$/.test(c));
+    if (!cols.length) continue;
+    const sql = `INSERT OR REPLACE INTO ${table} (${cols.join(', ')}) VALUES (${cols.map(() => '?').join(', ')})`;
+    await dbRun(sql, cols.map(c => row[c]));
+    n++;
+  }
+  return n;
+}
+
 app.get('/api/backup/export', async (_req, res) => {
   try {
     const configTables: Record<string, any[]> = {};
-    configTables.service_config = await dbAll('SELECT * FROM service_config');
-    configTables.service_status = await dbAll('SELECT * FROM service_status');
-    configTables.traffic_routing = await dbAll('SELECT * FROM traffic_routing');
-    configTables.routing_rules = await dbAll('SELECT * FROM routing_rules');
-    configTables.pihole_lists = await dbAll('SELECT * FROM pihole_lists');
-    configTables.zapret_domains = await dbAll('SELECT * FROM zapret_domains');
-    configTables.bandwidth_limits = await dbAll('SELECT * FROM bandwidth_limits');
-    configTables.parental_rules = await dbAll('SELECT * FROM parental_rules');
-    configTables.traffic_schedules = await dbAll('SELECT * FROM traffic_schedules');
-    configTables.device_groups = await dbAll('SELECT * FROM device_groups');
-    configTables.device_group_members = await dbAll('SELECT * FROM device_group_members');
-    configTables.throttle_rules = await dbAll('SELECT * FROM throttle_rules');
-    configTables.app_settings = await dbAll('SELECT * FROM app_settings');
-    configTables.cron_jobs = await dbAll('SELECT * FROM cron_jobs');
-    configTables.dhcp_leases = await dbAll('SELECT * FROM dhcp_leases WHERE is_static = 1');
+    for (const t of BACKUP_TABLES) {
+      configTables[t] = t === 'dhcp_leases'
+        ? await dbAll('SELECT * FROM dhcp_leases WHERE is_static = 1')
+        : await dbAll(`SELECT * FROM ${t}`);
+    }
 
     res.json({
-      backup_version: 1,
+      backup_version: 2,
       created_at: new Date().toISOString(),
       data: configTables,
     });
@@ -1550,43 +1553,20 @@ app.post('/api/backup/import', async (req, res) => {
     if (!data || typeof data !== 'object') {
       return res.status(400).json({ error: 'Geçerli bir yedek verisi gerekli' });
     }
-    let restored = 0;
 
-    if (data.app_settings) {
-      for (const row of data.app_settings) {
-        await dbRun('INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)', [row.key, row.value]);
-        restored++;
+    // Export edilen TÜM tabloları tek transaction içinde geri yükle (kısmi hata = rollback).
+    let restored = 0;
+    await dbRun('BEGIN');
+    try {
+      for (const table of BACKUP_TABLES) {
+        if (!BACKUP_TABLE_SET.has(table)) continue; // whitelist güvencesi
+        if (!data[table]) continue;
+        restored += await restoreTable(table, data[table]);
       }
-    }
-    if (data.service_config) {
-      for (const row of data.service_config) {
-        await dbRun('INSERT OR REPLACE INTO service_config (service, category, key, value, label, description, type, options) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
-          [row.service, row.category, row.key, row.value, row.label, row.description, row.type, row.options || '']);
-        restored++;
-      }
-    }
-    if (data.bandwidth_limits) {
-      for (const row of data.bandwidth_limits) {
-        await dbRun('INSERT OR REPLACE INTO bandwidth_limits (device_mac, daily_limit_mb, monthly_limit_mb, enabled) VALUES (?, ?, ?, ?)',
-          [row.device_mac, row.daily_limit_mb, row.monthly_limit_mb, row.enabled]);
-        restored++;
-      }
-    }
-    if (data.parental_rules) {
-      await dbRun('DELETE FROM parental_rules');
-      for (const row of data.parental_rules) {
-        await dbRun('INSERT INTO parental_rules (device_mac_or_group, rule_type, value, schedule_start, schedule_end, days_of_week, enabled) VALUES (?, ?, ?, ?, ?, ?, ?)',
-          [row.device_mac_or_group, row.rule_type, row.value, row.schedule_start, row.schedule_end, row.days_of_week, row.enabled]);
-        restored++;
-      }
-    }
-    if (data.throttle_rules) {
-      await dbRun('DELETE FROM throttle_rules');
-      for (const row of data.throttle_rules) {
-        await dbRun('INSERT INTO throttle_rules (target_type, target_value, max_download_kbps, max_upload_kbps, enabled) VALUES (?, ?, ?, ?, ?)',
-          [row.target_type, row.target_value, row.max_download_kbps, row.max_upload_kbps, row.enabled]);
-        restored++;
-      }
+      await dbRun('COMMIT');
+    } catch (err) {
+      await dbRun('ROLLBACK').catch(() => {});
+      throw err;
     }
 
     res.json({ success: true, message: `${restored} kayıt geri yüklendi.`, restored_count: restored });
@@ -1668,14 +1648,39 @@ app.get('/api/routing/schedules', async (_req, res) => {
 
 app.post('/api/routing/schedules', async (req, res) => {
   try {
-    const { traffic_routing_id, schedule_route_type, schedule_vps_id, time_start, time_end, days_of_week, enabled } = req.body;
-    if (!traffic_routing_id || !schedule_route_type || !time_start || !time_end) {
-      return res.status(400).json({ error: 'traffic_routing_id, schedule_route_type, time_start ve time_end gerekli' });
+    // exit_node/dpi_bypass modeli (frontend bunları gönderir); route_type geriye-uyum için opsiyonel.
+    const { traffic_routing_id, schedule_exit_node, schedule_dpi_bypass, schedule_route_type, schedule_vps_id, time_start, time_end, days_of_week, enabled } = req.body;
+    if (!traffic_routing_id || !time_start || !time_end) {
+      return res.status(400).json({ error: 'traffic_routing_id, time_start ve time_end gerekli' });
     }
+    const exitNode = schedule_exit_node ?? schedule_route_type ?? 'isp';
+    const vpsId = schedule_vps_id ?? (exitNode !== 'isp' && exitNode !== 'blocked' ? Number(exitNode) || null : null);
     await dbRun(
-      'INSERT INTO traffic_schedules (traffic_routing_id, schedule_route_type, schedule_vps_id, time_start, time_end, days_of_week, enabled) VALUES (?, ?, ?, ?, ?, ?, ?)',
-      [traffic_routing_id, schedule_route_type, schedule_vps_id || null, time_start, time_end, days_of_week || '', enabled !== undefined ? (enabled ? 1 : 0) : 1]
+      `INSERT INTO traffic_schedules
+         (traffic_routing_id, schedule_route_type, schedule_exit_node, schedule_dpi_bypass, schedule_vps_id, time_start, time_end, days_of_week, enabled)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [traffic_routing_id, schedule_route_type ?? exitNode, exitNode, schedule_dpi_bypass ? 1 : 0, vpsId, time_start, time_end, days_of_week || '', enabled !== undefined ? (enabled ? 1 : 0) : 1]
     );
+    res.json({ success: true });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.put('/api/routing/schedules/:id', async (req, res) => {
+  try {
+    const { enabled, schedule_exit_node, schedule_dpi_bypass, time_start, time_end, days_of_week } = req.body;
+    const updates: string[] = [];
+    const params: any[] = [];
+    if (enabled !== undefined) { updates.push('enabled = ?'); params.push(enabled ? 1 : 0); }
+    if (schedule_exit_node !== undefined) { updates.push('schedule_exit_node = ?'); params.push(schedule_exit_node); }
+    if (schedule_dpi_bypass !== undefined) { updates.push('schedule_dpi_bypass = ?'); params.push(schedule_dpi_bypass ? 1 : 0); }
+    if (time_start !== undefined) { updates.push('time_start = ?'); params.push(time_start); }
+    if (time_end !== undefined) { updates.push('time_end = ?'); params.push(time_end); }
+    if (days_of_week !== undefined) { updates.push('days_of_week = ?'); params.push(days_of_week); }
+    if (updates.length === 0) return res.json({ success: true });
+    params.push(req.params.id);
+    await dbRun(`UPDATE traffic_schedules SET ${updates.join(', ')} WHERE id = ?`, params);
     res.json({ success: true });
   } catch (e: any) {
     res.status(500).json({ error: e.message });
@@ -1765,16 +1770,11 @@ app.post('/api/devices/:mac/block', async (req, res) => {
     if (!device) {
       return res.status(404).json({ error: 'Cihaz bulunamadı' });
     }
-    // Toggle blocked status (using route_profile as proxy since blocked column may not exist yet)
-    // First try to add the column if it doesn't exist
-    try {
-      await dbRun('ALTER TABLE devices ADD COLUMN blocked INTEGER DEFAULT 0');
-    } catch (_e) {
-      // Column already exists, ignore
-    }
-    const current = device.blocked || 0;
-    const newStatus = current ? 0 : 1;
+    const newStatus = device.blocked ? 0 : 1;
     await dbRun('UPDATE devices SET blocked = ? WHERE mac_address = ?', [newStatus, req.params.mac]);
+    // Apply real nftables enforcement for all currently-blocked devices
+    const blocked = await dbAll('SELECT mac_address FROM devices WHERE blocked = 1');
+    await applyBlockedDevices((blocked as any[]).map(d => d.mac_address));
     res.json({ success: true, mac: req.params.mac, blocked: newStatus });
   } catch (e: any) {
     res.status(500).json({ error: e.message });
@@ -1797,7 +1797,14 @@ app.get('/api/devices/:mac/history', async (req, res) => {
 // ─── New Device Alerts / Known Devices ───
 app.get('/api/devices/unknown', async (_req, res) => {
   try {
-    const unknown = await dbAll('SELECT * FROM known_devices WHERE approved = 0 ORDER BY first_seen DESC');
+    const unknown = await dbAll(`
+      SELECT k.mac_address, k.first_seen, k.approved,
+             d.ip_address, d.hostname, d.last_seen
+      FROM known_devices k
+      LEFT JOIN devices d ON k.mac_address = d.mac_address
+      WHERE k.approved = 0
+      ORDER BY k.first_seen DESC
+    `);
     res.json({ devices: unknown });
   } catch (e: any) {
     res.status(500).json({ error: e.message });
@@ -2073,11 +2080,18 @@ app.post('/api/ddns/configs', async (req, res) => {
 
 app.put('/api/ddns/configs/:id', async (req, res) => {
   try {
-    const { provider, hostname, username, password, token, domain, update_interval_min, enabled } = req.body;
-    await dbRun(
-      'UPDATE ddns_configs SET provider=?, hostname=?, username=?, password=?, token=?, domain=?, update_interval_min=?, enabled=? WHERE id=?',
-      [provider, hostname, username || '', password || '', token || '', domain || '', update_interval_min || 5, enabled ?? 1, req.params.id]
-    );
+    // Partial-merge: yalnızca gönderilen alanları güncelle (toggle'ın kimlik bilgilerini silmesini önler).
+    const body = req.body || {};
+    const updates: string[] = [];
+    const params: any[] = [];
+    for (const field of ['provider', 'hostname', 'username', 'password', 'token', 'domain', 'update_interval_min']) {
+      if (body[field] !== undefined) { updates.push(`${field} = ?`); params.push(body[field]); }
+    }
+    if (body.enabled !== undefined) { updates.push('enabled = ?'); params.push(body.enabled ? 1 : 0); }
+    if (updates.length > 0) {
+      params.push(req.params.id);
+      await dbRun(`UPDATE ddns_configs SET ${updates.join(', ')} WHERE id = ?`, params);
+    }
     const configs = await dbAll('SELECT * FROM ddns_configs ORDER BY id');
     res.json({ success: true, configs });
   } catch (e: any) {
@@ -2095,61 +2109,70 @@ app.delete('/api/ddns/configs/:id', async (req, res) => {
 });
 
 // ─── DDNS Provider Update Functions ───
+// All HTTP calls use execFile('curl', [...args]) — no shell, so config fields (hostname/token/
+// url/credentials) cannot inject commands. URL query values are percent-encoded.
+async function curlGet(args: string[]): Promise<string> {
+  const { stdout } = await execFileP('curl', ['-s', '--max-time', '10', ...args], { timeout: 15000 });
+  return stdout.trim();
+}
+
 async function updateDdnsProvider(config: any, ip: string): Promise<{ success: boolean; message: string }> {
-  const exec = require('util').promisify(require('child_process').exec);
   const provider = (config.provider || '').toLowerCase();
+  const enc = encodeURIComponent;
 
   try {
     if (provider === 'duckdns') {
       // DuckDNS: https://www.duckdns.org/spec.jsp
-      const subdomain = config.hostname.replace('.duckdns.org', '');
-      const url = `https://www.duckdns.org/update?domains=${subdomain}&token=${config.token}&ip=${ip}`;
-      const { stdout } = await exec(`curl -s --max-time 10 "${url}"`, { timeout: 15000 });
-      const result = stdout.trim();
+      const subdomain = String(config.hostname || '').replace('.duckdns.org', '');
+      const url = `https://www.duckdns.org/update?domains=${enc(subdomain)}&token=${enc(config.token || '')}&ip=${enc(ip)}`;
+      const result = await curlGet([url]);
       if (result === 'OK') return { success: true, message: 'DuckDNS güncellendi' };
       return { success: false, message: `DuckDNS yanıtı: ${result}` };
 
     } else if (provider === 'noip' || provider === 'no-ip') {
-      // No-IP: HTTP Basic Auth
-      const url = `https://dynupdate.no-ip.com/nic/update?hostname=${config.hostname}&myip=${ip}`;
+      const url = `https://dynupdate.no-ip.com/nic/update?hostname=${enc(config.hostname || '')}&myip=${enc(ip)}`;
       const auth = Buffer.from(`${config.username}:${config.password}`).toString('base64');
-      const { stdout } = await exec(`curl -s --max-time 10 -H "Authorization: Basic ${auth}" "${url}"`, { timeout: 15000 });
-      const result = stdout.trim();
+      const result = await curlGet(['-H', `Authorization: Basic ${auth}`, url]);
       if (result.startsWith('good') || result.startsWith('nochg')) return { success: true, message: `No-IP: ${result}` };
       return { success: false, message: `No-IP yanıtı: ${result}` };
 
     } else if (provider === 'cloudflare') {
-      // Cloudflare: DNS record update via API
-      const zoneId = config.domain; // Zone ID stored in domain field
-      const { stdout: listOut } = await exec(`curl -s --max-time 10 -H "Authorization: Bearer ${config.token}" -H "Content-Type: application/json" "https://api.cloudflare.com/client/v4/zones/${zoneId}/dns_records?type=A&name=${config.hostname}"`, { timeout: 15000 });
+      const zoneId = enc(config.domain || ''); // Zone ID stored in domain field
+      const listOut = await curlGet([
+        '-H', `Authorization: Bearer ${config.token}`, '-H', 'Content-Type: application/json',
+        `https://api.cloudflare.com/client/v4/zones/${zoneId}/dns_records?type=A&name=${enc(config.hostname || '')}`,
+      ]);
       const listData = JSON.parse(listOut);
       if (!listData.success || !listData.result?.[0]) return { success: false, message: 'Cloudflare DNS kaydı bulunamadı' };
-      const recordId = listData.result[0].id;
-      const { stdout: updateOut } = await exec(`curl -s --max-time 10 -X PUT -H "Authorization: Bearer ${config.token}" -H "Content-Type: application/json" -d '{"type":"A","name":"${config.hostname}","content":"${ip}","ttl":300}' "https://api.cloudflare.com/client/v4/zones/${zoneId}/dns_records/${recordId}"`, { timeout: 15000 });
+      const recordId = enc(listData.result[0].id);
+      const body = JSON.stringify({ type: 'A', name: config.hostname, content: ip, ttl: 300 });
+      const updateOut = await curlGet([
+        '-X', 'PUT', '-H', `Authorization: Bearer ${config.token}`, '-H', 'Content-Type: application/json',
+        '-d', body,
+        `https://api.cloudflare.com/client/v4/zones/${zoneId}/dns_records/${recordId}`,
+      ]);
       const updateData = JSON.parse(updateOut);
       if (updateData.success) return { success: true, message: 'Cloudflare güncellendi' };
       return { success: false, message: `Cloudflare hatası: ${JSON.stringify(updateData.errors)}` };
 
     } else if (provider === 'dynu') {
-      // Dynu: HTTP Basic Auth
-      const url = `https://api.dynu.com/nic/update?hostname=${config.hostname}&myip=${ip}`;
+      const url = `https://api.dynu.com/nic/update?hostname=${enc(config.hostname || '')}&myip=${enc(ip)}`;
       const auth = Buffer.from(`${config.username}:${config.password}`).toString('base64');
-      const { stdout } = await exec(`curl -s --max-time 10 -H "Authorization: Basic ${auth}" "${url}"`, { timeout: 15000 });
-      const result = stdout.trim();
+      const result = await curlGet(['-H', `Authorization: Basic ${auth}`, url]);
       if (result.startsWith('good') || result.startsWith('nochg')) return { success: true, message: `Dynu: ${result}` };
       return { success: false, message: `Dynu yanıtı: ${result}` };
 
     } else if (provider === 'custom') {
       // Custom URL with placeholders
-      let url = config.domain || '';
-      url = url.replace('{ip}', ip).replace('{hostname}', config.hostname);
-      if (config.username && config.password) {
-        const auth = Buffer.from(`${config.username}:${config.password}`).toString('base64');
-        const { stdout } = await exec(`curl -s --max-time 10 -H "Authorization: Basic ${auth}" "${url}"`, { timeout: 15000 });
-        return { success: true, message: `Custom: ${stdout.trim().slice(0, 100)}` };
-      }
-      const { stdout } = await exec(`curl -s --max-time 10 "${url}"`, { timeout: 15000 });
-      return { success: true, message: `Custom: ${stdout.trim().slice(0, 100)}` };
+      let url = String(config.domain || '');
+      url = url.replace('{ip}', ip).replace('{hostname}', String(config.hostname || ''));
+      if (!/^https?:\/\//i.test(url)) return { success: false, message: 'Custom URL http(s):// ile başlamalı' };
+      const extra = (config.username && config.password)
+        ? ['-H', `Authorization: Basic ${Buffer.from(`${config.username}:${config.password}`).toString('base64')}`]
+        : [];
+      // "--" stops curl option parsing so a URL starting with "-" can't be read as a flag
+      const out = await curlGet([...extra, '--', url]);
+      return { success: true, message: `Custom: ${out.slice(0, 100)}` };
 
     } else {
       return { success: false, message: `Bilinmeyen provider: ${provider}` };
@@ -2270,12 +2293,15 @@ app.put('/api/case/led', async (req, res) => {
     // Apply LED via Python script on Pi
     if (isLinux) {
       const { color, brightness, animation, enabled } = req.body;
-      const cmd = enabled
-        ? `python3 /opt/pi5-gateway/scripts/led_control.py set "${color}" ${Math.round(brightness)} "${animation}"`
-        : 'python3 /opt/pi5-gateway/scripts/led_control.py off';
-      const exec = require('util').promisify(require('child_process').exec);
+      if (enabled && (!isValidHexColor(color) || !isValidAnimation(animation))) {
+        return res.status(400).json({ error: 'Geçersiz renk (hex) veya animasyon değeri' });
+      }
+      const script = '/opt/pi5-gateway/scripts/led_control.py';
+      const args = enabled
+        ? [script, 'set', String(color), String(Math.round(Number(brightness) || 0)), String(animation)]
+        : [script, 'off'];
       try {
-        const { stdout, stderr } = await exec(cmd, { timeout: 10000 });
+        const { stdout, stderr } = await execFileP('python3', args, { timeout: 10000 });
         res.json({ success: true, applied: true, output: stdout.trim(), error: stderr.trim() || undefined });
       } catch (cmdErr: any) {
         res.json({ success: true, applied: false, error: `LED script hatası: ${cmdErr.message}. 'pip3 install fanshim spidev' kurulumu gerekebilir.` });
@@ -2368,9 +2394,9 @@ app.put('/api/system/timezone', async (req, res) => {
   try {
     const { timezone } = req.body;
     if (!timezone) return res.status(400).json({ error: 'timezone gerekli' });
+    if (!isValidTimezone(timezone)) return res.status(400).json({ error: 'Geçersiz zaman dilimi' });
     if (isLinux) {
-      const exec = require('util').promisify(require('child_process').exec);
-      await exec(`timedatectl set-timezone "${timezone}"`, { timeout: 5000 });
+      await execFileP('timedatectl', ['set-timezone', timezone], { timeout: 5000 });
     }
     res.json({ success: true, timezone });
   } catch (e: any) {
@@ -2489,8 +2515,10 @@ app.use((_req, res) => {
   res.status(404).json({ error: 'Endpoint bulunamadı.' });
 });
 
-const server = app.listen(port, () => {
-  console.log(`Backend server running on http://localhost:${port}`);
+// Yalnız localhost'a bağlan: dış erişim NGINX (:80) üzerinden olmalı (Basic Auth'u atlamayı önler).
+const bindHost = process.env.BIND_HOST || '127.0.0.1';
+const server = app.listen(Number(port), bindHost, () => {
+  console.log(`Backend server running on http://${bindHost}:${port}`);
 });
 
 server.keepAliveTimeout = 65000;
