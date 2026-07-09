@@ -389,10 +389,10 @@ function ThrottleView() {
                           <ArrowDown size={10} /> Indirme: {rule.max_download_kbps} kbps
                         </div>
                         <div style={{
-                          height: 6, borderRadius: 3, background: 'rgba(255,255,255,0.08)', overflow: 'hidden'
+                          height: 6, borderRadius: 8, background: 'rgba(255,255,255,0.08)', overflow: 'hidden'
                         }}>
                           <div style={{
-                            height: '100%', borderRadius: 3, background: '#3b82f6',
+                            height: '100%', borderRadius: 8, background: '#3b82f6',
                             width: `${Math.min((rule.max_download_kbps / maxBandwidth) * 100, 100)}%`
                           }} />
                         </div>
@@ -402,10 +402,10 @@ function ThrottleView() {
                           <ArrowUp size={10} /> Yukleme: {rule.max_upload_kbps} kbps
                         </div>
                         <div style={{
-                          height: 6, borderRadius: 3, background: 'rgba(255,255,255,0.08)', overflow: 'hidden'
+                          height: 6, borderRadius: 8, background: 'rgba(255,255,255,0.08)', overflow: 'hidden'
                         }}>
                           <div style={{
-                            height: '100%', borderRadius: 3, background: '#8b5cf6',
+                            height: '100%', borderRadius: 8, background: '#8b5cf6',
                             width: `${Math.min((rule.max_upload_kbps / maxBandwidth) * 100, 100)}%`
                           }} />
                         </div>

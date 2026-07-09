@@ -1,22 +1,27 @@
 #!/bin/bash
-# Install dependencies for Pimoroni Fan SHIM LED and LCD display
+# Install dependencies for case LED (WS2812/Pironman 5 or Fan SHIM) + OLED/LCD display
 # Run on Pi5: bash /opt/pi5-gateway/scripts/install_case_deps.sh
+# Bookworm (PEP 668): --break-system-packages gerekir, yoksa pip sessizce başarısız olur.
 
-echo "=== Pimoroni Kasa Bağımlılıkları Kuruluyor ==="
+echo "=== Kasa Bağımlılıkları Kuruluyor ==="
 
-# Fan SHIM LED (APA102 SPI)
-echo "[1/4] Fan SHIM Python kütüphanesi..."
-pip3 install fanshim 2>/dev/null || pip3 install spidev gpiod 2>/dev/null
-echo "  ✓ LED kontrol hazır"
+# pip yardımcı: önce --break-system-packages, olmazsa düz
+pipx_install() { pip3 install --break-system-packages "$@" 2>/dev/null || pip3 install "$@" 2>/dev/null; }
 
-# OLED Display (SSD1306 I2C)
+# LED: WS2812 (Pironman 5 / addressable RGB — SPI) VE Fan SHIM (APA102) desteği
+echo "[1/4] LED kütüphaneleri (spidev + fanshim)..."
+pipx_install spidev fanshim
+echo "  ✓ LED hazır — WS2812/SPI önce denenir, sonra Fan SHIM."
+echo "    Ayarlar: PI5_LED_TYPE=ws2812|apa102|fanshim  PI5_LED_COUNT=4  PI5_LED_SPI_BUS=0 PI5_LED_SPI_DEV=0"
+
+# OLED Display (SSD1306 I2C — Pironman 5 dahil)
 echo "[2/4] OLED display kütüphanesi..."
-pip3 install luma.oled luma.core Pillow 2>/dev/null
+pipx_install luma.oled luma.core Pillow
 echo "  ✓ OLED display hazır"
 
 # HD44780 LCD fallback
 echo "[3/4] HD44780 LCD kütüphanesi..."
-pip3 install RPLCD smbus2 2>/dev/null
+pipx_install RPLCD smbus2
 echo "  ✓ LCD display hazır"
 
 # Enable I2C and SPI

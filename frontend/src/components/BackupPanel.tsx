@@ -116,7 +116,7 @@ export function BackupPanel() {
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14 }}>
           {/* Export Section */}
           <div style={{
-            background: 'rgba(255,255,255,0.03)', borderRadius: 10, padding: 20,
+            background: 'rgba(255,255,255,0.03)', borderRadius: 8, padding: 20,
             border: '1px solid rgba(255,255,255,0.06)'
           }}>
             <h4 style={{ marginBottom: 12, display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -133,7 +133,7 @@ export function BackupPanel() {
 
           {/* Import Section */}
           <div style={{
-            background: 'rgba(255,255,255,0.03)', borderRadius: 10, padding: 20,
+            background: 'rgba(255,255,255,0.03)', borderRadius: 8, padding: 20,
             border: '1px solid rgba(255,255,255,0.06)'
           }}>
             <h4 style={{ marginBottom: 12, display: 'flex', alignItems: 'center', gap: 8 }}>

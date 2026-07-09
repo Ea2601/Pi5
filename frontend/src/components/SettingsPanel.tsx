@@ -302,7 +302,7 @@ export function SettingsPanel() {
       >
         {result && (
           <div style={{
-            padding: '8px 12px', borderRadius: 6, marginBottom: 10,
+            padding: '8px 12px', borderRadius: 8, marginBottom: 10,
             background: result.type === 'success' ? 'rgba(16,185,129,0.1)' : 'rgba(239,68,68,0.1)',
             color: result.type === 'success' ? '#10b981' : '#ef4444', fontSize: 13
           }}>
@@ -380,7 +380,7 @@ function UpdateSection() {
       </div>
       {updateResult && (
         <div style={{
-          padding: '8px 12px', borderRadius: 6, marginTop: 8,
+          padding: '8px 12px', borderRadius: 8, marginTop: 8,
           background: updateResult.success ? 'rgba(16,185,129,0.1)' : 'rgba(239,68,68,0.1)',
           color: updateResult.success ? '#10b981' : '#ef4444', fontSize: 13,
           display: 'flex', alignItems: 'center', gap: 6,
@@ -438,7 +438,7 @@ function AboutSection() {
             {data.changelog.map((item, i) => (
               <div key={i} style={{
                 display: 'flex', alignItems: 'center', gap: 8,
-                padding: '5px 10px', borderRadius: 6,
+                padding: '5px 10px', borderRadius: 8,
                 background: 'rgba(255,255,255,0.02)', border: '1px solid var(--panel-border)',
                 fontSize: 12, color: 'var(--text-primary)',
               }}>
@@ -534,7 +534,7 @@ function TimezoneSection() {
         </div>
       </div>
       {result && (
-        <div style={{ padding: '6px 10px', borderRadius: 6, fontSize: 12, color: '#10b981', background: 'rgba(16,185,129,0.1)', marginTop: 4 }}>
+        <div style={{ padding: '6px 10px', borderRadius: 8, fontSize: 12, color: '#10b981', background: 'rgba(16,185,129,0.1)', marginTop: 4 }}>
           {result}
         </div>
       )}

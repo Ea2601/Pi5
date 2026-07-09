@@ -2,6 +2,7 @@ import { exec } from 'child_process';
 import { promisify } from 'util';
 import fs from 'fs';
 import os from 'os';
+import sqlite3 from 'sqlite3';
 import { shq } from './util';
 
 const execAsync = promisify(exec);
@@ -19,6 +20,40 @@ async function run(cmd: string, timeout: number = 10000): Promise<string> {
     return '';
   }
 }
+
+// ─── Pi-hole v6 (FTL) direct-DB access ───
+// Pi-hole v6 removed the legacy admin/api.php; its REST API needs the embedded FTL
+// webserver + auth (which collides with our nginx on :80). Reading the FTL SQLite DB
+// directly is version-proof and needs no webserver/port/auth. Backend runs as root.
+const FTL_DB = '/etc/pihole/pihole-FTL.db';
+const GRAVITY_DB = '/etc/pihole/gravity.db';
+// FTL query status codes that mean "blocked" (gravity/blacklist/regex/upstream/special).
+const BLOCKED_STATUS = [1, 4, 5, 6, 7, 8, 9, 10, 11, 15, 16];
+const FORWARDED_STATUS = [2, 14];
+const CACHED_STATUS = [3, 17];
+// FTL numeric query types → labels.
+const FTL_TYPE_MAP: Record<number, string> = {
+  1: 'A', 2: 'AAAA', 3: 'ANY', 4: 'SRV', 5: 'SOA', 6: 'PTR', 7: 'TXT',
+  8: 'NAPTR', 9: 'MX', 10: 'DS', 11: 'RRSIG', 12: 'DNSKEY', 13: 'NS',
+  14: 'OTHER', 15: 'SVCB', 16: 'HTTPS',
+};
+
+// Read-only query against an external SQLite DB. Returns [] on any error (missing file,
+// locked, schema mismatch) so callers can transparently fall back.
+function readOnlyQuery(dbPath: string, sql: string, params: any[] = []): Promise<any[]> {
+  return new Promise((resolve) => {
+    if (!fs.existsSync(dbPath)) return resolve([]);
+    const d = new sqlite3.Database(dbPath, sqlite3.OPEN_READONLY, (err) => {
+      if (err) return resolve([]);
+      d.all(sql, params, (e, rows) => {
+        d.close(() => {});
+        resolve(e ? [] : (rows || []));
+      });
+    });
+  });
+}
+
+const startOfTodayEpoch = () => Math.floor(new Date().setHours(0, 0, 0, 0) / 1000);
 
 // ─── 1. System Stats ───
 // Always real on Linux. On non-Linux returns zeros (frontend handles empty state).
@@ -151,27 +186,67 @@ export async function getServiceStatus(name: string): Promise<string> {
 
 // ─── 3. Pi-hole Stats ───
 // Returns null if Pi-hole is not installed/accessible.
-export async function getPiholeStats(): Promise<{
+export interface PiholeStats {
   domainsBlocked: number; dnsQueriesToday: number; adsBlockedToday: number;
   adsPercentageToday: number; uniqueClients: number; queriesForwarded: number;
   queriesCached: number; topBlockedDomains: { domain: string; count: number }[];
   queryTypes: Record<string, number>;
-} | null> {
+}
+
+// Primary: read the Pi-hole v6 FTL SQLite DB directly (version-proof, no webserver/auth).
+// Falls back to the legacy v5 admin/api.php only if the DB is unavailable.
+export async function getPiholeStats(): Promise<PiholeStats | null> {
   if (!isLinux) return null;
 
+  const midnight = startOfTodayEpoch();
+  const summaryRows = await readOnlyQuery(FTL_DB,
+    `SELECT
+       COUNT(*) AS total,
+       SUM(CASE WHEN status IN (${BLOCKED_STATUS.join(',')}) THEN 1 ELSE 0 END) AS blocked,
+       SUM(CASE WHEN status IN (${FORWARDED_STATUS.join(',')}) THEN 1 ELSE 0 END) AS forwarded,
+       SUM(CASE WHEN status IN (${CACHED_STATUS.join(',')}) THEN 1 ELSE 0 END) AS cached,
+       COUNT(DISTINCT client) AS clients
+     FROM queries WHERE timestamp >= ?`, [midnight]);
+
+  if (summaryRows.length && summaryRows[0].total !== null && summaryRows[0].total !== undefined) {
+    const s = summaryRows[0];
+    const total = s.total || 0;
+    const blocked = s.blocked || 0;
+
+    const gravityRows = await readOnlyQuery(GRAVITY_DB, 'SELECT COUNT(*) AS c FROM gravity');
+    const topRows = await readOnlyQuery(FTL_DB,
+      `SELECT domain, COUNT(*) AS c FROM queries
+       WHERE timestamp >= ? AND status IN (${BLOCKED_STATUS.join(',')})
+       GROUP BY domain ORDER BY c DESC LIMIT 5`, [midnight]);
+    const typeRows = await readOnlyQuery(FTL_DB,
+      'SELECT type, COUNT(*) AS c FROM queries WHERE timestamp >= ? GROUP BY type', [midnight]);
+
+    const queryTypes: Record<string, number> = {};
+    for (const r of typeRows) queryTypes[FTL_TYPE_MAP[r.type] || `TYPE${r.type}`] = r.c;
+
+    return {
+      domainsBlocked: gravityRows[0]?.c || 0,
+      dnsQueriesToday: total,
+      adsBlockedToday: blocked,
+      adsPercentageToday: total > 0 ? Math.round((blocked / total) * 1000) / 10 : 0,
+      uniqueClients: s.clients || 0,
+      queriesForwarded: s.forwarded || 0,
+      queriesCached: s.cached || 0,
+      topBlockedDomains: topRows.map(r => ({ domain: r.domain, count: r.c })),
+      queryTypes,
+    };
+  }
+
+  return getPiholeStatsViaLegacyApi();
+}
+
+// Legacy Pi-hole v5 API (admin/api.php). Returns null on v6/headless installs.
+async function getPiholeStatsViaLegacyApi(): Promise<PiholeStats | null> {
   let summary: any = null;
   try {
     const r = await fetch('http://127.0.0.1/admin/api.php?summaryRaw');
     if (r.ok) summary = await r.json();
   } catch { /* */ }
-
-  if (!summary) {
-    try {
-      const r = await fetch('http://127.0.0.1:8080/api/stats/summary');
-      if (r.ok) summary = await r.json();
-    } catch { /* */ }
-  }
-
   if (!summary) return null;
 
   let topBlockedDomains: { domain: string; count: number }[] = [];
@@ -307,7 +382,27 @@ export async function getFail2banStatus() {
 export async function getDnsQueries(limit: number = 50, filters?: { device?: string; blocked?: string; domain?: string }) {
   if (!isLinux) return [];
 
-  // Try Pi-hole API
+  // Primary: Pi-hole v6 FTL DB (direct read — version-proof, no webserver needed).
+  const dbRows = await readOnlyQuery(FTL_DB,
+    'SELECT timestamp, type, status, domain, client FROM queries ORDER BY timestamp DESC LIMIT ?',
+    [Math.min(limit * 4, 1000)]);
+  if (dbRows.length) {
+    let queries = dbRows.map((r: any, idx: number) => ({
+      id: idx + 1,
+      timestamp: new Date(r.timestamp * 1000).toISOString(),
+      client_ip: r.client, domain: r.domain,
+      type: FTL_TYPE_MAP[r.type] || `TYPE${r.type}`,
+      status: BLOCKED_STATUS.includes(r.status) ? 'blocked' : 'allowed',
+      response_time_ms: 0,
+    }));
+    if (filters?.device) queries = queries.filter((q: any) => q.client_ip === filters.device);
+    if (filters?.blocked === 'true') queries = queries.filter((q: any) => q.status === 'blocked');
+    else if (filters?.blocked === 'false') queries = queries.filter((q: any) => q.status === 'allowed');
+    if (filters?.domain) queries = queries.filter((q: any) => q.domain?.includes(filters.domain!));
+    return queries.slice(0, limit);
+  }
+
+  // Fallback: legacy Pi-hole v5 API (admin/api.php)
   try {
     const r = await fetch(`http://127.0.0.1/admin/api.php?getAllQueries=${Math.min(limit * 4, 500)}`);
     if (r.ok) {

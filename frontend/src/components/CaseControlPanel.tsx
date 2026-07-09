@@ -57,6 +57,7 @@ export function CaseControlPanel() {
   const [pages, setPages] = useState<LcdPage[]>(DEFAULT_PAGES);
   const [saving, setSaving] = useState(false);
   const [result, setResult] = useState('');
+  const [resultOk, setResultOk] = useState(true);
 
   useEffect(() => {
     if (ledData.config) setLed(ledData.config);
@@ -70,9 +71,11 @@ export function CaseControlPanel() {
     setSaving(true);
     setResult('');
     try {
-      await putApi('/case/led', led as unknown as Record<string, unknown>);
-      setResult('LED ayarları kaydedildi ve uygulandı');
-    } catch { setResult('LED kaydetme başarısız'); }
+      const r = await putApi('/case/led', led as unknown as Record<string, unknown>);
+      if (r?.warning) { setResultOk(false); setResult(r.warning); }
+      else if (r?.applied === false) { setResultOk(false); setResult(r?.error || 'LED kaydedildi ama donanıma uygulanamadı'); }
+      else { setResultOk(true); setResult('LED ayarları kaydedildi ve uygulandı'); }
+    } catch { setResultOk(false); setResult('LED kaydetme başarısız'); }
     setSaving(false);
   };
 
@@ -80,9 +83,11 @@ export function CaseControlPanel() {
     setSaving(true);
     setResult('');
     try {
-      await putApi('/case/lcd', { pages });
-      setResult('LCD ayarları kaydedildi ve uygulandı');
-    } catch { setResult('LCD kaydetme başarısız'); }
+      const r = await putApi('/case/lcd', { pages });
+      if (r?.warning) { setResultOk(false); setResult(r.warning); }
+      else if (r?.applied === false) { setResultOk(false); setResult(r?.error || 'LCD kaydedildi ama donanıma uygulanamadı'); }
+      else { setResultOk(true); setResult('LCD ayarları kaydedildi ve uygulandı'); }
+    } catch { setResultOk(false); setResult('LCD kaydetme başarısız'); }
     setSaving(false);
   };
 
@@ -130,7 +135,7 @@ export function CaseControlPanel() {
               {PRESET_COLORS.map(c => (
                 <button key={c.value}
                   style={{
-                    width: 28, height: 28, borderRadius: 6, background: c.value,
+                    width: 28, height: 28, borderRadius: 8, background: c.value,
                     border: led.color === c.value ? '2px solid #fff' : '2px solid transparent',
                     cursor: 'pointer',
                   }}
@@ -140,7 +145,7 @@ export function CaseControlPanel() {
               ))}
               <input type="color" value={led.color}
                 onChange={e => setLed(prev => ({ ...prev, color: e.target.value }))}
-                style={{ width: 28, height: 28, border: 'none', cursor: 'pointer', borderRadius: 6 }}
+                style={{ width: 28, height: 28, border: 'none', cursor: 'pointer', borderRadius: 8 }}
                 title="Özel renk"
               />
             </div>
@@ -260,7 +265,10 @@ export function CaseControlPanel() {
       </div>
 
       {result && (
-        <div style={{ marginTop: 10, padding: '8px 12px', borderRadius: 6, fontSize: 12, color: '#10b981', background: 'rgba(16,185,129,0.1)', display: 'flex', alignItems: 'center', gap: 6 }}>
+        <div style={{ marginTop: 10, padding: '8px 12px', borderRadius: 8, fontSize: 12,
+          color: resultOk ? '#10b981' : '#f59e0b',
+          background: resultOk ? 'rgba(16,185,129,0.1)' : 'rgba(245,158,11,0.12)',
+          display: 'flex', alignItems: 'center', gap: 6 }}>
           <RotateCcw size={12} />{result}
         </div>
       )}

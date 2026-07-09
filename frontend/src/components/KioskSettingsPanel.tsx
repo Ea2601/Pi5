@@ -107,7 +107,7 @@ export function KioskSettingsPanel() {
           <h4 style={{ fontSize: 13, marginBottom: 6 }}>Pi5 Kiosk Kurulumu</h4>
           <div style={{ fontSize: 12, color: 'var(--text-muted)', lineHeight: 1.6 }}>
             <p>HDMI ekranda otomatik açılış için Pi5'te:</p>
-            <code style={{ display: 'block', padding: '8px 10px', borderRadius: 6, background: 'rgba(0,0,0,0.3)', marginTop: 6, fontSize: 11, fontFamily: 'var(--font-mono)' }}>
+            <code style={{ display: 'block', padding: '8px 10px', borderRadius: 8, background: 'rgba(0,0,0,0.3)', marginTop: 6, fontSize: 11, fontFamily: 'var(--font-mono)' }}>
               # /etc/xdg/autostart/kiosk.desktop{'\n'}
               [Desktop Entry]{'\n'}
               Type=Application{'\n'}
@@ -118,7 +118,7 @@ export function KioskSettingsPanel() {
         </div>
 
         {result && (
-          <div style={{ marginTop: 10, padding: '6px 10px', borderRadius: 6, fontSize: 12, color: '#10b981', background: 'rgba(16,185,129,0.1)' }}>
+          <div style={{ marginTop: 10, padding: '6px 10px', borderRadius: 8, fontSize: 12, color: '#10b981', background: 'rgba(16,185,129,0.1)' }}>
             {result}
           </div>
         )}

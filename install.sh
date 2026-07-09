@@ -219,7 +219,9 @@ log "Pimoroni bağımlılık adımı tamamlandı"
 
 # ─── Kiosk: Minimal X11 + Chromium (Lite OS için) ───
 warn "Kiosk modu bağımlılıkları kuruluyor (Lite OS)..."
-apt install -y -qq xserver-xorg x11-xserver-utils xinit openbox chromium-browser 2>/dev/null || true
+apt install -y -qq xserver-xorg x11-xserver-utils xinit openbox 2>/dev/null || true
+# Bookworm tarayıcıyı "chromium" olarak paketler; eski/türev imajlar "chromium-browser" kullanır.
+apt install -y -qq chromium 2>/dev/null || apt install -y -qq chromium-browser 2>/dev/null || true
 
 # Kiosk başlatma script'i
 cat > /opt/pi5-gateway/scripts/kiosk.sh << 'KIOSKEOF'
@@ -232,8 +234,15 @@ xset s off
 xset s noblank
 xset -dpms
 
+# Chromium binary adı dağıtıma göre değişir (Bookworm: chromium, türevler: chromium-browser)
+CHROMIUM_BIN="$(command -v chromium || command -v chromium-browser)"
+if [ -z "$CHROMIUM_BIN" ]; then
+  echo "HATA: chromium bulunamadi (kurulum: apt install chromium)" >&2
+  exit 1
+fi
+
 # Chromium kiosk modunda başlat
-chromium-browser \
+"$CHROMIUM_BIN" \
   --kiosk \
   --noerrdialogs \
   --disable-infobars \

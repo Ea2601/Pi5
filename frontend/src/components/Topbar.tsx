@@ -146,7 +146,7 @@ export function Topbar({ onShowAlerts }: { onShowAlerts?: () => void }) {
             {updateInfo?.commits.map(c => (
               <div key={c.hash} style={{
                 display: 'flex', gap: 8, alignItems: 'flex-start',
-                padding: '6px 10px', borderRadius: 6,
+                padding: '6px 10px', borderRadius: 8,
                 background: 'rgba(255,255,255,0.03)', border: '1px solid var(--panel-border)',
               }}>
                 <code style={{ color: 'var(--accent-color)', fontSize: 11, flexShrink: 0, fontFamily: 'var(--font-mono)' }}>
@@ -161,7 +161,7 @@ export function Topbar({ onShowAlerts }: { onShowAlerts?: () => void }) {
 
         {updateResult && (
           <div style={{
-            marginTop: 12, padding: '8px 12px', borderRadius: 6, fontSize: 12,
+            marginTop: 12, padding: '8px 12px', borderRadius: 8, fontSize: 12,
             background: updateResult.includes('tamamlandı') ? 'rgba(16,185,129,0.1)' : 'rgba(239,68,68,0.1)',
             color: updateResult.includes('tamamlandı') ? '#10b981' : '#ef4444',
           }}>

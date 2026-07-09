@@ -2278,6 +2278,21 @@ app.post('/api/ddns/check-ip', async (_req, res) => {
 });
 
 // ─── Case LED / LCD Control ───
+
+// SunFounder's Pironman software runs a service that continuously drives the case OLED + RGB.
+// When active, our one-shot LED/LCD writes get overwritten. Detect it so the UI can warn.
+async function detectPironmanConflict(): Promise<string> {
+  if (!isLinux) return '';
+  try {
+    const exec = require('util').promisify(require('child_process').exec);
+    const { stdout } = await exec('systemctl is-active pironman5 pironman pm_auto 2>/dev/null || true', { timeout: 3000 }).catch(() => ({ stdout: '' }));
+    if (String(stdout).split('\n').some((s: string) => s.trim() === 'active')) {
+      return 'SunFounder Pironman servisi (pironman5) kasa OLED/RGB donanımını sürekli kendisi sürüyor; panel ayarlarının üzerine yazabilir. Panel kontrolünün etkili olması için SunFounder yapılandırmasında OLED/RGB modülünü kapatın ya da "sudo systemctl stop pironman5" ile servisi durdurun.';
+    }
+  } catch { /* */ }
+  return '';
+}
+
 app.get('/api/case/led', async (_req, res) => {
   try {
     const row = await dbGet("SELECT value FROM app_settings WHERE key = 'led_config'");
@@ -2302,9 +2317,10 @@ app.put('/api/case/led', async (req, res) => {
         : [script, 'off'];
       try {
         const { stdout, stderr } = await execFileP('python3', args, { timeout: 10000 });
-        res.json({ success: true, applied: true, output: stdout.trim(), error: stderr.trim() || undefined });
+        const warning = await detectPironmanConflict();
+        res.json({ success: true, applied: !warning, output: stdout.trim(), error: stderr.trim() || undefined, warning: warning || undefined });
       } catch (cmdErr: any) {
-        res.json({ success: true, applied: false, error: `LED script hatası: ${cmdErr.message}. 'pip3 install fanshim spidev' kurulumu gerekebilir.` });
+        res.json({ success: true, applied: false, error: `LED script hatası: ${cmdErr.message}. WS2812 kasa (Pironman 5) için 'pip3 install spidev' + SPI etkin olmalı.` });
       }
     } else {
       res.json({ success: true, applied: false, warning: 'LED kontrolü sadece Pi5 üzerinde çalışır' });
@@ -2329,7 +2345,8 @@ app.put('/api/case/lcd', async (req, res) => {
       const exec = require('util').promisify(require('child_process').exec);
       try {
         await exec('python3 /opt/pi5-gateway/scripts/lcd_display.py stop 2>/dev/null; python3 /opt/pi5-gateway/scripts/lcd_display.py start &', { timeout: 10000 });
-        res.json({ success: true, applied: true });
+        const warning = await detectPironmanConflict();
+        res.json({ success: true, applied: !warning, warning: warning || undefined });
       } catch (cmdErr: any) {
         res.json({ success: true, applied: false, error: `LCD script hatası: ${cmdErr.message}. 'pip3 install luma.oled luma.core RPLCD' kurulumu gerekebilir.` });
       }

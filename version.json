@@ -1,17 +1,13 @@
 {
-  "version": "2.6.0",
-  "build": 28,
-  "date": "2026-07-09",
+  "version": "2.7.0",
+  "build": 29,
+  "date": "2026-07-10",
   "changelog": [
-    "Güvenlik: WoL/LED/DDNS/timezone/zapret komut enjeksiyonları giderildi (execFile + shell-quote)",
-    "Güvenlik: nginx Basic Auth (opt-in), CORS same-origin, backend yalnız localhost'a bağlanır",
-    "Ağ: policy-routing artık çalışıyor (ipset + iptables mangle; nft @set hatası düzeltildi)",
-    "Ağ: firewall flush ruleset kaldırıldı — zapret/domain_routing/block kuralları korunur; arayüz otomatik-algılama",
-    "Ağ: WG tünel Table=off + Pi5 SNAT (VPS çıkış trafiği artık akıyor); MSS clamp + ICMP",
-    "Ağ: domain redirect nginx'e taşındı; Pi-hole tek upstream (Unbound) — DNS sızıntısı kapatıldı",
-    "Kırık özellikler: Dashboard gerçek metrik (mock kaldırıldı), WoL/DHCP/grup/zamanlama 400 hataları, cihaz engelleme",
-    "Veri: yedek export/import tüm tabloları kapsar (transaction); DDNS partial-merge kimlik bilgilerini korur",
-    "Kurulum: NVMe otomatik-format guard'ı, npm --production kaldırıldı, pip PEP668, build crash-loop koruması",
-    "Bakım: sahte maintenance/fail-open stub'ları ve gizli günlük reboot kaldırıldı"
+    "Pi-hole v6: istatistik + DNS sorgu logu artık FTL veritabanından doğrudan okunuyor (admin/api.php kaldırıldığı için panel kartları boştu)",
+    "Kasa LED: Pironman 5 / WS2812 desteği (Pi5-uyumlu SPI kodlama; rpi_ws281x Pi5'te çalışmaz). Ayar: PI5_LED_TYPE/COUNT/SPI",
+    "Kasa OLED/LED: SunFounder pironman5 servis çakışması tespiti — panel uygulanamadığında net uyarı gösterir",
+    "Kiosk: chromium binary otomatik-tespit (Bookworm 'chromium'); gerçek ağ-trafiği sayfası (eskiden sistem sayfasının kopyasıydı)",
+    "UI: premium glassmorphism tema — renkler korunarak; badge dahil tüm köşe radiusları 8px",
+    "UI: Kasa kaydet-sonucu artık uyarı/hata durumunu doğru renkte gösteriyor (yeşil 'başarılı' yanılgısı düzeltildi)"
   ]
 }

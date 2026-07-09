@@ -260,7 +260,7 @@ function VpsCard({ server, onConnect, onDisconnect, onDelete, onRefresh }: {
 
   const StatusDot = ({ ok, label }: { ok: boolean; label: string }) => (
     <span title={label} style={{ display: 'inline-flex', alignItems: 'center', gap: 3, fontSize: 10, color: ok ? 'var(--success-color)' : 'var(--danger-color)' }}>
-      <span style={{ width: 6, height: 6, borderRadius: 3, background: ok ? 'var(--success-color)' : 'var(--danger-color)', display: 'inline-block' }} />
+      <span style={{ width: 6, height: 6, borderRadius: 8, background: ok ? 'var(--success-color)' : 'var(--danger-color)', display: 'inline-block' }} />
       {label}
     </span>
   );
@@ -323,7 +323,7 @@ function VpsCard({ server, onConnect, onDisconnect, onDelete, onRefresh }: {
                     {repairResults.map((r, i) => (
                       <div key={i} style={{
                         display: 'flex', alignItems: 'center', gap: 6, fontSize: 10,
-                        padding: '3px 6px', borderRadius: 4,
+                        padding: '3px 6px', borderRadius: 8,
                         background: r.status === 'ok' ? 'rgba(34,197,94,0.06)' : r.status === 'fixed' ? 'rgba(59,130,246,0.06)' : 'rgba(239,68,68,0.06)',
                         color: r.status === 'ok' ? 'var(--success-color)' : r.status === 'fixed' ? 'var(--accent-color)' : 'var(--danger-color)',
                       }}>
@@ -381,7 +381,7 @@ function VpsCard({ server, onConnect, onDisconnect, onDelete, onRefresh }: {
               {clients.map(c => (
                 <div key={c.id} style={{
                   display: 'flex', alignItems: 'center', gap: 6, padding: '4px 6px',
-                  borderRadius: 4, background: 'rgba(255,255,255,0.02)', border: '1px solid var(--panel-border)',
+                  borderRadius: 8, background: 'rgba(255,255,255,0.02)', border: '1px solid var(--panel-border)',
                   fontSize: 11,
                 }}>
                   <Users size={10} style={{ color: 'var(--accent-color)', flexShrink: 0 }} />

@@ -137,7 +137,7 @@ function GroupsView() {
                   {colorOptions.map(c => (
                     <button key={c}
                       style={{
-                        width: 28, height: 28, borderRadius: 6, background: c, border: newGroup.color === c ? '2px solid #fff' : '2px solid transparent',
+                        width: 28, height: 28, borderRadius: 8, background: c, border: newGroup.color === c ? '2px solid #fff' : '2px solid transparent',
                         cursor: 'pointer'
                       }}
                       onClick={() => setNewGroup({ ...newGroup, color: c })}

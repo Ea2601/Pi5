@@ -62,37 +62,95 @@ def write_pid():
         f.write(str(os.getpid()))
 
 
+def _ws2812_encode(count, r, g, b):
+    """Encode one solid color for `count` WS2812 LEDs as an SPI byte stream.
+
+    WS2812 has no clock line; the waveform is encoded on SPI MOSI. At 2.4 MHz each SPI
+    bit is ~0.417us, so one 1.25us data bit = 3 SPI bits: '1'=0b110, '0'=0b100. Wire
+    order is GRB. This is the Raspberry Pi 5 -compatible method (rpi_ws281x does NOT
+    work on the Pi5's RP1); Pironman 5 and most addressable-RGB cases use WS2812.
+    """
+    data = bytearray()
+    for _ in range(count):
+        for byte in (g, r, b):  # GRB wire order
+            bits = 0
+            for i in range(7, -1, -1):
+                bits = (bits << 3) | (0b110 if (byte >> i) & 1 else 0b100)
+            data += bits.to_bytes(3, 'big')  # 24 SPI bits = 3 bytes per color byte
+    return list(data)
+
+
+class WS2812:
+    def __init__(self, spi, count):
+        self._spi = spi
+        self._count = count
+
+    def set_light(self, r, g, b, brightness=1.0):
+        r = max(0, min(255, int(r * brightness)))
+        g = max(0, min(255, int(g * brightness)))
+        b = max(0, min(255, int(b * brightness)))
+        payload = _ws2812_encode(self._count, r, g, b)
+        # Trailing low bytes hold MOSI low >50us to latch the frame.
+        self._spi.xfer2(payload + [0] * 16)
+
+
+class DirectAPA102:
+    def __init__(self, spi):
+        self._spi = spi
+
+    def set_light(self, r, g, b, brightness=1.0):
+        # APA102 protocol: start frame + LED frame + end frame
+        bright_byte = 0xE0 | int(max(0, min(31, brightness * 31)))
+        self._spi.xfer2([0x00, 0x00, 0x00, 0x00])  # Start frame
+        self._spi.xfer2([bright_byte, b, g, r])      # LED data (BGR order)
+        self._spi.xfer2([0xFF, 0xFF, 0xFF, 0xFF])    # End frame
+
+
 def get_led():
-    """Try to get LED controller. Fan SHIM first, then fallback."""
+    """Return an LED controller. Order: Fan SHIM → WS2812/SPI (Pi5, Pironman 5) → APA102/SPI.
+
+    Override via env: PI5_LED_TYPE=ws2812|apa102|fanshim|auto (default auto),
+    PI5_LED_COUNT (default 4), PI5_LED_SPI_BUS (0), PI5_LED_SPI_DEV (0).
+    """
+    led_type = os.environ.get('PI5_LED_TYPE', 'auto').lower()
     try:
-        from fanshim import FanShim
-        fs = FanShim()
-        return fs
-    except Exception:
-        # ImportError (paket yok) VEYA donanım/SPI hatası (paket var ama donanım yok) — spidev fallback'e düş
-        pass
+        count = int(os.environ.get('PI5_LED_COUNT', '4') or 4)
+        bus = int(os.environ.get('PI5_LED_SPI_BUS', '0') or 0)
+        dev = int(os.environ.get('PI5_LED_SPI_DEV', '0') or 0)
+    except ValueError:
+        count, bus, dev = 4, 0, 0
 
-    # Fallback: direct APA102 via SPI
-    try:
-        import spidev
-        spi = spidev.SpiDev()
-        spi.open(0, 0)
-        spi.max_speed_hz = 1000000
+    # Pimoroni Fan SHIM (APA102 on its own pins)
+    if led_type in ('auto', 'fanshim'):
+        try:
+            from fanshim import FanShim
+            return FanShim()
+        except Exception:
+            # Paket yok VEYA donanım yok — sıradaki sürücüye düş
+            pass
 
-        class DirectLED:
-            def __init__(self, spi):
-                self._spi = spi
+    # WS2812 addressable RGB over SPI (Pi5-compatible; Pironman 5 default)
+    if led_type in ('auto', 'ws2812', 'ws281x', 'neopixel'):
+        try:
+            import spidev
+            spi = spidev.SpiDev()
+            spi.open(bus, dev)
+            spi.max_speed_hz = 2400000
+            spi.mode = 0
+            return WS2812(spi, count)
+        except Exception:
+            pass
 
-            def set_light(self, r, g, b, brightness=1.0):
-                # APA102 protocol: start frame + LED frame + end frame
-                bright_byte = 0xE0 | int(max(0, min(31, brightness * 31)))
-                self._spi.xfer2([0x00, 0x00, 0x00, 0x00])  # Start frame
-                self._spi.xfer2([bright_byte, b, g, r])      # LED data (BGR order)
-                self._spi.xfer2([0xFF, 0xFF, 0xFF, 0xFF])    # End frame
-
-        return DirectLED(spi)
-    except:
-        pass
+    # APA102 direct over SPI
+    if led_type in ('auto', 'apa102'):
+        try:
+            import spidev
+            spi = spidev.SpiDev()
+            spi.open(bus, dev)
+            spi.max_speed_hz = 1000000
+            return DirectAPA102(spi)
+        except Exception:
+            pass
 
     return None
 

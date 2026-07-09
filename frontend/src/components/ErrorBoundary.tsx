@@ -20,7 +20,7 @@ export class ErrorBoundary extends Component<Props, State> {
       return (
         <div style={{
           padding: 40, textAlign: 'center', color: '#ef4444',
-          background: 'rgba(239,68,68,0.05)', borderRadius: 12, margin: 20,
+          background: 'rgba(239,68,68,0.05)', borderRadius: 8, margin: 20,
           border: '1px solid rgba(239,68,68,0.2)'
         }}>
           <h3 style={{ marginBottom: 8 }}>Bir hata olustu</h3>
