@@ -2385,12 +2385,26 @@ app.put('/api/case/lcd', async (req, res) => {
     // Restart LCD daemon to pick up new config
     if (isLinux) {
       const exec = require('util').promisify(require('child_process').exec);
+      const LCD = '/opt/pi5-gateway/scripts/lcd_display.py';
       try {
-        await exec('python3 /opt/pi5-gateway/scripts/lcd_display.py stop 2>/dev/null; python3 /opt/pi5-gateway/scripts/lcd_display.py start &', { timeout: 10000 });
+        // Stop any old daemon, then detect a REAL display (detect exits 2 / prints display=console
+        // when only the console fallback is available → physical OLED stays dark).
+        await exec(`python3 ${LCD} stop 2>/dev/null || true`, { timeout: 8000 });
+        let noDisplay = false;
+        try {
+          await exec(`python3 ${LCD} detect`, { timeout: 12000 });
+        } catch (dErr: any) {
+          const out = String(dErr.stdout || '') + String(dErr.message || '');
+          if (dErr.code === 2 || /display=console/.test(out)) noDisplay = true;
+        }
+        await exec(`python3 ${LCD} start &`, { timeout: 10000 });
+        if (noDisplay) {
+          return res.json({ success: true, applied: false, error: 'Fiziksel ekran bulunamadı. Kurulum: pip3 install --break-system-packages luma.oled luma.core Pillow; I2C açık olmalı (raspi-config). SH1106 panelde (Pironman 5 1.3") PI5_LCD_CONTROLLER=sh1106 deneyin. Detay: /tmp/lcd_display.log' });
+        }
         const warning = await detectPironmanConflict();
         res.json({ success: true, applied: !warning, warning: warning || undefined });
       } catch (cmdErr: any) {
-        res.json({ success: true, applied: false, error: `LCD script hatası: ${cmdErr.message}. 'pip3 install luma.oled luma.core RPLCD' kurulumu gerekebilir.` });
+        res.json({ success: true, applied: false, error: `LCD script hatası: ${cmdErr.message}. 'pip3 install --break-system-packages luma.oled luma.core Pillow' kurulumu gerekebilir.` });
       }
     } else {
       res.json({ success: true, applied: false, warning: 'LCD kontrolü sadece Pi5 üzerinde çalışır' });

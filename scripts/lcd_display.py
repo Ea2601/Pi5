@@ -24,6 +24,16 @@ import subprocess
 PID_FILE = "/tmp/lcd_display.pid"
 CONFIG_FILE = "/opt/pi5-gateway/core/pi5router.sqlite"
 PAGES_KEY = "lcd_pages"
+LOG_FILE = "/tmp/lcd_display.log"
+
+
+def log_lcd(msg):
+    """Append a diagnostic line so 'ekran neden kararık' teşhis edilebilsin."""
+    try:
+        with open(LOG_FILE, 'a') as f:
+            f.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} {msg}\n")
+    except Exception:
+        pass
 
 
 def kill_existing():
@@ -122,39 +132,65 @@ def get_system_data(content_type):
         return ["Hata", str(e)[:16]]
 
 
-def get_display():
-    """Try to initialize display. OLED first, then HD44780."""
-    # Try SSD1306 OLED
-    try:
-        from luma.core.interface.serial import i2c
+def _make_oled(controller):
+    """Init a luma OLED. controller: 'ssd1306' (0.96") or 'sh1106' (1.3", örn. Pironman 5).
+    Ayar: PI5_LCD_ADDR (0x3C), PI5_LCD_WIDTH (128), PI5_LCD_HEIGHT (64), PI5_LCD_I2C_PORT (1)."""
+    from luma.core.interface.serial import i2c
+    from luma.core.render import canvas
+    from PIL import ImageFont
+
+    port = int(os.environ.get('PI5_LCD_I2C_PORT', '1') or 1)
+    addr = int(os.environ.get('PI5_LCD_ADDR', '0x3C'), 0)
+    width = int(os.environ.get('PI5_LCD_WIDTH', '128') or 128)
+    height = int(os.environ.get('PI5_LCD_HEIGHT', '64') or 64)
+
+    serial = i2c(port=port, address=addr)
+    if controller == 'sh1106':
+        from luma.oled.device import sh1106
+        device = sh1106(serial, width=width, height=height)
+    else:
         from luma.oled.device import ssd1306
-        from luma.core.render import canvas
-        from PIL import ImageFont
+        device = ssd1306(serial, width=width, height=height)
 
-        serial = i2c(port=1, address=0x3C)
-        device = ssd1306(serial, width=128, height=64)
+    font = ImageFont.load_default()
 
-        font = ImageFont.load_default()
+    class OLEDDisplay:
+        controller_name = controller
 
-        class OLEDDisplay:
-            def show(self, lines):
-                with canvas(device) as draw:
-                    for i, line in enumerate(lines[:4]):
-                        draw.text((2, i * 16), str(line)[:21], fill="white", font=font)
+        def show(self, lines):
+            with canvas(device) as draw:
+                for i, line in enumerate(lines[:4]):
+                    draw.text((2, i * 16), str(line)[:21], fill="white", font=font)
 
-            def clear(self):
-                device.clear()
+        def clear(self):
+            device.clear()
 
-        return OLEDDisplay()
-    except:
-        pass
+    return OLEDDisplay()
 
-    # Try HD44780 16x2 via I2C
+
+def get_display():
+    """Init a display. Controller via PI5_LCD_CONTROLLER=ssd1306|sh1106|auto (default auto)."""
+    ctrl = os.environ.get('PI5_LCD_CONTROLLER', 'auto').lower()
+    candidates = [ctrl] if ctrl in ('ssd1306', 'sh1106') else ['ssd1306', 'sh1106']
+
+    for c in candidates:
+        try:
+            d = _make_oled(c)
+            log_lcd(f"OLED baslatildi: {c}")
+            return d
+        except Exception as e:
+            log_lcd(f"OLED {c} basarisiz: {e}")
+
+    # HD44780 16x2 via I2C (fallback)
     try:
         from RPLCD.i2c import CharLCD
-        lcd = CharLCD('PCF8574', 0x27)
+        hd_addr = int(os.environ.get('PI5_LCD_ADDR', '0x27'), 0)
+        lcd = CharLCD('PCF8574', hd_addr)
+        log_lcd("HD44780 baslatildi")
 
         class HD44780Display:
+            controller_name = 'hd44780'
+
             def show(self, lines):
                 lcd.clear()
                 for i, line in enumerate(lines[:2]):
@@ -165,12 +201,17 @@ def get_display():
                 lcd.clear()
 
         return HD44780Display()
-    except:
-        pass
+    except Exception as e:
+        log_lcd(f"HD44780 basarisiz: {e}")
 
-    # Fallback: console output (for testing). Daemon olarak fork edilince stdout kapalı olabilir →
-    # BrokenPipeError'ı yut, daemon sessizce ölmesin.
+    log_lcd("GERCEK EKRAN YOK — luma.oled kurulu mu? "
+            "'pip3 install --break-system-packages luma.oled luma.core Pillow'. "
+            "I2C acik mi (raspi-config)? SH1106 panelde PI5_LCD_CONTROLLER=sh1106 deneyin.")
+
+    # Fallback: console output (headless test). Fiziksel OLED KARANLIK kalir — bu bir teşhis durumudur.
     class ConsoleDisplay:
+        controller_name = 'console'
+
         def show(self, lines):
             try:
                 print("┌──────────────────┐")
@@ -257,6 +298,26 @@ def main():
         else:
             os.setsid()
             run_display()
+
+    elif cmd == "detect":
+        # Hızlı teşhis: gerçek ekran bulunursa exit 0, yalnızca console fallback ise exit 2.
+        display = get_display()
+        name = getattr(display, 'controller_name', '?')
+        print(f"display={name}")
+        sys.exit(0 if name != 'console' else 2)
+
+    elif cmd == "test":
+        # İnsan için: bulunan ekrana 5sn test yazısı yaz.
+        display = get_display()
+        name = getattr(display, 'controller_name', '?')
+        display.show(["Pi5 Gateway", f"LCD OK: {name}"])
+        print(f"display={name}")
+        if name == 'console':
+            print("UYARI: Fiziksel ekran bulunamadi. Detay: /tmp/lcd_display.log")
+            sys.exit(2)
+        print("Test yazisi ekranda 5sn gorunecek...")
+        time.sleep(5)
+        sys.exit(0)
 
     else:
         print(f"Bilinmeyen komut: {cmd}")

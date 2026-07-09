@@ -172,8 +172,10 @@ async function loadConfig() {
   const cfg = d?.config;
   if (cfg) {
     rotateInterval = cfg.rotateInterval || 10;
-    const enabled = (cfg.widgets || []).filter(w => w.enabled);
-    pages = enabled.length ? enabled.map(w => w.id) : Object.keys(PAGE_BUILDERS);
+    // Yalnızca builder'ı olan (geçerli) etkin widget id'leri al; eski/uyuşmayan config
+    // yüzünden yalnız 'system' görünmesini önler. Hiçbiri geçerli değilse tüm sayfalar.
+    const enabled = (cfg.widgets || []).filter(w => w.enabled).map(w => w.id).filter(id => PAGE_BUILDERS[id]);
+    pages = enabled.length ? enabled : Object.keys(PAGE_BUILDERS);
   } else {
     pages = Object.keys(PAGE_BUILDERS);
   }
@@ -183,7 +185,10 @@ async function renderPage(idx) {
   const id = pages[idx % pages.length];
   const builder = PAGE_BUILDERS[id];
   if (!builder) return;
-  const content = await builder.build();
+  // Bir sayfa builder'ı hata verirse tüm döngü takılmasın — hatayı o karta yaz, devam et.
+  let content;
+  try { content = await builder.build(); }
+  catch (e) { content = card(builder.title, 'Hata', String((e && e.message) || e).slice(0, 40), 'text-red'); }
   const container = document.getElementById('pages');
   container.innerHTML = `<div class="kiosk-page active">
     <div class="kiosk-header">
@@ -237,8 +242,8 @@ document.addEventListener('touchend', e => {
   await loadConfig();
   await renderPage(0);
   resetTimer();
-  // Reload config every 5 minutes
-  setInterval(loadConfig, 300000);
+  // Config'i her 60sn yenile — panelden yapılan widget seçimleri kısa sürede yansısın.
+  setInterval(loadConfig, 60000);
 })();
 </script>
 </body>
