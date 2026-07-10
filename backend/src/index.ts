@@ -467,11 +467,12 @@ app.get('/api/devices', async (_req, res) => {
         // Bağlantı geçmişi: cihaz yeni ya da >5dk görünmüyorduysa 'connected' olayı kaydet.
         // Kontrol upsert'ten ÖNCE yapılır (last_seen henüz tazelenmemişken); sürekli görünen
         // cihaz sadece bir kez loglanır, uzun aradan sonra dönerse yeniden loglanır.
+        // NOT: alias 'returning' KULLANMA — SQLite ayrılmış kelimesi (RETURNING) → syntax error.
         const prev: any = await dbGet(
-          "SELECT (last_seen IS NULL OR last_seen < datetime('now','-5 minutes')) AS returning FROM devices WHERE mac_address = ?",
+          "SELECT (last_seen IS NULL OR last_seen < datetime('now','-5 minutes')) AS is_returning FROM devices WHERE mac_address = ?",
           [live.mac]
         );
-        const shouldLogConnect = !prev || prev.returning === 1;
+        const shouldLogConnect = !prev || prev.is_returning === 1;
         // Upsert into devices (keep existing hostname/profile/blocked; refresh ip + last_seen)
         await dbRun(
           `INSERT INTO devices (mac_address, ip_address, last_seen) VALUES (?, ?, CURRENT_TIMESTAMP)
@@ -1612,7 +1613,7 @@ app.get('/api/dhcp/leases', async (_req, res) => {
     if (isLinux) {
       try {
         const fs = require('fs');
-        const paths = ['/var/lib/misc/dnsmasq.leases', '/var/lib/dnsmasq/dnsmasq.leases'];
+        const paths = ['/var/lib/misc/dnsmasq.leases', '/var/lib/dnsmasq/dnsmasq.leases', '/etc/pihole/dhcp.leases'];
         const p = paths.find((x: string) => fs.existsSync(x));
         if (p) {
           const staticMacs = new Set(

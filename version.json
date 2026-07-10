@@ -1,11 +1,10 @@
 {
-  "version": "2.8.0",
-  "build": 45,
+  "version": "2.8.1",
+  "build": 46,
   "date": "2026-07-11",
   "changelog": [
-    "Kapsamlı canlı API testi: ~120 endpoint dev sunucusunda gerçek HTTP + DB ile test edildi — 102/102 geçti (tüm GET'ler 200, CRUD round-trip'leri, boş-gövde guard'ları, DDNS token koruması, kota 0)",
-    "Firewall özel kuralları artık gerçekten uygulanıyor: panelde ekleme formu (TCP/UDP port veya kaynak IP + izin/düşür/reddet) + nftables input zincirine katı doğrulamayla enjekte ediliyor (enjeksiyon önlemeli)",
-    "Bağlantı Geçmişi artık doluyor: cihaz taramada yeni/dönen cihazlar için 'connected' olayı kaydediliyor (5dk eşik, 30 gün retention)",
-    "Dinamik DHCP kiraları: dnsmasq lease dosyası okunup statik rezervasyonlarla birleştiriliyor — kira tablosu artık canlı istemcileri de gösteriyor"
+    "KRİTİK düzeltme: /api/devices, connection_history sorgusundaki 'returning' (SQLite ayrılmış kelime) yüzünden gerçek Pi'de SQLITE_ERROR veriyordu → 'is_returning' olarak değiştirildi. Cihaz ve Ebeveyn panelleri artık çalışıyor. (Windows dev'de isLinux=false olduğu için bu dal test edilememişti; gerçek Pi'de canlı test yakaladı.)",
+    "DHCP: Pi-hole lease dosyası yolu (/etc/pihole/dhcp.leases) eklendi — Pi-hole DHCP açıksa dinamik kiralar da görünecek",
+    "Not: bu topolojide (eth0/wlan0 aynı subnet) NAT/policy-routing devre dışı; firewall pi5_filter tablosu 'Deploy Et' ile aktive edilmeli"
   ]
 }
