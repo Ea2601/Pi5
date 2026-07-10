@@ -2,13 +2,14 @@ import { useState, useRef, useEffect, useCallback } from 'react';
 import { Terminal, Send, Trash2, ChevronDown, ChevronRight } from 'lucide-react';
 import { postApi } from '../hooks/useApi';
 import { Panel } from './ui';
+import { BRAND } from '../brand';
 
 interface TerminalLine {
   type: 'input' | 'output' | 'error' | 'system';
   text: string;
 }
 
-const WELCOME_BANNER = `  Pi5 Secure Gateway — SSH Terminal
+const WELCOME_BANNER = `  ${BRAND.fullName} — SSH Terminal
   Komut göndermek için aşağıdaki alana yazın.
   Geçmiş: ↑/↓  |  İptal: Ctrl+C  |  "help" yazarak komut listesini görün.`;
 

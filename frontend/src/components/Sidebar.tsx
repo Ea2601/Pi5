@@ -1,10 +1,12 @@
 import {
-  Shield, LayoutDashboard, Network, Route, Terminal, Server,
+  LayoutDashboard, Network, Route, Terminal, Server,
   ShieldBan, Zap, Flame, Globe, ShieldAlert, BookOpen,
   Activity, Search, Gauge, Bell, Wrench, Users, Sliders,
   Database, Settings, MonitorSmartphone, TerminalSquare, Lightbulb, Monitor
 } from 'lucide-react';
 import type { TabId } from '../types';
+import { BRAND } from '../brand';
+import { BrandMark } from './BrandMark';
 
 const tabs: { id: TabId; label: string; icon: React.ReactNode; group?: string }[] = [
   { id: 'dashboard', label: 'Dashboard', icon: <LayoutDashboard size={17} /> },
@@ -44,8 +46,14 @@ export function Sidebar({ activeTab, onTabChange }: SidebarProps) {
   return (
     <nav className="glass-panel sidebar">
       <div className="logo">
-        <div className="logo-shield"><Shield size={22} /></div>
-        <div><h2>Pi5 Secure</h2><span className="logo-sub">Gateway Control</span></div>
+        <BrandMark size={36} />
+        <div>
+          <h2>
+            <span style={{ fontWeight: 600, color: BRAND.colors.ink }}>{BRAND.wordmarkPrimary}</span>
+            <span style={{ fontWeight: 400, color: BRAND.colors.accent }}>{BRAND.wordmarkSecondary}</span>
+          </h2>
+          <span className="logo-sub">{BRAND.tagline}</span>
+        </div>
       </div>
       <ul className="nav-links">
         {tabs.map(tab => {
@@ -61,7 +69,7 @@ export function Sidebar({ activeTab, onTabChange }: SidebarProps) {
           );
         })}
       </ul>
-      <div className="sidebar-footer"><div className="version-badge">Pi5 Router v2.5</div></div>
+      <div className="sidebar-footer"><div className="version-badge">{BRAND.name} {BRAND.version}</div></div>
     </nav>
   );
 }

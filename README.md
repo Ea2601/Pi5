@@ -1,4 +1,4 @@
-# Pi5 Secure Gateway
+# Klyrix Gate — Secure Gateway
 
 Raspberry Pi 5 uzerinde calisan kapsamli ag guvenligi ve yonetim paneli.
 

@@ -104,7 +104,7 @@ export function KioskSettingsPanel() {
         </div>
 
         <div style={{ marginTop: 14, padding: '12px 16px', borderRadius: 8, background: 'rgba(59,130,246,0.06)', border: '1px solid rgba(59,130,246,0.15)' }}>
-          <h4 style={{ fontSize: 13, marginBottom: 6 }}>Pi5 Kiosk Kurulumu</h4>
+          <h4 style={{ fontSize: 13, marginBottom: 6 }}>Kiosk Kurulumu</h4>
           <div style={{ fontSize: 12, color: 'var(--text-muted)', lineHeight: 1.6 }}>
             <p>HDMI ekranda otomatik açılış için Pi5'te (install.sh servisi kurar):</p>
             <code style={{ display: 'block', padding: '8px 10px', borderRadius: 8, background: 'rgba(0,0,0,0.3)', marginTop: 6, fontSize: 11, fontFamily: 'var(--font-mono)' }}>

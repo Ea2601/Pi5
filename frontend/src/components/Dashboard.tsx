@@ -9,6 +9,7 @@ import { useApi } from '../hooks/useApi';
 import { useMetricHistory } from '../hooks/useMetricHistory';
 import { Panel, StatCard, ProgressMetric, Badge } from './ui';
 import type { SystemStats, ServiceStatus, HealthStatus, VpsServer } from '../types';
+import { BRAND } from '../brand';
 
 // Her 20. noktada bir zaman etiketi göster (120 nokta → 6 etiket)
 const LABEL_INTERVAL = 20;
@@ -57,7 +58,7 @@ export function Dashboard() {
 
   return (
     <div className="fade-in">
-      <Panel title="Sistem Genel Bakış" subtitle="Pi 5 Secure Gateway — Tüm ağ arayüzleri korumalı"
+      <Panel title="Sistem Genel Bakış" subtitle={`${BRAND.fullName} — Tüm ağ arayüzleri korumalı`}
         badge={<Badge variant={health.isFailOpen ? 'error' : 'success'}>{health.isFailOpen ? 'FAIL-OPEN' : 'Korumalı'}</Badge>}>
         <div className="stats-grid stats-grid-4">
           <StatCard icon={<ShieldCheck size={20} />} label="Engellenen Reklam" value={piholeData.adsBlockedToday.toLocaleString('tr-TR')} color="blue" />

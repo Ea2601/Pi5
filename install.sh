@@ -2,7 +2,7 @@
 set -e
 
 # ╔══════════════════════════════════════════════════════════════╗
-# ║         Pi5 Secure Gateway — Tek Komut Kurulum              ║
+# ║         Klyrix Gate — Tek Komut Kurulum                     ║
 # ║                                                              ║
 # ║  Kullanım:                                                   ║
 # ║    curl -fsSL https://raw.githubusercontent.com/             ║
@@ -34,7 +34,7 @@ fi
 
 echo -e "${BLUE}"
 echo "  ╔══════════════════════════════════════════════╗"
-echo "  ║     Pi5 Secure Gateway Kurulum Başlıyor      ║"
+echo "  ║     Klyrix Gate Kurulum Başlıyor             ║"
 echo "  ╚══════════════════════════════════════════════╝"
 echo -e "${NC}"
 
@@ -527,7 +527,7 @@ log "Otomatik bakım cron görevleri ayarlandı"
 # ─── Tamamlandı ───
 echo ""
 echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-echo -e "${GREEN}  ✓ Pi5 Secure Gateway kurulumu tamamlandı!${NC}"
+echo -e "${GREEN}  ✓ Klyrix Gate kurulumu tamamlandı!${NC}"
 echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 echo ""
 LOCAL_IP=$(hostname -I | awk '{print $1}')

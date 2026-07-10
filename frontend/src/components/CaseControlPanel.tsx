@@ -2,6 +2,7 @@ import { Lightbulb, Palette, Zap, Type, Save, RotateCcw, Plus, Trash2 } from 'lu
 import { useState, useEffect } from 'react';
 import { useApi, putApi } from '../hooks/useApi';
 import { Panel, Badge } from './ui';
+import { BRAND } from '../brand';
 
 interface LedConfig {
   color: string;
@@ -25,7 +26,7 @@ const DEFAULT_PAGES: LcdPage[] = [
   { id: 'network', label: 'Download / Upload Hız', type: 'system', content: 'network', duration: 5, enabled: true },
   { id: 'devices', label: 'Aktif Cihaz Sayısı', type: 'system', content: 'devices', duration: 5, enabled: true },
   { id: 'vpn', label: 'VPN Durumu', type: 'system', content: 'vpn', duration: 5, enabled: true },
-  { id: 'custom1', label: 'Özel Metin', type: 'custom', content: 'Pi5 Secure Gateway', duration: 5, enabled: false },
+  { id: 'custom1', label: 'Özel Metin', type: 'custom', content: BRAND.name, duration: 5, enabled: false },
 ];
 
 const ANIMATIONS = [

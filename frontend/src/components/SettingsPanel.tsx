@@ -5,6 +5,7 @@ import {
 } from 'lucide-react';
 import { useApi, putApi, postApi } from '../hooks/useApi';
 import { Panel, Badge } from './ui';
+import { BRAND } from '../brand';
 
 interface AppSettings {
   theme: string;
@@ -356,7 +357,7 @@ function UpdateSection() {
       <div className="config-item">
         <div className="config-item-info">
           <span className="config-item-label">Mevcut Versiyon</span>
-          <span className="config-item-desc">Pi5 Secure Gateway Panel</span>
+          <span className="config-item-desc">{BRAND.name} Panel</span>
         </div>
         <div className="config-item-control">
           <Badge variant="info">v{versionData.version} (build {versionData.build})</Badge>
@@ -404,7 +405,7 @@ function AboutSection() {
       <div className="config-item">
         <div className="config-item-info">
           <span className="config-item-label">Versiyon</span>
-          <span className="config-item-desc">Pi5 Secure Gateway Panel</span>
+          <span className="config-item-desc">{BRAND.name} Panel</span>
         </div>
         <div className="config-item-control">
           <Badge variant="info">v{data.version}</Badge>

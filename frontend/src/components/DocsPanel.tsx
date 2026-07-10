@@ -5,6 +5,7 @@ import {
 } from 'lucide-react';
 import { useState } from 'react';
 import { Panel, Badge } from './ui';
+import { BRAND } from '../brand';
 
 interface DocSection {
   id: string;
@@ -112,7 +113,7 @@ export function DocsPanel() {
     <div className="fade-in">
       <Panel title="Teknik Dokümantasyon & Kullanım Kılavuzu"
         icon={<BookOpen size={20} style={{ marginRight: 8 }} />}
-        subtitle="Pi5 Secure Gateway — Tüm servis ve ayarların detaylı açıklamaları">
+        subtitle={`${BRAND.fullName} — Tüm servis ve ayarların detaylı açıklamaları`}>
         <div className="docs-layout">
           <nav className="docs-nav">
             {sections.map(section => (
@@ -157,7 +158,7 @@ function DocTip({ type = 'info', children }: { type?: 'info' | 'warning' | 'succ
 function OverviewDoc() {
   return (
     <div className="doc-page">
-      <h3>Pi5 Secure Gateway — Genel Bakış</h3>
+      <h3>{BRAND.fullName} — Genel Bakış</h3>
       <p>Bu web paneli, Raspberry Pi 5 üzerinde çalışan ağ güvenliği ve yönlendirme servislerinin merkezi yönetim arayüzüdür.</p>
 
       <DocBlock title="Sistem Bileşenleri">
