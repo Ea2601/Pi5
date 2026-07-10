@@ -1,11 +1,11 @@
 {
-  "version": "2.7.3",
-  "build": 32,
+  "version": "2.7.4",
+  "build": 33,
   "date": "2026-07-10",
   "changelog": [
-    "Kasa LCD kalıcı systemd servisi (pi5-lcd): fork yerine 'run' foreground daemon — reboot/backend-restart sonrası döngü çalışmaya devam eder (ekran artık kararmıyor)",
-    "Backend LCD kaydı servisi kendiliğinden kurar/etkinleştirir (mevcut kurulumları da onarır) ve yeniden başlatır",
-    "LCD denetleyici (ssd1306/sh1106/auto) panelden seçilebilir; DB'de saklanır, lcd_display.py DB'den okur",
-    "install.sh pi5-lcd.service kurar ve enable eder"
+    "Kasa LCD animasyonlu render: 128x64 OLED artık başlık çubuğu + 4 içerik satırı (5 satır) kullanıyor — kayan giriş, %-metrikleri için animasyonlu ilerleme barları, uzun metin için marquee, yanıp sönen aktivite noktası",
+    "Zengin sayfa içeriği: CPU/RAM sayfası CPU% + sıcaklık + RAM% bar + MB; sistem sayfası hostname/IP/uptime; ağ DL/UL/ping; VPN tünel listesi",
+    "PI5_LCD_ANIM=0 ile statik moda alınabilir; HD44780/console için düz metin fallback",
+    "test komutu artık animasyonlu demo görünümü gösteriyor"
   ]
 }

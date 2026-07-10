@@ -4,14 +4,19 @@ LCD Display Controller for Pimoroni Pi5 Case
 Cycles through configured pages showing system info on I2C display.
 
 Usage:
-  python3 lcd_display.py start   # Start display daemon
-  python3 lcd_display.py stop    # Stop display daemon
+  python3 lcd_display.py run     # Foreground daemon (systemd Type=simple)
+  python3 lcd_display.py start   # Fork daemon
+  python3 lcd_display.py stop    # Stop daemon
   python3 lcd_display.py status  # Show current state
+  python3 lcd_display.py detect  # Exit 0 if a real display, 2 if console fallback
+  python3 lcd_display.py test    # 5s animated test view
 
-Supports: SSD1306 OLED (128x64/128x32), HD44780 16x2 via I2C
+Supports: SSD1306 / SH1106 OLED (128x64), HD44780 16x2 via I2C.
+OLED render is frame-animated (header bar, slide-in, progress bars, marquee).
+Env: PI5_LCD_CONTROLLER=ssd1306|sh1106|auto, PI5_LCD_ADDR, PI5_LCD_ANIM=0 (static).
 
-Requires: pip3 install luma.oled luma.core  (for OLED)
-     OR:  pip3 install RPLCD               (for HD44780)
+Requires: pip3 install luma.oled luma.core Pillow  (for OLED)
+     OR:  pip3 install RPLCD                       (for HD44780)
 """
 
 import sys
@@ -93,61 +98,114 @@ def get_controller():
     return 'auto'
 
 
-def get_system_data(content_type):
-    """Fetch system data for a page type."""
+def _db_query(sql, one=True):
+    """Read-only helper against the app SQLite. Returns row / rows / None on error."""
+    try:
+        import sqlite3
+        db = sqlite3.connect(CONFIG_FILE)
+        cur = db.execute(sql)
+        res = cur.fetchone() if one else cur.fetchall()
+        db.close()
+        return res
+    except Exception:
+        return None
+
+
+def _cpu_percent():
+    """Instant CPU usage % via two /proc/stat samples (150ms)."""
+    try:
+        def read():
+            with open("/proc/stat") as f:
+                p = [float(x) for x in f.readline().split()[1:]]
+            return p[3] + (p[4] if len(p) > 4 else 0), sum(p)
+        i1, t1 = read()
+        time.sleep(0.15)
+        i2, t2 = read()
+        dt = t2 - t1
+        return int((1 - (i2 - i1) / dt) * 100) if dt > 0 else 0
+    except Exception:
+        return 0
+
+
+def _flatten(view):
+    """Flatten a rich view to plain text lines (HD44780 / console fallback)."""
+    out = []
+    for row in view.get("rows", []):
+        if isinstance(row, (list, tuple)) and len(row) >= 3 and row[0] == "bar":
+            out.append(f"{row[1]} {int(row[2])}%")
+        elif isinstance(row, (list, tuple)):
+            out.append(str(row[1]))
+        else:
+            out.append(str(row))
+    return out
+
+
+def build_system_view(content_type):
+    """Build a rich page view: {title, rows}. row = ("text", str) | ("bar", label, percent)."""
     try:
         if content_type == "hostname":
-            hostname = subprocess.getoutput("hostname").strip()
+            host = subprocess.getoutput("hostname").strip()
             ip = subprocess.getoutput("hostname -I | awk '{print $1}'").strip()
-            return [hostname, ip]
-
-        elif content_type == "cpu_ram":
+            up = subprocess.getoutput("uptime -p 2>/dev/null").strip().replace("up ", "")
+            return {"title": "SISTEM", "rows": [
+                ("text", host or "pi5"),
+                ("text", "IP " + (ip or "-")),
+                ("text", "Up " + (up[:18] or "-")),
+            ]}
+        if content_type == "cpu_ram":
             temp = subprocess.getoutput("cat /sys/class/thermal/thermal_zone0/temp 2>/dev/null").strip()
-            temp_c = f"{int(temp) / 1000:.1f}C" if temp.isdigit() else "N/A"
-            ram = subprocess.getoutput("free -m | awk '/Mem:/{printf \"%d/%dMB\", $3, $2}'").strip()
-            return [f"CPU: {temp_c}", f"RAM: {ram}"]
-
-        elif content_type == "network":
-            # Get last speed test from DB
-            try:
-                import sqlite3
-                db = sqlite3.connect(CONFIG_FILE)
-                row = db.execute("SELECT download_mbps, upload_mbps FROM speed_tests ORDER BY timestamp DESC LIMIT 1").fetchone()
-                db.close()
-                if row:
-                    return [f"DL: {row[0]:.1f} Mbps", f"UL: {row[1]:.1f} Mbps"]
-            except:
-                pass
-            return ["DL: --- Mbps", "UL: --- Mbps"]
-
-        elif content_type == "devices":
-            try:
-                import sqlite3
-                db = sqlite3.connect(CONFIG_FILE)
-                row = db.execute("SELECT COUNT(*) FROM devices").fetchone()
-                db.close()
-                return [f"Aktif Cihaz", f"{row[0] if row else 0} adet"]
-            except:
-                return ["Cihaz: N/A", ""]
-
-        elif content_type == "vpn":
-            try:
-                import sqlite3
-                db = sqlite3.connect(CONFIG_FILE)
-                rows = db.execute("SELECT location, status FROM vps_servers").fetchall()
-                db.close()
-                if not rows:
-                    return ["VPN: Yok", ""]
-                connected = sum(1 for r in rows if r[1] == "connected")
-                return [f"VPN: {connected}/{len(rows)}", rows[0][0] if rows else ""]
-            except:
-                return ["VPN: N/A", ""]
-
-        else:
-            return [str(content_type)[:16], ""]
-
+            temp_c = f"{int(temp) / 1000:.0f}C" if temp.isdigit() else "N/A"
+            cpu = _cpu_percent()
+            mem = subprocess.getoutput("free -m | awk '/Mem:/{printf \"%d %d\", $3, $2}'").split()
+            used = int(mem[0]) if len(mem) == 2 else 0
+            total = int(mem[1]) if len(mem) == 2 else 0
+            mem_pct = int(used / total * 100) if total else 0
+            return {"title": "CPU / RAM", "rows": [
+                ("bar", "CPU", cpu),
+                ("text", f"Sicaklik {temp_c}"),
+                ("bar", "RAM", mem_pct),
+                ("text", f"{used}/{total} MB"),
+            ]}
+        if content_type == "network":
+            row = _db_query("SELECT download_mbps, upload_mbps, ping_ms FROM speed_tests ORDER BY timestamp DESC LIMIT 1")
+            if row:
+                return {"title": "AG / HIZ", "rows": [
+                    ("text", f"DL {row[0]:.1f} Mbps"),
+                    ("text", f"UL {row[1]:.1f} Mbps"),
+                    ("text", f"Ping {row[2]:.0f} ms"),
+                ]}
+            return {"title": "AG / HIZ", "rows": [("text", "Veri yok")]}
+        if content_type == "devices":
+            row = _db_query("SELECT COUNT(*) FROM devices")
+            n = row[0] if row else 0
+            return {"title": "CIHAZLAR", "rows": [("text", f"Aktif {n} cihaz")]}
+        if content_type == "vpn":
+            rows = _db_query("SELECT location, status FROM vps_servers", one=False)
+            if not rows:
+                return {"title": "VPN", "rows": [("text", "Tunel yok")]}
+            conn = sum(1 for r in rows if r[1] == "connected")
+            out = [("text", f"Bagli {conn}/{len(rows)}")]
+            for r in rows[:3]:
+                st = "+" if r[1] == "connected" else "-"
+                out.append(("text", f"{st} {r[0]}"[:20]))
+            return {"title": "VPN", "rows": out}
+        return {"title": str(content_type)[:20].upper(), "rows": [("text", "")]}
     except Exception as e:
-        return ["Hata", str(e)[:16]]
+        return {"title": "HATA", "rows": [("text", str(e)[:20])]}
+
+
+def build_view(page):
+    """Rich view for a page (system or custom-text)."""
+    if page.get("type") == "custom":
+        text = str(page.get("content", ""))
+        rows = []
+        while text and len(rows) < 4:
+            rows.append(("text", text[:21]))
+            text = text[21:]
+        if not rows:
+            rows = [("text", "")]
+        return {"title": "MESAJ", "rows": rows}
+    return build_system_view(page.get("content", ""))
 
 
 def _make_oled(controller):
@@ -179,6 +237,65 @@ def _make_oled(controller):
             with canvas(device) as draw:
                 for i, line in enumerate(lines[:4]):
                     draw.text((2, i * 16), str(line)[:21], fill="white", font=font)
+
+        def animate(self, view, duration):
+            """Render a page for `duration` s with animation: header bar + blinking activity
+            dot, slide-in content, animated progress bars, marquee for long lines.
+            PI5_LCD_ANIM=0 → statik tek kare."""
+            title = str(view.get("title", ""))[:20]
+            rows = view.get("rows", [])[:4]
+            HEADER_H, LINE_H, ENTER, SCROLL_CPS = 13, 12, 0.45, 9
+            anim = os.environ.get('PI5_LCD_ANIM', '1') != '0'
+            start = time.time()
+            try:
+                while True:
+                    t = time.time() - start
+                    if t >= duration:
+                        break
+                    e = min(1.0, t / ENTER) if anim else 1.0
+                    e = 1 - (1 - e) * (1 - e)  # ease-out
+                    with canvas(device) as draw:
+                        # Header (inverted) + blinking activity dot
+                        draw.rectangle((0, 0, width - 1, HEADER_H - 1), fill="white")
+                        draw.text((2, 2), title, fill="black", font=font)
+                        if (not anim) or int(t * 2) % 2 == 0:
+                            draw.ellipse((width - 9, 4, width - 5, 8), fill="black")
+                        # Content slides up from below on enter
+                        base_y = HEADER_H + 2 + int((1 - e) * (height - HEADER_H))
+                        for i, row in enumerate(rows):
+                            ry = base_y + i * LINE_H
+                            if ry >= height:
+                                break
+                            is_bar = isinstance(row, (list, tuple)) and len(row) >= 3 and row[0] == "bar"
+                            if is_bar:
+                                pct = max(0, min(100, int(row[2])))
+                                draw.text((2, ry), str(row[1])[:5], fill="white", font=font)
+                                bx0, bx1 = 40, width - 24
+                                draw.rectangle((bx0, ry + 1, bx1, ry + 8), outline="white")
+                                fw = int((bx1 - bx0 - 2) * (pct * e) / 100)
+                                if fw > 0:
+                                    draw.rectangle((bx0 + 1, ry + 2, bx0 + 1 + fw, ry + 7), fill="white")
+                                draw.text((bx1 + 3, ry), str(pct), fill="white", font=font)
+                            else:
+                                text = str(row[1]) if isinstance(row, (list, tuple)) else str(row)
+                                if anim and len(text) > 21:
+                                    period = len(text) + 3
+                                    off = int(t * SCROLL_CPS) % period
+                                    text = (text + "   " + text)[off:off + 21]
+                                else:
+                                    text = text[:21]
+                                draw.text((2, ry), text, fill="white", font=font)
+                    if not anim:
+                        time.sleep(max(0.0, duration - (time.time() - start)))
+                        break
+                    time.sleep(1.0 / 15)
+            except Exception as ex:
+                log_lcd(f"animate hata: {ex}")
+                try:
+                    self.show(_flatten(view))
+                except Exception:
+                    pass
+                time.sleep(max(0.0, duration - (time.time() - start)))
 
         def clear(self):
             device.clear()
@@ -215,6 +332,11 @@ def get_display():
                     lcd.cursor_pos = (i, 0)
                     lcd.write_string(str(line)[:16])
 
+            def animate(self, view, duration):
+                # 16x2 karakter LCD — grafik yok; başlık + ilk veri satırını göster.
+                self.show([str(view.get("title", ""))] + _flatten(view))
+                time.sleep(duration)
+
             def clear(self):
                 lcd.clear()
 
@@ -238,6 +360,10 @@ def get_display():
                 print("└──────────────────┘", flush=True)
             except (BrokenPipeError, OSError):
                 pass
+
+        def animate(self, view, duration):
+            self.show([str(view.get("title", ""))] + _flatten(view))
+            time.sleep(duration)
 
         def clear(self):
             pass
@@ -271,15 +397,8 @@ def run_display():
 
         page = pages[page_idx]
         duration = page.get("duration", 5)
-
-        if page.get("type") == "custom":
-            content = page.get("content", "")
-            lines = [content[:16], content[16:32] if len(content) > 16 else ""]
-        else:
-            lines = get_system_data(page.get("content", ""))
-
-        display.show(lines)
-        time.sleep(duration)
+        view = build_view(page)
+        display.animate(view, duration)
         page_idx += 1
 
 
@@ -330,16 +449,20 @@ def main():
         sys.exit(0 if name != 'console' else 2)
 
     elif cmd == "test":
-        # İnsan için: bulunan ekrana 5sn test yazısı yaz.
+        # İnsan için: bulunan ekranda 5sn animasyonlu test görünümü göster.
         display = get_display()
         name = getattr(display, 'controller_name', '?')
-        display.show(["Pi5 Gateway", f"LCD OK: {name}"])
         print(f"display={name}")
         if name == 'console':
             print("UYARI: Fiziksel ekran bulunamadi. Detay: /tmp/lcd_display.log")
             sys.exit(2)
-        print("Test yazisi ekranda 5sn gorunecek...")
-        time.sleep(5)
+        print("Animasyonlu test 5sn gorunecek...")
+        display.animate({"title": "Pi5 Gateway", "rows": [
+            ("text", f"LCD OK: {name}"),
+            ("bar", "CPU", 72),
+            ("bar", "RAM", 45),
+            ("text", "Animasyon aktif - kayan uzun metin ornegi"),
+        ]}, 5)
         sys.exit(0)
 
     else:
