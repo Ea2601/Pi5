@@ -1293,43 +1293,77 @@ app.get('/api/speedtest/history', async (req, res) => {
   }
 });
 
-// Otomatik hız testi — varsayılan 6 saatte bir. 10 dk çok agresifti: tam speedtest hattı
-// her seferinde ~30-60sn doyurur; gateway olduğu için 10 dk'da bir bunu yapmak üzerinden
-// geçen tüm trafiği sürekli aksatır. Ayarlanabilir: SPEEDTEST_INTERVAL_MIN env (dakika).
-if (isLinux) {
-  const stMin = Number(process.env.SPEEDTEST_INTERVAL_MIN) || 360;
-  const stMs = stMin * 60 * 1000;
-  const runAutoSpeedtest = async () => {
-    try {
-      const result = await runSpeedTest();
-      if (result) {
-        await dbRun(
-          'INSERT INTO speed_tests (download_mbps, upload_mbps, ping_ms, jitter_ms, packet_loss, server, isp) VALUES (?, ?, ?, ?, ?, ?, ?)',
-          [result.download_mbps, result.upload_mbps, result.ping_ms, result.jitter_ms, result.packet_loss, result.server, result.isp]
-        );
-        console.log(`[SpeedTest] Otomatik ölçüm kaydedildi: ${result.download_mbps}↓ / ${result.upload_mbps}↑ Mbps, ping ${result.ping_ms}ms`);
-      } else {
-        console.warn('[SpeedTest] Otomatik ölçüm atlandı — speedtest-cli yok. Kur: sudo apt install speedtest-cli');
-      }
-      // Retention temizliği
-      await dbRun(`DELETE FROM speed_tests WHERE timestamp < datetime('now', '-30 days')`);
-      await dbRun(`DELETE FROM ddns_ip_history WHERE detected_at < datetime('now', '-90 days')`);
-    } catch (e: any) {
-      console.error('[SpeedTest] Otomatik ölçüm hatası:', e?.message || e);
+// ─── Otomatik hız testi zamanlayıcı ───────────────────────────────────────
+// Varsayılan 6 saatte bir. 10 dk çok agresifti: tam speedtest hattı her seferinde
+// ~30-60sn doyurur; gateway olduğu için 10 dk'da bir bunu yapmak üzerinden geçen tüm
+// trafiği sürekli aksatır. Aralık Ayarlar'dan gelir (app_settings.speedtest_interval_min,
+// dakika; 0 = kapalı); yoksa SPEEDTEST_INTERVAL_MIN env; yoksa 360. Ayar değişince
+// PUT /api/settings rescheduleSpeedtest()'i çağırır → restart gerekmeden uygulanır.
+let speedtestTimer: ReturnType<typeof setTimeout> | null = null;
+
+async function getSpeedtestIntervalMin(): Promise<number> {
+  try {
+    const row = await dbGet("SELECT value FROM app_settings WHERE key = 'speedtest_interval_min'");
+    if (row && row.value != null && row.value !== '') {
+      const v = Number(row.value);
+      if (Number.isFinite(v)) return Math.max(0, Math.round(v)); // 0 = kapalı
     }
-  };
-  // Başlangıç yakalaması: setInterval yalnız stMin dk SONRA tetikler; backend sık yeniden
+  } catch { /* yoksay */ }
+  return Number(process.env.SPEEDTEST_INTERVAL_MIN) || 360;
+}
+
+async function runAutoSpeedtest(): Promise<void> {
+  try {
+    const result = await runSpeedTest();
+    if (result) {
+      await dbRun(
+        'INSERT INTO speed_tests (download_mbps, upload_mbps, ping_ms, jitter_ms, packet_loss, server, isp) VALUES (?, ?, ?, ?, ?, ?, ?)',
+        [result.download_mbps, result.upload_mbps, result.ping_ms, result.jitter_ms, result.packet_loss, result.server, result.isp]
+      );
+      console.log(`[SpeedTest] Otomatik ölçüm kaydedildi: ${result.download_mbps}↓ / ${result.upload_mbps}↑ Mbps, ping ${result.ping_ms}ms`);
+    } else {
+      console.warn('[SpeedTest] Otomatik ölçüm atlandı — speedtest-cli yok. Kur: sudo apt install speedtest-cli');
+    }
+    // Retention temizliği
+    await dbRun(`DELETE FROM speed_tests WHERE timestamp < datetime('now', '-30 days')`);
+    await dbRun(`DELETE FROM ddns_ip_history WHERE detected_at < datetime('now', '-90 days')`);
+  } catch (e: any) {
+    console.error('[SpeedTest] Otomatik ölçüm hatası:', e?.message || e);
+  }
+}
+
+// Aralığı DB'den okuyup bir sonraki çalıştırmayı planlar (self-rescheduling).
+// Ayar değişince tekrar çağrılır → aralık restart'sız güncellenir. 0/negatif = kapalı.
+async function rescheduleSpeedtest(): Promise<void> {
+  if (speedtestTimer) { clearTimeout(speedtestTimer); speedtestTimer = null; }
+  if (!isLinux) return;
+  const min = await getSpeedtestIntervalMin();
+  if (min <= 0) {
+    console.log('[SpeedTest] Otomatik ölçüm kapalı (aralık = 0).');
+    return;
+  }
+  speedtestTimer = setTimeout(async () => {
+    await runAutoSpeedtest();
+    rescheduleSpeedtest();
+  }, min * 60 * 1000);
+}
+
+if (isLinux) {
+  // Başlangıç yakalaması: ilk periyodik ölçüm ancak `min` dk SONRA düşer; backend sık yeniden
   // başlarsa (güncelleme vb.) sayaç sürekli sıfırlanıp hiç çalışmayabilir. Bu yüzden boot'tan
   // ~2 dk sonra, son ölçüm interval'den eskiyse (ya da hiç yoksa) bir kez çalıştır.
   setTimeout(async () => {
     try {
-      const recent = await dbGet(
-        `SELECT COUNT(*) AS n FROM speed_tests WHERE timestamp > datetime('now', '-${stMin} minutes')`
-      );
-      if (!recent || recent.n === 0) await runAutoSpeedtest();
+      const min = await getSpeedtestIntervalMin();
+      if (min > 0) {
+        const recent = await dbGet(
+          `SELECT COUNT(*) AS n FROM speed_tests WHERE timestamp > datetime('now', '-${min} minutes')`
+        );
+        if (!recent || recent.n === 0) await runAutoSpeedtest();
+      }
     } catch { /* yoksay */ }
   }, 120000);
-  setInterval(runAutoSpeedtest, stMs);
+  rescheduleSpeedtest();
 }
 
 // ─── Metric history recorder — sample every 5s, keep ~11 min (10-min window + margin) ───
@@ -1954,6 +1988,10 @@ app.put('/api/settings', async (req, res) => {
     }
     for (const [key, value] of Object.entries(settings)) {
       await dbRun('INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)', [key, String(value)]);
+    }
+    // Hız testi aralığı değiştiyse zamanlayıcıyı restart'sız yeniden planla
+    if (Object.prototype.hasOwnProperty.call(settings, 'speedtest_interval_min')) {
+      rescheduleSpeedtest().catch(() => {});
     }
     res.json({ success: true, message: 'Ayarlar güncellendi.' });
   } catch (e: any) {

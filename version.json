@@ -1,10 +1,10 @@
 {
-  "version": "2.7.11",
-  "build": 40,
+  "version": "2.7.12",
+  "build": 41,
   "date": "2026-07-11",
   "changelog": [
-    "Otomatik hız testi artık gerçekten çalışıyor: boot'tan ~2 dk sonra son ölçüm interval'den eskiyse bir kez çalıştıran 'başlangıç yakalaması' eklendi (setInterval sık restart'ta sürekli sıfırlanıp hiç tetiklenmiyordu)",
-    "Görünür loglama: otomatik ölçüm kaydı, speedtest-cli eksikliği ve hatalar artık journalctl'de görünüyor",
-    "Varsayılan aralık 6 saat (SPEEDTEST_INTERVAL_MIN env ile ayarlanır) — 10 dk gateway hattını sürekli doyurduğu için bilinçli olarak korunuyor"
+    "Otomatik hız testi aralığı artık Ayarlar → Performans'tan seçilebiliyor: Kapalı / 30dk / 1s / 3s / 6s / 12s / 24s",
+    "Zamanlayıcı DB'den okuyor ve ayar değişince restart gerektirmeden yeniden planlanıyor (self-rescheduling)",
+    "0 (Kapalı) seçilirse otomatik ölçüm hiç yapılmıyor; varsayılan 6 saat"
   ]
 }

@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import {
   Settings, Palette, Globe, Bell, Zap, Info, Save, ChevronDown, ChevronRight,
-  Sun, Moon, Volume2, VolumeX, Clock, RefreshCw, Download, Check, X, Loader2
+  Sun, Moon, Volume2, VolumeX, Clock, RefreshCw, Download, Check, X, Loader2, Gauge
 } from 'lucide-react';
 import { useApi, putApi, postApi } from '../hooks/useApi';
 import { Panel, Badge } from './ui';
@@ -15,6 +15,7 @@ interface AppSettings {
   desktopNotifications: boolean;
   autoRefresh: boolean;
   refreshInterval: number;
+  speedtestInterval: number; // otomatik hız testi aralığı (dakika; 0 = kapalı)
 }
 
 const defaultSettings: AppSettings = {
@@ -25,6 +26,7 @@ const defaultSettings: AppSettings = {
   desktopNotifications: false,
   autoRefresh: true,
   refreshInterval: 5000,
+  speedtestInterval: 360,
 };
 
 // API key-value nesnesini AppSettings'e dönüştür
@@ -36,6 +38,7 @@ function parseApiSettings(raw: Record<string, string>): Partial<AppSettings> {
     notificationSound: raw.notification_sound === 'true',
     autoRefresh: raw.auto_refresh === 'true',
     refreshInterval: parseInt(raw.refresh_interval || '5000') || 5000,
+    speedtestInterval: raw.speedtest_interval_min ? (parseInt(raw.speedtest_interval_min) || 0) : 360,
   };
 }
 
@@ -48,6 +51,7 @@ function toApiSettings(s: AppSettings): Record<string, unknown> {
     notification_sound: String(s.notificationSound),
     auto_refresh: String(s.autoRefresh),
     refresh_interval: String(s.refreshInterval),
+    speedtest_interval_min: String(s.speedtestInterval),
   };
 }
 
@@ -270,6 +274,26 @@ export function SettingsPanel() {
                 min={1000} step={1000}
                 disabled={!settings.autoRefresh} />
               <span className="text-muted" style={{ fontSize: 12 }}>ms</span>
+            </div>
+          </div>
+          <div className="config-item">
+            <div className="config-item-info">
+              <span className="config-item-label">Otomatik Hız Testi</span>
+              <span className="config-item-desc">Arka planda periyodik speedtest ölçümü. Her ölçüm hattı kısa süre (~30-60sn) doyurur; sık aralık gateway trafiğini aksatır.</span>
+            </div>
+            <div className="config-item-control" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <Gauge size={14} />
+              <select className="config-select" value={settings.speedtestInterval}
+                onChange={e => setSettings(prev => ({ ...prev, speedtestInterval: Number(e.target.value) }))}
+                style={{ width: 140 }}>
+                <option value={0}>Kapalı</option>
+                <option value={30}>30 dakikada bir</option>
+                <option value={60}>Saatte bir</option>
+                <option value={180}>3 saatte bir</option>
+                <option value={360}>6 saatte bir</option>
+                <option value={720}>12 saatte bir</option>
+                <option value={1440}>Günde bir</option>
+              </select>
             </div>
           </div>
         </div>
