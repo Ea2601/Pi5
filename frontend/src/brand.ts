@@ -6,7 +6,8 @@ export const BRAND = {
   name: 'Klyrix Gate',
   fullName: 'Klyrix Gate — Secure Gateway',
   // Kelime işareti (wordmark) — iki tonlu render için parçalı
-  wordmarkPrimary: 'klyrix',
+  // Canonical: ana marka büyük "Klyrix", alt marka küçük "/gate" (bkz. Klyrix marka kılavuzu)
+  wordmarkPrimary: 'Klyrix',
   wordmarkSecondary: '/gate',
   // Slogan / alt başlık
   tagline: 'Secure Gateway',

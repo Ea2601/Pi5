@@ -1,10 +1,11 @@
 {
-  "version": "2.7.5",
-  "build": 34,
+  "version": "2.7.6",
+  "build": 35,
   "date": "2026-07-10",
   "changelog": [
-    "Marka değişimi: uygulama artık 'Klyrix Gate — Secure Gateway'. Yeni klyrix/gate logosu (beyaz K + köşe düğümleri, slate gradient kutu) favicon, sidebar, kiosk ve tüm başlıklarda",
-    "Merkezi marka yönetimi: frontend/src/brand.ts — ad, slogan, sürüm ve renkler tek dosyadan; BrandMark.tsx yeniden kullanılabilir SVG logo bileşeni",
-    "Statik dosyalar güncellendi: index.html başlık + apple-touch-icon + theme-color, kiosk.html başlık, public/favicon.svg, README, install.sh banner"
+    "Logo paketi güncellendi: tam klyrix/gate seti (favicon, icon-128/512, horizontal + logo lockup'ları dark & light varyantlarıyla) public/'e işlendi",
+    "Favicon sadeleşti: 16px favicon artık shine/kenarlık içermiyor (küçük boyutta daha net)",
+    "Wordmark canonical'a hizalandı: sidebar artık 'Klyrix/gate' (büyük K) gösteriyor",
+    "dark varyant = koyu zeminler için açık renkli logo; light varyant = açık zeminler için — her ikisi de pakette hazır"
   ]
 }
