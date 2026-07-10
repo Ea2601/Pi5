@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import {
   Settings, Palette, Globe, Bell, Zap, Info, Save, ChevronDown, ChevronRight,
   Sun, Moon, Volume2, VolumeX, Clock, RefreshCw, Download, Check, X, Loader2, Gauge
@@ -62,6 +62,7 @@ export function SettingsPanel() {
   const [result, setResult] = useState<{ type: 'success' | 'error'; msg: string } | null>(null);
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
   const [loaded, setLoaded] = useState(false);
+  const skipFirstSave = useRef(true); // yükleme sonrası ilk otomatik-kayıt tetiğini atla
 
   useEffect(() => {
     if (data.settings && Object.keys(data.settings).length > 0 && !loaded) {
@@ -70,17 +71,30 @@ export function SettingsPanel() {
     }
   }, [data.settings, loaded]);
 
-  const handleSave = async () => {
-    setSaving(true);
-    setResult(null);
-    try {
-      await putApi('/settings', { settings: toApiSettings(settings) });
-      setResult({ type: 'success', msg: 'Ayarlar kaydedildi.' });
-    } catch (e: unknown) {
-      setResult({ type: 'error', msg: e instanceof Error ? e.message : 'Kaydetme başarısız.' });
+  // Otomatik kayıt: kullanıcı bir ayarı değiştirince (ilk yükleme hariç) debounce ile kaydet
+  useEffect(() => {
+    if (!loaded) return;
+    if (skipFirstSave.current) { skipFirstSave.current = false; return; }
+    const t = setTimeout(async () => {
+      setSaving(true);
+      try {
+        await putApi('/settings', { settings: toApiSettings(settings) });
+        setResult({ type: 'success', msg: 'Ayarlar otomatik kaydedildi.' });
+      } catch (e: unknown) {
+        setResult({ type: 'error', msg: e instanceof Error ? e.message : 'Otomatik kaydetme başarısız.' });
+      }
+      setSaving(false);
+    }, 600);
+    return () => clearTimeout(t);
+  }, [settings, loaded]);
+
+  // Başarılı kayıt bildirimini kısa süre sonra otomatik gizle (hatalar kalıcı)
+  useEffect(() => {
+    if (result?.type === 'success') {
+      const t = setTimeout(() => setResult(null), 2500);
+      return () => clearTimeout(t);
     }
-    setSaving(false);
-  };
+  }, [result]);
 
   const toggleCollapse = (cat: string) => {
     setCollapsed(prev => ({ ...prev, [cat]: !prev[cat] }));
@@ -320,9 +334,9 @@ export function SettingsPanel() {
         icon={<Settings size={20} style={{ marginRight: 8 }} />}
         subtitle="Uygulama geneli yapılandırma ve tercihler"
         actions={
-          <button className="btn-primary btn-sm" onClick={handleSave} disabled={saving}>
-            <Save size={13} /> {saving ? 'Kaydediliyor...' : 'Kaydet'}
-          </button>
+          <span style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: 'var(--text-muted)' }}>
+            <Save size={13} /> {saving ? 'Kaydediliyor…' : 'Değişiklikler otomatik kaydedilir'}
+          </span>
         }
       >
         {result && (

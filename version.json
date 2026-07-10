@@ -1,10 +1,11 @@
 {
-  "version": "2.7.12",
-  "build": 41,
+  "version": "2.7.13",
+  "build": 42,
   "date": "2026-07-11",
   "changelog": [
-    "Otomatik hız testi aralığı artık Ayarlar → Performans'tan seçilebiliyor: Kapalı / 30dk / 1s / 3s / 6s / 12s / 24s",
-    "Zamanlayıcı DB'den okuyor ve ayar değişince restart gerektirmeden yeniden planlanıyor (self-rescheduling)",
-    "0 (Kapalı) seçilirse otomatik ölçüm hiç yapılmıyor; varsayılan 6 saat"
+    "Ayarlar paneli otomatik kayıt: herhangi bir ayar değiştirildiğinde (tema, vurgu, dil, bildirim, yenileme, hız testi aralığı) 600ms debounce ile otomatik kaydediliyor — 'Kaydet' butonuna gerek yok",
+    "Kaydedilen ayarlar sonraki erişimlerde otomatik yükleniyor (App başlangıcı /api/settings'ten tema/vurgu uygular)",
+    "Manuel Kaydet butonu, 'Değişiklikler otomatik kaydedilir' göstergesiyle değiştirildi; başarı bildirimi kısa süre sonra kayboluyor",
+    "Not: LED/LCD/Kiosk gibi donanım/servis tetikleyen paneller kasıtlı olarak açık 'Uygula' butonuyla kalır"
   ]
 }
