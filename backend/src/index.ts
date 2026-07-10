@@ -1293,11 +1293,13 @@ app.get('/api/speedtest/history', async (req, res) => {
   }
 });
 
-// Otomatik hız testi — 6 saatte bir (10 dk çok agresifti: her seferinde hattı ~30-60sn doyuruyordu).
-// Ayarlanabilir: SPEEDTEST_INTERVAL_MIN env (dakika).
+// Otomatik hız testi — varsayılan 6 saatte bir. 10 dk çok agresifti: tam speedtest hattı
+// her seferinde ~30-60sn doyurur; gateway olduğu için 10 dk'da bir bunu yapmak üzerinden
+// geçen tüm trafiği sürekli aksatır. Ayarlanabilir: SPEEDTEST_INTERVAL_MIN env (dakika).
 if (isLinux) {
   const stMin = Number(process.env.SPEEDTEST_INTERVAL_MIN) || 360;
-  setInterval(async () => {
+  const stMs = stMin * 60 * 1000;
+  const runAutoSpeedtest = async () => {
     try {
       const result = await runSpeedTest();
       if (result) {
@@ -1305,13 +1307,29 @@ if (isLinux) {
           'INSERT INTO speed_tests (download_mbps, upload_mbps, ping_ms, jitter_ms, packet_loss, server, isp) VALUES (?, ?, ?, ?, ?, ?, ?)',
           [result.download_mbps, result.upload_mbps, result.ping_ms, result.jitter_ms, result.packet_loss, result.server, result.isp]
         );
+        console.log(`[SpeedTest] Otomatik ölçüm kaydedildi: ${result.download_mbps}↓ / ${result.upload_mbps}↑ Mbps, ping ${result.ping_ms}ms`);
+      } else {
+        console.warn('[SpeedTest] Otomatik ölçüm atlandı — speedtest-cli yok. Kur: sudo apt install speedtest-cli');
       }
-      // Cleanup old data
+      // Retention temizliği
       await dbRun(`DELETE FROM speed_tests WHERE timestamp < datetime('now', '-30 days')`);
-      // ddns_ip_history retention (sınırsız büyümeyi önle)
       await dbRun(`DELETE FROM ddns_ip_history WHERE detected_at < datetime('now', '-90 days')`);
-    } catch { /* silent */ }
-  }, stMin * 60 * 1000);
+    } catch (e: any) {
+      console.error('[SpeedTest] Otomatik ölçüm hatası:', e?.message || e);
+    }
+  };
+  // Başlangıç yakalaması: setInterval yalnız stMin dk SONRA tetikler; backend sık yeniden
+  // başlarsa (güncelleme vb.) sayaç sürekli sıfırlanıp hiç çalışmayabilir. Bu yüzden boot'tan
+  // ~2 dk sonra, son ölçüm interval'den eskiyse (ya da hiç yoksa) bir kez çalıştır.
+  setTimeout(async () => {
+    try {
+      const recent = await dbGet(
+        `SELECT COUNT(*) AS n FROM speed_tests WHERE timestamp > datetime('now', '-${stMin} minutes')`
+      );
+      if (!recent || recent.n === 0) await runAutoSpeedtest();
+    } catch { /* yoksay */ }
+  }, 120000);
+  setInterval(runAutoSpeedtest, stMs);
 }
 
 // ─── Metric history recorder — sample every 5s, keep ~11 min (10-min window + margin) ───

@@ -1,10 +1,10 @@
 {
-  "version": "2.7.10",
-  "build": 39,
-  "date": "2026-07-10",
+  "version": "2.7.11",
+  "build": 40,
+  "date": "2026-07-11",
   "changelog": [
-    "Sidebar logosu orijinal vektör lockup'a döndürüldü: wordmark artık path'e gömülü gerçek marka fontuyla (Liberation Sans Bold) render ediliyor — CSS/Inter ile yeniden yazılıp bozulmuyor",
-    "Lockup temaya göre otomatik: koyu temada horizontal-dark, açık temada horizontal-light varyantı",
-    "Sidebar'daki CSS-metin wordmark ve BrandMark bileşeni kaldırıldı"
+    "Otomatik hız testi artık gerçekten çalışıyor: boot'tan ~2 dk sonra son ölçüm interval'den eskiyse bir kez çalıştıran 'başlangıç yakalaması' eklendi (setInterval sık restart'ta sürekli sıfırlanıp hiç tetiklenmiyordu)",
+    "Görünür loglama: otomatik ölçüm kaydı, speedtest-cli eksikliği ve hatalar artık journalctl'de görünüyor",
+    "Varsayılan aralık 6 saat (SPEEDTEST_INTERVAL_MIN env ile ayarlanır) — 10 dk gateway hattını sürekli doyurduğu için bilinçli olarak korunuyor"
   ]
 }
