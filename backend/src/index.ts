@@ -2335,6 +2335,39 @@ async function detectPironmanConflict(): Promise<string> {
   return '';
 }
 
+// Ensure the persistent LCD systemd service exists (self-heals already-deployed installs). The
+// daemon runs `lcd_display.py run` in the foreground and restarts on failure, so the case OLED
+// keeps cycling across reboots and backend restarts instead of dying after a single apply.
+async function ensureLcdService(): Promise<void> {
+  if (!isLinux) return;
+  const fs = require('fs');
+  const exec = require('util').promisify(require('child_process').exec);
+  const UNIT = '/etc/systemd/system/pi5-lcd.service';
+  const content = `[Unit]
+Description=Pi5 Gateway Case LCD
+After=pi5-backend.service
+Wants=pi5-backend.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /opt/pi5-gateway/scripts/lcd_display.py run
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+`;
+  try {
+    let existing = '';
+    try { existing = fs.readFileSync(UNIT, 'utf8'); } catch { /* */ }
+    if (existing !== content) {
+      fs.writeFileSync(UNIT, content);
+      await exec('systemctl daemon-reload', { timeout: 5000 });
+    }
+    await exec('systemctl enable pi5-lcd.service 2>/dev/null || true', { timeout: 5000 });
+  } catch { /* */ }
+}
+
 app.get('/api/case/led', async (_req, res) => {
   try {
     const row = await dbGet("SELECT value FROM app_settings WHERE key = 'led_config'");
@@ -2373,23 +2406,27 @@ app.put('/api/case/led', async (req, res) => {
 app.get('/api/case/lcd', async (_req, res) => {
   try {
     const row = await dbGet("SELECT value FROM app_settings WHERE key = 'lcd_pages'");
+    const ctrlRow = await dbGet("SELECT value FROM app_settings WHERE key = 'lcd_controller'");
     const pages = row?.value ? JSON.parse(row.value) : [];
-    res.json({ pages });
-  } catch { res.json({ pages: [] }); }
+    res.json({ pages, controller: ctrlRow?.value || 'auto' });
+  } catch { res.json({ pages: [], controller: 'auto' }); }
 });
 
 app.put('/api/case/lcd', async (req, res) => {
   try {
-    const { pages } = req.body;
+    const { pages, controller } = req.body;
     await dbRun("INSERT OR REPLACE INTO app_settings (key, value) VALUES ('lcd_pages', ?)", [JSON.stringify(pages)]);
-    // Restart LCD daemon to pick up new config
+    if (controller && ['auto', 'ssd1306', 'sh1106'].includes(String(controller))) {
+      await dbRun("INSERT OR REPLACE INTO app_settings (key, value) VALUES ('lcd_controller', ?)", [String(controller)]);
+    }
+    // LCD is a persistent systemd service (pi5-lcd) — restart it so new pages/controller apply.
     if (isLinux) {
       const exec = require('util').promisify(require('child_process').exec);
       const LCD = '/opt/pi5-gateway/scripts/lcd_display.py';
       try {
-        // Stop any old daemon, then detect a REAL display (detect exits 2 / prints display=console
-        // when only the console fallback is available → physical OLED stays dark).
-        await exec(`python3 ${LCD} stop 2>/dev/null || true`, { timeout: 8000 });
+        await ensureLcdService();
+        // Detect a REAL display (detect exits 2 / prints display=console when only the console
+        // fallback exists → the physical OLED would stay dark).
         let noDisplay = false;
         try {
           await exec(`python3 ${LCD} detect`, { timeout: 12000 });
@@ -2397,14 +2434,14 @@ app.put('/api/case/lcd', async (req, res) => {
           const out = String(dErr.stdout || '') + String(dErr.message || '');
           if (dErr.code === 2 || /display=console/.test(out)) noDisplay = true;
         }
-        await exec(`python3 ${LCD} start &`, { timeout: 10000 });
+        await exec('systemctl restart pi5-lcd.service', { timeout: 10000 });
         if (noDisplay) {
-          return res.json({ success: true, applied: false, error: 'Fiziksel ekran bulunamadı. Kurulum: pip3 install --break-system-packages luma.oled luma.core Pillow; I2C açık olmalı (raspi-config). SH1106 panelde (Pironman 5 1.3") PI5_LCD_CONTROLLER=sh1106 deneyin. Detay: /tmp/lcd_display.log' });
+          return res.json({ success: true, applied: false, error: 'Fiziksel ekran bulunamadı. Kurulum: pip3 install --break-system-packages luma.oled luma.core Pillow; I2C açık olmalı (raspi-config). Detay: /tmp/lcd_display.log' });
         }
         const warning = await detectPironmanConflict();
         res.json({ success: true, applied: !warning, warning: warning || undefined });
       } catch (cmdErr: any) {
-        res.json({ success: true, applied: false, error: `LCD script hatası: ${cmdErr.message}. 'pip3 install --break-system-packages luma.oled luma.core Pillow' kurulumu gerekebilir.` });
+        res.json({ success: true, applied: false, error: `LCD servisi hatası: ${cmdErr.message}` });
       }
     } else {
       res.json({ success: true, applied: false, warning: 'LCD kontrolü sadece Pi5 üzerinde çalışır' });

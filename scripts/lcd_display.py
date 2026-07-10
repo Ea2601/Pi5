@@ -24,6 +24,7 @@ import subprocess
 PID_FILE = "/tmp/lcd_display.pid"
 CONFIG_FILE = "/opt/pi5-gateway/core/pi5router.sqlite"
 PAGES_KEY = "lcd_pages"
+CONTROLLER_KEY = "lcd_controller"
 LOG_FILE = "/tmp/lcd_display.log"
 
 
@@ -73,6 +74,23 @@ def get_pages():
         {"id": "hostname", "type": "system", "content": "hostname", "duration": 5, "enabled": True},
         {"id": "cpu", "type": "system", "content": "cpu_ram", "duration": 5, "enabled": True},
     ]
+
+
+def get_controller():
+    """LCD denetleyicisi. Öncelik: env PI5_LCD_CONTROLLER > DB app_settings > 'auto'."""
+    env = os.environ.get('PI5_LCD_CONTROLLER')
+    if env:
+        return env.lower()
+    try:
+        import sqlite3
+        db = sqlite3.connect(CONFIG_FILE)
+        row = db.execute("SELECT value FROM app_settings WHERE key = ?", (CONTROLLER_KEY,)).fetchone()
+        db.close()
+        if row and row[0]:
+            return str(row[0]).lower()
+    except Exception:
+        pass
+    return 'auto'
 
 
 def get_system_data(content_type):
@@ -169,8 +187,8 @@ def _make_oled(controller):
 
 
 def get_display():
-    """Init a display. Controller via PI5_LCD_CONTROLLER=ssd1306|sh1106|auto (default auto)."""
-    ctrl = os.environ.get('PI5_LCD_CONTROLLER', 'auto').lower()
+    """Init a display. Controller: DB 'lcd_controller' veya env PI5_LCD_CONTROLLER (ssd1306|sh1106|auto)."""
+    ctrl = get_controller()
     candidates = [ctrl] if ctrl in ('ssd1306', 'sh1106') else ['ssd1306', 'sh1106']
 
     for c in candidates:
@@ -298,6 +316,11 @@ def main():
         else:
             os.setsid()
             run_display()
+
+    elif cmd == "run":
+        # Foreground (systemd Type=simple için — fork YOK). Varsa eski fork daemon'u öldür.
+        kill_existing()
+        run_display()
 
     elif cmd == "detect":
         # Hızlı teşhis: gerçek ekran bulunursa exit 0, yalnızca console fallback ise exit 2.

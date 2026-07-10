@@ -217,6 +217,26 @@ pip3 install --break-system-packages --quiet fanshim spidev luma.oled luma.core 
   || warn "Pimoroni pip bağımlılıkları kurulamadı (donanım yoksa normal)"
 log "Pimoroni bağımlılık adımı tamamlandı"
 
+# ─── Kasa LCD servisi (kalıcı döngü daemon'u — fork yerine systemd) ───
+cat > /etc/systemd/system/pi5-lcd.service << 'LCDEOF'
+[Unit]
+Description=Pi5 Gateway Case LCD
+After=pi5-backend.service
+Wants=pi5-backend.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /opt/pi5-gateway/scripts/lcd_display.py run
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+LCDEOF
+systemctl daemon-reload 2>/dev/null || true
+systemctl enable pi5-lcd.service 2>/dev/null || true
+log "Kasa LCD servisi hazır (pi5-lcd.service). Denetleyici: panelden ssd1306/sh1106 seçilebilir."
+
 # ─── Kiosk: Minimal X11 + Chromium (Lite OS için) ───
 warn "Kiosk modu bağımlılıkları kuruluyor (Lite OS)..."
 apt install -y -qq xserver-xorg x11-xserver-utils xinit openbox 2>/dev/null || true

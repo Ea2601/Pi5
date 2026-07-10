@@ -51,10 +51,11 @@ export function CaseControlPanel() {
   const { data: ledData } = useApi<{ config: LedConfig }>('/case/led', {
     config: { color: '#3b82f6', brightness: 80, animation: 'static', enabled: true },
   });
-  const { data: lcdData } = useApi<{ pages: LcdPage[] }>('/case/lcd', { pages: [] });
+  const { data: lcdData } = useApi<{ pages: LcdPage[]; controller?: string }>('/case/lcd', { pages: [], controller: 'auto' });
 
   const [led, setLed] = useState<LedConfig>({ color: '#3b82f6', brightness: 80, animation: 'static', enabled: true });
   const [pages, setPages] = useState<LcdPage[]>(DEFAULT_PAGES);
+  const [controller, setController] = useState('auto');
   const [saving, setSaving] = useState(false);
   const [result, setResult] = useState('');
   const [resultOk, setResultOk] = useState(true);
@@ -66,6 +67,10 @@ export function CaseControlPanel() {
   useEffect(() => {
     if (lcdData.pages?.length) setPages(lcdData.pages);
   }, [lcdData.pages]);
+
+  useEffect(() => {
+    if (lcdData.controller) setController(lcdData.controller);
+  }, [lcdData.controller]);
 
   const handleSaveLed = async () => {
     setSaving(true);
@@ -83,7 +88,7 @@ export function CaseControlPanel() {
     setSaving(true);
     setResult('');
     try {
-      const r = await putApi('/case/lcd', { pages });
+      const r = await putApi('/case/lcd', { pages, controller });
       if (r?.warning) { setResultOk(false); setResult(r.warning); }
       else if (r?.applied === false) { setResultOk(false); setResult(r?.error || 'LCD kaydedildi ama donanıma uygulanamadı'); }
       else { setResultOk(true); setResult('LCD ayarları kaydedildi ve uygulandı'); }
@@ -217,7 +222,18 @@ export function CaseControlPanel() {
             </div>
           }>
 
-          <div style={{ marginTop: 8, display: 'flex', flexDirection: 'column', gap: 4 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 8, marginBottom: 6, flexWrap: 'wrap' }}>
+            <span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>Ekran denetleyici</span>
+            <select className="config-select-sm" value={controller}
+              onChange={e => setController(e.target.value)} style={{ width: 'auto', minWidth: 150 }}>
+              <option value="auto">Otomatik (ssd1306→sh1106)</option>
+              <option value="ssd1306">SSD1306 (0.96")</option>
+              <option value="sh1106">SH1106 (1.3" — Pironman 5)</option>
+            </select>
+            <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>Yazı kayıyor/kırpılıyorsa SH1106 deneyin</span>
+          </div>
+
+          <div style={{ marginTop: 4, display: 'flex', flexDirection: 'column', gap: 4 }}>
             {pages.map(page => (
               <div key={page.id} className={`glass-panel ${!page.enabled ? 'routing-row-disabled' : ''}`}
                 style={{ padding: '10px 14px', display: 'flex', alignItems: 'center', gap: 10 }}>

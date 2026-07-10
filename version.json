@@ -1,11 +1,11 @@
 {
-  "version": "2.7.2",
-  "build": 31,
+  "version": "2.7.3",
+  "build": 32,
   "date": "2026-07-10",
   "changelog": [
-    "Kasa LCD: SH1106 desteği (Pironman 5 1.3\" panel) + env ayarları (PI5_LCD_CONTROLLER/ADDR/WIDTH/HEIGHT); /tmp/lcd_display.log teşhis logu",
-    "Kasa LCD: lcd_display.py 'detect'/'test' komutları; backend gerçek ekran yoksa artık net hata döndürüyor (sessiz kararma yerine)",
-    "Kiosk: geçersiz/eski widget config'i yalnız 'system' göstermesin — sadece builder'ı olan sayfalar; bir sayfa hatası döngüyü takmaz; config 60sn'de yenilenir",
-    "Kiosk: KioskSettingsPanel'deki eski autostart dökümanı düzeltildi (systemd + doğru URL)"
+    "Kasa LCD kalıcı systemd servisi (pi5-lcd): fork yerine 'run' foreground daemon — reboot/backend-restart sonrası döngü çalışmaya devam eder (ekran artık kararmıyor)",
+    "Backend LCD kaydı servisi kendiliğinden kurar/etkinleştirir (mevcut kurulumları da onarır) ve yeniden başlatır",
+    "LCD denetleyici (ssd1306/sh1106/auto) panelden seçilebilir; DB'de saklanır, lcd_display.py DB'den okur",
+    "install.sh pi5-lcd.service kurar ve enable eder"
   ]
 }
