@@ -6,7 +6,6 @@ import {
 } from 'lucide-react';
 import type { TabId } from '../types';
 import { BRAND } from '../brand';
-import { BrandMark } from './BrandMark';
 
 const tabs: { id: TabId; label: string; icon: React.ReactNode; group?: string }[] = [
   { id: 'dashboard', label: 'Dashboard', icon: <LayoutDashboard size={17} /> },
@@ -46,11 +45,9 @@ export function Sidebar({ activeTab, onTabChange }: SidebarProps) {
   return (
     <nav className="glass-panel sidebar">
       <div className="logo">
-        <BrandMark size={36} />
-        <h2>
-          <span style={{ fontWeight: 600, color: 'var(--brand-ink)' }}>{BRAND.wordmarkPrimary}</span>
-          <span style={{ fontWeight: 400, color: BRAND.colors.accent }}>{BRAND.wordmarkSecondary}</span>
-        </h2>
+        {/* Orijinal vektör lockup (font path'e gömülü — bozulmaz). Temaya göre dark/light. */}
+        <img className="logo-lockup logo-lockup-dark" src="/klyrix-gate-horizontal-dark.svg" alt={BRAND.name} />
+        <img className="logo-lockup logo-lockup-light" src="/klyrix-gate-horizontal-light.svg" alt={BRAND.name} />
       </div>
       <ul className="nav-links">
         {tabs.map(tab => {

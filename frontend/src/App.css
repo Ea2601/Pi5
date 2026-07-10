@@ -27,6 +27,17 @@
   margin-bottom: 28px;
 }
 
+/* Orijinal vektör lockup — temaya göre dark/light varyant */
+.logo-lockup {
+  height: 32px;
+  width: auto;
+  max-width: 100%;
+  display: block;
+}
+.logo-lockup-light { display: none; }
+:root.light-theme .logo-lockup-dark { display: none; }
+:root.light-theme .logo-lockup-light { display: block; }
+
 .logo-shield {
   width: 36px;
   height: 36px;
