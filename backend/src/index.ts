@@ -177,6 +177,27 @@ app.post('/api/services/toggle', async (req, res) => {
   }
 });
 
+// Özel firewall kurallarını (routing_rules) GÜVENLİ nft satırlarına çevirir.
+// KRİTİK: target kullanıcı girdisidir → nft dosyasına girmeden önce katı doğrulama (enjeksiyon önleme).
+function buildCustomFwRules(rows: any[]): string[] {
+  const out: string[] = [];
+  const ACTIONS: Record<string, string> = { accept: 'accept', drop: 'drop', reject: 'reject' };
+  for (const r of rows || []) {
+    const action = ACTIONS[String(r.action || '').toLowerCase()];
+    if (!action) continue;
+    const type = String(r.type || '').toLowerCase();
+    const target = String(r.target || '').trim();
+    if (type === 'tcp' || type === 'udp') {
+      const n = Number(target);
+      if (/^\d{1,5}$/.test(target) && n >= 1 && n <= 65535) out.push(`${type} dport ${n} ${action}`);
+    } else if (type === 'ip') {
+      // IPv4 veya IPv4/CIDR — yalnızca rakam, nokta, /; başka karakter kabul edilmez
+      if (/^\d{1,3}(\.\d{1,3}){3}(\/\d{1,2})?$/.test(target)) out.push(`ip saddr ${target} ${action}`);
+    }
+  }
+  return out;
+}
+
 app.post('/api/services/setup', async (req, res) => {
   try {
     const action = req.body.action;
@@ -197,7 +218,10 @@ app.post('/api/services/setup', async (req, res) => {
       const cfg = await dbAll("SELECT key, value FROM service_config WHERE service = 'nftables' AND key IN ('lan_iface', 'wan_iface')");
       const m: Record<string, string> = {};
       (cfg as any[]).forEach(r => { m[r.key] = r.value; });
-      result = await systemServices.configureNftables({ lan: m.lan_iface, wan: m.wan_iface });
+      // Özel kuralları DB'den al, doğrula, nftables input zincirine uygula
+      const customRows = await dbAll('SELECT type, target, action FROM routing_rules');
+      const custom = buildCustomFwRules(customRows);
+      result = await systemServices.configureNftables({ lan: m.lan_iface, wan: m.wan_iface }, custom);
       await dbRun("UPDATE service_status SET enabled=1, status='running' WHERE name='nftables'");
     }
     res.json({ success: true, message: `Action ${action} executed.`, log: result });
@@ -440,12 +464,26 @@ app.get('/api/devices', async (_req, res) => {
     if (isLinux) {
       const liveDevices = await getNetworkDevices();
       for (const live of liveDevices) {
+        // Bağlantı geçmişi: cihaz yeni ya da >5dk görünmüyorduysa 'connected' olayı kaydet.
+        // Kontrol upsert'ten ÖNCE yapılır (last_seen henüz tazelenmemişken); sürekli görünen
+        // cihaz sadece bir kez loglanır, uzun aradan sonra dönerse yeniden loglanır.
+        const prev: any = await dbGet(
+          "SELECT (last_seen IS NULL OR last_seen < datetime('now','-5 minutes')) AS returning FROM devices WHERE mac_address = ?",
+          [live.mac]
+        );
+        const shouldLogConnect = !prev || prev.returning === 1;
         // Upsert into devices (keep existing hostname/profile/blocked; refresh ip + last_seen)
         await dbRun(
           `INSERT INTO devices (mac_address, ip_address, last_seen) VALUES (?, ?, CURRENT_TIMESTAMP)
            ON CONFLICT(mac_address) DO UPDATE SET ip_address = excluded.ip_address, last_seen = CURRENT_TIMESTAMP`,
           [live.mac, live.ip]
         );
+        if (shouldLogConnect) {
+          await dbRun(
+            "INSERT INTO connection_history (device_mac, event_type, timestamp) VALUES (?, 'connected', CURRENT_TIMESTAMP)",
+            [live.mac]
+          );
+        }
         // Track first-seen for the "unknown devices" alert (approved defaults to 0)
         await dbRun('INSERT OR IGNORE INTO known_devices (mac_address) VALUES (?)', [live.mac]);
       }
@@ -1329,6 +1367,7 @@ async function runAutoSpeedtest(): Promise<void> {
     // Retention temizliği
     await dbRun(`DELETE FROM speed_tests WHERE timestamp < datetime('now', '-30 days')`);
     await dbRun(`DELETE FROM ddns_ip_history WHERE detected_at < datetime('now', '-90 days')`);
+    await dbRun(`DELETE FROM connection_history WHERE timestamp < datetime('now', '-30 days')`);
   } catch (e: any) {
     console.error('[SpeedTest] Otomatik ölçüm hatası:', e?.message || e);
   }
@@ -1567,8 +1606,36 @@ app.post('/api/network/portscan', async (req, res) => {
 // ─── DHCP Leases ───
 app.get('/api/dhcp/leases', async (_req, res) => {
   try {
-    const leases = await dbAll('SELECT * FROM dhcp_leases ORDER BY ip_address');
-    res.json({ leases });
+    const staticLeases = await dbAll('SELECT * FROM dhcp_leases ORDER BY ip_address');
+    const dynamic: any[] = [];
+    // Linux'ta dnsmasq kira dosyasından canlı (dinamik) kiraları oku ve birleştir.
+    if (isLinux) {
+      try {
+        const fs = require('fs');
+        const paths = ['/var/lib/misc/dnsmasq.leases', '/var/lib/dnsmasq/dnsmasq.leases'];
+        const p = paths.find((x: string) => fs.existsSync(x));
+        if (p) {
+          const staticMacs = new Set(
+            (staticLeases as any[]).filter(l => l.is_static).map(l => String(l.mac_address).toLowerCase())
+          );
+          const txt: string = fs.readFileSync(p, 'utf8');
+          for (const line of txt.split('\n')) {
+            const parts = line.trim().split(/\s+/);
+            if (parts.length < 3) continue;
+            const [exp, mac, ip, host] = parts;
+            if (!mac || staticMacs.has(mac.toLowerCase())) continue; // statik olanları tekrar ekleme
+            dynamic.push({
+              mac_address: mac,
+              ip_address: ip,
+              hostname: host && host !== '*' ? host : '',
+              lease_end: exp && exp !== '0' ? new Date(Number(exp) * 1000).toISOString() : null,
+              is_static: 0,
+            });
+          }
+        }
+      } catch { /* lease dosyası okunamadı — yalnız statikleri döndür */ }
+    }
+    res.json({ leases: [...staticLeases, ...dynamic] });
   } catch (e: any) {
     res.status(500).json({ error: e.message });
   }

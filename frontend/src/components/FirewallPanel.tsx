@@ -1,4 +1,4 @@
-import { Flame, Trash2, Shield, ArrowRight, Settings, Activity, Waypoints } from 'lucide-react';
+import { Flame, Trash2, Shield, ArrowRight, Settings, Activity, Waypoints, Plus } from 'lucide-react';
 import { useApi, postApi, deleteApi } from '../hooks/useApi';
 import { useState } from 'react';
 import { Panel, Alert } from './ui';
@@ -17,6 +17,11 @@ export function FirewallPanel() {
   const { data, refetch } = useApi<FirewallData>('/firewall/rules', { rules: [], nftablesPreview: { inputRules: [], forwardRules: [], natRules: [] } });
   const [deploying, setDeploying] = useState(false);
   const [result, setResult] = useState<{ type: 'success' | 'error'; msg: string } | null>(null);
+  const [showForm, setShowForm] = useState(false);
+  const [fwType, setFwType] = useState('tcp');
+  const [fwTarget, setFwTarget] = useState('');
+  const [fwAction, setFwAction] = useState('accept');
+  const [adding, setAdding] = useState(false);
 
   const handleDeploy = async () => {
     setDeploying(true); setResult(null);
@@ -24,7 +29,31 @@ export function FirewallPanel() {
     catch (e: any) { setResult({ type: 'error', msg: e.message }); }
     setDeploying(false);
   };
-  const handleDelete = async (id: number) => { try { await deleteApi(`/firewall/rules/${id}`); await refetch(); } catch { /* */ } };
+
+  const handleAdd = async () => {
+    const target = fwTarget.trim();
+    if (!target) { setResult({ type: 'error', msg: 'Hedef (port ya da IP) gerekli.' }); return; }
+    if (fwType === 'tcp' || fwType === 'udp') {
+      const n = Number(target);
+      if (!/^\d+$/.test(target) || n < 1 || n > 65535) { setResult({ type: 'error', msg: 'Port 1-65535 arası bir sayı olmalı.' }); return; }
+    } else if (fwType === 'ip') {
+      if (!/^\d{1,3}(\.\d{1,3}){3}(\/\d{1,2})?$/.test(target)) { setResult({ type: 'error', msg: 'Geçerli bir IPv4 ya da IPv4/CIDR girin (ör. 192.168.1.50 veya 10.0.0.0/24).' }); return; }
+    }
+    setAdding(true); setResult(null);
+    try {
+      await postApi('/firewall/rules', { type: fwType, target, action: fwAction });
+      setFwTarget(''); setShowForm(false);
+      await refetch();
+      // Kaydedilen kuralı nftables'a uygula (Pi dışında/başarısızsa kural yine kayıtlı kalır)
+      try { await postApi('/services/setup', { action: 'firewall' }); setResult({ type: 'success', msg: 'Kural eklendi ve uygulandı.' }); }
+      catch { setResult({ type: 'success', msg: 'Kural kaydedildi. "Deploy Et" ile uygulayabilirsiniz.' }); }
+    } catch (e: any) { setResult({ type: 'error', msg: e.message || 'Kural eklenemedi.' }); }
+    setAdding(false);
+  };
+
+  const handleDelete = async (id: number) => {
+    try { await deleteApi(`/firewall/rules/${id}`); await refetch(); try { await postApi('/services/setup', { action: 'firewall' }); } catch { /* */ } } catch { /* */ }
+  };
   const preview = data.nftablesPreview;
 
   const tabs: { id: FwTab; label: string; icon: React.ReactNode }[] = [
@@ -48,7 +77,12 @@ export function FirewallPanel() {
     <div className="fade-in">
       <Panel title="nftables Güvenlik Duvarı" icon={<Flame size={20} style={{ marginRight: 8 }} />}
         subtitle="Paket filtreleme, port yönetimi ve NAT kuralları"
-        actions={<button className="btn-primary btn-sm" onClick={handleDeploy} disabled={deploying}>{deploying ? 'Uygulanıyor...' : 'Deploy Et'}</button>}>
+        actions={
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button className="btn-outline btn-sm" onClick={() => setShowForm(v => !v)}><Plus size={13} /> Kural Ekle</button>
+            <button className="btn-primary btn-sm" onClick={handleDeploy} disabled={deploying}>{deploying ? 'Uygulanıyor...' : 'Deploy Et'}</button>
+          </div>
+        }>
         <div className="service-tabs">
           {tabs.map(tab => (
             <button key={tab.id}
@@ -62,6 +96,32 @@ export function FirewallPanel() {
 
       {activeTab === 'overview' && (
         <>
+          {showForm && (
+            <div className="glass-panel widget-large" style={{ marginTop: 14, display: 'flex', gap: 10, alignItems: 'flex-end', flexWrap: 'wrap' }}>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                <label style={{ fontSize: 11, color: 'var(--text-muted)' }}>Tür</label>
+                <select className="config-select" value={fwType} onChange={e => setFwType(e.target.value)} style={{ width: 130 }}>
+                  <option value="tcp">TCP Port</option>
+                  <option value="udp">UDP Port</option>
+                  <option value="ip">Kaynak IP</option>
+                </select>
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                <label style={{ fontSize: 11, color: 'var(--text-muted)' }}>Hedef</label>
+                <input className="config-input" value={fwTarget} onChange={e => setFwTarget(e.target.value)}
+                  placeholder={fwType === 'ip' ? '192.168.1.50 veya 10.0.0.0/24' : 'ör. 8080'} style={{ width: 200 }} />
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                <label style={{ fontSize: 11, color: 'var(--text-muted)' }}>Eylem</label>
+                <select className="config-select" value={fwAction} onChange={e => setFwAction(e.target.value)} style={{ width: 130 }}>
+                  <option value="accept">İzin Ver</option>
+                  <option value="drop">Düşür</option>
+                  <option value="reject">Reddet</option>
+                </select>
+              </div>
+              <button className="btn-primary btn-sm" onClick={handleAdd} disabled={adding}>{adding ? 'Ekleniyor...' : 'Ekle'}</button>
+            </div>
+          )}
           <div className="glass-panel widget-large" style={{ marginTop: 14 }}>
             {result && <Alert type={result.type} message={result.msg} />}
             <div className="fw-section">

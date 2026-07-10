@@ -42,7 +42,7 @@ export const systemServices = {
         return execAsync(zapretBash, { timeout: 120000 });
     },
 
-    async configureNftables(ifaces?: { lan?: string; wan?: string }) {
+    async configureNftables(ifaces?: { lan?: string; wan?: string }, customInputRules?: string[]) {
         if (!isLinux) throw new Error('nftables yapılandırması sadece Pi5 üzerinde çalışır');
         // Arayüz rollerini DB config'ten al; geçersiz/var olmayan arayüzde otomatik algılamaya düş
         // (böylece hem eth0=WAN hem wlan0=WAN topolojileri doğru çalışır).
@@ -50,6 +50,11 @@ export const systemServices = {
         const exists = (n?: string) => !!n && fs.existsSync(`/sys/class/net/${n}`);
         const wan = exists(ifaces?.wan) ? ifaces!.wan! : detected.wan;
         const lan = exists(ifaces?.lan) ? ifaces!.lan! : detected.lan;
+
+        // Özel kullanıcı kuralları (index.ts'te doğrulanmış nft satırları olarak gelir).
+        const customLines = (customInputRules && customInputRules.length)
+            ? '\n        # Özel kullanıcı kuralları\n        ' + customInputRules.join('\n        ')
+            : '';
 
         // ÖNEMLI: `flush ruleset` KULLANILMAZ — yalnızca kendi tablolarımızı idempotent yönetiriz.
         // Böylece zapret NFQUEUE, domain_routing ve pi5_block tabloları korunur.
@@ -68,7 +73,7 @@ table inet pi5_filter {
         tcp dport 53 accept
         udp dport 53 accept
         tcp dport 80 accept
-        udp dport 51820 accept
+        udp dport 51820 accept${customLines}
     }
     chain forward {
         type filter hook forward priority 0; policy drop;

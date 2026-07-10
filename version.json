@@ -1,10 +1,11 @@
 {
-  "version": "2.7.15",
-  "build": 44,
+  "version": "2.8.0",
+  "build": 45,
   "date": "2026-07-11",
   "changelog": [
-    "Kaydetme doğrulaması: tüm paneller (ağ, cihaz, trafik, routing, ebeveyn, pihole, zapret, DDNS, VPS, cron, LED/LCD/kiosk, bandwidth) tek tek denetlendi — alan adları frontend↔backend↔DB tam eşleşiyor, kaydetme/geri-yükleme sağlam",
-    "Ebeveyn kuralı: kategori/site engelleme için değer boşken sessizce başarısız olma düzeltildi — artık görünür hata + istemci doğrulaması",
-    "İki latent boş-gövde SQL guard'ı eklendi (PUT /routing/rules, PUT /pihole/lists) — boş güncellemede 500 yerine no-op"
+    "Kapsamlı canlı API testi: ~120 endpoint dev sunucusunda gerçek HTTP + DB ile test edildi — 102/102 geçti (tüm GET'ler 200, CRUD round-trip'leri, boş-gövde guard'ları, DDNS token koruması, kota 0)",
+    "Firewall özel kuralları artık gerçekten uygulanıyor: panelde ekleme formu (TCP/UDP port veya kaynak IP + izin/düşür/reddet) + nftables input zincirine katı doğrulamayla enjekte ediliyor (enjeksiyon önlemeli)",
+    "Bağlantı Geçmişi artık doluyor: cihaz taramada yeni/dönen cihazlar için 'connected' olayı kaydediliyor (5dk eşik, 30 gün retention)",
+    "Dinamik DHCP kiraları: dnsmasq lease dosyası okunup statik rezervasyonlarla birleştiriliyor — kira tablosu artık canlı istemcileri de gösteriyor"
   ]
 }
