@@ -1,11 +1,10 @@
 {
-  "version": "2.7.14",
-  "build": 43,
+  "version": "2.7.15",
+  "build": 44,
   "date": "2026-07-11",
   "changelog": [
-    "Açık/koyu tema düğmesi Ayarlar'dan kaldırılıp Topbar'a taşındı (saat yanındaki güneş/ay ikonu)",
-    "Tema artık localStorage ile ANLIK kalıcı: sayfa yenilendiğinde sıfırlanmıyor, render öncesi uygulandığı için dark-flash da yok; backend'e de senkronlanıyor",
-    "Ayar kalıcılık düzeltmesi: yükleme kapısı 'loading' bayrağına bağlandı (DB boş dönse bile otomatik kayıt etkinleşir) + debounce 600ms→300ms → hız testi aralığı vb. artık yenilemede korunuyor",
-    "Tema ayarı SettingsPanel'den tamamen kaldırıldı (accent/vurgu rengi kalıyor); tek kaynak Topbar + localStorage"
+    "Kaydetme doğrulaması: tüm paneller (ağ, cihaz, trafik, routing, ebeveyn, pihole, zapret, DDNS, VPS, cron, LED/LCD/kiosk, bandwidth) tek tek denetlendi — alan adları frontend↔backend↔DB tam eşleşiyor, kaydetme/geri-yükleme sağlam",
+    "Ebeveyn kuralı: kategori/site engelleme için değer boşken sessizce başarısız olma düzeltildi — artık görünür hata + istemci doğrulaması",
+    "İki latent boş-gövde SQL guard'ı eklendi (PUT /routing/rules, PUT /pihole/lists) — boş güncellemede 500 yerine no-op"
   ]
 }

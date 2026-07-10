@@ -345,6 +345,7 @@ app.put('/api/pihole/lists/:id', async (req, res) => {
     if (enabled !== undefined) { updates.push('enabled = ?'); params.push(enabled ? 1 : 0); }
     if (value !== undefined) { updates.push('value = ?'); params.push(value); }
     if (comment !== undefined) { updates.push('comment = ?'); params.push(comment); }
+    if (updates.length === 0) return res.json({ success: true });
     params.push(req.params.id);
     await dbRun(`UPDATE pihole_lists SET ${updates.join(', ')} WHERE id = ?`, params);
     res.json({ success: true });
@@ -1019,6 +1020,7 @@ app.put('/api/routing/rules/:id', async (req, res) => {
     if (enabled !== undefined) { updates.push('enabled = ?'); params.push(enabled ? 1 : 0); }
     if (exit_node !== undefined) { updates.push('exit_node = ?'); params.push(exit_node); }
     if (dpi_bypass !== undefined) { updates.push('dpi_bypass = ?'); params.push(dpi_bypass ? 1 : 0); }
+    if (updates.length === 0) return res.json({ success: true });
     params.push(req.params.id);
     await dbRun(`UPDATE traffic_routing SET ${updates.join(', ')} WHERE id = ?`, params);
     // Apply unified routing (app + domain rules together)
