@@ -882,7 +882,7 @@
   width: 100%;
   padding: 9px 12px;
   border-radius: var(--radius-sm);
-  background: rgba(0, 0, 0, 0.3);
+  background: var(--input-bg-soft);
   border: 1px solid var(--panel-border);
   color: var(--text-primary);
   font-family: var(--font-mono);
@@ -906,7 +906,7 @@ select,
   width: 100%;
   padding: 9px 32px 9px 12px;
   border-radius: var(--radius-sm);
-  background-color: rgba(0, 0, 0, 0.4);
+  background-color: var(--input-bg);
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%2364748b' stroke-width='2'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
   background-repeat: no-repeat;
   background-position: right 10px center;
@@ -925,7 +925,7 @@ select:hover,
 .config-select:hover,
 .form-group select:hover {
   border-color: var(--panel-border-hover);
-  background-color: rgba(0, 0, 0, 0.5);
+  background-color: var(--input-bg-hover);
 }
 
 select:focus,
@@ -938,7 +938,7 @@ select:focus,
 
 select option,
 .config-select option {
-  background-color: #111820;
+  background-color: var(--option-bg);
   color: var(--text-primary);
   padding: 8px 12px;
 }
@@ -1332,7 +1332,7 @@ select:disabled,
 .config-input {
   padding: 7px 12px;
   border-radius: 8px;
-  background: rgba(0, 0, 0, 0.3);
+  background: var(--input-bg-soft);
   border: 1px solid var(--panel-border);
   color: var(--text-primary);
   font-family: var(--font-mono);

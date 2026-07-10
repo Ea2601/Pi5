@@ -1,11 +1,11 @@
 {
-  "version": "2.7.6",
-  "build": 35,
+  "version": "2.7.7",
+  "build": 36,
   "date": "2026-07-10",
   "changelog": [
-    "Logo paketi güncellendi: tam klyrix/gate seti (favicon, icon-128/512, horizontal + logo lockup'ları dark & light varyantlarıyla) public/'e işlendi",
-    "Favicon sadeleşti: 16px favicon artık shine/kenarlık içermiyor (küçük boyutta daha net)",
-    "Wordmark canonical'a hizalandı: sidebar artık 'Klyrix/gate' (büyük K) gösteriyor",
-    "dark varyant = koyu zeminler için açık renkli logo; light varyant = açık zeminler için — her ikisi de pakette hazır"
+    "Dropdown/input tema uyumu düzeltildi: kapalı select, hover ve açılan option listesi artık temaya göre renk alıyor (açık temada siyah kalmıyor)",
+    "Tema-duyarlı form yüzeyi token'ları eklendi: --input-bg, --input-bg-hover, --input-bg-soft, --option-bg (dark & light varyantlar)",
+    "color-scheme dark/light: native açılır menü ve kaydırma çubukları da temaya uyuyor",
+    "Metin input'ları (.form-group input, .config-input) da aynı token'larla tema uyumlu hale getirildi"
   ]
 }

@@ -30,6 +30,13 @@
   --glass-saturate: 150%;
   --glass-shadow: 0 8px 32px rgba(0, 0, 0, 0.30), inset 0 1px 0 rgba(255, 255, 255, 0.06);
   --glass-sheen: inset 0 1px 0 rgba(255, 255, 255, 0.05);
+  /* Form control surfaces (theme-aware — dark defaults) */
+  --input-bg: rgba(0, 0, 0, 0.4);
+  --input-bg-hover: rgba(0, 0, 0, 0.5);
+  --input-bg-soft: rgba(0, 0, 0, 0.3);
+  --option-bg: #111820;
+  /* Native açılır menü / kaydırma çubuğu vb. koyu render etsin */
+  color-scheme: dark;
 }
 
 /* Light Theme */
@@ -42,6 +49,13 @@
   --text-primary: #1e293b;
   --text-secondary: #475569;
   --text-muted: #94a3b8;
+  /* Form control surfaces — açık temada koyu yerine hafif nötr yüzeyler */
+  --input-bg: rgba(15, 23, 42, 0.05);
+  --input-bg-hover: rgba(15, 23, 42, 0.09);
+  --input-bg-soft: rgba(15, 23, 42, 0.04);
+  --option-bg: #ffffff;
+  /* Native açılır menü / kaydırma çubuğu vb. açık render etsin */
+  color-scheme: light;
 }
 :root.light-theme body {
   background-image:
