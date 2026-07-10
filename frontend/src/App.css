@@ -4,6 +4,9 @@
   height: 100vh;
   padding: 14px;
   gap: 14px;
+  /* Geniş ekranlarda içeriği 1600px'te sınırla ve ortala */
+  max-width: 1600px;
+  margin: 0 auto;
 }
 
 /* ═══════════════════ SIDEBAR ═══════════════════ */

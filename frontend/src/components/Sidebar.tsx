@@ -47,13 +47,10 @@ export function Sidebar({ activeTab, onTabChange }: SidebarProps) {
     <nav className="glass-panel sidebar">
       <div className="logo">
         <BrandMark size={36} />
-        <div>
-          <h2>
-            <span style={{ fontWeight: 600, color: BRAND.colors.ink }}>{BRAND.wordmarkPrimary}</span>
-            <span style={{ fontWeight: 400, color: BRAND.colors.accent }}>{BRAND.wordmarkSecondary}</span>
-          </h2>
-          <span className="logo-sub">{BRAND.tagline}</span>
-        </div>
+        <h2>
+          <span style={{ fontWeight: 600, color: BRAND.colors.ink }}>{BRAND.wordmarkPrimary}</span>
+          <span style={{ fontWeight: 400, color: BRAND.colors.accent }}>{BRAND.wordmarkSecondary}</span>
+        </h2>
       </div>
       <ul className="nav-links">
         {tabs.map(tab => {
