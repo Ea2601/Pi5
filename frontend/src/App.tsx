@@ -28,22 +28,21 @@ import { DdnsPanel } from './components/DdnsPanel';
 import { CaseControlPanel } from './components/CaseControlPanel';
 import { KioskSettingsPanel } from './components/KioskSettingsPanel';
 import type { TabId } from './types';
+import { seedThemeFromBackend } from './theme';
 import './index.css';
 import './App.css';
 
 function App() {
   const [activeTab, setActiveTab] = useState<TabId>('dashboard');
 
-  // Load and apply saved theme/accent on app start
+  // Load saved accent on start; theme localStorage'dan (main.tsx) gelir, yoksa backend'den tohumla
   useEffect(() => {
     fetch('/api/settings')
       .then(r => r.json())
       .then(data => {
         const s = data.settings || {};
-        // Theme
-        if (s.theme === 'light') {
-          document.documentElement.classList.add('light-theme');
-        }
+        // Tema: localStorage birincil; localStorage boşsa backend değerini uygula + tohumla
+        seedThemeFromBackend(s.theme);
         // Accent color
         const accent = s.accent_color || 'blue';
         if (accent !== 'blue') {

@@ -1,14 +1,13 @@
 import { useState, useEffect, useRef } from 'react';
 import {
   Settings, Palette, Globe, Bell, Zap, Info, Save, ChevronDown, ChevronRight,
-  Sun, Moon, Volume2, VolumeX, Clock, RefreshCw, Download, Check, X, Loader2, Gauge
+  Volume2, VolumeX, Clock, RefreshCw, Download, Check, X, Loader2, Gauge
 } from 'lucide-react';
 import { useApi, putApi, postApi } from '../hooks/useApi';
 import { Panel, Badge } from './ui';
 import { BRAND } from '../brand';
 
 interface AppSettings {
-  theme: string;
   accentColor: string;
   language: string;
   notificationSound: boolean;
@@ -19,7 +18,6 @@ interface AppSettings {
 }
 
 const defaultSettings: AppSettings = {
-  theme: 'dark',
   accentColor: 'blue',
   language: 'tr',
   notificationSound: true,
@@ -32,7 +30,6 @@ const defaultSettings: AppSettings = {
 // API key-value nesnesini AppSettings'e dönüştür
 function parseApiSettings(raw: Record<string, string>): Partial<AppSettings> {
   return {
-    theme: raw.theme || 'dark',
     accentColor: raw.accent_color || raw.accentColor || 'blue',
     language: raw.language || 'tr',
     notificationSound: raw.notification_sound === 'true',
@@ -45,7 +42,6 @@ function parseApiSettings(raw: Record<string, string>): Partial<AppSettings> {
 // AppSettings'i API formatına dönüştür
 function toApiSettings(s: AppSettings): Record<string, unknown> {
   return {
-    theme: s.theme,
     accent_color: s.accentColor,
     language: s.language,
     notification_sound: String(s.notificationSound),
@@ -56,7 +52,7 @@ function toApiSettings(s: AppSettings): Record<string, unknown> {
 }
 
 export function SettingsPanel() {
-  const { data } = useApi<{ settings: Record<string, string> }>('/settings', { settings: {} });
+  const { data, loading } = useApi<{ settings: Record<string, string> }>('/settings', { settings: {} });
   const [settings, setSettings] = useState<AppSettings>(defaultSettings);
   const [saving, setSaving] = useState(false);
   const [result, setResult] = useState<{ type: 'success' | 'error'; msg: string } | null>(null);
@@ -64,14 +60,15 @@ export function SettingsPanel() {
   const [loaded, setLoaded] = useState(false);
   const skipFirstSave = useRef(true); // yükleme sonrası ilk otomatik-kayıt tetiğini atla
 
+  // İlk fetch tamamlanınca kayıtlı ayarları uygula. `loading` bayrağını kullanıyoruz;
+  // DB boş dönse bile loaded=true olur (aksi halde otomatik kayıt hiç etkinleşmezdi).
   useEffect(() => {
-    if (data.settings && Object.keys(data.settings).length > 0 && !loaded) {
-      setSettings({ ...defaultSettings, ...parseApiSettings(data.settings) });
-      setLoaded(true);
-    }
-  }, [data.settings, loaded]);
+    if (loading || loaded) return;
+    setSettings({ ...defaultSettings, ...parseApiSettings(data.settings || {}) });
+    setLoaded(true);
+  }, [loading, loaded, data.settings]);
 
-  // Otomatik kayıt: kullanıcı bir ayarı değiştirince (ilk yükleme hariç) debounce ile kaydet
+  // Otomatik kayıt: kullanıcı bir ayarı değiştirince (ilk yükleme hariç) kısa debounce ile kaydet
   useEffect(() => {
     if (!loaded) return;
     if (skipFirstSave.current) { skipFirstSave.current = false; return; }
@@ -84,7 +81,7 @@ export function SettingsPanel() {
         setResult({ type: 'error', msg: e instanceof Error ? e.message : 'Otomatik kaydetme başarısız.' });
       }
       setSaving(false);
-    }, 600);
+    }, 300);
     return () => clearTimeout(t);
   }, [settings, loaded]);
 
@@ -100,11 +97,7 @@ export function SettingsPanel() {
     setCollapsed(prev => ({ ...prev, [cat]: !prev[cat] }));
   };
 
-  // Apply theme/accent to DOM immediately
-  const applyTheme = (theme: string) => {
-    document.documentElement.classList.toggle('light-theme', theme === 'light');
-  };
-
+  // Accent rengini DOM'a uygula (tema Topbar'dan yönetilir)
   const applyAccentColor = (color: string) => {
     document.documentElement.classList.remove('accent-green', 'accent-purple', 'accent-orange');
     if (color !== 'blue') {
@@ -112,18 +105,12 @@ export function SettingsPanel() {
     }
   };
 
-  // Apply settings on load
+  // Apply accent on load
   useEffect(() => {
     if (loaded) {
-      applyTheme(settings.theme);
       applyAccentColor(settings.accentColor);
     }
   }, [loaded]);
-
-  const handleTheme = (theme: 'dark' | 'light') => {
-    setSettings(prev => ({ ...prev, theme }));
-    applyTheme(theme);
-  };
 
   const requestDesktopNotifications = async () => {
     if ('Notification' in window) {
@@ -146,26 +133,6 @@ export function SettingsPanel() {
       icon: <Palette size={15} />,
       content: (
         <div className="config-items">
-          <div className="config-item">
-            <div className="config-item-info">
-              <span className="config-item-label">Tema</span>
-              <span className="config-item-desc">Arayüz renk temasını değiştir</span>
-            </div>
-            <div className="config-item-control" style={{ display: 'flex', gap: 6 }}>
-              <button
-                className={`btn-sm ${settings.theme === 'dark' ? 'btn-primary' : 'btn-outline'}`}
-                onClick={() => handleTheme('dark')}
-              >
-                <Moon size={13} /> Koyu
-              </button>
-              <button
-                className={`btn-sm ${settings.theme === 'light' ? 'btn-primary' : 'btn-outline'}`}
-                onClick={() => handleTheme('light')}
-              >
-                <Sun size={13} /> Açık
-              </button>
-            </div>
-          </div>
           <div className="config-item">
             <div className="config-item-info">
               <span className="config-item-label">Vurgu Rengi</span>

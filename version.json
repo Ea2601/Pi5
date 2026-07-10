@@ -1,11 +1,11 @@
 {
-  "version": "2.7.13",
-  "build": 42,
+  "version": "2.7.14",
+  "build": 43,
   "date": "2026-07-11",
   "changelog": [
-    "Ayarlar paneli otomatik kayıt: herhangi bir ayar değiştirildiğinde (tema, vurgu, dil, bildirim, yenileme, hız testi aralığı) 600ms debounce ile otomatik kaydediliyor — 'Kaydet' butonuna gerek yok",
-    "Kaydedilen ayarlar sonraki erişimlerde otomatik yükleniyor (App başlangıcı /api/settings'ten tema/vurgu uygular)",
-    "Manuel Kaydet butonu, 'Değişiklikler otomatik kaydedilir' göstergesiyle değiştirildi; başarı bildirimi kısa süre sonra kayboluyor",
-    "Not: LED/LCD/Kiosk gibi donanım/servis tetikleyen paneller kasıtlı olarak açık 'Uygula' butonuyla kalır"
+    "Açık/koyu tema düğmesi Ayarlar'dan kaldırılıp Topbar'a taşındı (saat yanındaki güneş/ay ikonu)",
+    "Tema artık localStorage ile ANLIK kalıcı: sayfa yenilendiğinde sıfırlanmıyor, render öncesi uygulandığı için dark-flash da yok; backend'e de senkronlanıyor",
+    "Ayar kalıcılık düzeltmesi: yükleme kapısı 'loading' bayrağına bağlandı (DB boş dönse bile otomatik kayıt etkinleşir) + debounce 600ms→300ms → hız testi aralığı vb. artık yenilemede korunuyor",
+    "Tema ayarı SettingsPanel'den tamamen kaldırıldı (accent/vurgu rengi kalıyor); tek kaynak Topbar + localStorage"
   ]
 }

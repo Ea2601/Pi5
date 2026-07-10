@@ -1,8 +1,9 @@
-import { Bell, User, ShieldCheck, ShieldAlert, Download, Loader2, Clock } from 'lucide-react';
+import { Bell, User, ShieldCheck, ShieldAlert, Download, Loader2, Clock, Sun, Moon } from 'lucide-react';
 import { useState, useEffect } from 'react';
 import type { HealthStatus } from '../types';
 import { useApi, postApi } from '../hooks/useApi';
 import { Modal, Badge } from './ui';
+import { setTheme, getCurrentTheme, type Theme } from '../theme';
 
 interface UpdateInfo {
   available: boolean;
@@ -22,6 +23,13 @@ export function Topbar({ onShowAlerts }: { onShowAlerts?: () => void }) {
   const [updating, setUpdating] = useState(false);
   const [updateResult, setUpdateResult] = useState<string | null>(null);
   const [clock, setClock] = useState('');
+  const [theme, setThemeState] = useState<Theme>(getCurrentTheme());
+
+  const toggleTheme = () => {
+    const next: Theme = theme === 'dark' ? 'light' : 'dark';
+    setTheme(next);      // DOM + localStorage + backend senkron
+    setThemeState(next); // ikon güncellensin
+  };
 
   // Live clock
   useEffect(() => {
@@ -99,6 +107,13 @@ export function Topbar({ onShowAlerts }: { onShowAlerts?: () => void }) {
               <Clock size={13} /> {clock}
             </span>
           )}
+          <button
+            className="icon-btn"
+            title={theme === 'dark' ? 'Açık moda geç' : 'Koyu moda geç'}
+            onClick={toggleTheme}
+          >
+            {theme === 'dark' ? <Sun size={18} /> : <Moon size={18} />}
+          </button>
           <button
             className="icon-btn"
             title="Bildirimler"
