@@ -48,7 +48,7 @@ export function Sidebar({ activeTab, onTabChange }: SidebarProps) {
       <div className="logo">
         <BrandMark size={36} />
         <h2>
-          <span style={{ fontWeight: 600, color: BRAND.colors.ink }}>{BRAND.wordmarkPrimary}</span>
+          <span style={{ fontWeight: 600, color: 'var(--brand-ink)' }}>{BRAND.wordmarkPrimary}</span>
           <span style={{ fontWeight: 400, color: BRAND.colors.accent }}>{BRAND.wordmarkSecondary}</span>
         </h2>
       </div>

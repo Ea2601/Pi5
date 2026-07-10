@@ -35,6 +35,8 @@
   --input-bg-hover: rgba(0, 0, 0, 0.5);
   --input-bg-soft: rgba(0, 0, 0, 0.3);
   --option-bg: #111820;
+  /* Marka wordmark mürekkebi — koyu temada açık (dark logo varyantı) */
+  --brand-ink: #F8FAFC;
   /* Native açılır menü / kaydırma çubuğu vb. koyu render etsin */
   color-scheme: dark;
 }
@@ -54,6 +56,8 @@
   --input-bg-hover: rgba(15, 23, 42, 0.09);
   --input-bg-soft: rgba(15, 23, 42, 0.04);
   --option-bg: #ffffff;
+  /* Marka wordmark mürekkebi — açık temada koyu (light logo varyantı) */
+  --brand-ink: #0F172A;
   /* Native açılır menü / kaydırma çubuğu vb. açık render etsin */
   color-scheme: light;
 }

@@ -1,9 +1,9 @@
 {
-  "version": "2.7.8",
-  "build": 37,
+  "version": "2.7.9",
+  "build": 38,
   "date": "2026-07-10",
   "changelog": [
-    "Sidebar logo sadeleşti: 'Secure Gateway' alt metni kaldırıldı, artık yalnızca marka sembolü + Klyrix/gate (orijinal lockup gibi)",
-    "Geniş ekran düzeni: içerik max 1600px ile sınırlandı ve ortalandı (küçük ekranlarda responsive davranış korunuyor)"
+    "Sidebar logo tema-duyarlı: 'Klyrix' wordmark'ı artık koyu temada açık (#F8FAFC), açık temada koyu (#0F172A) renk alıyor — açık modda kaybolmuyor",
+    "Yeni --brand-ink tema değişkeni (marka kılavuzundaki dark/light wordmark varyantına göre)"
   ]
 }
