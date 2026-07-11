@@ -1885,9 +1885,9 @@ app.post('/api/devices/groups', async (req, res) => {
     if (!name) {
       return res.status(400).json({ error: 'name gerekli' });
     }
-    await dbRun('INSERT INTO device_groups (name, description, color, icon) VALUES (?, ?, ?, ?)',
+    const id = await dbInsert('INSERT INTO device_groups (name, description, color, icon) VALUES (?, ?, ?, ?)',
       [name, description || '', color || '#3B82F6', icon || 'devices']);
-    res.json({ success: true });
+    res.json({ success: true, id });
   } catch (e: any) {
     res.status(500).json({ error: e.message });
   }
