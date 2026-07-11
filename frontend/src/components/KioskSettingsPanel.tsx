@@ -2,6 +2,7 @@ import { Monitor, Layout, Clock, Save, ExternalLink } from 'lucide-react';
 import { useState, useEffect } from 'react';
 import { useApi, putApi } from '../hooks/useApi';
 import { Panel } from './ui';
+import { toast } from '../toast';
 
 interface KioskConfig {
   enabled: boolean;
@@ -29,7 +30,6 @@ export function KioskSettingsPanel() {
     enabled: true, rotateInterval: 10, widgets: DEFAULT_WIDGETS,
   });
   const [saving, setSaving] = useState(false);
-  const [result, setResult] = useState('');
 
   useEffect(() => {
     if (data.config?.widgets?.length) setConfig(data.config);
@@ -46,8 +46,8 @@ export function KioskSettingsPanel() {
     setSaving(true);
     try {
       await putApi('/case/kiosk', config as unknown as Record<string, unknown>);
-      setResult('Kiosk ayarları kaydedildi');
-    } catch { setResult('Kaydetme başarısız'); }
+      toast.success('Kiosk ayarları kaydedildi');
+    } catch { toast.error('Kaydetme başarısız'); }
     setSaving(false);
   };
 
@@ -115,12 +115,6 @@ export function KioskSettingsPanel() {
             </code>
           </div>
         </div>
-
-        {result && (
-          <div style={{ marginTop: 10, padding: '6px 10px', borderRadius: 8, fontSize: 12, color: '#10b981', background: 'rgba(16,185,129,0.1)' }}>
-            {result}
-          </div>
-        )}
       </Panel>
     </div>
   );

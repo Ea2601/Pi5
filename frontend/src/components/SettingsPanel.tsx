@@ -1,11 +1,12 @@
 import { useState, useEffect, useRef } from 'react';
 import {
   Settings, Palette, Globe, Bell, Zap, Info, Save, ChevronDown, ChevronRight,
-  Volume2, VolumeX, Clock, RefreshCw, Download, Check, X, Loader2, Gauge
+  Volume2, VolumeX, Clock, RefreshCw, Download, Loader2, Gauge
 } from 'lucide-react';
 import { useApi, putApi, postApi } from '../hooks/useApi';
 import { Panel, Badge } from './ui';
 import { BRAND } from '../brand';
+import { toast } from '../toast';
 
 interface AppSettings {
   accentColor: string;
@@ -55,7 +56,6 @@ export function SettingsPanel() {
   const { data, loading } = useApi<{ settings: Record<string, string> }>('/settings', { settings: {} });
   const [settings, setSettings] = useState<AppSettings>(defaultSettings);
   const [saving, setSaving] = useState(false);
-  const [result, setResult] = useState<{ type: 'success' | 'error'; msg: string } | null>(null);
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
   const [loaded, setLoaded] = useState(false);
   const skipFirstSave = useRef(true); // yükleme sonrası ilk otomatik-kayıt tetiğini atla
@@ -76,22 +76,14 @@ export function SettingsPanel() {
       setSaving(true);
       try {
         await putApi('/settings', { settings: toApiSettings(settings) });
-        setResult({ type: 'success', msg: 'Ayarlar otomatik kaydedildi.' });
+        toast.success('Ayarlar otomatik kaydedildi.');
       } catch (e: unknown) {
-        setResult({ type: 'error', msg: e instanceof Error ? e.message : 'Otomatik kaydetme başarısız.' });
+        toast.error(e instanceof Error ? e.message : 'Otomatik kaydetme başarısız.');
       }
       setSaving(false);
     }, 300);
     return () => clearTimeout(t);
   }, [settings, loaded]);
-
-  // Başarılı kayıt bildirimini kısa süre sonra otomatik gizle (hatalar kalıcı)
-  useEffect(() => {
-    if (result?.type === 'success') {
-      const t = setTimeout(() => setResult(null), 2500);
-      return () => clearTimeout(t);
-    }
-  }, [result]);
 
   const toggleCollapse = (cat: string) => {
     setCollapsed(prev => ({ ...prev, [cat]: !prev[cat] }));
@@ -306,16 +298,6 @@ export function SettingsPanel() {
           </span>
         }
       >
-        {result && (
-          <div style={{
-            padding: '8px 12px', borderRadius: 8, marginBottom: 10,
-            background: result.type === 'success' ? 'rgba(16,185,129,0.1)' : 'rgba(239,68,68,0.1)',
-            color: result.type === 'success' ? '#10b981' : '#ef4444', fontSize: 13
-          }}>
-            {result.msg}
-          </div>
-        )}
-
         <div className="service-settings">
           {categories.map(cat => (
             <div key={cat.key} className="config-category">
@@ -337,22 +319,20 @@ export function SettingsPanel() {
 function UpdateSection() {
   const { data: versionData } = useApi<{ version: string; build: number }>('/system/version', { version: '2.1.0', build: 0 });
   const [updating, setUpdating] = useState(false);
-  const [updateResult, setUpdateResult] = useState<{ success: boolean; message: string } | null>(null);
 
   const handleUpdate = async () => {
     setUpdating(true);
-    setUpdateResult(null);
     try {
       const result = await postApi('/system/update', {});
       if (result.success) {
-        setUpdateResult({ success: true, message: 'Güncelleme tamamlandı! Servis yeniden başlatılıyor, 8sn sonra sayfa yenilenecek...' });
+        toast.success('Güncelleme tamamlandı! Servis yeniden başlatılıyor, 8sn sonra sayfa yenilenecek...');
         setTimeout(() => window.location.reload(), 8000);
       } else {
         const failed = result.steps?.filter((s: any) => !s.success).map((s: any) => s.step).join(', ');
-        setUpdateResult({ success: false, message: `Başarısız adımlar: ${failed}` });
+        toast.error(`Başarısız adımlar: ${failed}`);
       }
     } catch (e: any) {
-      setUpdateResult({ success: false, message: e.message || 'Güncelleme başarısız' });
+      toast.error(e.message || 'Güncelleme başarısız');
     }
     setUpdating(false);
   };
@@ -384,17 +364,6 @@ function UpdateSection() {
           </button>
         </div>
       </div>
-      {updateResult && (
-        <div style={{
-          padding: '8px 12px', borderRadius: 8, marginTop: 8,
-          background: updateResult.success ? 'rgba(16,185,129,0.1)' : 'rgba(239,68,68,0.1)',
-          color: updateResult.success ? '#10b981' : '#ef4444', fontSize: 13,
-          display: 'flex', alignItems: 'center', gap: 6,
-        }}>
-          {updateResult.success ? <Check size={14} /> : <X size={14} />}
-          {updateResult.message}
-        </div>
-      )}
     </div>
   );
 }
@@ -493,7 +462,6 @@ function TimezoneSection() {
   const { data } = useApi<{ timezone: string }>('/system/timezone', { timezone: '' });
   const [selected, setSelected] = useState('');
   const [saving, setSaving] = useState(false);
-  const [result, setResult] = useState<string | null>(null);
 
   useEffect(() => {
     if (data.timezone && !selected) setSelected(data.timezone);
@@ -504,9 +472,9 @@ function TimezoneSection() {
     setSaving(true);
     try {
       await putApi('/system/timezone', { timezone: selected });
-      setResult('Saat dilimi güncellendi');
+      toast.success('Saat dilimi güncellendi');
     } catch {
-      setResult('Güncelleme başarısız');
+      toast.error('Güncelleme başarısız');
     }
     setSaving(false);
   };
@@ -539,11 +507,6 @@ function TimezoneSection() {
           </button>
         </div>
       </div>
-      {result && (
-        <div style={{ padding: '6px 10px', borderRadius: 8, fontSize: 12, color: '#10b981', background: 'rgba(16,185,129,0.1)', marginTop: 4 }}>
-          {result}
-        </div>
-      )}
     </div>
   );
 }

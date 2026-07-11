@@ -1,9 +1,10 @@
 import { Zap, Globe, Shield, Settings, List, Plus, Trash2, Search } from 'lucide-react';
 import { useApi, postApi, putApi, deleteApi } from '../hooks/useApi';
 import { useState } from 'react';
-import { Panel, Badge, Alert } from './ui';
+import { Panel, Badge } from './ui';
 import { ServiceSettings } from './ui/ServiceSettings';
 import type { ServiceStatus, ZapretDomain } from '../types';
+import { toast } from '../toast';
 
 type ZapretTab = 'overview' | 'settings' | 'hostlist' | 'exclude';
 
@@ -14,26 +15,23 @@ export function ZapretPanel() {
   const isEnabled = zapretSvc?.enabled === 1;
   const [testDomain, setTestDomain] = useState('discord.com');
   const [installing, setInstalling] = useState(false);
-  const [result, setResult] = useState<{ type: 'success' | 'error'; msg: string } | null>(null);
 
   const handleInstall = async () => {
-    setInstalling(true); setResult(null);
+    setInstalling(true);
     try {
       await postApi('/services/setup', { action: 'zapret', domain: testDomain });
-      setResult({ type: 'success', msg: `Zapret DPI bypass ${testDomain} için yapılandırıldı.` });
+      toast.success(`Zapret DPI bypass ${testDomain} için yapılandırıldı.`);
       await refetch();
-    } catch (e: any) { setResult({ type: 'error', msg: e.message }); }
+    } catch (e: any) { toast.error(e.message); }
     setInstalling(false);
   };
 
-  const [toggleError, setToggleError] = useState('');
   const handleToggle = async () => {
-    setToggleError('');
     try {
       const r = await postApi('/services/toggle', { name: 'zapret', enabled: !isEnabled });
-      if (r.error) setToggleError(r.error);
+      if (r.error) toast.error(r.error);
       await refetch();
-    } catch (e: any) { setToggleError(e.message || 'Toggle başarısız'); }
+    } catch (e: any) { toast.error(e.message || 'Toggle başarısız'); }
   };
 
   const tabs: { id: ZapretTab; label: string; icon: React.ReactNode }[] = [
@@ -92,8 +90,6 @@ export function ZapretPanel() {
         </div>
       </Panel>
 
-      {toggleError && <Alert type="error" message={toggleError} />}
-
       {activeTab === 'overview' && (
         <>
           <div style={{ marginTop: 14 }}>
@@ -121,7 +117,6 @@ export function ZapretPanel() {
                 <label><Globe size={14} /><span>Test Domaini</span></label>
                 <input type="text" value={testDomain} onChange={e => setTestDomain(e.target.value)} placeholder="discord.com" disabled={installing} />
               </div>
-              {result && <Alert type={result.type} message={result.msg} />}
               <button className="btn-primary btn-full" onClick={handleInstall} disabled={installing}>
                 {installing ? 'Blockcheck çalışıyor...' : 'Blockcheck Başlat & Uygula'}
               </button>

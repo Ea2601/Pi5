@@ -4,6 +4,7 @@ import type { HealthStatus } from '../types';
 import { useApi, postApi } from '../hooks/useApi';
 import { Modal, Badge } from './ui';
 import { setTheme, getCurrentTheme, type Theme } from '../theme';
+import { toast } from '../toast';
 
 interface UpdateInfo {
   available: boolean;
@@ -21,7 +22,6 @@ export function Topbar({ onShowAlerts }: { onShowAlerts?: () => void }) {
   const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(null);
   const [showUpdateModal, setShowUpdateModal] = useState(false);
   const [updating, setUpdating] = useState(false);
-  const [updateResult, setUpdateResult] = useState<string | null>(null);
   const [clock, setClock] = useState('');
   const [theme, setThemeState] = useState<Theme>(getCurrentTheme());
 
@@ -61,18 +61,17 @@ export function Topbar({ onShowAlerts }: { onShowAlerts?: () => void }) {
 
   const handleUpdate = async () => {
     setUpdating(true);
-    setUpdateResult(null);
     try {
       const result = await postApi('/system/update', {});
       if (result.success) {
-        setUpdateResult('Güncelleme tamamlandı! 8sn sonra sayfa yenilenecek...');
+        toast.success('Güncelleme tamamlandı! 8sn sonra sayfa yenilenecek...');
         setTimeout(() => window.location.reload(), 8000);
       } else {
         const failed = result.steps?.filter((s: any) => !s.success).map((s: any) => s.step).join(', ');
-        setUpdateResult(`Başarısız: ${failed}`);
+        toast.error(`Başarısız: ${failed}`);
       }
     } catch (e: any) {
-      setUpdateResult(e.message || 'Güncelleme başarısız');
+      toast.error(e.message || 'Güncelleme başarısız');
     }
     setUpdating(false);
   };
@@ -173,16 +172,6 @@ export function Topbar({ onShowAlerts }: { onShowAlerts?: () => void }) {
             ))}
           </div>
         </div>
-
-        {updateResult && (
-          <div style={{
-            marginTop: 12, padding: '8px 12px', borderRadius: 8, fontSize: 12,
-            background: updateResult.includes('tamamlandı') ? 'rgba(16,185,129,0.1)' : 'rgba(239,68,68,0.1)',
-            color: updateResult.includes('tamamlandı') ? '#10b981' : '#ef4444',
-          }}>
-            {updateResult}
-          </div>
-        )}
       </Modal>
     </>
   );

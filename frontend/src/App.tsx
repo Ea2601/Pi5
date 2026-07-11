@@ -29,6 +29,7 @@ import { CaseControlPanel } from './components/CaseControlPanel';
 import { KioskSettingsPanel } from './components/KioskSettingsPanel';
 import type { TabId } from './types';
 import { seedThemeFromBackend } from './theme';
+import { Toaster } from './toast';
 import './index.css';
 import './App.css';
 
@@ -95,6 +96,7 @@ function App() {
           </div>
         </main>
       </div>
+      <Toaster />
     </ErrorBoundary>
   );
 }

@@ -1,7 +1,8 @@
-import { Wrench, Power, Search, Server, Plus, Loader, Wifi } from 'lucide-react';
+import { Wrench, Power, Search, Server, Plus, Loader } from 'lucide-react';
 import { useApi, postApi } from '../hooks/useApi';
 import { useState } from 'react';
 import { Panel, Badge } from './ui';
+import { toast } from '../toast';
 import type { Device } from '../types';
 
 type ToolTab = 'wol' | 'portscan' | 'dhcp';
@@ -32,7 +33,6 @@ export function NetworkToolsPanel() {
   // WoL state
   const [wolTarget, setWolTarget] = useState('');
   const [wolSending, setWolSending] = useState(false);
-  const [wolResult, setWolResult] = useState('');
 
   // Port scanner state
   const [scanIp, setScanIp] = useState('');
@@ -54,12 +54,11 @@ export function NetworkToolsPanel() {
   const handleWol = async () => {
     if (!wolTarget) return;
     setWolSending(true);
-    setWolResult('');
     try {
       await postApi('/wol/send', { mac_address: wolTarget });
-      setWolResult('Wake-on-LAN paketi gonderildi!');
+      toast.success('Wake-on-LAN paketi gonderildi!');
     } catch {
-      setWolResult('Gonderim basarisiz oldu.');
+      toast.error('Gonderim basarisiz oldu.');
     }
     setWolSending(false);
   };
@@ -130,12 +129,6 @@ export function NetworkToolsPanel() {
                 </button>
               </div>
             </div>
-            {wolResult && (
-              <div className="pihole-flow" style={{ marginTop: 8 }}>
-                <Wifi size={14} />
-                <span>{wolResult}</span>
-              </div>
-            )}
             <div className="blocked-list" style={{ marginTop: 12 }}>
               <p className="text-muted" style={{ padding: '8px 0', fontSize: '0.8rem' }}>
                 Wake-on-LAN, kapalı cihazlari ag uzerinden uzaktan baslatmanizi saglar. Hedef cihazin WoL destekli olmasi gerekir.

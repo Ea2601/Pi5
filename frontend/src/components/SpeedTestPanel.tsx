@@ -1,6 +1,7 @@
-import { Gauge, Play, ArrowDown, ArrowUp, Clock, Loader2, AlertTriangle, Zap, Wifi, Server } from 'lucide-react';
+import { Gauge, Play, ArrowDown, ArrowUp, Clock, Loader2, Zap, Wifi, Server } from 'lucide-react';
 import { useApi, postApi } from '../hooks/useApi';
 import { useState } from 'react';
+import { toast } from '../toast';
 import { Panel, StatCard, Badge } from './ui';
 import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from 'recharts';
 import type { SpeedTestResult } from '../types';
@@ -12,13 +13,11 @@ export function SpeedTestPanel() {
   const { data, refetch } = useApi<{ tests: SpeedTestResult[] }>(`/speedtest/history?period=${period}`, { tests: [] });
   const [running, setRunning] = useState(false);
   const [progress, setProgress] = useState('');
-  const [error, setError] = useState('');
   const [elapsed, setElapsed] = useState(0);
 
   const handleRun = async () => {
     setRunning(true);
     setProgress('Bağlantı hazırlanıyor...');
-    setError('');
     setElapsed(0);
 
     const startTime = Date.now();
@@ -34,7 +33,7 @@ export function SpeedTestPanel() {
       const result = await postApi('/speedtest/run', {});
       clearInterval(timer);
       if (result.error) {
-        setError(result.error);
+        toast.error(result.error);
         setProgress('');
       } else {
         setProgress(`Tamamlandı! (${Math.floor((Date.now() - startTime) / 1000)} saniye)`);
@@ -42,7 +41,7 @@ export function SpeedTestPanel() {
       }
     } catch (e: any) {
       clearInterval(timer);
-      setError(e?.message || 'Test başarısız oldu.');
+      toast.error(e?.message || 'Test başarısız oldu.');
       setProgress('');
     }
     setRunning(false);
@@ -75,11 +74,6 @@ export function SpeedTestPanel() {
         {running && progress && (
           <div className="alert alert-success" style={{ marginTop: 8 }}>
             <Loader2 size={14} className="spin" /><span>{progress}</span>
-          </div>
-        )}
-        {error && (
-          <div className="alert alert-error" style={{ marginTop: 8 }}>
-            <AlertTriangle size={14} /><span>{error}</span>
           </div>
         )}
       </Panel>

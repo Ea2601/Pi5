@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { Save, RotateCcw, ChevronDown, ChevronRight, Info } from 'lucide-react';
 import { useApi, putApi, postApi } from '../../hooks/useApi';
+import { toast } from '../../toast';
 import type { ConfigItem } from '../../types';
 
 interface ServiceSettingsProps {
@@ -16,7 +17,6 @@ export function ServiceSettings({ service, categoryLabels = {}, categoryIcons = 
   const [changes, setChanges] = useState<Record<string, string>>({});
   const [saving, setSaving] = useState(false);
   const [restarting, setRestarting] = useState(false);
-  const [result, setResult] = useState<{ type: 'success' | 'error'; msg: string } | null>(null);
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
 
   const hasChanges = Object.keys(changes).length > 0;
@@ -27,7 +27,6 @@ export function ServiceSettings({ service, categoryLabels = {}, categoryIcons = 
 
   const handleChange = (key: string, value: string) => {
     setChanges(prev => ({ ...prev, [key]: value }));
-    setResult(null);
   };
 
   const handleSave = async () => {
@@ -35,10 +34,10 @@ export function ServiceSettings({ service, categoryLabels = {}, categoryIcons = 
     try {
       await putApi(`/services/${service}/config`, { changes });
       setChanges({});
-      setResult({ type: 'success', msg: 'Ayarlar kaydedildi.' });
+      toast.success('Ayarlar kaydedildi.');
       await refetch();
     } catch (e: any) {
-      setResult({ type: 'error', msg: e.message });
+      toast.error(e.message);
     }
     setSaving(false);
   };
@@ -47,9 +46,9 @@ export function ServiceSettings({ service, categoryLabels = {}, categoryIcons = 
     setRestarting(true);
     try {
       await postApi(`/services/${service}/restart`, {});
-      setResult({ type: 'success', msg: 'Servis yeniden başlatılıyor...' });
+      toast.success('Servis yeniden başlatılıyor...');
     } catch (e: any) {
-      setResult({ type: 'error', msg: e.message });
+      toast.error(e.message);
     }
     setTimeout(() => setRestarting(false), 2500);
   };
@@ -102,13 +101,7 @@ export function ServiceSettings({ service, categoryLabels = {}, categoryIcons = 
   return (
     <div className="service-settings">
       <div className="settings-toolbar">
-        <div className="settings-toolbar-left">
-          {result && (
-            <span className={`settings-result ${result.type === 'success' ? 'text-success' : 'text-danger'}`}>
-              {result.msg}
-            </span>
-          )}
-        </div>
+        <div className="settings-toolbar-left" />
         <div className="settings-toolbar-right">
           <button className="btn-outline btn-sm" onClick={handleRestart} disabled={restarting}>
             <RotateCcw size={13} className={restarting ? 'spin' : ''} />

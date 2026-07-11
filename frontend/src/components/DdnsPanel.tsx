@@ -1,7 +1,8 @@
 import { useState } from 'react';
-import { Globe, RefreshCw, Shield, Clock, Plus, Trash2, Check, AlertTriangle, Edit3, X } from 'lucide-react';
+import { Globe, RefreshCw, Shield, Clock, Plus, Trash2, Check, Edit3, X } from 'lucide-react';
 import { useApi, postApi, putApi, deleteApi } from '../hooks/useApi';
 import { Panel, Badge, StatCard } from './ui';
+import { toast } from '../toast';
 
 interface DdnsConfig {
   id: number;
@@ -50,19 +51,19 @@ export function DdnsPanel() {
   const { data: historyData, refetch: refetchHistory } = useApi<{ history: IpHistoryEntry[] }>('/ddns/ip-history', { history: [] });
 
   const [checking, setChecking] = useState(false);
-  const [checkResult, setCheckResult] = useState<string | null>(null);
   const [form, setForm] = useState(emptyForm);
   const [editingId, setEditingId] = useState<number | null>(null);
   const [showForm, setShowForm] = useState(false);
   const [testing, setTesting] = useState<number | null>(null);
 
   const handleCheckIp = async () => {
-    setChecking(true); setCheckResult(null);
+    setChecking(true);
     try {
       const result = await postApi('/ddns/check-ip', {});
-      setCheckResult(result.changed ? `IP degisti: ${result.old_ip} → ${result.new_ip}` : `IP degismedi: ${result.ip}`);
+      if (result.changed) toast.info(`IP degisti: ${result.old_ip} → ${result.new_ip}`);
+      else toast.success(`IP degismedi: ${result.ip}`);
       refetchIp(); refetchHistory(); refetchConfigs();
-    } catch { setCheckResult('IP kontrolu basarisiz.'); }
+    } catch { toast.error('IP kontrolu basarisiz.'); }
     setChecking(false);
   };
 
@@ -138,12 +139,6 @@ export function DdnsPanel() {
                   Saglayici: {ipData.provider} — {ipData.checked_at ? new Date(ipData.checked_at).toLocaleString('tr-TR') : '---'}
                 </p>
               </div>
-              {checkResult && (
-                <div className={`alert ${checkResult.includes('degisti') ? 'alert-error' : 'alert-success'}`}>
-                  {checkResult.includes('degisti') ? <AlertTriangle size={14} /> : <Check size={14} />}
-                  <span>{checkResult}</span>
-                </div>
-              )}
             </Panel>
           </div>
 

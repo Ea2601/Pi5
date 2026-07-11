@@ -6,6 +6,7 @@ import { useApi, putApi, postApi, deleteApi } from '../hooks/useApi';
 import { useState } from 'react';
 import { Panel, Badge } from './ui';
 import { AppLogo } from './AppLogos';
+import { toast } from '../toast';
 import type { TrafficRule } from '../types';
 
 type RoutingTab = 'apps' | 'domains';
@@ -216,7 +217,6 @@ function DomainRoutingView() {
   const [newDesc, setNewDesc] = useState('');
   const [newRedirectUrl, setNewRedirectUrl] = useState('');
   const [filter, setFilter] = useState('');
-  const [error, setError] = useState('');
 
   const vpsList = vpsData.servers;
   const domains = data.domains;
@@ -224,7 +224,6 @@ function DomainRoutingView() {
 
   const handleAdd = async () => {
     if (!newDomain.trim()) return;
-    setError('');
     try {
       const result = await postApi('/routing/domains', {
         domain: newDomain.trim(),
@@ -233,11 +232,11 @@ function DomainRoutingView() {
         description: newDesc.trim(),
         redirect_url: newRedirectUrl.trim(),
       });
-      if (result.error) { setError(result.error); return; }
+      if (result.error) { toast.error(result.error); return; }
       setNewDomain(''); setNewDesc(''); setNewExitNode('isp'); setNewDpi(0); setNewRedirectUrl(''); setShowAdd(false);
       await refetch();
     } catch (e: any) {
-      setError(e.message || 'Eklenemedi');
+      toast.error(e.message || 'Eklenemedi');
     }
   };
 
@@ -313,12 +312,11 @@ function DomainRoutingView() {
                 {newRedirectUrl && <span style={{ fontSize: 11, color: 'var(--accent-color)', marginTop: 4, display: 'block' }}>Bu domain'e erişildiğinde kullanıcı otomatik olarak bu URL'ye yönlendirilecek</span>}
               </div>
             </div>
-            {error && <div style={{ color: 'var(--danger-color)', fontSize: 12, marginTop: 6 }}>{error}</div>}
             <div className="cron-add-actions" style={{ marginTop: 10 }}>
               <button className="btn-primary btn-sm" onClick={handleAdd} disabled={!newDomain.trim()}>
                 <Check size={13} /> Ekle
               </button>
-              <button className="btn-outline btn-sm" onClick={() => { setShowAdd(false); setError(''); }}>
+              <button className="btn-outline btn-sm" onClick={() => setShowAdd(false)}>
                 <X size={13} /> İptal
               </button>
             </div>

@@ -4,6 +4,7 @@ import { useState } from 'react';
 import { Panel, StatCard, Badge } from './ui';
 import { ServiceSettings } from './ui/ServiceSettings';
 import type { PiholeStats, ServiceStatus, PiholeListItem } from '../types';
+import { toast } from '../toast';
 
 type PiholeTab = 'overview' | 'settings' | 'blocklists' | 'whitelist' | 'blacklist' | 'localdns';
 
@@ -18,19 +19,17 @@ export function PiholePanel() {
   const piholeSvc = svcData.services.find(s => s.name === 'pihole');
   const isEnabled = piholeSvc?.enabled === 1;
   const [toggling, setToggling] = useState(false);
-  const [toggleError, setToggleError] = useState('');
 
   const handleToggle = async () => {
     setToggling(true);
-    setToggleError('');
     try {
       const result = await postApi('/services/toggle', { name: 'pihole', enabled: !isEnabled });
       if (!result.success) {
-        setToggleError(result.error || 'Servis değiştirilemedi');
+        toast.error(result.error || 'Servis değiştirilemedi');
       }
       await refetchSvc();
     } catch (e: any) {
-      setToggleError(e.message || 'İstek başarısız');
+      toast.error(e.message || 'İstek başarısız');
     }
     setToggling(false);
   };
@@ -66,7 +65,6 @@ export function PiholePanel() {
         subtitle="Headless Pi-hole + Unbound DNS — Reklam & tracker bloklama"
         actions={
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            {toggleError && <span style={{ fontSize: 11, color: 'var(--danger-color)', maxWidth: 300 }}>{toggleError}</span>}
             <Badge variant={isEnabled ? 'success' : 'neutral'}>{isEnabled ? 'Aktif' : 'Pasif'}</Badge>
             <button
               className={`toggle-btn ${isEnabled ? 'toggle-on' : 'toggle-off'}`}

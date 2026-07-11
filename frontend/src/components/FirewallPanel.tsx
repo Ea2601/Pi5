@@ -1,9 +1,10 @@
 import { Flame, Trash2, Shield, ArrowRight, Settings, Activity, Waypoints, Plus } from 'lucide-react';
 import { useApi, postApi, deleteApi } from '../hooks/useApi';
 import { useState } from 'react';
-import { Panel, Alert } from './ui';
+import { Panel } from './ui';
 import { ServiceSettings } from './ui/ServiceSettings';
 import type { FirewallRule } from '../types';
+import { toast } from '../toast';
 
 interface FirewallData {
   rules: { id: number; type: string; target: string; action: string; enabled: number }[];
@@ -16,7 +17,6 @@ export function FirewallPanel() {
   const [activeTab, setActiveTab] = useState<FwTab>('overview');
   const { data, refetch } = useApi<FirewallData>('/firewall/rules', { rules: [], nftablesPreview: { inputRules: [], forwardRules: [], natRules: [] } });
   const [deploying, setDeploying] = useState(false);
-  const [result, setResult] = useState<{ type: 'success' | 'error'; msg: string } | null>(null);
   const [showForm, setShowForm] = useState(false);
   const [fwType, setFwType] = useState('tcp');
   const [fwTarget, setFwTarget] = useState('');
@@ -24,30 +24,30 @@ export function FirewallPanel() {
   const [adding, setAdding] = useState(false);
 
   const handleDeploy = async () => {
-    setDeploying(true); setResult(null);
-    try { await postApi('/services/setup', { action: 'firewall' }); setResult({ type: 'success', msg: 'nftables kuralları uygulandı.' }); }
-    catch (e: any) { setResult({ type: 'error', msg: e.message }); }
+    setDeploying(true);
+    try { await postApi('/services/setup', { action: 'firewall' }); toast.success('nftables kuralları uygulandı.'); }
+    catch (e: any) { toast.error(e.message); }
     setDeploying(false);
   };
 
   const handleAdd = async () => {
     const target = fwTarget.trim();
-    if (!target) { setResult({ type: 'error', msg: 'Hedef (port ya da IP) gerekli.' }); return; }
+    if (!target) { toast.error('Hedef (port ya da IP) gerekli.'); return; }
     if (fwType === 'tcp' || fwType === 'udp') {
       const n = Number(target);
-      if (!/^\d+$/.test(target) || n < 1 || n > 65535) { setResult({ type: 'error', msg: 'Port 1-65535 arası bir sayı olmalı.' }); return; }
+      if (!/^\d+$/.test(target) || n < 1 || n > 65535) { toast.error('Port 1-65535 arası bir sayı olmalı.'); return; }
     } else if (fwType === 'ip') {
-      if (!/^\d{1,3}(\.\d{1,3}){3}(\/\d{1,2})?$/.test(target)) { setResult({ type: 'error', msg: 'Geçerli bir IPv4 ya da IPv4/CIDR girin (ör. 192.168.1.50 veya 10.0.0.0/24).' }); return; }
+      if (!/^\d{1,3}(\.\d{1,3}){3}(\/\d{1,2})?$/.test(target)) { toast.error('Geçerli bir IPv4 ya da IPv4/CIDR girin (ör. 192.168.1.50 veya 10.0.0.0/24).'); return; }
     }
-    setAdding(true); setResult(null);
+    setAdding(true);
     try {
       await postApi('/firewall/rules', { type: fwType, target, action: fwAction });
       setFwTarget(''); setShowForm(false);
       await refetch();
       // Kaydedilen kuralı nftables'a uygula (Pi dışında/başarısızsa kural yine kayıtlı kalır)
-      try { await postApi('/services/setup', { action: 'firewall' }); setResult({ type: 'success', msg: 'Kural eklendi ve uygulandı.' }); }
-      catch { setResult({ type: 'success', msg: 'Kural kaydedildi. "Deploy Et" ile uygulayabilirsiniz.' }); }
-    } catch (e: any) { setResult({ type: 'error', msg: e.message || 'Kural eklenemedi.' }); }
+      try { await postApi('/services/setup', { action: 'firewall' }); toast.success('Kural eklendi ve uygulandı.'); }
+      catch { toast.success('Kural kaydedildi. "Deploy Et" ile uygulayabilirsiniz.'); }
+    } catch (e: any) { toast.error(e.message || 'Kural eklenemedi.'); }
     setAdding(false);
   };
 
@@ -123,7 +123,6 @@ export function FirewallPanel() {
             </div>
           )}
           <div className="glass-panel widget-large" style={{ marginTop: 14 }}>
-            {result && <Alert type={result.type} message={result.msg} />}
             <div className="fw-section">
               <h4 className="fw-section-title"><Shield size={14} /> Input Chain <span className="fw-policy">policy: drop</span></h4>
               <div className="fw-rules">

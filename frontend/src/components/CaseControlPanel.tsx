@@ -1,8 +1,9 @@
-import { Lightbulb, Palette, Zap, Type, Save, RotateCcw, Plus, Trash2 } from 'lucide-react';
+import { Lightbulb, Palette, Zap, Type, Save, Plus, Trash2 } from 'lucide-react';
 import { useState, useEffect } from 'react';
 import { useApi, putApi } from '../hooks/useApi';
 import { Panel, Badge } from './ui';
 import { BRAND } from '../brand';
+import { toast } from '../toast';
 
 interface LedConfig {
   color: string;
@@ -58,8 +59,6 @@ export function CaseControlPanel() {
   const [pages, setPages] = useState<LcdPage[]>(DEFAULT_PAGES);
   const [controller, setController] = useState('auto');
   const [saving, setSaving] = useState(false);
-  const [result, setResult] = useState('');
-  const [resultOk, setResultOk] = useState(true);
 
   useEffect(() => {
     if (ledData.config) setLed(ledData.config);
@@ -75,25 +74,23 @@ export function CaseControlPanel() {
 
   const handleSaveLed = async () => {
     setSaving(true);
-    setResult('');
     try {
       const r = await putApi('/case/led', led as unknown as Record<string, unknown>);
-      if (r?.warning) { setResultOk(false); setResult(r.warning); }
-      else if (r?.applied === false) { setResultOk(false); setResult(r?.error || 'LED kaydedildi ama donanıma uygulanamadı'); }
-      else { setResultOk(true); setResult('LED ayarları kaydedildi ve uygulandı'); }
-    } catch { setResultOk(false); setResult('LED kaydetme başarısız'); }
+      if (r?.warning) { toast.error(r.warning); }
+      else if (r?.applied === false) { toast.error(r?.error || 'LED kaydedildi ama donanıma uygulanamadı'); }
+      else { toast.success('LED ayarları kaydedildi ve uygulandı'); }
+    } catch { toast.error('LED kaydetme başarısız'); }
     setSaving(false);
   };
 
   const handleSaveLcd = async () => {
     setSaving(true);
-    setResult('');
     try {
       const r = await putApi('/case/lcd', { pages, controller });
-      if (r?.warning) { setResultOk(false); setResult(r.warning); }
-      else if (r?.applied === false) { setResultOk(false); setResult(r?.error || 'LCD kaydedildi ama donanıma uygulanamadı'); }
-      else { setResultOk(true); setResult('LCD ayarları kaydedildi ve uygulandı'); }
-    } catch { setResultOk(false); setResult('LCD kaydetme başarısız'); }
+      if (r?.warning) { toast.error(r.warning); }
+      else if (r?.applied === false) { toast.error(r?.error || 'LCD kaydedildi ama donanıma uygulanamadı'); }
+      else { toast.success('LCD ayarları kaydedildi ve uygulandı'); }
+    } catch { toast.error('LCD kaydetme başarısız'); }
     setSaving(false);
   };
 
@@ -280,15 +277,6 @@ export function CaseControlPanel() {
           </div>
         </Panel>
       </div>
-
-      {result && (
-        <div style={{ marginTop: 10, padding: '8px 12px', borderRadius: 8, fontSize: 12,
-          color: resultOk ? '#10b981' : '#f59e0b',
-          background: resultOk ? 'rgba(16,185,129,0.1)' : 'rgba(245,158,11,0.12)',
-          display: 'flex', alignItems: 'center', gap: 6 }}>
-          <RotateCcw size={12} />{result}
-        </div>
-      )}
     </div>
   );
 }

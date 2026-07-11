@@ -6,6 +6,7 @@ import {
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { useApi, postApi, deleteApi } from '../hooks/useApi';
 import { ServiceSettings } from './ui/ServiceSettings';
+import { toast } from '../toast';
 import type { VpsServer } from '../types';
 
 type SetupState = 'idle' | 'deploying' | 'success' | 'error';
@@ -428,7 +429,6 @@ export function VpsSetup() {
   const [showPassword, setShowPassword] = useState(false);
   const [location, setLocation] = useState('');
   const [state, setState] = useState<SetupState>('idle');
-  const [errorMsg, setErrorMsg] = useState('');
   const [showForm, setShowForm] = useState(false);
   const [steps, setSteps] = useState<SetupStep[]>([]);
 
@@ -493,7 +493,7 @@ export function VpsSetup() {
         } else if (data.overall === 'error') {
           stopPolling();
           setState('error');
-          setErrorMsg('Kurulum sırasında hata oluştu');
+          toast.error('Kurulum sırasında hata oluştu');
           refetch();
         }
       } catch { /* polling error, will retry next interval */ }
@@ -503,7 +503,6 @@ export function VpsSetup() {
   const handleDeploy = async () => {
     if (!ip.trim()) return;
     setState('deploying');
-    setErrorMsg('');
 
     // Initialize steps as pending
     setSteps(SETUP_STEPS.map(s => ({
@@ -519,7 +518,7 @@ export function VpsSetup() {
 
       if (!setupResult.success) {
         setState('error');
-        setErrorMsg(setupResult.error || 'Bağlantı başarısız');
+        toast.error(setupResult.error || 'Bağlantı başarısız');
         setSteps([]);
         return;
       }
@@ -528,7 +527,7 @@ export function VpsSetup() {
       startPolling(setupResult.id);
     } catch (e) {
       setState('error');
-      setErrorMsg(e instanceof Error ? e.message : 'Bağlantı başarısız');
+      toast.error(e instanceof Error ? e.message : 'Bağlantı başarısız');
       setSteps([]);
     }
   };
@@ -540,22 +539,19 @@ export function VpsSetup() {
     } catch { /* */ }
   };
 
-  const [clientError, setClientError] = useState('');
-
   const handleAddClient = async () => {
     if (!newClientName.trim() || !selectedVpsId) return;
     setAddingClient(true);
-    setClientError('');
     try {
       const result = await postApi(`/vps/${selectedVpsId}/clients`, { name: newClientName.trim() });
       if (result.error) {
-        setClientError(result.error);
+        toast.error(result.error);
       } else {
         setNewClientName('');
         await fetchClients(Number(selectedVpsId));
       }
     } catch (e: any) {
-      setClientError(e.message || 'Client eklenemedi');
+      toast.error(e.message || 'Client eklenemedi');
     }
     setAddingClient(false);
   };
@@ -570,16 +566,17 @@ export function VpsSetup() {
       });
       if (result.success) {
         setState('success');
+        toast.success('WireGuard tuneli basariyla kuruldu!');
         setIp(''); setPassword(''); setLocation('');
         setShowForm(false);
         await refetch();
       } else {
         setState('error');
-        setErrorMsg(result.error || 'Eklenemedi');
+        toast.error(result.error || 'Eklenemedi');
       }
     } catch (e: any) {
       setState('error');
-      setErrorMsg(e.message || 'Eklenemedi');
+      toast.error(e.message || 'Eklenemedi');
     }
   };
 
@@ -694,17 +691,6 @@ export function VpsSetup() {
                 </div>
               )}
 
-              {state === 'success' && steps.length === 0 && (
-                <div className="alert alert-success">
-                  <CheckCircle size={16} /><span>WireGuard tuneli basariyla kuruldu!</span>
-                </div>
-              )}
-              {state === 'error' && steps.length === 0 && (
-                <div className="alert alert-error">
-                  <AlertTriangle size={16} /><span>{errorMsg}</span>
-                </div>
-              )}
-
               <div style={{ display: 'flex', gap: 8 }}>
                 <button className="btn-primary" style={{ flex: 1 }} onClick={handleDeploy} disabled={state === 'deploying' || !ip.trim()}>
                   {state === 'deploying' ? <><Loader2 size={16} className="spin" /> Kuruluyor...</> : <><Lock size={16} /> Deploy Secure Tunnel</>}
@@ -749,12 +735,6 @@ export function VpsSetup() {
                   {addingClient ? <Loader2 size={13} className="spin" /> : <><Plus size={13} /> Yeni Client Ekle</>}
                 </button>
               </div>
-
-              {clientError && (
-                <div className="alert alert-error" style={{ marginTop: 8 }}>
-                  <AlertTriangle size={14} /><span>{clientError}</span>
-                </div>
-              )}
 
               {clientsLoading ? (
                 <div style={{ textAlign: 'center', padding: 40, color: 'var(--text-muted)' }}>

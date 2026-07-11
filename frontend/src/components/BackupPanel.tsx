@@ -1,10 +1,11 @@
 import { useState, useEffect, useRef } from 'react';
 import {
-  Download, Upload, Archive, Check, AlertTriangle, Clock,
+  Download, Upload, Archive, Check, Clock,
   Settings, Shield, Users, Globe, Calendar, Database, Trash2
 } from 'lucide-react';
 import { postApi } from '../hooks/useApi';
 import { Panel, Badge } from './ui';
+import { toast } from '../toast';
 
 interface BackupHistoryItem {
   id: string;
@@ -18,7 +19,6 @@ const BACKUP_HISTORY_KEY = 'pi5_backup_history';
 export function BackupPanel() {
   const [exporting, setExporting] = useState(false);
   const [importing, setImporting] = useState(false);
-  const [result, setResult] = useState<{ type: 'success' | 'error'; msg: string } | null>(null);
   const [history, setHistory] = useState<BackupHistoryItem[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -36,7 +36,6 @@ export function BackupPanel() {
 
   const handleExport = async () => {
     setExporting(true);
-    setResult(null);
     try {
       const res = await fetch('/api/backup/export');
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -56,9 +55,9 @@ export function BackupPanel() {
         items: Object.keys(data).length
       };
       saveHistory([newItem, ...history].slice(0, 20));
-      setResult({ type: 'success', msg: 'Yedek başarıyla indirildi.' });
+      toast.success('Yedek başarıyla indirildi.');
     } catch (e: unknown) {
-      setResult({ type: 'error', msg: e instanceof Error ? e.message : 'Yedek alınamadı.' });
+      toast.error(e instanceof Error ? e.message : 'Yedek alınamadı.');
     }
     setExporting(false);
   };
@@ -67,14 +66,13 @@ export function BackupPanel() {
     const file = e.target.files?.[0];
     if (!file) return;
     setImporting(true);
-    setResult(null);
     try {
       const text = await file.text();
       const data = JSON.parse(text);
       await postApi('/backup/import', data);
-      setResult({ type: 'success', msg: 'Yapılandırma başarıyla geri yüklendi.' });
+      toast.success('Yapılandırma başarıyla geri yüklendi.');
     } catch (err: unknown) {
-      setResult({ type: 'error', msg: err instanceof Error ? err.message : 'Geri yükleme başarısız.' });
+      toast.error(err instanceof Error ? err.message : 'Geri yükleme başarısız.');
     }
     setImporting(false);
     if (fileInputRef.current) fileInputRef.current.value = '';
@@ -101,18 +99,6 @@ export function BackupPanel() {
         subtitle="Tüm yapılandırmaları yedekle ve geri yükle"
         badge={history.length > 0 ? <Badge variant="info">Son: {history[0].date}</Badge> : undefined}
       >
-        {result && (
-          <div style={{
-            padding: '10px 14px', borderRadius: 8, marginBottom: 12,
-            background: result.type === 'success' ? 'rgba(16,185,129,0.1)' : 'rgba(239,68,68,0.1)',
-            border: `1px solid ${result.type === 'success' ? 'rgba(16,185,129,0.3)' : 'rgba(239,68,68,0.3)'}`,
-            display: 'flex', alignItems: 'center', gap: 8
-          }}>
-            {result.type === 'success' ? <Check size={16} style={{ color: '#10b981' }} /> : <AlertTriangle size={16} style={{ color: '#ef4444' }} />}
-            <span style={{ color: result.type === 'success' ? '#10b981' : '#ef4444' }}>{result.msg}</span>
-          </div>
-        )}
-
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14 }}>
           {/* Export Section */}
           <div style={{

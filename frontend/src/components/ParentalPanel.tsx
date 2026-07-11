@@ -2,6 +2,7 @@ import { Shield, Clock, Globe, Ban, Plus, Trash2, Settings } from 'lucide-react'
 import { useApi, postApi, putApi, deleteApi } from '../hooks/useApi';
 import { useState } from 'react';
 import { Panel, Badge } from './ui';
+import { toast } from '../toast';
 import type { Device, ParentalRule } from '../types';
 
 
@@ -38,7 +39,6 @@ export function ParentalPanel() {
   const [formEndTime, setFormEndTime] = useState('08:00');
   const [formDays, setFormDays] = useState<string[]>([...ALL_DAYS]);
   const [saving, setSaving] = useState(false);
-  const [error, setError] = useState<string | null>(null);
 
   const resetForm = () => {
     setFormTarget('');
@@ -48,15 +48,13 @@ export function ParentalPanel() {
     setFormEndTime('08:00');
     setFormDays([...ALL_DAYS]);
     setShowForm(false);
-    setError(null);
   };
 
   const handleAdd = async () => {
     if (!formTarget.trim()) return;
-    setError(null);
     // category_block / site_block için değer zorunlu — boşsa backend 400 döner ve önceden sessiz kalıyordu
     if ((formType === 'category_block' || formType === 'site_block') && !formValue.trim()) {
-      setError(formType === 'site_block' ? 'Lütfen engellenecek siteyi girin.' : 'Lütfen bir kategori seçin.');
+      toast.error(formType === 'site_block' ? 'Lütfen engellenecek siteyi girin.' : 'Lütfen bir kategori seçin.');
       return;
     }
     setSaving(true);
@@ -75,7 +73,7 @@ export function ParentalPanel() {
       resetForm();
       await refetch();
     } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : 'Kural eklenemedi.');
+      toast.error(e instanceof Error ? e.message : 'Kural eklenemedi.');
     }
     setSaving(false);
   };
@@ -215,11 +213,6 @@ export function ParentalPanel() {
                 </div>
               )}
 
-              {error && (
-                <div style={{ marginTop: 10, padding: '8px 12px', borderRadius: 8, background: 'rgba(239,68,68,0.1)', color: '#ef4444', fontSize: 12 }}>
-                  {error}
-                </div>
-              )}
               <div style={{ marginTop: 12, display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
                 <button className="btn-outline btn-sm" onClick={resetForm}>Iptal</button>
                 <button className="btn-primary btn-sm" onClick={handleAdd}

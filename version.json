@@ -1,9 +1,10 @@
 {
-  "version": "2.8.2",
-  "build": 47,
+  "version": "2.9.0",
+  "build": 48,
   "date": "2026-07-11",
   "changelog": [
-    "Cihaz grupları: POST /api/devices/groups artık oluşturulan grubun 'id' değerini döndürüyor — frontend yeni grubu anında referanslayabiliyor (önceden sadece {success:true} dönüyordu, id için tekrar fetch gerekiyordu)",
-    "Canlı Pi doğrulaması: build 46'daki /api/devices ('is_returning') düzeltmesi gerçek Pi'de teyit edildi — 6 gerçek cihaz dönüyor, connection_history gerçekten log yazıyor (dedup çalışıyor), cihaz/ebeveyn/gruplar/uyarı panelleri gerçek veriyle çalışıyor"
+    "Toast bildirim sistemi: 'Ayarlar kaydedildi', 'Kural eklendi' gibi sistem bildirimleri artık sayfa içinde banner olarak değil, sağ üstte otomatik kapanan toast bildirimleri olarak gösteriliyor (glass tema, tip renkli, pause-on-hover, kapatma butonu, mobilde alt-tam genişlik)",
+    "15 panel inline bildirimden toast'a geçirildi (Ayarlar, Firewall, Zapret, VPS, DDNS, Kiosk, Yedekleme, Case/LED, Ebeveyn, Routing, Pi-hole, Ağ Araçları, Hız Testi, ServiceSettings, Topbar) — canlı progress göstergeleri korundu",
+    "Kullanılmayan Alert bileşeni temizlendi; toast çekirdeği main.tsx yerine App kökünde sekmelerden bağımsız mount edilir"
   ]
 }
