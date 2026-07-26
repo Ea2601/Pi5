@@ -1,9 +1,8 @@
 {
-  "version": "2.10.1",
-  "build": 50,
+  "version": "2.10.2",
+  "build": 51,
   "date": "2026-07-11",
   "changelog": [
-    "Kasa OLED çakışması düzeltildi: SunFounder pironman5 servisi kendi OLED ekranını aynı I2C hattında sürüyordu, iki animasyon saliselik titriyordu. pi5-lcd servisi artık başlarken SunFounder'ın SADECE OLED modülünü bırakıyor (pironman5 -oe 0, ExecStartPre) — fan/RGB kontrolü korunuyor. Ayar SunFounder config'ine kalıcı yazılır, reboot'ta korunur",
-    "LCD kaydet: pironman OLED uyarısı kaldırıldı (çakışma artık yapısal olarak önleniyor)"
+    "Sidebar logosu sticky yapıldı: menü kaydırıldığında logo üstte sabit kalıyor (frosted arka plan + alt çizgi, altından kayan öğeleri kapatır). Sidebar üst padding'i logoya taşındı, tepeye tam yaslanır"
   ]
 }

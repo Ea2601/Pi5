@@ -12,19 +12,28 @@
 /* ═══════════════════ SIDEBAR ═══════════════════ */
 .sidebar {
   width: 230px;
-  padding: 20px 12px;
+  padding: 0 12px 20px;
   display: flex;
   flex-direction: column;
   flex-shrink: 0;
   overflow-y: auto;
 }
 
+/* Logo kaydırmada üstte sabit kalır (sticky). Frosted arka plan + alt çizgi,
+   altından kayan menü öğelerini kapatır. Üst padding sidebar'dan buraya taşındı. */
 .logo {
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 0 10px;
-  margin-bottom: 28px;
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  padding: 18px 10px 14px;
+  margin-bottom: 14px;
+  background: var(--panel-bg);
+  backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+  border-bottom: 1px solid var(--panel-border);
 }
 
 /* Orijinal vektör lockup — temaya göre dark/light varyant */
