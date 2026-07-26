@@ -1,11 +1,9 @@
 {
-  "version": "2.10.0",
-  "build": 49,
+  "version": "2.10.1",
+  "build": 50,
   "date": "2026-07-11",
   "changelog": [
-    "Kasa OLED ekranı: Klyrix 'piroled' 1-bit animasyon motoru entegre edildi (scripts/lcd_widgets.py). Marka açılışı (kutu aşağı çizilir → K markası monte olur → wordmark sağdan kayar), sıcaklık için yay göstergesi, internet hızı için sparkline, cihazlar için nokta ızgarası + sayaç, güvenlik için dolan kalkan + tünel listesi, CPU/RAM için segmentli barlar",
-    "7 zengin sayfa: Marka Açılışı · Ağ Adresleri · CPU Sıcaklık+RAM · İnternet Hızı · Bağlı Cihazlar · Güvenlik/VPN · Özel Metin. Kasa Kontrol panelinden sayfa ekle/çıkar/sırala",
-    "lcd_display.py OLED render'ı device.display(img) ile yeniden yazıldı; SH1106/HD44780/console fallback'ları ve mevcut config şeması korundu. Cihazsız 'preview' komutu ile PNG/GIF önizleme (tasarım döngüsü)",
-    "Frontend Kasa Kontrol: 'Marka Açılışı' varsayılan sayfa + sistem sayfası ekleyici; tüm sayfalar kaldırılabilir"
+    "Kasa OLED çakışması düzeltildi: SunFounder pironman5 servisi kendi OLED ekranını aynı I2C hattında sürüyordu, iki animasyon saliselik titriyordu. pi5-lcd servisi artık başlarken SunFounder'ın SADECE OLED modülünü bırakıyor (pironman5 -oe 0, ExecStartPre) — fan/RGB kontrolü korunuyor. Ayar SunFounder config'ine kalıcı yazılır, reboot'ta korunur",
+    "LCD kaydet: pironman OLED uyarısı kaldırıldı (çakışma artık yapısal olarak önleniyor)"
   ]
 }

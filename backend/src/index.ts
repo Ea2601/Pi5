@@ -2476,6 +2476,10 @@ Wants=pi5-backend.service
 
 [Service]
 Type=simple
+# SunFounder pironman5 aynı I2C OLED'ini sürerse iki proses çakışır (ekran titrer).
+# Servis her başladığında SunFounder'ın SADECE OLED modülünü bırak (fan/RGB dokunulmaz).
+# '-' öneki: pironman5 kurulu değilse hata yut. Ayar SunFounder config'ine kalıcı yazılır.
+ExecStartPre=-/bin/sh -c '/usr/local/bin/pironman5 -oe 0 2>/dev/null || pironman5 -oe 0 2>/dev/null || true'
 ExecStart=/usr/bin/python3 /opt/pi5-gateway/scripts/lcd_display.py run
 Restart=always
 RestartSec=5
@@ -2560,12 +2564,13 @@ app.put('/api/case/lcd', async (req, res) => {
           const out = String(dErr.stdout || '') + String(dErr.message || '');
           if (dErr.code === 2 || /display=console/.test(out)) noDisplay = true;
         }
-        await exec('systemctl restart pi5-lcd.service', { timeout: 10000 });
+        // pi5-lcd servisi ExecStartPre ile SunFounder OLED'ini bıraktığı için restart yeterli;
+        // OLED çakışması yapısal olarak önlenir (ayrı bir pironman uyarısına gerek yok).
+        await exec('systemctl restart pi5-lcd.service', { timeout: 15000 });
         if (noDisplay) {
           return res.json({ success: true, applied: false, error: 'Fiziksel ekran bulunamadı. Kurulum: pip3 install --break-system-packages luma.oled luma.core Pillow; I2C açık olmalı (raspi-config). Detay: /tmp/lcd_display.log' });
         }
-        const warning = await detectPironmanConflict();
-        res.json({ success: true, applied: !warning, warning: warning || undefined });
+        res.json({ success: true, applied: true });
       } catch (cmdErr: any) {
         res.json({ success: true, applied: false, error: `LCD servisi hatası: ${cmdErr.message}` });
       }
