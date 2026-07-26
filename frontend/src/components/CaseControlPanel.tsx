@@ -21,12 +21,24 @@ interface LcdPage {
   enabled: boolean;
 }
 
+// Sistem sayfa tipleri — Python renderer'larındaki içerik anahtarlarıyla eşleşir.
+// (content → lcd_display.py _KEY_MAP: brand/system/cpu/speed/clients/vpn)
+const SYSTEM_PAGE_TYPES: { content: string; label: string }[] = [
+  { content: 'brand', label: 'Marka Açılışı (Klyrix)' },
+  { content: 'hostname', label: 'Ağ Adresleri (LAN/GW)' },
+  { content: 'cpu_ram', label: 'CPU Sıcaklık + RAM' },
+  { content: 'network', label: 'İnternet Hızı (grafik)' },
+  { content: 'devices', label: 'Bağlı Cihazlar' },
+  { content: 'vpn', label: 'Güvenlik / VPN' },
+];
+
 const DEFAULT_PAGES: LcdPage[] = [
-  { id: 'hostname', label: 'Hostname + IP', type: 'system', content: 'hostname', duration: 5, enabled: true },
+  { id: 'brand', label: 'Marka Açılışı', type: 'system', content: 'brand', duration: 5, enabled: true },
+  { id: 'hostname', label: 'Ağ Adresleri', type: 'system', content: 'hostname', duration: 5, enabled: true },
   { id: 'cpu', label: 'CPU Sıcaklık + RAM', type: 'system', content: 'cpu_ram', duration: 5, enabled: true },
-  { id: 'network', label: 'Download / Upload Hız', type: 'system', content: 'network', duration: 5, enabled: true },
-  { id: 'devices', label: 'Aktif Cihaz Sayısı', type: 'system', content: 'devices', duration: 5, enabled: true },
-  { id: 'vpn', label: 'VPN Durumu', type: 'system', content: 'vpn', duration: 5, enabled: true },
+  { id: 'network', label: 'İnternet Hızı', type: 'system', content: 'network', duration: 5, enabled: true },
+  { id: 'devices', label: 'Bağlı Cihazlar', type: 'system', content: 'devices', duration: 5, enabled: true },
+  { id: 'vpn', label: 'Güvenlik / VPN', type: 'system', content: 'vpn', duration: 5, enabled: true },
   { id: 'custom1', label: 'Özel Metin', type: 'custom', content: BRAND.name, duration: 5, enabled: false },
 ];
 
@@ -105,6 +117,15 @@ export function CaseControlPanel() {
   const addCustomPage = () => {
     const id = `custom_${Date.now()}`;
     setPages(prev => [...prev, { id, label: 'Özel Metin', type: 'custom', content: '', duration: 5, enabled: true }]);
+  };
+
+  const addSystemPage = (content: string) => {
+    if (!content) return;
+    const meta = SYSTEM_PAGE_TYPES.find(t => t.content === content);
+    const id = `sys_${content}_${Date.now()}`;
+    setPages(prev => [...prev, {
+      id, label: meta?.label || content, type: 'system', content, duration: 5, enabled: true,
+    }]);
   };
 
   const removePage = (id: string) => {
@@ -210,7 +231,15 @@ export function CaseControlPanel() {
           subtitle="Kasa LCD ekranında sırayla gösterilecek bilgiler"
           badge={<Badge variant="info">{pages.filter(p => p.enabled).length} sayfa aktif</Badge>}
           actions={
-            <div style={{ display: 'flex', gap: 6 }}>
+            <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+              <select className="config-select-sm" defaultValue=""
+                onChange={e => { addSystemPage(e.target.value); e.target.value = ''; }}
+                style={{ width: 'auto', minWidth: 130 }} title="Sistem sayfası ekle">
+                <option value="" disabled>+ Sayfa Ekle</option>
+                {SYSTEM_PAGE_TYPES.map(t => (
+                  <option key={t.content} value={t.content}>{t.label}</option>
+                ))}
+              </select>
               <button className="btn-outline btn-sm" onClick={addCustomPage}>
                 <Plus size={13} /> Metin Ekle
               </button>
@@ -266,12 +295,10 @@ export function CaseControlPanel() {
                   <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>sn</span>
                 </div>
 
-                {/* Sil (sadece custom) */}
-                {page.type === 'custom' && (
-                  <button className="icon-btn icon-btn-sm" onClick={() => removePage(page.id)} title="Kaldır" style={{ flexShrink: 0 }}>
-                    <Trash2 size={12} />
-                  </button>
-                )}
+                {/* Sil */}
+                <button className="icon-btn icon-btn-sm" onClick={() => removePage(page.id)} title="Kaldır" style={{ flexShrink: 0 }}>
+                  <Trash2 size={12} />
+                </button>
               </div>
             ))}
           </div>

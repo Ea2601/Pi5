@@ -1,10 +1,11 @@
 {
-  "version": "2.9.0",
-  "build": 48,
+  "version": "2.10.0",
+  "build": 49,
   "date": "2026-07-11",
   "changelog": [
-    "Toast bildirim sistemi: 'Ayarlar kaydedildi', 'Kural eklendi' gibi sistem bildirimleri artık sayfa içinde banner olarak değil, sağ üstte otomatik kapanan toast bildirimleri olarak gösteriliyor (glass tema, tip renkli, pause-on-hover, kapatma butonu, mobilde alt-tam genişlik)",
-    "15 panel inline bildirimden toast'a geçirildi (Ayarlar, Firewall, Zapret, VPS, DDNS, Kiosk, Yedekleme, Case/LED, Ebeveyn, Routing, Pi-hole, Ağ Araçları, Hız Testi, ServiceSettings, Topbar) — canlı progress göstergeleri korundu",
-    "Kullanılmayan Alert bileşeni temizlendi; toast çekirdeği main.tsx yerine App kökünde sekmelerden bağımsız mount edilir"
+    "Kasa OLED ekranı: Klyrix 'piroled' 1-bit animasyon motoru entegre edildi (scripts/lcd_widgets.py). Marka açılışı (kutu aşağı çizilir → K markası monte olur → wordmark sağdan kayar), sıcaklık için yay göstergesi, internet hızı için sparkline, cihazlar için nokta ızgarası + sayaç, güvenlik için dolan kalkan + tünel listesi, CPU/RAM için segmentli barlar",
+    "7 zengin sayfa: Marka Açılışı · Ağ Adresleri · CPU Sıcaklık+RAM · İnternet Hızı · Bağlı Cihazlar · Güvenlik/VPN · Özel Metin. Kasa Kontrol panelinden sayfa ekle/çıkar/sırala",
+    "lcd_display.py OLED render'ı device.display(img) ile yeniden yazıldı; SH1106/HD44780/console fallback'ları ve mevcut config şeması korundu. Cihazsız 'preview' komutu ile PNG/GIF önizleme (tasarım döngüsü)",
+    "Frontend Kasa Kontrol: 'Marka Açılışı' varsayılan sayfa + sistem sayfası ekleyici; tüm sayfalar kaldırılabilir"
   ]
 }
