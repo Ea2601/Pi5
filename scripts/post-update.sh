@@ -33,10 +33,13 @@ if [ -f "$BASE/scripts/led_control.py" ]; then
 fi
 
 if [ -f "$BASE/scripts/lcd_display.py" ]; then
-  python3 -c "from luma.oled.device import ssd1306" 2>/dev/null || {
+  # Pillow: klyrix_oled render motorunun zorunlu bağımlılığı (luma'sız kurulumda da gerekir).
+  python3 -c "from luma.oled.device import ssd1306; import PIL" 2>/dev/null || {
     echo "  LCD Python bağımlılıkları kuruluyor..." >> "$LOG"
-    pip3 install --break-system-packages luma.oled luma.core RPLCD 2>/dev/null >> "$LOG" || pip3 install luma.oled luma.core RPLCD 2>/dev/null >> "$LOG" || true
+    pip3 install --break-system-packages luma.oled luma.core RPLCD Pillow 2>/dev/null >> "$LOG" || pip3 install luma.oled luma.core RPLCD Pillow 2>/dev/null >> "$LOG" || true
   }
+  # Yeni render kodu ancak servis yeniden başlayınca ekrana düşer.
+  systemctl restart pi5-lcd.service 2>/dev/null && echo "  pi5-lcd.service yeniden başlatıldı" >> "$LOG" || true
 fi
 
 # 5. Enable I2C/SPI if not already

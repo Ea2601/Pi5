@@ -3,8 +3,10 @@
 LCD Display Controller — Pi5 Gateway kasa OLED'i (Pironman / Pimoroni).
 
 Kasada sırayla dönen çok-sayfalı, animasyonlu bilgi ekranı. OLED render'ı
-Klyrix "piroled" 1-bit motoruyla (scripts/lcd_widgets.py) yapılır: marka
-açılışı, yay göstergesi, sparkline, nokta ızgarası, kalkan, segmentli barlar.
+Klyrix 1-bit motoruyla (scripts/klyrix_oled.py) yapılır: marka açılışı, termometre,
+sparkline, yay göstergesi, nokta ızgarası, güvenlik listesi ve sayfalar arası
+yatay kaydırma geçişi. Sayfa sırası/süresi panelden (DB app_settings.lcd_pages)
+gelir; HD44780 16x2 ve konsol için düz-metin görünüm korunur.
 
 Usage:
   python3 lcd_display.py run              # Foreground daemon (systemd Type=simple)
@@ -12,16 +14,17 @@ Usage:
   python3 lcd_display.py stop             # Stop daemon
   python3 lcd_display.py status           # Show current state
   python3 lcd_display.py detect           # Exit 0 gerçek ekran, 2 console fallback
-  python3 lcd_display.py test [page]      # 5s animasyonlu test (varsayılan: brand)
+  python3 lcd_display.py test [sayfa]     # 6s animasyonlu test (varsayılan: brand)
   python3 lcd_display.py preview ...      # Cihazsız PNG/GIF üret (Pillow yeter)
 
   # Önizleme örnekleri (masaüstünde, luma/I2C gerekmez):
   python3 lcd_display.py preview --sheet sayfalar.png --scale 4
-  python3 lcd_display.py preview --gif brand.gif -p brand --seconds 5 --scale 6
+  python3 lcd_display.py preview --gif temp.gif -p temp --seconds 8 --scale 6
 
+Sayfa id'leri: brand temp ram disk inet net clients sec msg
 Supports: SSD1306 / SH1106 OLED (128x64), HD44780 16x2 via I2C, console fallback.
 Env: PI5_LCD_CONTROLLER=ssd1306|sh1106|auto, PI5_LCD_ADDR, PI5_LCD_ANIM=0 (statik),
-     PI5_LCD_WIDTH, PI5_LCD_HEIGHT, PI5_LCD_I2C_PORT, PI5_LCD_FPS.
+     PI5_LCD_I2C_PORT, PI5_LCD_FPS, PI5_LCD_WAN_IF, PI5_LCD_TEMP_ALARM, PI5_LCD_MOUNTS.
 Requires: pip3 install luma.oled luma.core Pillow  (OLED)  |  RPLCD (HD44780)
 """
 
@@ -32,12 +35,12 @@ import time
 import signal
 import subprocess
 
-# Script dizinini import yoluna ekle (lcd_widgets aynı klasörde).
+# Script dizinini import yoluna ekle (klyrix_oled aynı klasörde).
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 try:
-    import lcd_widgets as lw
+    import klyrix_oled as ko
 except Exception:
-    lw = None  # Pillow yoksa yalnızca HD44780/console yolu çalışır.
+    ko = None  # Pillow yoksa yalnızca HD44780/console yolu çalışır.
 
 PID_FILE = "/tmp/lcd_display.pid"
 CONFIG_FILE = "/opt/pi5-gateway/core/pi5router.sqlite"
@@ -45,6 +48,7 @@ PAGES_KEY = "lcd_pages"
 CONTROLLER_KEY = "lcd_controller"
 LOG_FILE = "/tmp/lcd_display.log"
 FPS = int(os.environ.get("PI5_LCD_FPS", "20") or 20)
+CONFIG_POLL = 60  # sn — panelden değişen sayfa yapılandırmasını yeniden oku
 
 
 def log_lcd(msg):
@@ -91,9 +95,12 @@ def get_pages():
         pass
     return [
         {"id": "brand", "type": "system", "content": "brand", "duration": 5, "enabled": True},
-        {"id": "cpu", "type": "system", "content": "cpu_ram", "duration": 5, "enabled": True},
-        {"id": "network", "type": "system", "content": "network", "duration": 5, "enabled": True},
-        {"id": "devices", "type": "system", "content": "devices", "duration": 5, "enabled": True},
+        {"id": "cpu", "type": "system", "content": "cpu_ram", "duration": 10, "enabled": True},
+        {"id": "disk", "type": "system", "content": "disk", "duration": 10, "enabled": True},
+        {"id": "network", "type": "system", "content": "network", "duration": 10, "enabled": True},
+        {"id": "hostname", "type": "system", "content": "hostname", "duration": 10, "enabled": True},
+        {"id": "devices", "type": "system", "content": "devices", "duration": 10, "enabled": True},
+        {"id": "vpn", "type": "system", "content": "vpn", "duration": 10, "enabled": True},
     ]
 
 
@@ -127,7 +134,50 @@ def _db_query(sql, one=True):
         return None
 
 
-# ── Veri toplayıcılar ────────────────────────────────────────────────────────
+# ── Sayfa eşlemesi: panel içerik anahtarı → motor sayfa id'leri ──────────────
+# Bir panel sayfası birden fazla motor sayfasına açılabilir (cpu_ram → temp + ram).
+_KEY_MAP = {
+    "brand": ["brand"],
+    "hostname": ["net"], "system": ["net"], "ip": ["net"], "net": ["net"],
+    "cpu_ram": ["temp", "ram"],
+    "cpu": ["temp"], "temperature": ["temp"], "temp": ["temp"],
+    "memory": ["ram"], "ram": ["ram"],
+    "disk": ["disk"], "storage": ["disk"],
+    "network": ["inet"], "speed": ["inet"], "internet": ["inet"], "inet": ["inet"],
+    "devices": ["clients"], "clients": ["clients"],
+    "vpn": ["sec"], "security": ["sec"], "sec": ["sec"],
+    "message": ["msg"], "msg": ["msg"],
+}
+
+
+def _page_key(page):
+    """Panel sayfasının motor id'leri. Bilinmeyen içerik → serbest metin sayfası."""
+    if str(page.get("type")) == "custom":
+        return ["msg"]
+    c = str(page.get("content", "")).lower().strip()
+    return _KEY_MAP.get(c) or ["msg"]
+
+
+def build_engine_pages(db_pages):
+    """Panel yapılandırmasını motor sayfa listesine çevir (etkin olanlar, sırayla)."""
+    out = []
+    for pg in db_pages or []:
+        if not pg.get("enabled", True):
+            continue
+        dwell = float(pg.get("duration") or 5)
+        ids = _page_key(pg)
+        content = str(pg.get("content", "") or "")
+        for pid in ids:
+            # 'msg' sayfası metnini panel içeriğinden alır (custom sayfa ya da bilinmeyen anahtar).
+            out.append(ko.page(pid, dwell, message=content if pid == "msg" else None))
+    return out
+
+
+def _pages_signature(pages):
+    return [(p["id"], p["dwell"], p.get("message")) for p in pages]
+
+
+# ── Veri toplayıcılar (HD44780 / konsol düz-metin yolu) ──────────────────────
 def _cpu_percent():
     """Instant CPU usage % via two /proc/stat samples (150ms)."""
     try:
@@ -140,14 +190,6 @@ def _cpu_percent():
         i2, t2 = read()
         dt = t2 - t1
         return int((1 - (i2 - i1) / dt) * 100) if dt > 0 else 0
-    except Exception:
-        return 0
-
-
-def _uptime_s():
-    try:
-        with open("/proc/uptime") as f:
-            return float(f.read().split()[0])
     except Exception:
         return 0
 
@@ -175,11 +217,9 @@ def _devices():
 
 def _speed():
     row = _db_query("SELECT download_mbps, upload_mbps, ping_ms FROM speed_tests ORDER BY timestamp DESC LIMIT 1")
-    hist_rows = _db_query("SELECT download_mbps FROM speed_tests ORDER BY timestamp DESC LIMIT 64", one=False) or []
-    hist = [float(r[0]) for r in reversed(hist_rows) if r and r[0] is not None]
     if row:
-        return float(row[0]), float(row[1]), float(row[2]), hist
-    return None, None, None, hist
+        return float(row[0] or 0), float(row[1] or 0), float(row[2] or 0)
+    return None, None, None
 
 
 def _tunnels():
@@ -192,241 +232,6 @@ def _addrs():
     lan = subprocess.getoutput("hostname -I | awk '{print $1}'").strip() or "-"
     gw = subprocess.getoutput("ip route 2>/dev/null | awk '/default/{print $3; exit}'").strip() or "-"
     return host, lan, gw
-
-
-# İçerik anahtarı → renderer anahtarı (geriye dönük + piroled takma adları)
-_KEY_MAP = {
-    "hostname": "system", "system": "system", "ip": "system",
-    "cpu_ram": "cpu", "cpu": "cpu", "temperature": "cpu", "temp": "cpu", "memory": "cpu",
-    "network": "speed", "speed": "speed",
-    "devices": "clients", "clients": "clients",
-    "vpn": "vpn", "security": "vpn",
-    "brand": "brand",
-}
-
-
-def _page_key(page):
-    if page.get("type") == "custom":
-        return "custom"
-    c = str(page.get("content", "")).lower().strip()
-    return _KEY_MAP.get(c, "system" if c in ("", "brand") else "custom")
-
-
-def collect_data(page, demo=False):
-    """Bir sayfanın çizim verisini topla. demo=True → offline örnek veri."""
-    key = _page_key(page)
-    if demo:
-        return demo_data(key, page)
-    d = {"key": key}
-    try:
-        if key == "brand":
-            cnt, _ = _devices()
-            d.update(name="Klyrix", suffix="/gate",
-                     tagline=str(page.get("content", "") or ""),
-                     clients=cnt, uptime_s=_uptime_s(), filled=False)
-        elif key == "cpu":
-            used, total, pct = _mem()
-            d.update(temp_c=_temp_c(), cpu=_cpu_percent(), mem_pct=pct,
-                     mem_used=used, mem_total=total, uptime_s=_uptime_s(),
-                     temp_alarm=75)
-        elif key == "speed":
-            dl, ul, ping, hist = _speed()
-            d.update(dl=dl, ul=ul, ping=ping, dl_hist=hist)
-        elif key == "clients":
-            cnt, names = _devices()
-            d.update(count=cnt, names=names)
-        elif key == "vpn":
-            d.update(tunnels=_tunnels())
-        elif key == "system":
-            host, lan, gw = _addrs()
-            d.update(host=host, lan=lan, gw=gw, uptime_s=_uptime_s())
-        else:
-            d.update(message=str(page.get("content", "")))
-    except Exception as ex:
-        log_lcd(f"collect {key} hata: {ex}")
-    return d
-
-
-def demo_data(key, page):
-    samples = {
-        "brand": dict(name="Klyrix", suffix="/gate", tagline="Secure Gateway",
-                      clients=12, uptime_s=95000, filled=False),
-        "cpu": dict(temp_c=52.4, cpu=37, mem_pct=61, mem_used=4980,
-                    mem_total=8192, uptime_s=95000, temp_alarm=75),
-        "speed": dict(dl=284.6, ul=41.2, ping=8,
-                      dl_hist=[120, 180, 150, 210, 190, 260, 240, 300, 280,
-                               255, 284, 240, 265, 300, 288, 276, 310, 284]),
-        "clients": dict(count=12, names=["macbook-pro", "pixel-8", "ps5",
-                                         "nas", "iphone", "desk-pc"]),
-        "vpn": dict(tunnels=[{"name": "Frankfurt", "up": True},
-                             {"name": "Amsterdam", "up": True},
-                             {"name": "New York", "up": False}]),
-        "system": dict(host="pi5-gateway", lan="192.168.1.153",
-                       gw="192.168.1.1", uptime_s=95000),
-        "custom": dict(message=str(page.get("content") or "Klyrix Gate")),
-    }
-    return samples.get(key, samples["custom"])
-
-
-# ── Sayfa renderer'ları (draw, img, data, p, t) ─────────────────────────────
-# p: giriş animasyonu 0..1 (eased) · t: geçen saniye (sürekli anim)
-def render_brand(draw, img, data, p, t):
-    TILE, TILE_X, TILE_Y, MARK_H = 40, 2, 11, 23
-    filled = bool(data.get("filled"))
-    lw.klyrix_tile(draw, TILE_X, TILE_Y, TILE,
-                   reveal=lw.ease_out_cubic(lw.clamp(p / 0.35)), filled=filled)
-    lw.klyrix_mark(draw, TILE_X + TILE // 2, TILE_Y + TILE // 2, MARK_H,
-                   reveal=lw.clamp((p - 0.15) / 0.65), ink=0 if filled else 1)
-    wp = lw.ease_out_cubic(lw.clamp((p - 0.60) / 0.40))
-    tx = TILE_X + TILE + 8
-    if wp > 0:
-        off = int(round((1 - wp) * (lw.WIDTH - tx)))
-        lw.text(draw, (tx + off, 13), data.get("name", "Klyrix"), lw.load(19, bold=True))
-        if lw.has_true_italic():
-            lw.text(draw, (tx + off, 32), data.get("suffix", "/gate"),
-                    lw.load(15, bold=True, italic=True))
-        else:
-            lw.text_oblique(draw, (tx + off, 32), data.get("suffix", "/gate"),
-                            lw.load(15, bold=True), img=img)
-    if p >= 0.99:
-        bits = []
-        if data.get("tagline"):
-            bits.append(str(data["tagline"]))
-        if data.get("clients") is not None:
-            bits.append(f"{data['clients']} clients")
-        if data.get("uptime_s"):
-            bits.append("up " + lw.human_uptime(data["uptime_s"]))
-        line = "  ·  ".join(bits)
-        if line:
-            lw.text(draw, (lw.WIDTH - lw.SAFE, 52),
-                    lw.fit(draw, line, lw.f_label(), lw.SAFE_W), lw.f_label(), "rt")
-
-
-def render_cpu(draw, img, data, p, t):
-    over = data.get("temp_c", 0) >= data.get("temp_alarm", 75)
-    blink = over and int(t * 2) % 2 == 0
-    lw.header(draw, "SISTEM", right="up " + lw.human_uptime(data.get("uptime_s")))
-    cx, cy, r = 24, 40, 19
-    if not blink:
-        lw.arc_gauge(draw, cx, cy, r, lw.clamp(data.get("temp_c", 0) / 90.0) * p, thickness=4)
-        lw.text(draw, (cx, cy - 2), f"{int(round(data.get('temp_c', 0) * p))}", lw.f_value(), "cm")
-        lw.text(draw, (cx, cy + 10), "C", lw.f_label(), "cm")
-    bx, bw = 52, 72
-    lw.text(draw, (bx, 16), "CPU", lw.f_label())
-    lw.text(draw, (bx + bw, 16), f"{int(round(data.get('cpu', 0) * p))}%", lw.f_label(), "rt")
-    lw.hbar(draw, bx, 26, bw, 9, lw.clamp(data.get("cpu", 0) / 100.0) * p, segments=12)
-    lw.text(draw, (bx, 40), "RAM", lw.f_label())
-    lw.text(draw, (bx + bw, 40), f"{int(round(data.get('mem_pct', 0) * p))}%", lw.f_label(), "rt")
-    lw.hbar(draw, bx, 50, bw, 9, lw.clamp(data.get("mem_pct", 0) / 100.0) * p, segments=12)
-
-
-def render_speed(draw, img, data, p, t):
-    lw.header(draw, "INTERNET", right="Mbps")
-    hist = data.get("dl_hist") or []
-    if hist:
-        lw.sparkline(draw, lw.SAFE, 15, lw.SAFE_W, 25, hist, vmin=0, fill=True, baseline=True)
-    dl, ul, ping = data.get("dl"), data.get("ul"), data.get("ping")
-    if dl is not None:
-        lw.text(draw, (lw.SAFE, 45), f"DL {dl * p:.0f}", lw.f_body())
-        lw.text(draw, (60, 45), f"UL {ul * p:.0f}", lw.f_body())
-        lw.text(draw, (lw.WIDTH - lw.SAFE, 45), f"{ping:.0f}ms", lw.f_body(), "rt")
-    else:
-        lw.text(draw, (lw.WIDTH // 2, 42), "Veri yok", lw.f_body(), "cm")
-
-
-def render_clients(draw, img, data, p, t):
-    n = int(data.get("count", 0))
-    lw.header(draw, "CIHAZLAR", right=f"{n}")
-    shown = int(round(n * p))
-    lw.text(draw, (30, 34), str(shown), lw.f_hero(26), "cm")
-    lw.text(draw, (30, 52), "cihaz", lw.f_label(), "cm")
-    cols, rows = 8, 4
-    lw.dot_grid(draw, 68, 18, cols, rows, min(n, cols * rows), cell=6, dot=3, progress=p)
-    names = data.get("names") or []
-    if names and p >= 0.6:
-        idx = int(t / 2) % len(names)
-        lw.text_badge(draw, (66, 46), lw.fit(draw, names[idx], lw.f_label(), 58), lw.f_label())
-
-
-def render_vpn(draw, img, data, p, t):
-    tunnels = data.get("tunnels") or []
-    conn = sum(1 for x in tunnels if x.get("up"))
-    total = len(tunnels)
-    frac = (conn / total) if total else 0.0
-    lw.header(draw, "GUVENLIK", right=f"{conn}/{total}")
-    lw.icon_shield(draw, 6, 16, w=24, h=30, frac=frac * p, img=img)
-    if not tunnels:
-        lw.text(draw, (40, 30), "Tunel yok", lw.f_body())
-        return
-    for i, x in enumerate(tunnels[:3]):
-        if lw.clamp((p - i * 0.12) / 0.3) <= 0:
-            continue
-        yy = 16 + i * 14
-        gx = 38
-        if x.get("up"):
-            lw.icon_check(draw, gx, yy + 2, 9)
-        elif int(t * 2) % 2 == 0:
-            lw.icon_cross(draw, gx, yy + 2, 9)
-        lw.text(draw, (gx + 13, yy), lw.fit(draw, str(x.get("name", "?")), lw.f_body(),
-                                            lw.WIDTH - (gx + 13) - lw.SAFE), lw.f_body())
-
-
-def render_system(draw, img, data, p, t):
-    lw.header(draw, "AG ADRESLERI", right=lw.fit(draw, str(data.get("host", "")), lw.f_label(), 60))
-    slide = lw.clamp(lw.ease_out_back(p))
-    xoff = int((1 - slide) * lw.WIDTH)
-    lw.text(draw, (lw.SAFE - xoff, 18), f"LAN {data.get('lan', '-')}", lw.f_body())
-    lw.text(draw, (lw.WIDTH - lw.SAFE + xoff, 32), f"GW {data.get('gw', '-')}", lw.f_body(), "rt")
-    if p >= 0.99:
-        lw.text(draw, (lw.SAFE, 50), "up " + lw.human_uptime(data.get("uptime_s")), lw.f_label())
-
-
-def render_custom(draw, img, data, p, t):
-    msg = str(data.get("message", "") or "")
-    f = lw.f_value()
-    if lw.text_size(draw, msg, f)[0] <= lw.SAFE_W:
-        lw.text(draw, (lw.WIDTH // 2, lw.HEIGHT // 2), msg, f, "cm")
-    else:
-        lw.marquee(draw, (lw.SAFE, lw.HEIGHT // 2 - 8), lw.SAFE_W, msg, f, t=t, img=img)
-
-
-RENDERERS = {
-    "brand": render_brand, "cpu": render_cpu, "speed": render_speed,
-    "clients": render_clients, "vpn": render_vpn, "system": render_system,
-    "custom": render_custom,
-}
-INTRO_TIME = {"brand": 1.6, "system": 1.0, "cpu": 1.2, "speed": 1.0,
-              "clients": 1.2, "vpn": 1.3, "custom": 0.6}
-
-
-def render_page(device, page, duration):
-    """Bir sayfayı `duration` sn boyunca zengin animasyonla OLED'e çiz."""
-    from PIL import Image, ImageDraw
-    key = _page_key(page)
-    renderer = RENDERERS.get(key, render_custom)
-    data = collect_data(page)
-    intro = INTRO_TIME.get(key, 1.2)
-    anim = os.environ.get("PI5_LCD_ANIM", "1") != "0"
-    W, H = lw.WIDTH, lw.HEIGHT
-    start = time.time()
-    while True:
-        t = time.time() - start
-        if t >= duration:
-            break
-        p = lw.ease_out_cubic(min(1.0, t / intro)) if anim else 1.0
-        tt = t if anim else 999.0
-        img = Image.new("1", (W, H), 0)
-        draw = ImageDraw.Draw(img)
-        try:
-            renderer(draw, img, data, p, tt)
-        except Exception as ex:
-            log_lcd(f"render {key} hata: {ex}")
-            lw.text(draw, (2, 2), str(ex)[:20], lw.f_label())
-        device.display(img)
-        if not anim:
-            time.sleep(max(0.0, duration - (time.time() - start)))
-            break
-        time.sleep(1.0 / FPS)
 
 
 # ── HD44780 / console için düz-metin görünüm (grafik yok) ────────────────────
@@ -446,20 +251,30 @@ def build_system_view(content_type):
     """HD44780/console için düz {title, rows} görünümü (OLED zengin yolu kullanmaz)."""
     try:
         c = str(content_type).lower()
-        if c in ("hostname", "system", "ip", "brand"):
+        if c in ("hostname", "system", "ip", "brand", "net"):
             host, lan, gw = _addrs()
             title = "KLYRIX/GATE" if c == "brand" else "SISTEM"
             return {"title": title, "rows": [
                 ("text", host), ("text", "IP " + lan), ("text", "GW " + gw)]}
-        if c in ("cpu_ram", "cpu", "temperature", "memory", "temp"):
+        if c in ("cpu_ram", "cpu", "temperature", "memory", "temp", "ram"):
             used, total, pct = _mem()
             return {"title": "CPU / RAM", "rows": [
                 ("bar", "CPU", _cpu_percent()),
                 ("text", f"Sicaklik {_temp_c():.0f}C"),
                 ("bar", "RAM", pct),
                 ("text", f"{used}/{total} MB")]}
-        if c in ("network", "speed"):
-            dl, ul, ping, _ = _speed()
+        if c in ("disk", "storage"):
+            import shutil
+            rows = []
+            for name, path in (ko._mounts() if ko else [("ROOT", "/")]):
+                try:
+                    u = shutil.disk_usage(path)
+                    rows.append(("bar", name, int(u.used * 100 / u.total)))
+                except Exception:
+                    pass
+            return {"title": "DISK", "rows": rows or [("text", "Veri yok")]}
+        if c in ("network", "speed", "internet", "inet"):
+            dl, ul, ping = _speed()
             if dl is not None:
                 return {"title": "AG / HIZ", "rows": [
                     ("text", f"DL {dl:.1f} Mbps"), ("text", f"UL {ul:.1f} Mbps"),
@@ -468,7 +283,7 @@ def build_system_view(content_type):
         if c in ("devices", "clients"):
             n, _ = _devices()
             return {"title": "CIHAZLAR", "rows": [("text", f"Aktif {n} cihaz")]}
-        if c in ("vpn", "security"):
+        if c in ("vpn", "security", "sec"):
             tuns = _tunnels()
             if not tuns:
                 return {"title": "VPN", "rows": [("text", "Tunel yok")]}
@@ -483,7 +298,7 @@ def build_system_view(content_type):
 
 
 def build_view(page):
-    if page.get("type") == "custom":
+    if str(page.get("type")) == "custom":
         text = str(page.get("content", ""))
         rows = []
         while text and len(rows) < 4:
@@ -493,43 +308,86 @@ def build_view(page):
     return build_system_view(page.get("content", ""))
 
 
+# ── OLED (zengin motor) ──────────────────────────────────────────────────────
 def _make_oled(controller):
-    """luma OLED (ssd1306 0.96" / sh1106 1.3"). Zengin render device.display(img) ile."""
-    if lw is None:
-        raise RuntimeError("Pillow/lcd_widgets yok — OLED render devre dışı")
-    from luma.core.interface.serial import i2c
-    from PIL import Image, ImageDraw
-
-    port = int(os.environ.get('PI5_LCD_I2C_PORT', '1') or 1)
-    addr = int(os.environ.get('PI5_LCD_ADDR', '0x3C'), 0)
-    width = lw.WIDTH
-    height = lw.HEIGHT
-
-    serial = i2c(port=port, address=addr)
-    if controller == 'sh1106':
-        from luma.oled.device import sh1106
-        device = sh1106(serial, width=width, height=height)
-    else:
-        from luma.oled.device import ssd1306
-        device = ssd1306(serial, width=width, height=height)
+    """luma OLED (ssd1306 0.96" / sh1106 1.3"). Render Klyrix 1-bit motoruyla."""
+    if ko is None:
+        raise RuntimeError("Pillow/klyrix_oled yok — OLED render devre dışı")
+    device = ko.make_device(controller)
 
     class OLEDDisplay:
         controller_name = controller
 
+        def __init__(self):
+            self.device = device
+            self.src = None
+
+        def _source(self):
+            if self.src is None:
+                self.src = ko.Live()
+            return self.src
+
         def show(self, lines):
-            img = Image.new("1", (width, height), 0)
-            draw = ImageDraw.Draw(img)
-            for i, line in enumerate(lines[:5]):
-                lw.text(draw, (2, i * 12), str(line), lw.f_body())
-            device.display(img)
+            """Düz metin (yalnızca hata/uyarı durumları için)."""
+            fb = ko.FB()
+            for i, line in enumerate(lines[:6]):
+                fb.text(2, 2 + i * 10, str(line)[:21])
+            device.display(fb.image())
+
+        def loop(self):
+            """Sürekli saat: sayfalar arası geçiş animasyonlu, config canlı yenilenir."""
+            src = self._source()
+            pages = build_engine_pages(get_pages()) or ko.pages_spec()
+            player = ko.Player(src, pages)
+            clock, last, last_cfg = 0.0, time.time(), time.time()
+            while True:
+                now = time.time()
+                dt = min(0.1, max(0.0, now - last))
+                last = now
+                clock += dt
+                if now - last_cfg > CONFIG_POLL:
+                    last_cfg = now
+                    fresh = build_engine_pages(get_pages())
+                    if fresh and _pages_signature(fresh) != _pages_signature(player.pages):
+                        player.pages = fresh
+                        player.cur = None  # geçiş animasyonunu atla, temiz başla
+                        clock = 0.0
+                        log_lcd(f"sayfa yapilandirmasi yenilendi: {[p['id'] for p in fresh]}")
+                src.step(dt)
+                try:
+                    device.display(player.frame(clock).image())
+                except Exception as ex:
+                    log_lcd(f"render hata: {ex}")
+                    time.sleep(0.5)
+                time.sleep(max(0.0, 1.0 / FPS - (time.time() - now)))
 
         def animate(self, page, duration):
+            """Tek sayfayı `duration` sn oynat (test komutu / statik mod)."""
             try:
-                render_page(device, page, duration)
+                src = self._source()
+                pages = build_engine_pages([dict(page, enabled=True, duration=duration)]) \
+                    or [ko.page('msg', duration, message=str(page.get('content', '')))]
+                player = ko.Player(src, pages)
+                anim = os.environ.get("PI5_LCD_ANIM", "1") != "0"
+                if not anim:
+                    src.step(0.1)
+                    device.display(player.frame(duration - 0.01).image())
+                    time.sleep(duration)
+                    return
+                start, last = time.time(), time.time()
+                while True:
+                    now = time.time()
+                    t = now - start
+                    if t >= duration:
+                        break
+                    src.step(min(0.1, max(0.0, now - last)))
+                    last = now
+                    device.display(player.frame(t).image())
+                    time.sleep(max(0.0, 1.0 / FPS - (time.time() - now)))
             except Exception as ex:
                 log_lcd(f"animate hata: {ex}")
                 try:
-                    self.show(_flatten(build_view(page)))
+                    self.show([str(build_view(page).get("title", ""))] + _flatten(build_view(page)))
                 except Exception:
                     pass
                 time.sleep(duration)
@@ -609,17 +467,23 @@ def get_display():
 
 
 def run_display():
-    """Main display loop — cycles through enabled pages."""
+    """Main display loop. OLED: tek sürekli saat; diğerleri: sayfa sayfa döngü."""
     write_pid()
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
 
     display = get_display()
+
+    # Zengin OLED yolu — sayfa geçişleri ve canlı veri motorun içinde akar.
+    if hasattr(display, 'loop') and os.environ.get("PI5_LCD_ANIM", "1") != "0":
+        display.loop()
+        return
+
     last_config_check = 0
     pages = [p for p in get_pages() if p.get("enabled", True)]
     page_idx = 0
 
     while True:
-        if time.time() - last_config_check > 60:
+        if time.time() - last_config_check > CONFIG_POLL:
             pages = [p for p in get_pages() if p.get("enabled", True)]
             last_config_check = time.time()
             if not pages:
@@ -637,12 +501,12 @@ def run_display():
 
 # ── Offline önizleme (cihazsız; yalnızca Pillow) ─────────────────────────────
 def _preview(argv):
-    if lw is None:
+    if ko is None:
         print("Pillow gerekli: pip3 install Pillow")
         sys.exit(1)
-    from PIL import Image, ImageDraw, ImageOps
+    from PIL import Image, ImageOps
 
-    opts = {"scale": 4, "seconds": 5.0, "fps": FPS, "page": "brand"}
+    opts = {"scale": 4, "seconds": 8.0, "fps": FPS, "page": "temp", "alarm": False}
     i = 0
     while i < len(argv):
         a = argv[i]
@@ -658,47 +522,46 @@ def _preview(argv):
             opts["scale"] = int(argv[i + 1]); i += 2
         elif a == "--fps":
             opts["fps"] = int(argv[i + 1]); i += 2
+        elif a == "--alarm":
+            opts["alarm"] = True; i += 1
         elif a == "--invert":
             opts["invert"] = True; i += 1
         else:
             i += 1
 
     scale = opts["scale"]
+    src = ko.Demo(alarm=opts["alarm"])
+    pages = ko.pages_spec(float(os.environ.get("PI5_LCD_DWELL", "10") or 10))
+    player = ko.Player(src, pages)
 
-    def make_page(key):
-        return {"type": "custom", "content": "Klyrix Gate"} if key == "custom" \
-            else {"type": "system", "content": key}
-
-    def frame(key, p, t):
-        img = Image.new("1", (lw.WIDTH, lw.HEIGHT), 0)
-        draw = ImageDraw.Draw(img)
-        data = collect_data(make_page(key), demo=True)
-        RENDERERS.get(key, render_custom)(draw, img, data, p, t)
-        return img
-
-    def scaled(img):
-        im = img.convert("L")
+    def scaled(fb):
+        im = fb.image().convert("L")
         if opts.get("invert"):
             im = ImageOps.invert(im)
-        return im.resize((im.width * scale, im.height * scale), Image.NEAREST)
-
-    keys = ["brand", "system", "cpu", "speed", "clients", "vpn", "custom"]
+        return im.resize((ko.W * scale, ko.H * scale), Image.NEAREST)
 
     if "gif" in opts:
-        key = opts["page"] if opts["page"] in RENDERERS else "brand"
-        secs, fps = opts["seconds"], opts["fps"]
-        intro = INTRO_TIME.get(key, 1.2)
+        pg = next((p for p in pages if p["id"] == opts["page"]), pages[1])
+        fps = opts["fps"]
         frames = []
-        for n in range(int(secs * fps)):
-            t = n / fps
-            p = lw.ease_out_cubic(min(1.0, t / intro))
-            frames.append(scaled(frame(key, p, t)).convert("P"))
+        for n in range(int(opts["seconds"] * fps)):
+            src.step(1.0 / fps)
+            fb = ko.FB()
+            pg["fn"](fb, player.ctx(pg, n / fps, src.data()))
+            frames.append(scaled(fb).convert("P"))
         frames[0].save(opts["gif"], save_all=True, append_images=frames[1:],
                        duration=int(1000 / fps), loop=0)
-        print("GIF yazildi:", opts["gif"])
+        print("GIF yazildi:", opts["gif"], f"({pg['id']})")
 
     if "sheet" in opts:
-        imgs = [scaled(frame(k, 1.0, 3.0)) for k in keys]
+        D = src.data()
+        imgs = []
+        for pg in pages:
+            fb = ko.FB()
+            # Giriş animasyonu bitmiş, döngü animasyonu ortasında bir an yakala.
+            tt = max(pg["intro"] + 0.95, pg["dwell"] - 3.5)
+            pg["fn"](fb, player.ctx(pg, tt, D))
+            imgs.append(scaled(fb))
         gap = 8
         bg = 255 if opts.get("invert") else 0
         W = max(im.width for im in imgs)
@@ -708,11 +571,12 @@ def _preview(argv):
         for im in imgs:
             sheet.paste(im, (0, y)); y += im.height + gap
         sheet.save(opts["sheet"])
-        print("Sheet yazildi:", opts["sheet"], f"({len(keys)} sayfa)")
+        print("Sheet yazildi:", opts["sheet"], f"({len(imgs)} sayfa)")
 
     if "gif" not in opts and "sheet" not in opts:
-        print("Kullanim: preview --sheet out.png [--scale 4] | "
-              "--gif out.gif -p brand [--seconds 5] [--scale 6] [--invert]")
+        print("Kullanim: preview --sheet out.png [--scale 4] [--alarm] | "
+              "--gif out.gif -p temp [--seconds 8] [--scale 6] [--invert]")
+        print("Sayfalar:", " ".join(ko.PAGE_ORDER))
 
 
 def main():
@@ -766,8 +630,8 @@ def main():
             print("UYARI: Fiziksel ekran bulunamadi. Detay: /tmp/lcd_display.log")
             sys.exit(2)
         page_key = sys.argv[2] if len(sys.argv) > 2 else "brand"
-        print(f"Animasyonlu test 5sn gorunecek ({page_key})...")
-        display.animate({"type": "system", "content": page_key}, 5)
+        print(f"Animasyonlu test 6sn gorunecek ({page_key})...")
+        display.animate({"type": "system", "content": page_key}, 6)
         sys.exit(0)
 
     elif cmd == "preview":

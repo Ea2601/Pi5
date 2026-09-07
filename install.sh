@@ -212,8 +212,9 @@ fi
 # ─── Hardware: LED, LCD bağımlılıkları ───
 # Bookworm (PEP 668) externally-managed-environment: --break-system-packages gerekir, yoksa sessiz başarısızlık.
 warn "Pimoroni kasa bağımlılıkları kuruluyor..."
-pip3 install --break-system-packages --quiet fanshim spidev luma.oled luma.core RPLCD 2>/dev/null \
-  || pip3 install --quiet fanshim spidev luma.oled luma.core RPLCD 2>/dev/null \
+# Pillow: kasa OLED render motorunun (scripts/klyrix_oled.py) tek zorunlu bağımlılığı.
+pip3 install --break-system-packages --quiet fanshim spidev luma.oled luma.core RPLCD Pillow 2>/dev/null \
+  || pip3 install --quiet fanshim spidev luma.oled luma.core RPLCD Pillow 2>/dev/null \
   || warn "Pimoroni pip bağımlılıkları kurulamadı (donanım yoksa normal)"
 log "Pimoroni bağımlılık adımı tamamlandı"
 

@@ -1,8 +1,17 @@
 {
-  "version": "2.10.2",
-  "build": 51,
-  "date": "2026-07-11",
+  "version": "2.11.0",
+  "build": 52,
+  "date": "2026-09-07",
   "changelog": [
-    "Sidebar logosu sticky yapıldı: menü kaydırıldığında logo üstte sabit kalıyor (frosted arka plan + alt çizgi, altından kayan öğeleri kapatır). Sidebar üst padding'i logoya taşındı, tepeye tam yaslanır"
+    "Kasa OLED render motoru yenilendi: scripts/klyrix_oled.py — kendi 1-bit framebuffer'ı, 5x7 piksel fontu ve Klyrix wordmark'ı; TrueType/DejaVu bağımlılığı kalktı",
+    "9 yeni sayfa: marka açılışı, sıcaklık+fan (termometre+sparkline), RAM+yük, disk doluluk (yay göstergeleri, sayfalı), internet (indirme/yükleme grafiği), ağ adresleri (WAN/V6/LAN/GW), cihazlar (nokta ızgarası), güvenlik katmanları, mesaj",
+    "Sayfalar arası yatay kaydırma geçişi ve sürekli saatli oynatıcı; veri arka plan thread'inde 5 sn'de bir toplanıyor, geçmiş tamponları grafikleri besliyor",
+    "Panel sayfa yapılandırması korundu: lcd_pages → motor sayfa eşlemesi (cpu_ram iki sayfaya açılır), süre/sıra/aktiflik ve özel metin çalışmaya devam ediyor; yapılandırma 60 sn'de bir canlı yenileniyor",
+    "Panele TEMP / RAM / DISK sayfaları eklendi; DDNS ve fail2ban/Pi-hole durumu güvenlik sayfasında görünüyor",
+    "Alert şeridi düzeltildi: sorgu alerts tablosunun gerçek şemasına (acknowledged/created_at) uyduruldu — eski sorgu 'no such column: timestamp' ile sessizce hiç çalışmıyordu; 60 sn yaş filtresi eklendi",
+    "Türkçe karakterler ekranda '?' yerine ASCII karşılığıyla çiziliyor (alert mesajı, hostname, cihaz adları)",
+    "HD44780 16x2 ve konsol düz-metin fallback'i, detect/test/preview/start/stop/status komutları korundu; preview yeni motora göre yenilendi (--alarm eklendi)",
+    "post-update.sh artık Pillow'u doğruluyor ve pi5-lcd.service'i yeniden başlatıyor — güncelleme sonrası yeni animasyon anında devreye giriyor",
+    "scripts/lcd_widgets.py kaldırıldı (yeni motor tüm widget'ları kapsıyor)"
   ]
 }

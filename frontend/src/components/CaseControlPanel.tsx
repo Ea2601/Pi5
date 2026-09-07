@@ -22,24 +22,29 @@ interface LcdPage {
 }
 
 // Sistem sayfa tipleri — Python renderer'larındaki içerik anahtarlarıyla eşleşir.
-// (content → lcd_display.py _KEY_MAP: brand/system/cpu/speed/clients/vpn)
+// (content → lcd_display.py _KEY_MAP → klyrix_oled.py sayfa id'si)
 const SYSTEM_PAGE_TYPES: { content: string; label: string }[] = [
   { content: 'brand', label: 'Marka Açılışı (Klyrix)' },
-  { content: 'hostname', label: 'Ağ Adresleri (LAN/GW)' },
-  { content: 'cpu_ram', label: 'CPU Sıcaklık + RAM' },
+  { content: 'temp', label: 'Sıcaklık + Fan (grafik)' },
+  { content: 'ram', label: 'RAM + Yük (grafik)' },
+  { content: 'cpu_ram', label: 'Sıcaklık ve RAM (iki sayfa)' },
+  { content: 'disk', label: 'Disk Doluluk (birimler)' },
   { content: 'network', label: 'İnternet Hızı (grafik)' },
+  { content: 'hostname', label: 'Ağ Adresleri (WAN/LAN/GW)' },
   { content: 'devices', label: 'Bağlı Cihazlar' },
-  { content: 'vpn', label: 'Güvenlik / VPN' },
+  { content: 'vpn', label: 'Güvenlik Katmanları / VPN' },
 ];
 
 const DEFAULT_PAGES: LcdPage[] = [
   { id: 'brand', label: 'Marka Açılışı', type: 'system', content: 'brand', duration: 5, enabled: true },
-  { id: 'hostname', label: 'Ağ Adresleri', type: 'system', content: 'hostname', duration: 5, enabled: true },
-  { id: 'cpu', label: 'CPU Sıcaklık + RAM', type: 'system', content: 'cpu_ram', duration: 5, enabled: true },
-  { id: 'network', label: 'İnternet Hızı', type: 'system', content: 'network', duration: 5, enabled: true },
-  { id: 'devices', label: 'Bağlı Cihazlar', type: 'system', content: 'devices', duration: 5, enabled: true },
-  { id: 'vpn', label: 'Güvenlik / VPN', type: 'system', content: 'vpn', duration: 5, enabled: true },
-  { id: 'custom1', label: 'Özel Metin', type: 'custom', content: BRAND.name, duration: 5, enabled: false },
+  { id: 'temp', label: 'Sıcaklık + Fan', type: 'system', content: 'temp', duration: 10, enabled: true },
+  { id: 'ram', label: 'RAM + Yük', type: 'system', content: 'ram', duration: 10, enabled: true },
+  { id: 'disk', label: 'Disk Doluluk', type: 'system', content: 'disk', duration: 10, enabled: true },
+  { id: 'network', label: 'İnternet Hızı', type: 'system', content: 'network', duration: 10, enabled: true },
+  { id: 'hostname', label: 'Ağ Adresleri', type: 'system', content: 'hostname', duration: 10, enabled: true },
+  { id: 'devices', label: 'Bağlı Cihazlar', type: 'system', content: 'devices', duration: 10, enabled: true },
+  { id: 'vpn', label: 'Güvenlik / VPN', type: 'system', content: 'vpn', duration: 10, enabled: true },
+  { id: 'custom1', label: 'Özel Metin', type: 'custom', content: BRAND.name, duration: 6, enabled: false },
 ];
 
 const ANIMATIONS = [
