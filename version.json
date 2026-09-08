@@ -1,13 +1,12 @@
 {
-  "version": "2.13.0",
-  "build": 58,
+  "version": "2.13.1",
+  "build": 59,
   "date": "2026-09-08",
   "changelog": [
-    "Kök neden bulundu: pironman5 config dosyasını YALNIZCA başlangıçta okuyor — 'pironman5 -oe 0 / -re 0' dosyayı doğru yazıyor ama çalışan servis bunu hiç görmüyordu. v2.10.1'den beri unit'te duran OLED bırakma adımı bu yüzden hiçbir zaman etkili olmamış",
-    "Yeni scripts/pironman_release.sh: OLED+RGB modüllerini bıraktırır ve config gerçekten değiştiyse pironman5'i yeniler (değişmediyse dokunmaz — gereksiz fan kesintisi olmaz)",
-    "Cihazda doğrulandı: pironman5 16:37'de başlamış, config 17:30'da yazılmıştı; servis yeniden başlatılınca rgb_enable/oled_enable false gerçekten devreye girdi",
-    "Üç systemd unit tanımındaki iki ayrı ExecStartPre satırı tek script çağrısına indirildi (install.sh, post-update.sh, backend ensureLcdService)",
-    "Backend releasePironmanModule() aynı script'i kullanıyor — LED yazmadan önce tek ve tutarlı yol",
-    "install.sh script'i çalıştırılabilir yapıyor"
+    "Kasa LED animasyonları düzeltildi: 'Pulse' ile 'Yanıp Sönme' aynı kare dalga algoritmasını kullanıyordu (tek fark süreydi), ikisi görsel olarak ayırt edilemiyordu",
+    "Pulse artık gerçek nabız: hızlı yükseliş (0.10s), yavaş sönüş (0.60s), kısa dinlenme (0.40s) — 1.1s kalp atışı ritmi. Yanıp Sönme kare dalga olarak kalıyor (0.30s)",
+    "Nefes Alma lineer rampa yerine sinüs eğrisiyle çiziliyor: uçlarda yavaşlar, ortada hızlanır; 4 saniyelik tam nefes. Eski rampada dönüş noktasında süreksizlik vardı",
+    "Fade'lere gamma (2.2) düzeltmesi: insan gözü ışığı logaritmik algılıyor, lineer PWM eşit adımlı görünmüyordu",
+    "Sabit, Gökkuşağı ve Yanıp Sönme kodları doğru çalışıyordu — dokunulmadı"
   ]
 }

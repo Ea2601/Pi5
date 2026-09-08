@@ -16,6 +16,7 @@ If fanshim not available, falls back to direct SPI via spidev/gpiod.
 import sys
 import time
 import json
+import math
 import signal
 import os
 
@@ -155,6 +156,18 @@ def get_led():
     return None
 
 
+# İnsan gözü ışığı logaritmik algılar: PWM'de lineer rampa göze eşit adımlı gelmez,
+# ortada hızlı geçip uçlarda asılı kalır. Fade'lerde algısal seviyeyi bu eğriyle
+# doğrusal PWM'e çeviriyoruz. Yalnızca animasyonlarda kullanılır; sabit renk yolu
+# (set_static) dokunulmadan kalır.
+GAMMA = 2.2
+
+
+def _gamma(level):
+    """Algısal parlaklık (0..1) → doğrusal PWM çarpanı."""
+    return max(0.0, min(1.0, level)) ** GAMMA
+
+
 def set_static(led, r, g, b, brightness):
     """Set LED to a static color."""
     led.set_light(r, g, b, brightness=brightness)
@@ -173,25 +186,31 @@ def run_animation(led, r, g, b, brightness, animation):
 
     elif animation == "breathe":
         signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
+        # Sinüs eğrisi: uçlarda yavaşlar, ortada hızlanır — nefes ritmi. Eski lineer
+        # rampa göze eşit hızda gelmiyordu; ayrıca fade-out 0.02'de bitip fade-in 0'dan
+        # başladığı için dönüş noktasında küçük bir süreksizlik vardı.
+        STEPS, PERIOD = 120, 4.0          # bir tam nefes = 4 sn
+        dt = PERIOD / STEPS
         while True:
-            # Fade in
-            for i in range(0, 100, 2):
-                b_factor = (i / 100.0) * brightness
-                led.set_light(r, g, b, brightness=b_factor)
-                time.sleep(0.03)
-            # Fade out
-            for i in range(100, 0, -2):
-                b_factor = (i / 100.0) * brightness
-                led.set_light(r, g, b, brightness=b_factor)
-                time.sleep(0.03)
+            for i in range(STEPS):
+                level = (1 - math.cos(2 * math.pi * i / STEPS)) / 2   # 0 → 1 → 0
+                led.set_light(r, g, b, brightness=_gamma(level) * brightness)
+                time.sleep(dt)
 
     elif animation == "pulse":
         signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
+        # Kalp atışı: hızlı yükseliş, yavaş sönüş, kısa dinlenme. Eskiden bu da blink
+        # gibi kare dalgaydı (yalnız süresi farklıydı), ikisi ayırt edilemiyordu.
+        RISE_S, FALL_S, REST_S, STEPS = 0.10, 0.60, 0.40, 24
         while True:
-            led.set_light(r, g, b, brightness=brightness)
-            time.sleep(0.5)
+            for i in range(STEPS + 1):
+                led.set_light(r, g, b, brightness=_gamma(i / STEPS) * brightness)
+                time.sleep(RISE_S / STEPS)
+            for i in range(STEPS, -1, -1):
+                led.set_light(r, g, b, brightness=_gamma(i / STEPS) * brightness)
+                time.sleep(FALL_S / STEPS)
             led.set_light(0, 0, 0, brightness=0)
-            time.sleep(0.5)
+            time.sleep(REST_S)
 
     elif animation == "blink":
         signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
