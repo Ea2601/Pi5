@@ -16,7 +16,7 @@ import {
 } from './system';
 import {
   shq, sedEscape, isValidMac, isValidDomain, isValidTimezone,
-  isValidHexColor, isValidAnimation, sanitizeName,
+  isValidHexColor, normalizeAnimation, sanitizeName,
 } from './util';
 import { promisify } from 'util';
 import { execFile as _execFile } from 'child_process';
@@ -2493,10 +2493,12 @@ Wants=pi5-backend.service
 
 [Service]
 Type=simple
-# SunFounder pironman5 aynı I2C OLED'ini sürerse iki proses çakışır (ekran titrer).
-# Servis her başladığında SunFounder'ın SADECE OLED modülünü bırak (fan/RGB dokunulmaz).
-# '-' öneki: pironman5 kurulu değilse hata yut. Ayar SunFounder config'ine kalıcı yazılır.
+# SunFounder pironman5 aynı OLED'i / RGB'yi sürerse iki proses çakışır (ekran üst üste
+# biner, LED rengi ezilir). Servis her başladığında OLED ve RGB modüllerini bırak —
+# fan/güç yönetimi pironman5'te kalır. '-' öneki: kurulu değilse hata yut.
+# Ayar SunFounder config'ine kalıcı yazılır.
 ExecStartPre=-/bin/sh -c '/usr/local/bin/pironman5 -oe 0 2>/dev/null || pironman5 -oe 0 2>/dev/null || true'
+ExecStartPre=-/bin/sh -c '/usr/local/bin/pironman5 -re 0 2>/dev/null || pironman5 -re 0 2>/dev/null || true'
 ExecStart=/usr/bin/python3 /opt/pi5-gateway/scripts/lcd_display.py run
 Restart=always
 RestartSec=5
@@ -2519,36 +2521,56 @@ app.get('/api/case/led', async (_req, res) => {
   try {
     const row = await dbGet("SELECT value FROM app_settings WHERE key = 'led_config'");
     const config = row?.value ? JSON.parse(row.value) : { color: '#3b82f6', brightness: 80, animation: 'static', enabled: true };
+    // Eski kayıtlarda desteklenmeyen ad olabilir ('solid'); panelde hiçbir animasyon
+    // seçili görünmemesine yol açıyordu.
+    config.animation = normalizeAnimation(config.animation);
     res.json({ config });
   } catch { res.json({ config: { color: '#3b82f6', brightness: 80, animation: 'static', enabled: true } }); }
 });
 
+// LED'i donanıma uygula. Hem PUT hem backend açılışı bu yolu kullanır; açılışta çağrılması
+// kullanıcının seçimini reboot / servis restart sonrası korur. Aksi halde tek seferlik bir
+// yazma kalıyordu ve pironman5 RGB'yi ilk fırsatta geri açıyordu.
+async function applyLedConfig(cfg: any): Promise<{ applied: boolean; output?: string; error?: string; warning?: string }> {
+  if (!isLinux) return { applied: false, warning: 'LED kontrolü sadece Pi5 üzerinde çalışır' };
+  const enabled = cfg?.enabled !== false;
+  const script = '/opt/pi5-gateway/scripts/led_control.py';
+  const args = enabled
+    ? [script, 'set', String(cfg?.color ?? '#3b82f6'),
+       String(Math.round(Number(cfg?.brightness) || 0)), normalizeAnimation(cfg?.animation)]
+    : [script, 'off'];
+  // Önce SunFounder'ın RGB modülünü bırak, sonra yaz — sırası tersse rengimiz eziliyor.
+  const released = await releasePironmanModule('rgb');
+  try {
+    const { stdout, stderr } = await execFileP('python3', args, { timeout: 10000 });
+    const warning = released ? '' : await detectPironmanConflict();
+    return { applied: !warning, output: stdout.trim(), error: stderr.trim() || undefined, warning: warning || undefined };
+  } catch (cmdErr: any) {
+    return { applied: false, error: `LED script hatası: ${cmdErr.message}. WS2812 kasa (Pironman 5) için 'pip3 install spidev' + SPI etkin olmalı.` };
+  }
+}
+
+// Açılışta kayıtlı LED ayarını geri yükle (bloklamadan; hata sessizce yutulur).
+async function restoreLedConfig(): Promise<void> {
+  if (!isLinux) return;
+  try {
+    const row = await dbGet("SELECT value FROM app_settings WHERE key = 'led_config'");
+    if (!row?.value) return;
+    await applyLedConfig(JSON.parse(row.value));
+  } catch { /* LED donanımı yoksa sorun değil */ }
+}
+
 app.put('/api/case/led', async (req, res) => {
   try {
-    const config = JSON.stringify(req.body);
-    await dbRun("INSERT OR REPLACE INTO app_settings (key, value) VALUES ('led_config', ?)", [config]);
-    // Apply LED via Python script on Pi
-    if (isLinux) {
-      const { color, brightness, animation, enabled } = req.body;
-      if (enabled && (!isValidHexColor(color) || !isValidAnimation(animation))) {
-        return res.status(400).json({ error: 'Geçersiz renk (hex) veya animasyon değeri' });
-      }
-      const script = '/opt/pi5-gateway/scripts/led_control.py';
-      const args = enabled
-        ? [script, 'set', String(color), String(Math.round(Number(brightness) || 0)), String(animation)]
-        : [script, 'off'];
-      // Önce SunFounder'ın RGB modülünü bırak, sonra yaz — sırası tersse rengimiz eziliyor.
-      const released = await releasePironmanModule('rgb');
-      try {
-        const { stdout, stderr } = await execFileP('python3', args, { timeout: 10000 });
-        const warning = released ? '' : await detectPironmanConflict();
-        res.json({ success: true, applied: !warning, output: stdout.trim(), error: stderr.trim() || undefined, warning: warning || undefined });
-      } catch (cmdErr: any) {
-        res.json({ success: true, applied: false, error: `LED script hatası: ${cmdErr.message}. WS2812 kasa (Pironman 5) için 'pip3 install spidev' + SPI etkin olmalı.` });
-      }
-    } else {
-      res.json({ success: true, applied: false, warning: 'LED kontrolü sadece Pi5 üzerinde çalışır' });
+    const { color, enabled } = req.body;
+    // Doğrulama DB yazımından ÖNCE: geçersiz ayar kaydedilip donanıma hiç uygulanmasın.
+    if (enabled && !isValidHexColor(color)) {
+      return res.status(400).json({ error: 'Geçersiz renk (hex) değeri' });
     }
+    // Desteklenmeyen animasyon adı reddedilmek yerine 'static'e indirilir (eski 'solid' kayıtları).
+    const cfg = { ...req.body, animation: normalizeAnimation(req.body?.animation) };
+    await dbRun("INSERT OR REPLACE INTO app_settings (key, value) VALUES ('led_config', ?)", [JSON.stringify(cfg)]);
+    res.json({ success: true, ...(await applyLedConfig(cfg)) });
   } catch (e: any) { res.status(500).json({ error: e.message }); }
 });
 
@@ -2847,6 +2869,9 @@ app.use((_req, res) => {
 const bindHost = process.env.BIND_HOST || '127.0.0.1';
 const server = app.listen(Number(port), bindHost, () => {
   console.log(`Backend server running on http://${bindHost}:${port}`);
+  // Kayıtlı kasa LED ayarını geri yükle — boot/restart sonrası kullanıcının seçimi
+  // korunsun (aksi halde pironman5 RGB'yi kendi varsayılanıyla geri açıyor).
+  void restoreLedConfig();
 });
 
 server.keepAliveTimeout = 65000;

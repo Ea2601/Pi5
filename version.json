@@ -1,12 +1,13 @@
 {
-  "version": "2.12.2",
-  "build": 55,
+  "version": "2.12.3",
+  "build": 56,
   "date": "2026-09-08",
   "changelog": [
-    "Düzeltme: kasa RGB değişimi 'hata' veriyordu — SunFounder pironman5 RGB modülü artık LED yazılmadan önce otomatik bırakılıyor (pironman5 -re 0)",
-    "OLED tarafında bu zaten pi5-lcd unit'inde ExecStartPre ile yapılıyordu; RGB tarafında hiç yoktu, bu yüzden panelden verilen renk pironman5 tarafından eziliyordu",
-    "Bırakma başarılıysa uyarı hiç gösterilmiyor; pironman5 kurulu değilse veya bayrak desteklenmiyorsa eski davranışa güvenle düşüyor",
-    "Uyarı metni gerçekçileştirildi: elle çalıştırılacak komut (sudo pironman5 -re 0) ve fan/güç yönetiminin pironman5'te kaldığı belirtiliyor",
-    "Panelde uyarılar artık kırmızı hata yerine bilgi toast'ı olarak gösteriliyor (LED ve LCD kaydetme) — uyarı bir hata değil"
+    "Düzeltme: kasa LED'i kapalıya alınsa da reboot/servis restart sonrası geri yanıyordu — kayıtlı led_config artık backend açılışında donanıma yeniden uygulanıyor",
+    "led_control.py yalnızca panelden kaydedince çalışıyordu; ayar kalıcı değildi, pironman5 RGB'yi ilk fırsatta geri açıyordu",
+    "pi5-lcd servisi başlarken SunFounder'ın RGB modülünü de bırakıyor (pironman5 -re 0) — OLED için zaten yapılıyordu; install.sh, post-update.sh ve backend'deki üç unit tanımı da güncellendi",
+    "Düzeltme: desteklenmeyen animasyon adı ('solid' gibi eski kayıtlar) LED'i tamamen uygulanamaz yapıyordu — artık 'static'e indiriliyor, panelde de doğru seçili görünüyor",
+    "Düzeltme: LED ayarı doğrulanmadan önce DB'ye yazılıyordu; geçersiz değer kaydedilip donanıma hiç uygulanmıyordu. Doğrulama artık yazımdan önce",
+    "LED uygulama yolu tek fonksiyonda toplandı (applyLedConfig) — PUT ve açılışta aynı davranış"
   ]
 }

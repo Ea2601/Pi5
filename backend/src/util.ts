@@ -34,6 +34,15 @@ export function isValidAnimation(s: unknown): boolean {
   return typeof s === 'string' && (LED_ANIMATIONS as readonly string[]).includes(s);
 }
 
+/**
+ * Animasyon adını led_control.py'nin tanıdığı sete indir. Eski kayıtlarda desteklenmeyen
+ * değerler bulunabiliyor (ör. 'solid'); bunlar reddedilirse LED hiç uygulanmıyordu.
+ */
+export function normalizeAnimation(s: unknown): string {
+  const v = String(s ?? '').trim().toLowerCase();
+  return (LED_ANIMATIONS as readonly string[]).includes(v) ? v : 'static';
+}
+
 /** Safe WireGuard/client display name — alnum, space, dot, dash, underscore. */
 export function sanitizeName(s: unknown, max = 64): string {
   return String(s ?? '').replace(/[^A-Za-z0-9 _.-]/g, '').slice(0, max).trim();
