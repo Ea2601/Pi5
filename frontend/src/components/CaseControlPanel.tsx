@@ -49,7 +49,7 @@ interface LcdHints {
 const DEFAULT_SETTINGS: LcdSettings = {
   wan_if: 'eth0',
   temp_alarm: 75,
-  fps: 20,
+  fps: 10,
   anim: true,
   i2c_addr: '0x3C',
   i2c_port: 1,
@@ -407,7 +407,10 @@ export function CaseControlPanel() {
                 <input className="config-input" type="number" min={1} max={60} value={settings.fps}
                   onChange={e => updateSetting('fps', Number(e.target.value))}
                   style={{ fontSize: 12, padding: '4px 8px' }} />
-                <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>Yüksek değer = akıcı, daha çok I2C yükü</span>
+                <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>
+                  100 kHz I2C'de 10–12 üst sınır; üstüne çıkınca görüntü bozulur.
+                  Daha yükseği için /boot/firmware/config.txt → dtparam=i2c_arm_baudrate=400000
+                </span>
               </label>
 
               {/* I2C adres / port */}

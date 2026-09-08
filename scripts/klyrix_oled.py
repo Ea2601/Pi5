@@ -8,7 +8,7 @@ scripts/lcd_display.py tarafında yaşar — bu dosya doğrudan çalıştırılm
 
 Tek bağımlılık Pillow; cihazda ayrıca luma.oled + luma.core.
 
-Env: PI5_LCD_ADDR=0x3C  PI5_LCD_I2C_PORT=1  PI5_LCD_FPS=20  PI5_LCD_DWELL=10
+Env: PI5_LCD_ADDR=0x3C  PI5_LCD_I2C_PORT=1  PI5_LCD_FPS=10  PI5_LCD_DWELL=10
      PI5_LCD_WAN_IF=eth0  PI5_LCD_CONTROLLER=ssd1306|sh1106
      PI5_LCD_TEMP_ALARM=75
      PI5_LCD_MOUNTS="ROOT=/,BOOT=/boot/firmware,NAS=/mnt/nas,USB=/mnt/usb,DOCKER=/var/lib/docker"

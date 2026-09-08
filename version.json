@@ -1,17 +1,13 @@
 {
-  "version": "2.12.0",
-  "build": 53,
+  "version": "2.12.1",
+  "build": 54,
   "date": "2026-09-08",
   "changelog": [
-    "Kasa OLED motor ayarları backoffice'e bağlandı: Kasa Kontrol → LCD Ekran Döngüsü altına 'Ekran Ayarları' bölümü eklendi",
-    "WAN arayüzü panelden seçilebiliyor — internet sayfasındaki canlı hız grafiği bu arayüzden okunuyor; sistemdeki arayüzler listeleniyor ve tespit edilen WAN tek tıkla uygulanıyor",
-    "Disk birimleri panelden yönetiliyor (ad + yol, en fazla 8); sistemdeki bağlama noktaları açılır listeden eklenebiliyor",
-    "Sıcaklık alarm eşiği, kare hızı (FPS), animasyon aç/kapa ve I2C adres/port panelden ayarlanıyor",
-    "Sayfa listesine yukarı/aşağı sıralama butonları ve 'Varsayılan' düğmesi eklendi — sayfa sırası artık panelden değiştirilebiliyor",
-    "Motorun tanımadığı içerik anahtarları panelde uyarı ile işaretleniyor (serbest metin sayfasına düşeceği belirtiliyor)",
-    "Yeni app_settings.lcd_settings anahtarı; lcd_display.py bunu PI5_LCD_* env'lerine yazıyor, elle verilen env panelin önüne geçiyor",
-    "Backend doğrulaması: arayüz adı/mount yolu regex, aralık sınırları, tekrar eden birim ayıklama — kabuk metakarakteri ve göreli yol reddediliyor",
-    "Düzeltme: i2c_port=0 (I2C bus 0) 'or' fallback'i yüzünden 1'e dönüyordu",
-    "Düzeltme: disk birimi listesi boşaltıldığında env değeri çalışma sırasında yapışıp kalıyordu"
+    "Düzeltme: kasa OLED'de görüntü üst üste biniyordu — render döngüsünün kare freni geri geldi",
+    "Yeni motorda bekleme adaptifti (max(0, 1/FPS - render süresi)); I2C yavaş olduğunda sıfıra düşüp bus'ı doyuruyor, yarım kalan transferin üstüne yazıyordu. Artık her karede en az 5 ms boşluk bırakılıyor (MIN_FRAME_SLEEP)",
+    "Varsayılan FPS 20 → 10: 100 kHz I2C'de SH1106/SSD1306 tam kare (~1 KB) yaklaşık 100 ms sürüyor, 20 FPS taşınamıyordu",
+    "install.sh'ın yazdığı pi5-lcd.service unit'i backend'inkiyle eşitlendi — ExecStartPre eksikti, SunFounder pironman5 aynı I2C OLED'ini sürmeye devam edebiliyordu",
+    "post-update.sh servisi yeniden başlatmadan önce unit'i tazeliyor (eski kurulumlarda ExecStartPre yoktu)",
+    "Panelde FPS alanına I2C sınırı notu: 100 kHz'de 10-12 üst sınır, dtparam=i2c_arm_baudrate=400000 ile yükseltilebilir"
   ]
 }

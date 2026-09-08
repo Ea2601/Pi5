@@ -2538,7 +2538,7 @@ app.put('/api/case/led', async (req, res) => {
 const LCD_DEFAULT_SETTINGS = {
   wan_if: 'eth0',
   temp_alarm: 75,
-  fps: 20,
+  fps: 10,   // 100 kHz I2C'nin taşıyabildiği üst sınır; 400 kHz'de yükseltilebilir
   anim: true,
   i2c_addr: '0x3C',
   i2c_port: 1,

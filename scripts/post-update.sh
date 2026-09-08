@@ -38,6 +38,25 @@ if [ -f "$BASE/scripts/lcd_display.py" ]; then
     echo "  LCD Python bağımlılıkları kuruluyor..." >> "$LOG"
     pip3 install --break-system-packages luma.oled luma.core RPLCD Pillow 2>/dev/null >> "$LOG" || pip3 install luma.oled luma.core RPLCD Pillow 2>/dev/null >> "$LOG" || true
   }
+  # Unit'i tazele: eski kurulumlarda ExecStartPre yoktu, SunFounder pironman5 aynı
+  # I2C OLED'ini sürmeye devam edip ekranı üst üste bindiriyordu.
+  cat > /etc/systemd/system/pi5-lcd.service << 'LCDEOF'
+[Unit]
+Description=Pi5 Gateway Case LCD
+After=pi5-backend.service
+Wants=pi5-backend.service
+
+[Service]
+Type=simple
+ExecStartPre=-/bin/sh -c '/usr/local/bin/pironman5 -oe 0 2>/dev/null || pironman5 -oe 0 2>/dev/null || true'
+ExecStart=/usr/bin/python3 /opt/pi5-gateway/scripts/lcd_display.py run
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+LCDEOF
+  systemctl daemon-reload 2>/dev/null || true
   # Yeni render kodu ancak servis yeniden başlayınca ekrana düşer.
   systemctl restart pi5-lcd.service 2>/dev/null && echo "  pi5-lcd.service yeniden başlatıldı" >> "$LOG" || true
 fi

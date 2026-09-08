@@ -55,15 +55,19 @@ PAGES_KEY = "lcd_pages"
 CONTROLLER_KEY = "lcd_controller"
 SETTINGS_KEY = "lcd_settings"
 LOG_FILE = "/tmp/lcd_display.log"
-FPS = int(os.environ.get("PI5_LCD_FPS", "20") or 20)
+FPS = int(os.environ.get("PI5_LCD_FPS", "10") or 10)
 CONFIG_POLL = 60  # sn — panelden değişen sayfa yapılandırmasını yeniden oku
+# Her karede en az bu kadar bekle. 100 kHz I2C'de tam kare (~1 KB) ~100 ms sürer;
+# beklemesiz döngü yarım kalan transferin üstüne yazıp görüntüyü bozar (üst üste binme).
+# I2C 400 kHz'e çıkarılırsa (dtparam=i2c_arm_baudrate=400000) FPS güvenle yükseltilebilir.
+MIN_FRAME_SLEEP = 0.005
 
 # Panelden yönetilen motor ayarları. Değerler klyrix_oled'in okuduğu env'lere yazılır;
 # elle verilmiş bir PI5_LCD_* env'i (systemd/kabuk) her zaman panelin önüne geçer.
 DEFAULT_SETTINGS = {
     "wan_if": "eth0",          # internet sayfasının canlı DL/UL grafiği bu arayüzden okunur
     "temp_alarm": 75,          # °C — sıcaklık sayfasındaki alarm eşiği
-    "fps": 20,                 # kare/sn — akıcılık ve I2C yükü
+    "fps": 10,                 # kare/sn — 100 kHz I2C'nin taşıyabildiği üst sınır
     "anim": True,              # False: animasyonsuz statik sayfa döngüsü
     "i2c_addr": "0x3C",
     "i2c_port": 1,
@@ -182,7 +186,7 @@ def _int_or(value, dflt):
 def apply_settings(s):
     """Ayarları motorun okuduğu env'lere yaz. Elle verilmiş env'ler korunur."""
     global FPS
-    FPS = max(1, min(60, _int_or(s.get("fps"), 20)))
+    FPS = max(1, min(60, _int_or(s.get("fps"), 10)))
     mounts = ",".join(
         f"{str(m.get('name', '')).strip().upper()[:6]}={str(m.get('path', '')).strip()}"
         for m in (s.get("mounts") or [])
@@ -450,7 +454,7 @@ def _make_oled(controller):
                 except Exception as ex:
                     log_lcd(f"render hata: {ex}")
                     time.sleep(0.5)
-                time.sleep(max(0.0, 1.0 / FPS - (time.time() - now)))
+                time.sleep(max(MIN_FRAME_SLEEP, 1.0 / FPS - (time.time() - now)))
 
         def animate(self, page, duration):
             """Tek sayfayı `duration` sn oynat (test komutu / statik mod)."""
@@ -474,7 +478,7 @@ def _make_oled(controller):
                     src.step(min(0.1, max(0.0, now - last)))
                     last = now
                     device.display(player.frame(t).image())
-                    time.sleep(max(0.0, 1.0 / FPS - (time.time() - now)))
+                    time.sleep(max(MIN_FRAME_SLEEP, 1.0 / FPS - (time.time() - now)))
             except Exception as ex:
                 log_lcd(f"animate hata: {ex}")
                 try:

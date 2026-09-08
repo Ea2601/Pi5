@@ -227,6 +227,10 @@ Wants=pi5-backend.service
 
 [Service]
 Type=simple
+# SunFounder pironman5 aynı I2C OLED'ini sürerse iki proses çakışır (ekran üst üste biner).
+# Servis her başladığında SunFounder'ın SADECE OLED modülünü bırak (fan/RGB dokunulmaz).
+# '-' öneki: pironman5 kurulu değilse hata yut. Ayar SunFounder config'ine kalıcı yazılır.
+ExecStartPre=-/bin/sh -c '/usr/local/bin/pironman5 -oe 0 2>/dev/null || pironman5 -oe 0 2>/dev/null || true'
 ExecStart=/usr/bin/python3 /opt/pi5-gateway/scripts/lcd_display.py run
 Restart=always
 RestartSec=5
