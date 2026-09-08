@@ -12,7 +12,7 @@ import {
   getNetworkDevices, getBandwidthLive, getWireguardStatus,
   getFail2banStatus, getDnsQueries, getCurrentExternalIp,
   runSpeedTest, executeCommand, applyDomainRouting, applyBlockedDevices,
-  sampleMetrics,
+  sampleMetrics, detectInterfaces,
 } from './system';
 import {
   shq, sedEscape, isValidMac, isValidDomain, isValidTimezone,
@@ -2533,21 +2533,89 @@ app.put('/api/case/led', async (req, res) => {
   } catch (e: any) { res.status(500).json({ error: e.message }); }
 });
 
+// Kasa OLED motor ayarları (scripts/lcd_display.py DEFAULT_SETTINGS ile aynı şema).
+// Değerler PI5_LCD_* env'lerine yazılır; panelden gelen her alan burada doğrulanır.
+const LCD_DEFAULT_SETTINGS = {
+  wan_if: 'eth0',
+  temp_alarm: 75,
+  fps: 20,
+  anim: true,
+  i2c_addr: '0x3C',
+  i2c_port: 1,
+  mounts: [{ name: 'ROOT', path: '/' }, { name: 'BOOT', path: '/boot/firmware' }],
+};
+
+function sanitizeLcdSettings(input: any) {
+  const s: any = { ...LCD_DEFAULT_SETTINGS, mounts: [...LCD_DEFAULT_SETTINGS.mounts] };
+  if (!input || typeof input !== 'object') return s;
+  const num = (v: any, min: number, max: number, dflt: number) => {
+    const n = Math.round(Number(v));
+    return Number.isFinite(n) && n >= min && n <= max ? n : dflt;
+  };
+  // Arayüz adı: Linux IFNAMSIZ 15 karakter; kabuk metakarakteri kabul edilmez.
+  if (typeof input.wan_if === 'string' && /^[A-Za-z0-9_.@-]{1,15}$/.test(input.wan_if)) s.wan_if = input.wan_if;
+  s.temp_alarm = num(input.temp_alarm, 40, 110, LCD_DEFAULT_SETTINGS.temp_alarm);
+  s.fps = num(input.fps, 1, 60, LCD_DEFAULT_SETTINGS.fps);
+  s.anim = input.anim !== false;
+  const addr = typeof input.i2c_addr === 'string' ? input.i2c_addr.trim() : '';
+  if (/^0x[0-9a-fA-F]{2}$/.test(addr)) s.i2c_addr = '0x' + addr.slice(2).toUpperCase();
+  s.i2c_port = num(input.i2c_port, 0, 9, LCD_DEFAULT_SETTINGS.i2c_port);
+  if (Array.isArray(input.mounts)) {
+    const seen = new Set<string>();
+    s.mounts = input.mounts
+      .map((m: any) => ({
+        name: String(m?.name ?? '').trim().toUpperCase().slice(0, 6),
+        path: String(m?.path ?? '').trim(),
+      }))
+      // Yol mutlak olmalı; ad/yol motorun "AD=yol" listesine girdiği için ',' ve '=' yasak.
+      .filter((m: any) => m.name && /^[A-Z0-9_-]+$/.test(m.name)
+        && /^\/[^,=\s]*$/.test(m.path) && !seen.has(m.name) && seen.add(m.name))
+      .slice(0, 8);
+  }
+  return s;
+}
+
 app.get('/api/case/lcd', async (_req, res) => {
   try {
     const row = await dbGet("SELECT value FROM app_settings WHERE key = 'lcd_pages'");
     const ctrlRow = await dbGet("SELECT value FROM app_settings WHERE key = 'lcd_controller'");
+    const setRow = await dbGet("SELECT value FROM app_settings WHERE key = 'lcd_settings'");
     const pages = row?.value ? JSON.parse(row.value) : [];
-    res.json({ pages, controller: ctrlRow?.value || 'auto' });
-  } catch { res.json({ pages: [], controller: 'auto' }); }
+    const settings = sanitizeLcdSettings(setRow?.value ? JSON.parse(setRow.value) : null);
+    // Panelin arayüz seçimi ve mount önerileri için ipuçları (Pi5 dışında boş döner).
+    const hints: { interfaces: string[]; wan: string; mounts: { name: string; path: string }[] } =
+      { interfaces: [], wan: settings.wan_if, mounts: [] };
+    if (isLinux) {
+      try {
+        const bw = await getBandwidthLive();
+        hints.interfaces = bw.interfaces.map(i => i.name);
+        hints.wan = (await detectInterfaces()).wan;
+      } catch { /* ipuçları isteğe bağlı */ }
+      try {
+        const exec = require('util').promisify(require('child_process').exec);
+        const { stdout } = await exec("df -P --output=target 2>/dev/null | tail -n +2", { timeout: 4000 });
+        hints.mounts = String(stdout).split('\n').map(t => t.trim()).filter(Boolean)
+          .filter(t => t === '/' || (!t.startsWith('/dev') && !t.startsWith('/sys') && !t.startsWith('/proc') && !t.startsWith('/run')))
+          .slice(0, 20)
+          .map(path => ({ path, name: (path === '/' ? 'ROOT' : path.split('/').filter(Boolean).pop() || 'VOL').toUpperCase().slice(0, 6) }));
+      } catch { /* ipuçları isteğe bağlı */ }
+    }
+    res.json({ pages, controller: ctrlRow?.value || 'auto', settings, hints });
+  } catch {
+    res.json({ pages: [], controller: 'auto', settings: sanitizeLcdSettings(null), hints: { interfaces: [], wan: 'eth0', mounts: [] } });
+  }
 });
 
 app.put('/api/case/lcd', async (req, res) => {
   try {
-    const { pages, controller } = req.body;
+    const { pages, controller, settings } = req.body;
     await dbRun("INSERT OR REPLACE INTO app_settings (key, value) VALUES ('lcd_pages', ?)", [JSON.stringify(pages)]);
     if (controller && ['auto', 'ssd1306', 'sh1106'].includes(String(controller))) {
       await dbRun("INSERT OR REPLACE INTO app_settings (key, value) VALUES ('lcd_controller', ?)", [String(controller)]);
+    }
+    if (settings !== undefined) {
+      await dbRun("INSERT OR REPLACE INTO app_settings (key, value) VALUES ('lcd_settings', ?)",
+        [JSON.stringify(sanitizeLcdSettings(settings))]);
     }
     // LCD is a persistent systemd service (pi5-lcd) — restart it so new pages/controller apply.
     if (isLinux) {

@@ -5,8 +5,14 @@ LCD Display Controller — Pi5 Gateway kasa OLED'i (Pironman / Pimoroni).
 Kasada sırayla dönen çok-sayfalı, animasyonlu bilgi ekranı. OLED render'ı
 Klyrix 1-bit motoruyla (scripts/klyrix_oled.py) yapılır: marka açılışı, termometre,
 sparkline, yay göstergesi, nokta ızgarası, güvenlik listesi ve sayfalar arası
-yatay kaydırma geçişi. Sayfa sırası/süresi panelden (DB app_settings.lcd_pages)
-gelir; HD44780 16x2 ve konsol için düz-metin görünüm korunur.
+yatay kaydırma geçişi. HD44780 16x2 ve konsol için düz-metin görünüm korunur.
+
+Yapılandırma tamamen panelden (Kasa Kontrol) gelir, DB app_settings üzerinden:
+  lcd_pages      sayfa sırası / süresi / aktifliği + özel metin
+  lcd_controller ssd1306 | sh1106 | auto
+  lcd_settings   WAN arayüzü, sıcaklık alarmı, FPS, animasyon, I2C adres/port,
+                 disk birimleri — apply_settings() bunları PI5_LCD_* env'lerine yazar
+Elle verilmiş bir PI5_LCD_* env'i (systemd/kabuk) panel ayarının önüne geçer.
 
 Usage:
   python3 lcd_display.py run              # Foreground daemon (systemd Type=simple)
@@ -23,8 +29,9 @@ Usage:
 
 Sayfa id'leri: brand temp ram disk inet net clients sec msg
 Supports: SSD1306 / SH1106 OLED (128x64), HD44780 16x2 via I2C, console fallback.
-Env: PI5_LCD_CONTROLLER=ssd1306|sh1106|auto, PI5_LCD_ADDR, PI5_LCD_ANIM=0 (statik),
-     PI5_LCD_I2C_PORT, PI5_LCD_FPS, PI5_LCD_WAN_IF, PI5_LCD_TEMP_ALARM, PI5_LCD_MOUNTS.
+Env (panel ayarını ezmek için): PI5_LCD_CONTROLLER=ssd1306|sh1106|auto, PI5_LCD_ADDR,
+     PI5_LCD_ANIM=0 (statik), PI5_LCD_I2C_PORT, PI5_LCD_FPS, PI5_LCD_WAN_IF,
+     PI5_LCD_TEMP_ALARM, PI5_LCD_MOUNTS.
 Requires: pip3 install luma.oled luma.core Pillow  (OLED)  |  RPLCD (HD44780)
 """
 
@@ -46,9 +53,32 @@ PID_FILE = "/tmp/lcd_display.pid"
 CONFIG_FILE = "/opt/pi5-gateway/core/pi5router.sqlite"
 PAGES_KEY = "lcd_pages"
 CONTROLLER_KEY = "lcd_controller"
+SETTINGS_KEY = "lcd_settings"
 LOG_FILE = "/tmp/lcd_display.log"
 FPS = int(os.environ.get("PI5_LCD_FPS", "20") or 20)
 CONFIG_POLL = 60  # sn — panelden değişen sayfa yapılandırmasını yeniden oku
+
+# Panelden yönetilen motor ayarları. Değerler klyrix_oled'in okuduğu env'lere yazılır;
+# elle verilmiş bir PI5_LCD_* env'i (systemd/kabuk) her zaman panelin önüne geçer.
+DEFAULT_SETTINGS = {
+    "wan_if": "eth0",          # internet sayfasının canlı DL/UL grafiği bu arayüzden okunur
+    "temp_alarm": 75,          # °C — sıcaklık sayfasındaki alarm eşiği
+    "fps": 20,                 # kare/sn — akıcılık ve I2C yükü
+    "anim": True,              # False: animasyonsuz statik sayfa döngüsü
+    "i2c_addr": "0x3C",
+    "i2c_port": 1,
+    "mounts": [                # disk sayfasındaki birimler (ad → yol)
+        {"name": "ROOT", "path": "/"},
+        {"name": "BOOT", "path": "/boot/firmware"},
+    ],
+}
+SETTINGS_ENV = {
+    "wan_if": "PI5_LCD_WAN_IF", "temp_alarm": "PI5_LCD_TEMP_ALARM", "fps": "PI5_LCD_FPS",
+    "anim": "PI5_LCD_ANIM", "i2c_addr": "PI5_LCD_ADDR", "i2c_port": "PI5_LCD_I2C_PORT",
+    "mounts": "PI5_LCD_MOUNTS",
+}
+# Süreç başlarken dışarıdan gelen env'ler — panel ayarı bunları ezmez.
+_ENV_OVERRIDES = {k for k, e in SETTINGS_ENV.items() if os.environ.get(e)}
 
 
 def log_lcd(msg):
@@ -119,6 +149,64 @@ def get_controller():
     except Exception:
         pass
     return 'auto'
+
+
+def get_settings():
+    """Panelden kaydedilen motor ayarları (app_settings.lcd_settings) + varsayılanlar."""
+    s = dict(DEFAULT_SETTINGS)
+    s["mounts"] = [dict(m) for m in DEFAULT_SETTINGS["mounts"]]
+    try:
+        import sqlite3
+        db = sqlite3.connect(CONFIG_FILE)
+        row = db.execute("SELECT value FROM app_settings WHERE key = ?", (SETTINGS_KEY,)).fetchone()
+        db.close()
+        if row and row[0]:
+            saved = json.loads(row[0])
+            if isinstance(saved, dict):
+                for k in DEFAULT_SETTINGS:
+                    if saved.get(k) is not None:
+                        s[k] = saved[k]
+    except Exception as ex:
+        log_lcd(f"lcd_settings okunamadi ({ex}) — varsayilanlar")
+    return s
+
+
+def _int_or(value, dflt):
+    """0 geçerli bir ayar değeri (I2C bus 0) — 'or' ile fallback yapılamaz."""
+    try:
+        return dflt if value is None or value == "" else int(value)
+    except (TypeError, ValueError):
+        return dflt
+
+
+def apply_settings(s):
+    """Ayarları motorun okuduğu env'lere yaz. Elle verilmiş env'ler korunur."""
+    global FPS
+    FPS = max(1, min(60, _int_or(s.get("fps"), 20)))
+    mounts = ",".join(
+        f"{str(m.get('name', '')).strip().upper()[:6]}={str(m.get('path', '')).strip()}"
+        for m in (s.get("mounts") or [])
+        if str(m.get("name", "")).strip() and str(m.get("path", "")).strip()
+    )
+    values = {
+        "wan_if": str(s.get("wan_if") or "eth0"),
+        "temp_alarm": str(_int_or(s.get("temp_alarm"), 75)),
+        "fps": str(FPS),
+        "anim": "1" if s.get("anim", True) else "0",
+        "i2c_addr": str(s.get("i2c_addr") or "0x3C"),
+        "i2c_port": str(_int_or(s.get("i2c_port"), 1)),
+        "mounts": mounts,
+    }
+    for key, env in SETTINGS_ENV.items():
+        if key in _ENV_OVERRIDES:
+            continue  # dışarıdan verilmiş env panelin önünde
+        if key == "mounts" and not mounts:
+            # Boş liste = motorun kendi varsayılan mount seti. Env'i temizle ki
+            # önceki ayardan kalan liste çalışma sırasında yapışıp kalmasın.
+            os.environ.pop(env, None)
+            continue
+        os.environ[env] = values[key]
+    return values
 
 
 def _db_query(sql, one=True):
@@ -347,6 +435,9 @@ def _make_oled(controller):
                 clock += dt
                 if now - last_cfg > CONFIG_POLL:
                     last_cfg = now
+                    # temp_alarm / mounts / fps anında etkili; wan_if ve I2C adresi
+                    # yalnızca servis yeniden başlayınca (panel kaydı zaten restart eder).
+                    apply_settings(get_settings())
                     fresh = build_engine_pages(get_pages())
                     if fresh and _pages_signature(fresh) != _pages_signature(player.pages):
                         player.pages = fresh
@@ -470,6 +561,7 @@ def run_display():
     """Main display loop. OLED: tek sürekli saat; diğerleri: sayfa sayfa döngü."""
     write_pid()
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
+    apply_settings(get_settings())
 
     display = get_display()
 
@@ -585,6 +677,7 @@ def main():
         sys.exit(1)
 
     cmd = sys.argv[1]
+    apply_settings(get_settings())
 
     if cmd == "stop":
         kill_existing()

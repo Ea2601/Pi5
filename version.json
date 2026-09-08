@@ -1,17 +1,17 @@
 {
-  "version": "2.11.0",
-  "build": 52,
-  "date": "2026-09-07",
+  "version": "2.12.0",
+  "build": 53,
+  "date": "2026-09-08",
   "changelog": [
-    "Kasa OLED render motoru yenilendi: scripts/klyrix_oled.py — kendi 1-bit framebuffer'ı, 5x7 piksel fontu ve Klyrix wordmark'ı; TrueType/DejaVu bağımlılığı kalktı",
-    "9 yeni sayfa: marka açılışı, sıcaklık+fan (termometre+sparkline), RAM+yük, disk doluluk (yay göstergeleri, sayfalı), internet (indirme/yükleme grafiği), ağ adresleri (WAN/V6/LAN/GW), cihazlar (nokta ızgarası), güvenlik katmanları, mesaj",
-    "Sayfalar arası yatay kaydırma geçişi ve sürekli saatli oynatıcı; veri arka plan thread'inde 5 sn'de bir toplanıyor, geçmiş tamponları grafikleri besliyor",
-    "Panel sayfa yapılandırması korundu: lcd_pages → motor sayfa eşlemesi (cpu_ram iki sayfaya açılır), süre/sıra/aktiflik ve özel metin çalışmaya devam ediyor; yapılandırma 60 sn'de bir canlı yenileniyor",
-    "Panele TEMP / RAM / DISK sayfaları eklendi; DDNS ve fail2ban/Pi-hole durumu güvenlik sayfasında görünüyor",
-    "Alert şeridi düzeltildi: sorgu alerts tablosunun gerçek şemasına (acknowledged/created_at) uyduruldu — eski sorgu 'no such column: timestamp' ile sessizce hiç çalışmıyordu; 60 sn yaş filtresi eklendi",
-    "Türkçe karakterler ekranda '?' yerine ASCII karşılığıyla çiziliyor (alert mesajı, hostname, cihaz adları)",
-    "HD44780 16x2 ve konsol düz-metin fallback'i, detect/test/preview/start/stop/status komutları korundu; preview yeni motora göre yenilendi (--alarm eklendi)",
-    "post-update.sh artık Pillow'u doğruluyor ve pi5-lcd.service'i yeniden başlatıyor — güncelleme sonrası yeni animasyon anında devreye giriyor",
-    "scripts/lcd_widgets.py kaldırıldı (yeni motor tüm widget'ları kapsıyor)"
+    "Kasa OLED motor ayarları backoffice'e bağlandı: Kasa Kontrol → LCD Ekran Döngüsü altına 'Ekran Ayarları' bölümü eklendi",
+    "WAN arayüzü panelden seçilebiliyor — internet sayfasındaki canlı hız grafiği bu arayüzden okunuyor; sistemdeki arayüzler listeleniyor ve tespit edilen WAN tek tıkla uygulanıyor",
+    "Disk birimleri panelden yönetiliyor (ad + yol, en fazla 8); sistemdeki bağlama noktaları açılır listeden eklenebiliyor",
+    "Sıcaklık alarm eşiği, kare hızı (FPS), animasyon aç/kapa ve I2C adres/port panelden ayarlanıyor",
+    "Sayfa listesine yukarı/aşağı sıralama butonları ve 'Varsayılan' düğmesi eklendi — sayfa sırası artık panelden değiştirilebiliyor",
+    "Motorun tanımadığı içerik anahtarları panelde uyarı ile işaretleniyor (serbest metin sayfasına düşeceği belirtiliyor)",
+    "Yeni app_settings.lcd_settings anahtarı; lcd_display.py bunu PI5_LCD_* env'lerine yazıyor, elle verilen env panelin önüne geçiyor",
+    "Backend doğrulaması: arayüz adı/mount yolu regex, aralık sınırları, tekrar eden birim ayıklama — kabuk metakarakteri ve göreli yol reddediliyor",
+    "Düzeltme: i2c_port=0 (I2C bus 0) 'or' fallback'i yüzünden 1'e dönüyordu",
+    "Düzeltme: disk birimi listesi boşaltıldığında env değeri çalışma sırasında yapışıp kalıyordu"
   ]
 }
