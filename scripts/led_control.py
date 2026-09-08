@@ -160,7 +160,7 @@ def get_led():
 # ortada hızlı geçip uçlarda asılı kalır. Fade'lerde algısal seviyeyi bu eğriyle
 # doğrusal PWM'e çeviriyoruz. Yalnızca animasyonlarda kullanılır; sabit renk yolu
 # (set_static) dokunulmadan kalır.
-GAMMA = 2.2
+GAMMA = 2.0
 
 
 def _gamma(level):
@@ -178,22 +178,25 @@ def run_animation(led, r, g, b, brightness, animation):
     write_pid()
 
     if animation == "static":
-        set_static(led, r, g, b, brightness)
-        # Stay alive so PID file remains valid
         signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
+        # Sabit renkte de canlı kalıyoruz: proses çıkınca spidev kapanıyor ve MOSI'nin
+        # durum değişimini WS2812 veri sanıp bozuk renkte kalabiliyor. Ayrıca rengi
+        # periyodik tazeleyerek hat üzerindeki tek seferlik gürültüden kurtuluyoruz.
         while True:
-            time.sleep(60)
+            set_static(led, r, g, b, brightness)
+            time.sleep(5)
 
     elif animation == "breathe":
         signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
         # Sinüs eğrisi: uçlarda yavaşlar, ortada hızlanır — nefes ritmi. Eski lineer
         # rampa göze eşit hızda gelmiyordu; ayrıca fade-out 0.02'de bitip fade-in 0'dan
         # başladığı için dönüş noktasında küçük bir süreksizlik vardı.
-        STEPS, PERIOD = 120, 4.0          # bir tam nefes = 4 sn
+        STEPS, PERIOD, FLOOR = 120, 4.0, 0.06   # bir tam nefes = 4 sn, dipte %6 kalır
         dt = PERIOD / STEPS
         while True:
             for i in range(STEPS):
-                level = (1 - math.cos(2 * math.pi * i / STEPS)) / 2   # 0 → 1 → 0
+                wave = (1 - math.cos(2 * math.pi * i / STEPS)) / 2    # 0 → 1 → 0
+                level = FLOOR + (1 - FLOOR) * wave                    # dipte sönmez
                 led.set_light(r, g, b, brightness=_gamma(level) * brightness)
                 time.sleep(dt)
 
@@ -303,21 +306,17 @@ def main():
         # Save state
         save_state(color, int(brightness * 100), animation, True)
 
-        if animation == "static":
-            # For static, just set and exit (no daemon needed)
-            set_static(led, r, g, b, brightness)
-            print(f"LED: {color} brightness={int(brightness*100)}% animation=static")
+        # Sabit renk dahil her mod daemon olarak yaşar. Sabit rengi yazıp çıkmak
+        # spidev'i kapatıyor, bu da WS2812'de bozuk renge yol açıyordu.
+        pid = os.fork()
+        if pid > 0:
+            # Parent exits
+            print(f"LED: {color} brightness={int(brightness*100)}% animation={animation} (pid={pid})")
+            return
         else:
-            # Fork daemon for animations
-            pid = os.fork()
-            if pid > 0:
-                # Parent exits
-                print(f"LED: {color} brightness={int(brightness*100)}% animation={animation} (pid={pid})")
-                return
-            else:
-                # Child runs animation
-                os.setsid()
-                run_animation(led, r, g, b, brightness, animation)
+            # Child runs animation
+            os.setsid()
+            run_animation(led, r, g, b, brightness, animation)
 
     else:
         print(f"Bilinmeyen komut: {cmd}")

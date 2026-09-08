@@ -1,12 +1,11 @@
 {
-  "version": "2.13.1",
-  "build": 59,
+  "version": "2.13.2",
+  "build": 60,
   "date": "2026-09-08",
   "changelog": [
-    "Kasa LED animasyonları düzeltildi: 'Pulse' ile 'Yanıp Sönme' aynı kare dalga algoritmasını kullanıyordu (tek fark süreydi), ikisi görsel olarak ayırt edilemiyordu",
-    "Pulse artık gerçek nabız: hızlı yükseliş (0.10s), yavaş sönüş (0.60s), kısa dinlenme (0.40s) — 1.1s kalp atışı ritmi. Yanıp Sönme kare dalga olarak kalıyor (0.30s)",
-    "Nefes Alma lineer rampa yerine sinüs eğrisiyle çiziliyor: uçlarda yavaşlar, ortada hızlanır; 4 saniyelik tam nefes. Eski rampada dönüş noktasında süreksizlik vardı",
-    "Fade'lere gamma (2.2) düzeltmesi: insan gözü ışığı logaritmik algılıyor, lineer PWM eşit adımlı görünmüyordu",
-    "Sabit, Gökkuşağı ve Yanıp Sönme kodları doğru çalışıyordu — dokunulmadı"
+    "Düzeltme: 'Sabit' renk tutmuyordu — rengi yazıp çıkan proses spidev'i kapatıyor, MOSI hattının durum değişimini WS2812 veri sanıp bozuk renkte kalabiliyordu. Sabit renk artık animasyonlar gibi daemon olarak yaşıyor ve rengi 5 saniyede bir tazeliyor",
+    "run_animation içindeki static dalı ölü koddu (main hiç oraya gitmiyordu) — artık kullanılıyor",
+    "Düzeltme: 'Nefes Alma' arada kesiliyor gibi görünüyordu — sinüs eğrisinin dip bölgesi gamma ile birleşince döngünün ~%29'u gözle görülmeyecek kadar karanlık kalıyordu. Dip noktasına %6 taban eklendi, nefes artık tamamen sönmüyor",
+    "Gamma 2.2 → 2.0: dip bölge fazla karartılmıyor, algısal doğrusallık korunuyor"
   ]
 }
