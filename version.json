@@ -1,11 +1,11 @@
 {
-  "version": "2.13.2",
-  "build": 60,
+  "version": "2.14.0",
+  "build": 61,
   "date": "2026-09-08",
   "changelog": [
-    "Düzeltme: 'Sabit' renk tutmuyordu — rengi yazıp çıkan proses spidev'i kapatıyor, MOSI hattının durum değişimini WS2812 veri sanıp bozuk renkte kalabiliyordu. Sabit renk artık animasyonlar gibi daemon olarak yaşıyor ve rengi 5 saniyede bir tazeliyor",
-    "run_animation içindeki static dalı ölü koddu (main hiç oraya gitmiyordu) — artık kullanılıyor",
-    "Düzeltme: 'Nefes Alma' arada kesiliyor gibi görünüyordu — sinüs eğrisinin dip bölgesi gamma ile birleşince döngünün ~%29'u gözle görülmeyecek kadar karanlık kalıyordu. Dip noktasına %6 taban eklendi, nefes artık tamamen sönmüyor",
-    "Gamma 2.2 → 2.0: dip bölge fazla karartılmıyor, algısal doğrusallık korunuyor"
+    "Düzeltme: kasa OLED'i üst üste biniyordu ve kasa RGB'si bizim renklerimizi siliyordu — tek sebep pironman5'ti. 'pironman5 -oe 0 -re 0' yalnız enable bayrağını değiştiriyor; modüllerin donanımı açması koddaki sabit PERIPHERALS listesine bağlı olduğu için bayrak false iken bile OLED I2C'yi tutuyor, WS2812 ise loop() içinde SPI'a durmadan siyah frame yazıyordu",
+    "pironman_release.sh artık PERIPHERALS listesinden yalnız 'oled' ve 'ws2812' girdilerini çıkarıyor; fan anahtarları (pwm_fan_*, gpio_fan_*) listede kaldığı için soğutma etkilenmiyor",
+    "Yama idempotent: uygulanmışsa hiçbir şey yapmadan çıkıyor — pi5-lcd her başladığında yaşanan gereksiz pironman5 restart'ı ve ~4 sn boot gecikmesi bitti",
+    "Yama .bak yedeğiyle uygulanıyor; sonuç geçerli Python değilse veya fan anahtarları kaybolduysa yedek geri yükleniyor ve servise dokunulmuyor"
   ]
 }
