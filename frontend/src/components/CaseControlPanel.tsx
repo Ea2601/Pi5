@@ -143,7 +143,7 @@ export function CaseControlPanel() {
     setSaving(true);
     try {
       const r = await putApi('/case/led', led as unknown as Record<string, unknown>);
-      if (r?.warning) { toast.error(r.warning); }
+      if (r?.warning) { toast.info(r.warning); }
       else if (r?.applied === false) { toast.error(r?.error || 'LED kaydedildi ama donanıma uygulanamadı'); }
       else { toast.success('LED ayarları kaydedildi ve uygulandı'); }
     } catch { toast.error('LED kaydetme başarısız'); }
@@ -154,7 +154,7 @@ export function CaseControlPanel() {
     setSaving(true);
     try {
       const r = await putApi('/case/lcd', { pages, controller, settings } as unknown as Record<string, unknown>);
-      if (r?.warning) { toast.error(r.warning); }
+      if (r?.warning) { toast.info(r.warning); }
       else if (r?.applied === false) { toast.error(r?.error || 'LCD kaydedildi ama donanıma uygulanamadı'); }
       else { toast.success('LCD ayarları kaydedildi ve uygulandı'); }
     } catch { toast.error('LCD kaydetme başarısız'); }

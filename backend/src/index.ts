@@ -2455,10 +2455,27 @@ async function detectPironmanConflict(): Promise<string> {
     const exec = require('util').promisify(require('child_process').exec);
     const { stdout } = await exec('systemctl is-active pironman5 pironman pm_auto 2>/dev/null || true', { timeout: 3000 }).catch(() => ({ stdout: '' }));
     if (String(stdout).split('\n').some((s: string) => s.trim() === 'active')) {
-      return 'SunFounder Pironman servisi (pironman5) kasa OLED/RGB donanımını sürekli kendisi sürüyor; panel ayarlarının üzerine yazabilir. Panel kontrolünün etkili olması için SunFounder yapılandırmasında OLED/RGB modülünü kapatın ya da "sudo systemctl stop pironman5" ile servisi durdurun.';
+      return 'SunFounder Pironman servisi (pironman5) kasa RGB\'sini sürüyor ve modülü otomatik bırakılamadı; panel ayarlarının üzerine yazabilir. Elle deneyin: "sudo pironman5 -re 0" (RGB modülünü bırakır, fan/güç yönetimi pironman5\'te kalır). Çare olmazsa "sudo systemctl stop pironman5".';
     }
   } catch { /* */ }
   return '';
+}
+
+// SunFounder pironman5'in tek bir donanım modülünü bırakmasını sağlar; ayar SunFounder
+// config'ine kalıcı yazılır, fan/güç yönetimi pironman5'te kalır. OLED için bunu pi5-lcd
+// unit'i ExecStartPre ile yapıyor; RGB için LED'e yazmadan hemen önce burada yapılır —
+// yoksa pironman5 bizim yazdığımız rengin üzerine kendi animasyonunu bindirir.
+// pironman5 kurulu değilse / bayrak desteklenmiyorsa false döner (davranış değişmez).
+async function releasePironmanModule(mod: 'rgb' | 'oled'): Promise<boolean> {
+  if (!isLinux) return false;
+  const flag = mod === 'rgb' ? '-re' : '-oe';
+  try {
+    const exec = require('util').promisify(require('child_process').exec);
+    await exec(`/usr/local/bin/pironman5 ${flag} 0 2>/dev/null || pironman5 ${flag} 0 2>/dev/null`, { timeout: 8000 });
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 // Ensure the persistent LCD systemd service exists (self-heals already-deployed installs). The
@@ -2520,9 +2537,11 @@ app.put('/api/case/led', async (req, res) => {
       const args = enabled
         ? [script, 'set', String(color), String(Math.round(Number(brightness) || 0)), String(animation)]
         : [script, 'off'];
+      // Önce SunFounder'ın RGB modülünü bırak, sonra yaz — sırası tersse rengimiz eziliyor.
+      const released = await releasePironmanModule('rgb');
       try {
         const { stdout, stderr } = await execFileP('python3', args, { timeout: 10000 });
-        const warning = await detectPironmanConflict();
+        const warning = released ? '' : await detectPironmanConflict();
         res.json({ success: true, applied: !warning, output: stdout.trim(), error: stderr.trim() || undefined, warning: warning || undefined });
       } catch (cmdErr: any) {
         res.json({ success: true, applied: false, error: `LED script hatası: ${cmdErr.message}. WS2812 kasa (Pironman 5) için 'pip3 install spidev' + SPI etkin olmalı.` });
