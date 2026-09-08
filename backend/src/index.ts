@@ -2634,7 +2634,11 @@ app.get('/api/case/lcd', async (_req, res) => {
       } catch { /* ipuçları isteğe bağlı */ }
       try {
         const exec = require('util').promisify(require('child_process').exec);
-        const { stdout } = await exec("df -P --output=target 2>/dev/null | tail -n +2", { timeout: 4000 });
+        // GNU coreutils: -P (--portability) ile --output birlikte kullanılamaz ("mutually
+        // exclusive") — ikisi bir aradayken komut hataya düşüp liste boş kalıyordu.
+        const { stdout } = await exec(
+          "(df --output=target 2>/dev/null || df -P 2>/dev/null | awk '{print $NF}') | tail -n +2",
+          { timeout: 4000 });
         hints.mounts = String(stdout).split('\n').map(t => t.trim()).filter(Boolean)
           .filter(t => t === '/' || (!t.startsWith('/dev') && !t.startsWith('/sys') && !t.startsWith('/proc') && !t.startsWith('/run')))
           .slice(0, 20)

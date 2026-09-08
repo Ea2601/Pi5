@@ -1,13 +1,9 @@
 {
-  "version": "2.12.3",
-  "build": 56,
+  "version": "2.12.4",
+  "build": 57,
   "date": "2026-09-08",
   "changelog": [
-    "Düzeltme: kasa LED'i kapalıya alınsa da reboot/servis restart sonrası geri yanıyordu — kayıtlı led_config artık backend açılışında donanıma yeniden uygulanıyor",
-    "led_control.py yalnızca panelden kaydedince çalışıyordu; ayar kalıcı değildi, pironman5 RGB'yi ilk fırsatta geri açıyordu",
-    "pi5-lcd servisi başlarken SunFounder'ın RGB modülünü de bırakıyor (pironman5 -re 0) — OLED için zaten yapılıyordu; install.sh, post-update.sh ve backend'deki üç unit tanımı da güncellendi",
-    "Düzeltme: desteklenmeyen animasyon adı ('solid' gibi eski kayıtlar) LED'i tamamen uygulanamaz yapıyordu — artık 'static'e indiriliyor, panelde de doğru seçili görünüyor",
-    "Düzeltme: LED ayarı doğrulanmadan önce DB'ye yazılıyordu; geçersiz değer kaydedilip donanıma hiç uygulanmıyordu. Doğrulama artık yazımdan önce",
-    "LED uygulama yolu tek fonksiyonda toplandı (applyLedConfig) — PUT ve açılışta aynı davranış"
+    "Düzeltme: paneldeki 'Bulunanlardan ekle' (disk birimi) listesi hep boş geliyordu — 'df -P --output=target' GNU coreutils'te geçersiz kombinasyon ('options -P and --output are mutually exclusive'), komut hataya düşüyordu",
+    "Bağlama noktası listesi artık --output=target ile, o desteklenmezse klasik df + awk ile okunuyor"
   ]
 }
