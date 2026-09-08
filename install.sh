@@ -228,10 +228,8 @@ Wants=pi5-backend.service
 [Service]
 Type=simple
 # SunFounder pironman5 aynı OLED'i / RGB'yi sürerse iki proses çakışır (ekran üst üste
-# biner, LED rengi ezilir). Servis her başladığında OLED ve RGB modüllerini bırak —
-# fan/güç yönetimi pironman5'te kalır. '-' öneki: kurulu değilse hata yut.
-ExecStartPre=-/bin/sh -c '/usr/local/bin/pironman5 -oe 0 2>/dev/null || pironman5 -oe 0 2>/dev/null || true'
-ExecStartPre=-/bin/sh -c '/usr/local/bin/pironman5 -re 0 2>/dev/null || pironman5 -re 0 2>/dev/null || true'
+# biner, LED rengi ezilir). Script modülleri bıraktırır ve gerekiyorsa pironman5'i yeniler.
+ExecStartPre=-/bin/sh /opt/pi5-gateway/scripts/pironman_release.sh
 ExecStart=/usr/bin/python3 /opt/pi5-gateway/scripts/lcd_display.py run
 Restart=always
 RestartSec=5
@@ -281,7 +279,7 @@ fi
   --overscroll-history-navigation=0 \
   http://localhost/kiosk.html
 KIOSKEOF
-chmod +x /opt/pi5-gateway/scripts/kiosk.sh
+chmod +x /opt/pi5-gateway/scripts/kiosk.sh /opt/pi5-gateway/scripts/pironman_release.sh 2>/dev/null || true
 
 # Openbox autostart — kiosk script'ini çalıştır
 mkdir -p /root/.config/openbox

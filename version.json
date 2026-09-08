@@ -1,9 +1,13 @@
 {
-  "version": "2.12.4",
-  "build": 57,
+  "version": "2.13.0",
+  "build": 58,
   "date": "2026-09-08",
   "changelog": [
-    "Düzeltme: paneldeki 'Bulunanlardan ekle' (disk birimi) listesi hep boş geliyordu — 'df -P --output=target' GNU coreutils'te geçersiz kombinasyon ('options -P and --output are mutually exclusive'), komut hataya düşüyordu",
-    "Bağlama noktası listesi artık --output=target ile, o desteklenmezse klasik df + awk ile okunuyor"
+    "Kök neden bulundu: pironman5 config dosyasını YALNIZCA başlangıçta okuyor — 'pironman5 -oe 0 / -re 0' dosyayı doğru yazıyor ama çalışan servis bunu hiç görmüyordu. v2.10.1'den beri unit'te duran OLED bırakma adımı bu yüzden hiçbir zaman etkili olmamış",
+    "Yeni scripts/pironman_release.sh: OLED+RGB modüllerini bıraktırır ve config gerçekten değiştiyse pironman5'i yeniler (değişmediyse dokunmaz — gereksiz fan kesintisi olmaz)",
+    "Cihazda doğrulandı: pironman5 16:37'de başlamış, config 17:30'da yazılmıştı; servis yeniden başlatılınca rgb_enable/oled_enable false gerçekten devreye girdi",
+    "Üç systemd unit tanımındaki iki ayrı ExecStartPre satırı tek script çağrısına indirildi (install.sh, post-update.sh, backend ensureLcdService)",
+    "Backend releasePironmanModule() aynı script'i kullanıyor — LED yazmadan önce tek ve tutarlı yol",
+    "install.sh script'i çalıştırılabilir yapıyor"
   ]
 }

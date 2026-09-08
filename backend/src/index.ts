@@ -2466,12 +2466,13 @@ async function detectPironmanConflict(): Promise<string> {
 // unit'i ExecStartPre ile yapıyor; RGB için LED'e yazmadan hemen önce burada yapılır —
 // yoksa pironman5 bizim yazdığımız rengin üzerine kendi animasyonunu bindirir.
 // pironman5 kurulu değilse / bayrak desteklenmiyorsa false döner (davranış değişmez).
-async function releasePironmanModule(mod: 'rgb' | 'oled'): Promise<boolean> {
+async function releasePironmanModule(): Promise<boolean> {
   if (!isLinux) return false;
-  const flag = mod === 'rgb' ? '-re' : '-oe';
   try {
     const exec = require('util').promisify(require('child_process').exec);
-    await exec(`/usr/local/bin/pironman5 ${flag} 0 2>/dev/null || pironman5 ${flag} 0 2>/dev/null`, { timeout: 8000 });
+    // Script config'i yazar ve gerçekten değiştiyse pironman5'i yeniler — yalnızca
+    // dosyaya yazmak yetmiyor, çalışan servis config'i başlangıçta okuyor.
+    await exec('/bin/sh /opt/pi5-gateway/scripts/pironman_release.sh', { timeout: 15000 });
     return true;
   } catch {
     return false;
@@ -2494,11 +2495,9 @@ Wants=pi5-backend.service
 [Service]
 Type=simple
 # SunFounder pironman5 aynı OLED'i / RGB'yi sürerse iki proses çakışır (ekran üst üste
-# biner, LED rengi ezilir). Servis her başladığında OLED ve RGB modüllerini bırak —
-# fan/güç yönetimi pironman5'te kalır. '-' öneki: kurulu değilse hata yut.
-# Ayar SunFounder config'ine kalıcı yazılır.
-ExecStartPre=-/bin/sh -c '/usr/local/bin/pironman5 -oe 0 2>/dev/null || pironman5 -oe 0 2>/dev/null || true'
-ExecStartPre=-/bin/sh -c '/usr/local/bin/pironman5 -re 0 2>/dev/null || pironman5 -re 0 2>/dev/null || true'
+# biner, LED rengi ezilir). Script modülleri bıraktırır ve gerekiyorsa pironman5'i
+# yeniler; ayrıntı scripts/pironman_release.sh içinde. '-' öneki: script yoksa hata yut.
+ExecStartPre=-/bin/sh /opt/pi5-gateway/scripts/pironman_release.sh
 ExecStart=/usr/bin/python3 /opt/pi5-gateway/scripts/lcd_display.py run
 Restart=always
 RestartSec=5
@@ -2540,7 +2539,7 @@ async function applyLedConfig(cfg: any): Promise<{ applied: boolean; output?: st
        String(Math.round(Number(cfg?.brightness) || 0)), normalizeAnimation(cfg?.animation)]
     : [script, 'off'];
   // Önce SunFounder'ın RGB modülünü bırak, sonra yaz — sırası tersse rengimiz eziliyor.
-  const released = await releasePironmanModule('rgb');
+  const released = await releasePironmanModule();
   try {
     const { stdout, stderr } = await execFileP('python3', args, { timeout: 10000 });
     const warning = released ? '' : await detectPironmanConflict();

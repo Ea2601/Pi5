@@ -48,8 +48,7 @@ Wants=pi5-backend.service
 
 [Service]
 Type=simple
-ExecStartPre=-/bin/sh -c '/usr/local/bin/pironman5 -oe 0 2>/dev/null || pironman5 -oe 0 2>/dev/null || true'
-ExecStartPre=-/bin/sh -c '/usr/local/bin/pironman5 -re 0 2>/dev/null || pironman5 -re 0 2>/dev/null || true'
+ExecStartPre=-/bin/sh /opt/pi5-gateway/scripts/pironman_release.sh
 ExecStart=/usr/bin/python3 /opt/pi5-gateway/scripts/lcd_display.py run
 Restart=always
 RestartSec=5
