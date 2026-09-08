@@ -1,11 +1,16 @@
 {
-  "version": "2.14.0",
-  "build": 61,
+  "version": "2.15.0",
+  "build": 62,
   "date": "2026-09-08",
   "changelog": [
-    "Düzeltme: kasa OLED'i üst üste biniyordu ve kasa RGB'si bizim renklerimizi siliyordu — tek sebep pironman5'ti. 'pironman5 -oe 0 -re 0' yalnız enable bayrağını değiştiriyor; modüllerin donanımı açması koddaki sabit PERIPHERALS listesine bağlı olduğu için bayrak false iken bile OLED I2C'yi tutuyor, WS2812 ise loop() içinde SPI'a durmadan siyah frame yazıyordu",
-    "pironman_release.sh artık PERIPHERALS listesinden yalnız 'oled' ve 'ws2812' girdilerini çıkarıyor; fan anahtarları (pwm_fan_*, gpio_fan_*) listede kaldığı için soğutma etkilenmiyor",
-    "Yama idempotent: uygulanmışsa hiçbir şey yapmadan çıkıyor — pi5-lcd her başladığında yaşanan gereksiz pironman5 restart'ı ve ~4 sn boot gecikmesi bitti",
-    "Yama .bak yedeğiyle uygulanıyor; sonuç geçerli Python değilse veya fan anahtarları kaybolduysa yedek geri yükleniyor ve servise dokunulmuyor"
+    "Kiosk: 4 yeni sayfa — Trend/Geçmiş (sıcaklık, CPU, bellek, ağ sparkline'ları), WAN/DDNS (genel IP + değişim geçmişi), DNS Sorguları (unbound + son sorgular), Güvenlik (fail2ban, firewall, sistem sağlığı, okunmamış uyarı)",
+    "Kiosk: saat artık saniyede bir işliyor — eskiden yalnız sayfa değişince hesaplandığı için 10 saniye donuyordu",
+    "Kiosk: görünen sayfanın verisi 5 saniyede bir yerinde tazeleniyor (animasyonsuz); sekme gizliyken duruyor, geri dönünce hemen yenileniyor",
+    "Kiosk: sayfa geçiş ilerleme çubuğu, API erişilemediğinde offline şeridi, ok tuşlarıyla gezinme",
+    "Düzeltme: ağ hızları düşük trafikte hep '0 KB/s' görünüyordu — rx_speed_bps bayt/sn olduğu halde her değer KB'ye bölünüp yuvarlanıyordu; artık B/s → KB/s → MB/s",
+    "Kiosk: Aktif Cihazlar sayfası gerçek listeye dönüştü (IP, ad, profil rozeti, son görülme, engelli sayısı); Servisler sayfası status alanını kullanıyor (Çalışıyor / Kurulu Değil / Durdu)",
+    "Kiosk: cihazdan gelen metinler (hostname, domain, uyarı) HTML'e kaçışlanıyor",
+    "Panel: kiosk aç/kapa anahtarı eklendi — KioskConfig.enabled alanı vardı ama arayüzde kontrolü yoktu, her kayıtta açık gidiyordu",
+    "Panel: sayfa sırası yukarı/aşağı taşınabiliyor, sıfırla düğmesi eklendi, kayıtlı ayar kod listesiyle birleştiriliyor (yeni sayfalar eski kayıt yüzünden gizlenmiyor)"
   ]
 }

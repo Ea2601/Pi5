@@ -7,56 +7,128 @@
 <title>Klyrix Gate — Kiosk</title>
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
+  :root {
+    --bg: #0a0e14; --fg: #e2e8f0; --muted: #64748b; --dim: #475569;
+    --blue: #3b82f6; --green: #22c55e; --orange: #f59e0b;
+    --red: #ef4444; --purple: #a855f7; --cyan: #06b6d4;
+  }
   body {
-    background: #0a0e14; color: #e2e8f0;
+    background: var(--bg); color: var(--fg);
     font-family: 'Inter', -apple-system, sans-serif;
-    overflow: hidden; height: 100vh; width: 100vw;
-    cursor: none;
+    overflow: hidden; height: 100vh; width: 100vw; cursor: none;
   }
   body.touch-active { cursor: default; }
-  .kiosk-page { display: none; height: 100vh; padding: 24px; flex-direction: column; gap: 16px; }
-  .kiosk-page.active { display: flex; animation: fadeIn 0.5s ease; }
-  .kiosk-header { display: flex; justify-content: space-between; align-items: center; }
+
+  /* Sayfa geçişi ilerlemesi — bir sonraki sayfaya kalan süre. */
+  #progress { position: fixed; top: 0; left: 0; height: 2px; background: var(--blue); width: 0; z-index: 20; }
+  #progress.run { transition: width linear; }
+
+  /* API'ye ulaşılamadığında görünen şerit; tek tek "Veri yok" kartlarından daha okunur. */
+  #offline {
+    position: fixed; top: 0; left: 0; right: 0; z-index: 19;
+    background: rgba(239,68,68,0.92); color: #fff; text-align: center;
+    padding: 5px; font-size: 13px; font-weight: 600;
+    transform: translateY(-100%); transition: transform 0.3s;
+  }
+  #offline.show { transform: translateY(0); }
+
+  .kiosk-page { display: flex; height: 100vh; padding: 24px; flex-direction: column; gap: 16px; }
+  .kiosk-header { display: flex; justify-content: space-between; align-items: baseline; gap: 16px; }
   .kiosk-title { font-size: clamp(18px, 3vw, 28px); font-weight: 700; }
-  .kiosk-time { font-family: 'JetBrains Mono', monospace; font-size: clamp(14px, 2vw, 20px); color: #64748b; }
+  .kiosk-time { font-family: 'JetBrains Mono', monospace; font-size: clamp(14px, 2vw, 20px); color: var(--muted); white-space: nowrap; }
+  #content { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+  #content.swap { animation: fadeIn 0.45s ease; }
+
   .kiosk-grid { display: grid; gap: 12px; flex: 1; }
   .kiosk-grid-2 { grid-template-columns: 1fr 1fr; }
+  .kiosk-grid-3 { grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); }
   .kiosk-grid-4 { grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); }
   .kiosk-card {
     background: rgba(17, 24, 32, 0.72); border: 1px solid rgba(255,255,255,0.08);
     border-radius: 8px; padding: 20px; display: flex; flex-direction: column; gap: 8px;
     backdrop-filter: blur(22px) saturate(150%); -webkit-backdrop-filter: blur(22px) saturate(150%);
     box-shadow: 0 8px 32px rgba(0,0,0,0.30), inset 0 1px 0 rgba(255,255,255,0.06);
+    min-width: 0;
   }
-  .kiosk-card-label { font-size: clamp(11px, 1.5vw, 14px); color: #64748b; text-transform: uppercase; letter-spacing: 0.5px; }
-  .kiosk-card-value { font-size: clamp(24px, 4vw, 48px); font-weight: 700; }
-  .kiosk-card-sub { font-size: clamp(10px, 1.2vw, 13px); color: #475569; }
-  .text-blue { color: #3b82f6; } .text-green { color: #22c55e; }
-  .text-orange { color: #f59e0b; } .text-red { color: #ef4444; }
-  .text-purple { color: #a855f7; } .text-cyan { color: #06b6d4; }
-  .dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; margin-right: 6px; }
-  .dot-on { background: #22c55e; } .dot-off { background: #475569; }
+  .kiosk-card-label { font-size: clamp(11px, 1.5vw, 14px); color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px; }
+  .kiosk-card-value { font-size: clamp(24px, 4vw, 48px); font-weight: 700; line-height: 1.1; }
+  .kiosk-card-sub { font-size: clamp(10px, 1.2vw, 13px); color: var(--dim); }
+  .text-blue { color: var(--blue); } .text-green { color: var(--green); }
+  .text-orange { color: var(--orange); } .text-red { color: var(--red); }
+  .text-purple { color: var(--purple); } .text-cyan { color: var(--cyan); }
+  .dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; margin-right: 6px; flex: none; }
+  .dot-on { background: var(--green); } .dot-off { background: var(--dim); }
   .progress-bar { height: 8px; background: rgba(255,255,255,0.05); border-radius: 8px; overflow: hidden; }
   .progress-fill { height: 100%; border-radius: 8px; transition: width 0.5s; }
-  .kiosk-nav { display: flex; justify-content: center; gap: 8px; padding: 8px 0; }
-  .kiosk-dot { width: 8px; height: 8px; border-radius: 8px; background: #475569; border: none; cursor: pointer; transition: all 0.3s; }
-  .kiosk-dot.active { background: #3b82f6; width: 24px; }
-  @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+
+  /* Satır listesi — cihaz/DNS/uyarı gibi çok kayıtlı sayfalar için. */
+  .rows { display: flex; flex-direction: column; gap: 6px; flex: 1; overflow: hidden; }
+  .row {
+    display: flex; align-items: center; gap: 12px; padding: 10px 16px;
+    background: rgba(17,24,32,0.72); border: 1px solid rgba(255,255,255,0.08);
+    border-radius: 8px; font-size: clamp(12px, 1.5vw, 15px); min-width: 0;
+  }
+  .row-main { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .row-meta { font-size: clamp(10px, 1.2vw, 12px); color: var(--dim); white-space: nowrap; }
+  .badge {
+    font-size: 10px; padding: 2px 8px; border-radius: 999px; white-space: nowrap;
+    border: 1px solid currentColor; opacity: 0.9;
+  }
+  .spark { width: 100%; height: 38px; display: block; }
+  .empty { color: var(--muted); font-size: clamp(13px,1.8vw,16px); }
+  @keyframes fadeIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+
+  .kiosk-nav { display: flex; justify-content: center; gap: 8px; padding: 8px 0; flex-wrap: wrap; }
+  .kiosk-dot { width: 8px; height: 8px; border-radius: 8px; background: var(--dim); border: none; cursor: pointer; transition: all 0.3s; padding: 0; }
+  .kiosk-dot.active { background: var(--blue); width: 24px; }
 </style>
 </head>
 <body>
-<div id="pages"></div>
+<div id="progress"></div>
+<div id="offline">Panel API'sine ulaşılamıyor — veriler güncel olmayabilir</div>
+
+<div class="kiosk-page">
+  <div class="kiosk-header">
+    <span class="kiosk-title" id="title"></span>
+    <span class="kiosk-time" id="clock"></span>
+  </div>
+  <div id="content"></div>
+</div>
 <div class="kiosk-nav" id="nav"></div>
 
 <script>
 const API = '/api';
+const REFRESH_MS = 5000;
 let currentPage = 0;
 let pages = [];
 let rotateInterval = 10;
-let timer = null;
+let rotateTimer = null;
+let refreshTimer = null;
+let failStreak = 0;
 
+/* ── yardımcılar ─────────────────────────────────────────────────────────── */
+
+// Cihazdan gelen metinler (hostname, domain, uyarı mesajı) innerHTML'e giriyor.
+function esc(s) {
+  return String(s == null ? '' : s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
+// Ardışık hataları sayar; 2+ hatada offline şeridi açılır (tek seferlik ıskalar
+// bütün ekranı kırmızıya boyamasın).
 async function fetchJSON(url) {
-  try { const r = await fetch(API + url); return await r.json(); } catch { return null; }
+  try {
+    const r = await fetch(API + url, { cache: 'no-store' });
+    if (!r.ok) throw new Error(r.status);
+    const d = await r.json();
+    failStreak = 0;
+    document.getElementById('offline').classList.remove('show');
+    return d;
+  } catch {
+    if (++failStreak >= 2) document.getElementById('offline').classList.add('show');
+    return null;
+  }
 }
 
 function timeStr() {
@@ -65,53 +137,162 @@ function timeStr() {
     + ' | ' + now.toLocaleDateString('tr-TR', { day: '2-digit', month: 'short', year: 'numeric' });
 }
 
+// rx_speed_bps backend'de bayt/sn (system.ts:386 — (rx - prev.rx) / elapsed, rx =
+// /proc/net/dev baytı). Eski biçim her şeyi KB/s'e bölüp yuvarlıyordu; cihazdaki
+// gerçek değer 234 B/s "0 KB/s" olarak görünüyordu.
+function fmtBytes(bps) {
+  const v = Number(bps) || 0;
+  if (v >= 1e6) return (v / 1e6).toFixed(2) + ' MB/s';
+  if (v >= 1e3) return (v / 1e3).toFixed(1) + ' KB/s';
+  return Math.round(v) + ' B/s';
+}
+
+function fmtSize(bytes) {
+  const v = Number(bytes) || 0;
+  if (v >= 1e9) return (v / 1e9).toFixed(1) + ' GB';
+  if (v >= 1e6) return (v / 1e6).toFixed(1) + ' MB';
+  if (v >= 1e3) return (v / 1e3).toFixed(0) + ' KB';
+  return v + ' B';
+}
+
+function since(ts) {
+  const t = new Date(String(ts == null ? '' : ts).replace(' ', 'T'));
+  if (isNaN(t)) return '';
+  const s = Math.max(0, (Date.now() - t.getTime()) / 1000);
+  if (s < 60) return Math.round(s) + ' sn önce';
+  if (s < 3600) return Math.round(s / 60) + ' dk önce';
+  if (s < 86400) return Math.round(s / 3600) + ' sa önce';
+  return Math.round(s / 86400) + ' gün önce';
+}
+
 function card(label, value, sub, colorClass) {
-  return `<div class="kiosk-card"><span class="kiosk-card-label">${label}</span><span class="kiosk-card-value ${colorClass || ''}">${value}</span>${sub ? `<span class="kiosk-card-sub">${sub}</span>` : ''}</div>`;
+  return `<div class="kiosk-card"><span class="kiosk-card-label">${label}</span>`
+    + `<span class="kiosk-card-value ${colorClass || ''}">${value}</span>`
+    + (sub ? `<span class="kiosk-card-sub">${sub}</span>` : '') + `</div>`;
 }
 
 function progressBar(percent, color) {
-  return `<div class="progress-bar"><div class="progress-fill" style="width:${Math.min(percent, 100)}%;background:${color}"></div></div>`;
+  const w = Math.min(Math.max(Number(percent) || 0, 0), 100);
+  return `<div class="progress-bar"><div class="progress-fill" style="width:${w}%;background:${color}"></div></div>`;
 }
 
+function empty(msg) {
+  return `<div class="kiosk-card" style="justify-content:center;align-items:center"><span class="empty">${esc(msg)}</span></div>`;
+}
+
+// Kütüphanesiz SVG sparkline. viewBox + preserveAspectRatio="none" ile karta yayılır;
+// non-scaling-stroke sayesinde yatay esnemede çizgi kalınlığı bozulmaz.
+function sparkline(values, color) {
+  const v = (values || []).map(Number).filter(n => isFinite(n));
+  if (v.length < 2) return '';
+  const W = 100, H = 38, PAD = 3;
+  const min = Math.min(...v), max = Math.max(...v);
+  const span = (max - min) || 1;
+  const x = i => (i / (v.length - 1)) * W;
+  const y = n => H - PAD - ((n - min) / span) * (H - PAD * 2);
+  const line = v.map((n, i) => `${i ? 'L' : 'M'}${x(i).toFixed(2)} ${y(n).toFixed(2)}`).join(' ');
+  const area = `${line} L${W} ${H} L0 ${H} Z`;
+  const gid = 'g' + Math.random().toString(36).slice(2, 8);
+  return `<svg class="spark" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">`
+    + `<defs><linearGradient id="${gid}" x1="0" y1="0" x2="0" y2="1">`
+    + `<stop offset="0%" stop-color="${color}" stop-opacity="0.35"/>`
+    + `<stop offset="100%" stop-color="${color}" stop-opacity="0"/>`
+    + `</linearGradient></defs>`
+    + `<path d="${area}" fill="url(#${gid})"/>`
+    + `<path d="${line}" fill="none" stroke="${color}" stroke-width="1.5"`
+    + ` vector-effect="non-scaling-stroke" stroke-linejoin="round" stroke-linecap="round"/></svg>`;
+}
+
+/* ── sayfalar ────────────────────────────────────────────────────────────── */
+
 async function buildSystemPage() {
-  const stats = await fetchJSON('/system/stats');
-  if (!stats) return '<div class="kiosk-card"><span class="kiosk-card-value">Veri yok</span></div>';
+  const [stats, hist] = await Promise.all([
+    fetchJSON('/system/stats'), fetchJSON('/system/metrics/history'),
+  ]);
+  if (!stats) return empty('Veri yok');
+  const h = ((hist && hist.history) || []).slice(-60);
   const memP = stats.memoryTotal > 0 ? Math.round(stats.memoryUsed / stats.memoryTotal * 100) : 0;
   const diskP = stats.diskTotal > 0 ? Math.round(stats.diskUsed / stats.diskTotal * 100) : 0;
+  const hot = stats.cpuTemp > 70;
   return `<div class="kiosk-grid kiosk-grid-4">
-    ${card('CPU Sicaklik', stats.cpuTemp + '°C', progressBar(stats.cpuTemp / 85 * 100, stats.cpuTemp > 70 ? '#ef4444' : '#f59e0b'), stats.cpuTemp > 70 ? 'text-red' : 'text-orange')}
-    ${card('CPU Kullanim', stats.cpuUsage + '%', progressBar(stats.cpuUsage, '#3b82f6'), 'text-blue')}
-    ${card('Bellek', memP + '%', `${stats.memoryUsed}/${stats.memoryTotal} MB` + progressBar(memP, '#a855f7'), 'text-purple')}
-    ${card('Disk', diskP + '%', `${stats.diskUsed}/${stats.diskTotal} GB` + progressBar(diskP, '#06b6d4'), 'text-cyan')}
+    ${card('CPU Sıcaklık', stats.cpuTemp + '&deg;C',
+      sparkline(h.map(r => r.cpuTemp), hot ? '#ef4444' : '#f59e0b'), hot ? 'text-red' : 'text-orange')}
+    ${card('CPU Kullanım', stats.cpuUsage + '%',
+      sparkline(h.map(r => r.cpuUsage), '#3b82f6'), 'text-blue')}
+    ${card('Bellek', memP + '%',
+      `${stats.memoryUsed}/${stats.memoryTotal} MB` + progressBar(memP, '#a855f7'), 'text-purple')}
+    ${card('Disk', diskP + '%',
+      `${stats.diskUsed}/${stats.diskTotal} GB` + progressBar(diskP, '#06b6d4'), 'text-cyan')}
+  </div>`;
+}
+
+async function buildTrendsPage() {
+  const d = await fetchJSON('/system/metrics/history');
+  const h = (d && d.history) || [];
+  if (h.length < 2) return empty('Geçmiş verisi henüz birikmedi');
+  const span = Math.round((h[h.length - 1].ts - h[0].ts) / 60000) + ' dk';
+  const last = h[h.length - 1];
+  const avg = k => h.reduce((s, r) => s + (Number(r[k]) || 0), 0) / h.length;
+  return `<div class="kiosk-grid kiosk-grid-2">
+    ${card('CPU Sıcaklık', Number(last.cpuTemp).toFixed(1) + '&deg;C',
+      `ort. ${avg('cpuTemp').toFixed(1)}&deg;C &middot; son ${span}`
+      + sparkline(h.map(r => r.cpuTemp), '#f59e0b'), 'text-orange')}
+    ${card('CPU Kullanım', Number(last.cpuUsage).toFixed(0) + '%',
+      `ort. ${avg('cpuUsage').toFixed(0)}%`
+      + sparkline(h.map(r => r.cpuUsage), '#3b82f6'), 'text-blue')}
+    ${card('Bellek', Number(last.memoryUsage).toFixed(1) + '%',
+      `ort. ${avg('memoryUsage').toFixed(1)}%`
+      + sparkline(h.map(r => r.memoryUsage), '#a855f7'), 'text-purple')}
+    ${card('Ağ (In / Out)', `${Number(last.networkIn).toFixed(2)} / ${Number(last.networkOut).toFixed(2)}`,
+      'MB/s' + sparkline(h.map(r => r.networkIn), '#06b6d4'), 'text-cyan')}
   </div>`;
 }
 
 async function buildNetworkPage() {
   const d = await fetchJSON('/bandwidth/live');
-  const ifaces = (d?.interfaces || []).filter(i => (i.rx_bytes || 0) > 0 || (i.tx_bytes || 0) > 0);
-  if (!ifaces.length) return card('Ag Trafigi', 'Veri yok', '', '');
-  const fmt = bps => bps >= 1e6 ? (bps / 1e6).toFixed(1) + ' MB/s' : (bps / 1e3).toFixed(0) + ' KB/s';
+  const ifaces = ((d && d.interfaces) || []).filter(i => (i.rx_bytes || 0) > 0 || (i.tx_bytes || 0) > 0);
+  if (!ifaces.length) return empty('Ağ trafiği verisi yok');
   return `<div class="kiosk-grid kiosk-grid-4">${ifaces.slice(0, 8).map(i =>
-    card(i.name, '↓ ' + fmt(i.rx_speed_bps || 0), '↑ ' + fmt(i.tx_speed_bps || 0), 'text-cyan')
+    card(esc(i.name), '&darr; ' + fmtBytes(i.rx_speed_bps),
+      `&uarr; ${fmtBytes(i.tx_speed_bps)}<br>toplam ${fmtSize(i.rx_bytes)} / ${fmtSize(i.tx_bytes)}`, 'text-cyan')
   ).join('')}</div>`;
+}
+
+async function buildWanPage() {
+  const [cur, hist] = await Promise.all([
+    fetchJSON('/ddns/current-ip'), fetchJSON('/ddns/ip-history'),
+  ]);
+  if (!cur || !cur.ip) return empty('WAN IP bilgisi yok');
+  const past = ((hist && hist.history) || []).slice(0, 5);
+  const rows = past.map(p =>
+    `<div class="row"><span class="row-main">${esc(p.ip)}</span>`
+    + `<span class="badge" style="color:#64748b">${esc(p.source || '')}</span>`
+    + `<span class="row-meta">${since(p.detected_at)}</span></div>`
+  ).join('');
+  return `<div class="kiosk-grid kiosk-grid-2" style="flex:none">
+    ${card('Genel IP', esc(cur.ip), `kaynak: ${esc(cur.provider || '-')} &middot; ${since(cur.checked_at)}`, 'text-green')}
+    ${card('IP Değişimi', past.length, 'kayıtlı geçmiş', 'text-blue')}
+  </div><div class="rows" style="margin-top:12px">${rows || empty('Geçmiş yok')}</div>`;
 }
 
 async function buildVpnPage() {
   const d = await fetchJSON('/vps/list');
-  if (!d?.servers?.length) return card('VPN', 'Tünel yok', '', 'text-orange');
-  return `<div class="kiosk-grid kiosk-grid-4">${d.servers.map(v =>
-    card(v.location || 'VPS', v.ip, `<span class="dot ${v.status === 'connected' ? 'dot-on' : 'dot-off'}"></span>${v.status === 'connected' ? 'Bagli' : 'Bagli Degil'}`,
-    v.status === 'connected' ? 'text-green' : '')
-  ).join('')}</div>`;
+  if (!d || !d.servers || !d.servers.length) return empty('Tanımlı VPN tüneli yok');
+  return `<div class="kiosk-grid kiosk-grid-4">${d.servers.map(v => {
+    const on = v.status === 'connected';
+    return card(esc(v.location || 'VPS'), esc(v.ip),
+      `<span class="dot ${on ? 'dot-on' : 'dot-off'}"></span>${on ? 'Bağlı' : 'Bağlı Değil'}`,
+      on ? 'text-green' : 'text-red');
+  }).join('')}</div>`;
 }
 
 async function buildSpeedPage() {
   const d = await fetchJSON('/speedtest/history?period=24h');
-  const t = d?.tests?.[0];
-  if (!t) return card('Hiz Testi', 'Veri yok', '', '');
+  const t = d && d.tests && d.tests[0];
+  if (!t) return empty('Son 24 saatte hız testi yok');
   return `<div class="kiosk-grid kiosk-grid-4">
-    ${card('Indirme', t.download_mbps.toFixed(1) + ' Mbps', '', 'text-blue')}
-    ${card('Yukleme', t.upload_mbps.toFixed(1) + ' Mbps', '', 'text-green')}
+    ${card('İndirme', t.download_mbps.toFixed(1) + ' Mbps', '', 'text-blue')}
+    ${card('Yükleme', t.upload_mbps.toFixed(1) + ' Mbps', '', 'text-green')}
     ${card('Ping', t.ping_ms.toFixed(1) + ' ms', '', 'text-orange')}
     ${card('Jitter', (t.jitter_ms || 0).toFixed(1) + ' ms', '', 'text-purple')}
   </div>`;
@@ -119,106 +300,222 @@ async function buildSpeedPage() {
 
 async function buildDevicesPage() {
   const d = await fetchJSON('/devices');
-  const count = d?.devices?.length || 0;
-  return `<div class="kiosk-grid kiosk-grid-2">
-    ${card('Aktif Cihazlar', count, '', 'text-green')}
-    ${card('Ag Durumu', 'Online', new Date().toLocaleString('tr-TR'), 'text-blue')}
+  const all = (d && d.devices) || [];
+  if (!all.length) return empty('Kayıtlı cihaz yok');
+  // Son görülene göre sırala; kiosk ekranına sığdığı kadarını göster.
+  const list = all.slice()
+    .sort((a, b) => String(b.last_seen || '').localeCompare(String(a.last_seen || '')))
+    .slice(0, 9);
+  const blocked = all.filter(x => x.blocked).length;
+  const rows = list.map(x =>
+    `<div class="row">`
+    + `<span class="dot ${x.blocked ? 'dot-off' : 'dot-on'}"${x.blocked ? ' style="background:#ef4444"' : ''}></span>`
+    + `<span class="row-main">${esc(x.hostname || x.ip_address || x.mac_address)}</span>`
+    + `<span class="row-meta">${esc(x.ip_address || '')}</span>`
+    + (x.route_profile && x.route_profile !== 'default'
+        ? `<span class="badge" style="color:#a855f7">${esc(x.route_profile)}</span>` : '')
+    + `<span class="row-meta">${since(x.last_seen)}</span></div>`
+  ).join('');
+  return `<div class="kiosk-grid kiosk-grid-3" style="flex:none">
+    ${card('Toplam Cihaz', all.length, '', 'text-green')}
+    ${card('Engelli', blocked, blocked ? 'erişimi kapalı' : 'yok', blocked ? 'text-red' : 'text-blue')}
+    ${card('Listelenen', list.length, 'en son görülenler', 'text-cyan')}
+  </div><div class="rows" style="margin-top:12px">${rows}</div>`;
+}
+
+async function buildDnsPage() {
+  const [q, u] = await Promise.all([fetchJSON('/dns/queries'), fetchJSON('/unbound/status')]);
+  const list = ((q && q.queries) || []).slice(0, 8);
+  const dnssec = ((u && u.security) || []).find(s => /DNSSEC/i.test(s.label));
+  const on = !!(dnssec && dnssec.status);
+  const head = `<div class="kiosk-grid kiosk-grid-3" style="flex:none">
+    ${card('Toplam Sorgu', esc(u && u.totalQueries != null ? u.totalQueries : '-'), 'unbound', 'text-blue')}
+    ${card('Önbellek', esc(u && u.cacheEntries != null ? u.cacheEntries : '-'), 'kayıt', 'text-cyan')}
+    ${card('DNSSEC', on ? 'Açık' : 'Kapalı', esc((u && u.listenAddr) || ''), on ? 'text-green' : 'text-orange')}
   </div>`;
+  if (!list.length) return head + `<div class="rows" style="margin-top:12px">${empty('Sorgu kaydı yok')}</div>`;
+  return head + `<div class="rows" style="margin-top:12px">${list.map(x => {
+    const blocked = x.status !== 'allowed';
+    return `<div class="row">`
+      + `<span class="dot" style="background:${blocked ? '#ef4444' : '#22c55e'}"></span>`
+      + `<span class="row-main">${esc(x.domain)}</span>`
+      + `<span class="badge" style="color:#64748b">${esc(x.type || '')}</span>`
+      + `<span class="row-meta">${esc(x.client_ip || '')}</span>`
+      + `<span class="row-meta">${since(x.timestamp)}</span></div>`;
+  }).join('')}</div>`;
+}
+
+async function buildSecurityPage() {
+  const [f2b, fw, health, unread] = await Promise.all([
+    fetchJSON('/fail2ban/status'), fetchJSON('/firewall/rules'),
+    fetchJSON('/system/health'), fetchJSON('/alerts/unread-count'),
+  ]);
+  const jails = (f2b && f2b.jails) || [];
+  const banned = jails.reduce((s, j) => s + (j.currentlyBanned || 0), 0);
+  const totalBanned = jails.reduce((s, j) => s + (j.totalBanned || 0), 0);
+  const fwCount = (((fw && fw.rules) || []).length)
+    + (((fw && fw.nftablesPreview && fw.nftablesPreview.inputRules) || []).length);
+  const alerts = (unread && unread.count) || 0;
+  const healthy = !!(health && health.lastCheckResult === 'healthy');
+  const rows = jails.map(j =>
+    `<div class="row">`
+    + `<span class="dot ${j.currentlyBanned ? 'dot-off' : 'dot-on'}"${j.currentlyBanned ? ' style="background:#ef4444"' : ''}></span>`
+    + `<span class="row-main">${esc(j.name)}</span>`
+    + `<span class="row-meta">şu an ${j.currentlyBanned || 0} &middot; toplam ${j.totalBanned || 0}</span></div>`
+  ).join('');
+  return `<div class="kiosk-grid kiosk-grid-4" style="flex:none">
+    ${card('Yasaklı IP', banned, `toplam ${totalBanned}`, banned ? 'text-red' : 'text-green')}
+    ${card('Güvenlik Duvarı', fwCount, 'aktif kural', 'text-blue')}
+    ${card('Sistem Sağlığı', healthy ? 'Sağlıklı' : esc((health && health.lastCheckResult) || '-'),
+      `çalışma %${health && health.uptimePercent != null ? health.uptimePercent : '-'}`,
+      healthy ? 'text-green' : 'text-orange')}
+    ${card('Okunmamış Uyarı', alerts, alerts ? 'inceleme bekliyor' : 'temiz', alerts ? 'text-orange' : 'text-green')}
+  </div><div class="rows" style="margin-top:12px">${rows || empty('Tanımlı jail yok')}</div>`;
 }
 
 async function buildAlertsPage() {
   const d = await fetchJSON('/alerts');
-  const alerts = (d?.alerts || []).slice(0, 6);
-  if (!alerts.length) return card('Bildirimler', 'Temiz', 'Aktif uyari yok', 'text-green');
-  return `<div style="display:flex;flex-direction:column;gap:8px;flex:1">${alerts.map(a =>
-    `<div class="kiosk-card" style="flex-direction:row;align-items:center;gap:12px;padding:12px 16px">
-      <span class="dot ${a.severity === 'critical' ? 'dot-on' : 'dot-off'}" style="background:${a.severity === 'critical' ? '#ef4444' : a.severity === 'warning' ? '#f59e0b' : '#3b82f6'}"></span>
-      <span style="flex:1;font-size:clamp(12px,1.5vw,15px)">${a.message}</span>
-      <span style="font-size:11px;color:#475569">${new Date(a.created_at).toLocaleTimeString('tr-TR')}</span>
-    </div>`
-  ).join('')}</div>`;
-}
-
-async function buildServicesPage() {
-  const d = await fetchJSON('/services');
-  const svcs = d?.services || [];
-  return `<div class="kiosk-grid kiosk-grid-4">${svcs.map(s =>
-    card(s.name, s.enabled ? 'Aktif' : 'Durdu', `<span class="dot ${s.enabled ? 'dot-on' : 'dot-off'}"></span>`,
-    s.enabled ? 'text-green' : 'text-red')
+  const alerts = ((d && d.alerts) || []).slice(0, 7);
+  if (!alerts.length) return empty('Aktif uyarı yok — her şey temiz');
+  const color = s => s === 'critical' ? '#ef4444' : s === 'warning' ? '#f59e0b' : '#3b82f6';
+  return `<div class="rows">${alerts.map(a =>
+    `<div class="row"><span class="dot" style="background:${color(a.severity)}"></span>`
+    + `<span class="row-main">${esc(a.message)}</span>`
+    + `<span class="row-meta">${since(a.created_at)}</span></div>`
   ).join('')}</div>`;
 }
 
 async function buildPiholePage() {
   const d = await fetchJSON('/pihole/stats');
+  if (!d) return empty('Pi-hole verisi yok');
+  const q = d.dnsQueriesToday || 0, b = d.adsBlockedToday || 0;
+  const pct = q > 0 ? (b / q * 100) : 0;
   return `<div class="kiosk-grid kiosk-grid-4">
-    ${card('Engellenen', (d?.adsBlockedToday || 0).toLocaleString(), '', 'text-red')}
-    ${card('Toplam Sorgu', (d?.dnsQueriesToday || 0).toLocaleString(), '', 'text-blue')}
-    ${card('Istemciler', d?.uniqueClients || 0, '', 'text-green')}
+    ${card('Engellenen', b.toLocaleString('tr-TR'), progressBar(pct, '#ef4444'), 'text-red')}
+    ${card('Toplam Sorgu', q.toLocaleString('tr-TR'), '', 'text-blue')}
+    ${card('Engelleme Oranı', pct.toFixed(1) + '%', '', 'text-orange')}
+    ${card('İstemciler', d.uniqueClients || 0, '', 'text-green')}
   </div>`;
 }
 
+async function buildServicesPage() {
+  const d = await fetchJSON('/services');
+  const svcs = (d && d.services) || [];
+  if (!svcs.length) return empty('Servis kaydı yok');
+  // status alanı enabled'dan daha bilgilendirici: running / stopped / not_installed
+  const label = s => s.status === 'running' ? 'Çalışıyor'
+    : s.status === 'not_installed' ? 'Kurulu Değil'
+    : s.enabled ? 'Durdu' : 'Kapalı';
+  const cls = s => s.status === 'running' ? 'text-green'
+    : s.status === 'not_installed' ? 'text-orange' : 'text-red';
+  return `<div class="kiosk-grid kiosk-grid-4">${svcs.map(s =>
+    card(esc(s.name), label(s),
+      `<span class="dot ${s.status === 'running' ? 'dot-on' : 'dot-off'}"></span>${since(s.last_check)}`, cls(s))
+  ).join('')}</div>`;
+}
+
 const PAGE_BUILDERS = {
-  system: { title: 'Sistem Durumu', build: buildSystemPage },
-  network: { title: 'Ag Trafigi', build: buildNetworkPage },
-  vpn: { title: 'VPN Tunelleri', build: buildVpnPage },
-  devices: { title: 'Aktif Cihazlar', build: buildDevicesPage },
-  speedtest: { title: 'Hiz Testi', build: buildSpeedPage },
-  alerts: { title: 'Bildirimler', build: buildAlertsPage },
-  pihole: { title: 'Pi-hole', build: buildPiholePage },
-  services: { title: 'Servisler', build: buildServicesPage },
+  system:    { title: 'Sistem Durumu',  build: buildSystemPage },
+  trends:    { title: 'Trend / Geçmiş', build: buildTrendsPage },
+  network:   { title: 'Ağ Trafiği',     build: buildNetworkPage },
+  wan:       { title: 'WAN / DDNS',     build: buildWanPage },
+  vpn:       { title: 'VPN Tünelleri',  build: buildVpnPage },
+  devices:   { title: 'Aktif Cihazlar', build: buildDevicesPage },
+  dns:       { title: 'DNS Sorguları',  build: buildDnsPage },
+  security:  { title: 'Güvenlik',       build: buildSecurityPage },
+  speedtest: { title: 'Hız Testi',      build: buildSpeedPage },
+  alerts:    { title: 'Bildirimler',    build: buildAlertsPage },
+  pihole:    { title: 'Pi-hole',        build: buildPiholePage },
+  services:  { title: 'Servisler',      build: buildServicesPage },
 };
+
+/* ── döngü ───────────────────────────────────────────────────────────────── */
 
 async function loadConfig() {
   const d = await fetchJSON('/case/kiosk');
-  const cfg = d?.config;
+  const cfg = d && d.config;
+  let next;
   if (cfg) {
     rotateInterval = cfg.rotateInterval || 10;
     // Yalnızca builder'ı olan (geçerli) etkin widget id'leri al; eski/uyuşmayan config
     // yüzünden yalnız 'system' görünmesini önler. Hiçbiri geçerli değilse tüm sayfalar.
     const enabled = (cfg.widgets || []).filter(w => w.enabled).map(w => w.id).filter(id => PAGE_BUILDERS[id]);
-    pages = enabled.length ? enabled : Object.keys(PAGE_BUILDERS);
+    next = enabled.length ? enabled : Object.keys(PAGE_BUILDERS);
   } else {
-    pages = Object.keys(PAGE_BUILDERS);
+    next = Object.keys(PAGE_BUILDERS);
+  }
+  // Sıra/eleman değişmediyse dokunma — 60sn'lik config yenilemesi sayfayı zıplatmasın.
+  if (next.join('|') !== pages.join('|')) {
+    pages = next;
+    if (currentPage >= pages.length) currentPage = 0;
+    renderNav();
   }
 }
 
-async function renderPage(idx) {
+function renderNav() {
+  document.getElementById('nav').innerHTML = pages.map((id, i) =>
+    `<button class="kiosk-dot ${i === currentPage ? 'active' : ''}"`
+    + ` onclick="goTo(${i})" title="${esc(PAGE_BUILDERS[id].title)}"></button>`
+  ).join('');
+}
+
+// swap=true: sayfa değişimi (fade animasyonu). swap=false: yerinde veri tazeleme —
+// animasyon yok, göz yormasın.
+async function renderPage(idx, swap) {
   const id = pages[idx % pages.length];
   const builder = PAGE_BUILDERS[id];
   if (!builder) return;
-  // Bir sayfa builder'ı hata verirse tüm döngü takılmasın — hatayı o karta yaz, devam et.
   let content;
+  // Bir sayfa builder'ı hata verirse tüm döngü takılmasın — hatayı o karta yaz, devam et.
   try { content = await builder.build(); }
-  catch (e) { content = card(builder.title, 'Hata', String((e && e.message) || e).slice(0, 40), 'text-red'); }
-  const container = document.getElementById('pages');
-  container.innerHTML = `<div class="kiosk-page active">
-    <div class="kiosk-header">
-      <span class="kiosk-title">${builder.title}</span>
-      <span class="kiosk-time">${timeStr()}</span>
-    </div>
-    ${content}
-  </div>`;
-  // Nav dots
-  document.getElementById('nav').innerHTML = pages.map((_, i) =>
-    `<button class="kiosk-dot ${i === idx % pages.length ? 'active' : ''}" onclick="goTo(${i})"></button>`
-  ).join('');
+  catch (e) { content = empty('Hata: ' + String((e && e.message) || e).slice(0, 60)); }
+  // Yavaş bir fetch dönerken kullanıcı başka sayfaya geçmiş olabilir; eski içeriği basma.
+  if (pages[currentPage % pages.length] !== id) return;
+
+  document.getElementById('title').textContent = builder.title;
+  const el = document.getElementById('content');
+  el.innerHTML = content;
+  if (swap) {
+    el.classList.remove('swap');
+    void el.offsetWidth;   // animasyonu yeniden tetiklemek için reflow
+    el.classList.add('swap');
+  }
+  renderNav();
+}
+
+function startProgress() {
+  const p = document.getElementById('progress');
+  p.classList.remove('run');
+  p.style.width = '0';
+  void p.offsetWidth;
+  p.style.transitionDuration = rotateInterval + 's';
+  p.classList.add('run');
+  p.style.width = '100%';
+}
+
+function resetTimers() {
+  clearInterval(rotateTimer);
+  clearInterval(refreshTimer);
+  startProgress();
+  rotateTimer = setInterval(() => {
+    currentPage = (currentPage + 1) % pages.length;
+    renderPage(currentPage, true);
+    startProgress();
+  }, rotateInterval * 1000);
+  // Görünen sayfayı yerinde tazele — eskiden veri yalnız sayfa değişince yenileniyordu.
+  refreshTimer = setInterval(() => {
+    if (!document.hidden) renderPage(currentPage, false);
+  }, REFRESH_MS);
 }
 
 function goTo(idx) {
   currentPage = idx;
-  renderPage(currentPage);
-  resetTimer();
+  renderPage(currentPage, true);
+  resetTimers();
 }
 
-function resetTimer() {
-  if (timer) clearInterval(timer);
-  timer = setInterval(() => {
-    currentPage = (currentPage + 1) % pages.length;
-    renderPage(currentPage);
-  }, rotateInterval * 1000);
-}
+/* ── etkileşim ───────────────────────────────────────────────────────────── */
 
-// Touch/mouse shows cursor briefly
 document.addEventListener('touchstart', () => { document.body.classList.add('touch-active'); });
 document.addEventListener('mousemove', () => {
   document.body.classList.add('touch-active');
@@ -226,23 +523,35 @@ document.addEventListener('mousemove', () => {
   window._cursorTimer = setTimeout(() => document.body.classList.remove('touch-active'), 3000);
 });
 
-// Swipe support
 let touchStartX = 0;
 document.addEventListener('touchstart', e => { touchStartX = e.touches[0].clientX; });
 document.addEventListener('touchend', e => {
   const diff = e.changedTouches[0].clientX - touchStartX;
   if (Math.abs(diff) > 50) {
-    currentPage = diff < 0 ? (currentPage + 1) % pages.length : (currentPage - 1 + pages.length) % pages.length;
-    renderPage(currentPage);
-    resetTimer();
+    goTo(diff < 0 ? (currentPage + 1) % pages.length : (currentPage - 1 + pages.length) % pages.length);
   }
 });
 
-// Init
+document.addEventListener('keydown', e => {
+  if (e.key === 'ArrowRight') goTo((currentPage + 1) % pages.length);
+  if (e.key === 'ArrowLeft') goTo((currentPage - 1 + pages.length) % pages.length);
+});
+
+// Sekme yeniden görünür olunca bayat veriyi hemen tazele.
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden) renderPage(currentPage, false);
+});
+
+/* ── başlangıç ───────────────────────────────────────────────────────────── */
+
 (async () => {
+  const clock = document.getElementById('clock');
+  clock.textContent = timeStr();
+  setInterval(() => { clock.textContent = timeStr(); }, 1000);   // eskiden 10sn donuyordu
+
   await loadConfig();
-  await renderPage(0);
-  resetTimer();
+  await renderPage(0, true);
+  resetTimers();
   // Config'i her 60sn yenile — panelden yapılan widget seçimleri kısa sürede yansısın.
   setInterval(loadConfig, 60000);
 })();
