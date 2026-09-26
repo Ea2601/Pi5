@@ -4,6 +4,8 @@
 set +e
 export LC_ALL=C
 h(){ printf '\n===== %s =====\n' "$*"; }
+# Günlük satırlarındaki sırları maskele (DDNS token, parola vb. — çıktı paylaşılabilir kalsın)
+redact(){ sed -E 's/((token|password|passwd|pass|key|secret|apikey|api_key)=)[^&[:space:]"]+/\1***/Ig'; }
 DB=/opt/pi5-gateway/core/pi5router.sqlite
 LANIP=$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src"){print $(i+1); exit}}')
 
@@ -51,8 +53,14 @@ echo -n "Unbound 5335 test: "; dig +short +time=2 @127.0.0.1 -p 5335 example.com
 h "nftables / iptables / policy routing"
 nft list tables; head -3 /etc/nftables.conf; grep -n include /etc/nftables.conf; ls -l /etc/nftables.d/ 2>/dev/null
 nft list chain inet pi5_filter input 2>/dev/null | grep -E 'policy|dport'
-iptables -t mangle -S PI5_ROUTING 2>/dev/null | head -20; iptables -t nat -S POSTROUTING 2>/dev/null | grep -i masq
-ipset list -n 2>/dev/null | grep '^rt_m'; ip rule show | grep fwmark
+for c in iptables ipset nft; do printf '%-9s %s\n' "$c" "$(command -v "$c" || echo YOK)"; done
+iptables -V 2>&1; ipset version 2>&1 | head -1
+echo "--- mangle PI5_ROUTING:"; iptables -t mangle -S PI5_ROUTING 2>&1 | head -20
+echo "--- nat POSTROUTING:"; iptables -t nat -S POSTROUTING 2>&1 | head -10
+echo "--- ipset'ler:"; for s in $(ipset list -n 2>/dev/null | grep '^rt_m'); do echo "$s: $(ipset list "$s" | sed '1,/^Members:/d' | grep -c .) IP"; done
+echo "--- ip rule (fwmark, tekrar sayısıyla):"; ip rule show | grep fwmark | sed -E 's/^[0-9]+:\s*//' | sort | uniq -c
+for t in $(ip rule show | grep -o 'lookup [0-9]*' | awk '{print $2}' | sort -u); do echo "tablo $t: $(ip route show table "$t" 2>&1 | tr '\n' ' ')"; done
+echo "--- 05-domain-routing.conf:"; cat /etc/dnsmasq.d/05-domain-routing.conf 2>/dev/null
 
 h "Fail2Ban"
 fail2ban-client status 2>/dev/null
@@ -79,7 +87,7 @@ for c in dig etherwake wakeonlan speedtest-cli qrencode conntrack nmcli wg; do p
 echo "Saat dilimi: $(timedatectl show -p Timezone --value)"; cat /etc/cron.d/pi5-maintenance 2>/dev/null
 
 h "Panel son hatalar (pi5-backend, son 30 satır routing/hata)"
-journalctl -u pi5-backend --since '-1 day' --no-pager 2>/dev/null | grep -iE 'routing|error|hata|failed' | tail -30
+journalctl -u pi5-backend --since '-1 day' --no-pager 2>/dev/null | grep -iE 'routing|error|hata|failed|tunnel|wg ' | grep -v 'X-Forwarded-For' | redact | tail -30
 
 h "Panel ve gravity veritabanları (salt okunur)"
 python3 - "$DB" <<'PY'
