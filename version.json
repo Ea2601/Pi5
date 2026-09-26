@@ -1,10 +1,11 @@
 {
-  "version": "2.16.1",
-  "build": 64,
+  "version": "2.16.2",
+  "build": 65,
   "date": "2026-09-26",
   "changelog": [
-    "VPS yönlendirme: mevcut kurulumlarda ipset ve iptables hiç yoktu — domain/uygulama kuralları için IP listesi ve işaretleme sessizce hiç kurulmuyordu; güncelleme artık ikisini de kuruyor, eksikse günlüğe açık hata yazılıyor",
-    "VPS yönlendirme: tünel NAT'ı kendi nft tablosunda (pi5_wgnat) — eski kurulumlardan kalan 'table ip nat' ile çakışmıyor",
-    "VPS yönlendirme: yönlendirme kuralı her uygulamada yeniden eklenip çoğalıyordu (13 kopya) — artık tek kopya; kullanılmayan kurallar temizleniyor"
+    "Ağ geçidi: Pi'yi ağ geçidi yapan cihazların interneti hiç gelmiyordu — eski (v2.0) firewall'un forward zinciri yalnız eth0→wlan0'a izin verip gerisini düşürüyordu; tek bacaklı ağda LAN→modem ve LAN→VPS tüneli trafiği artık panelin kendi zinciriyle (pi5_gw) izinli",
+    "Ağ geçidi: modeme geri iletilen trafikte kaynak Pi'ye çevriliyor (NAT) — cevaplar Pi'ye dönüyor; modem, Pi'nin cihaz adına gönderdiği paketleri artık düşürmüyor",
+    "VPS tüneli: tünele giren TCP bağlantılarında paket boyutu tünel MTU'suna indiriliyor (MSS clamp) — büyük paketlerde takılma önlenir",
+    "Ağ geçidi/NAT kuralları yüklenemezse günlüğe sebebiyle birlikte yazılıyor"
   ]
 }

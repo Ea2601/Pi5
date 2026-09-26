@@ -843,6 +843,31 @@ async function waitLocalDns(maxMs: number = 15000): Promise<boolean> {
   return false;
 }
 
+// Pi'yi ağ geçidi yapan LAN istemcilerinin ağları/arayüzleri ve Pi'nin kendi adresleri (çekirdek rotalarından;
+// wg_* ve lo hariç). nft anonim setinde iç içe aralık hata verir → başka bir ağın içinde kalan ağ elenir.
+const GW_NFT = '/opt/pi5-gateway/core/pi5-gw.nft';
+async function detectGatewayLan(): Promise<{ nets: string[]; ifaces: string[]; selfIps: string[] }> {
+  const ipNum = (ip: string) => ip.split('.').reduce((a, o) => a * 256 + Number(o), 0);
+  const within = (net: string, outer: string) => {
+    const [a, pa] = net.split('/');
+    const [b, pb] = outer.split('/');
+    const div = 2 ** (32 - Number(pb));
+    return Number(pb) <= Number(pa) && Math.floor(ipNum(a) / div) === Math.floor(ipNum(b) / div);
+  };
+  const nets = new Set<string>();
+  const ifaces = new Set<string>();
+  const selfIps = new Set<string>();
+  for (const line of (await run('ip -4 -o route show proto kernel scope link 2>/dev/null')).split('\n')) {
+    const m = line.match(/^(\d+\.\d+\.\d+\.\d+\/\d+)\s+dev\s+([A-Za-z0-9_.-]{1,15})\s/);
+    if (!m || /^(wg|lo)/.test(m[2])) continue;
+    nets.add(m[1]);
+    ifaces.add(m[2]);
+  }
+  for (const m of (await run('ip -4 -o addr show 2>/dev/null')).matchAll(/\sinet\s(\d+\.\d+\.\d+\.\d+)\//g)) selfIps.add(m[1]);
+  const all = [...nets];
+  return { nets: all.filter(n => !all.some(o => o !== n && within(n, o))), ifaces: [...ifaces], selfIps: [...selfIps] };
+}
+
 export async function applyDomainRouting(domains?: DomainRoute[]): Promise<void> {
   if (!isLinux) return;
   if (!domains) return;
@@ -975,6 +1000,14 @@ export async function applyDomainRouting(domains?: DomainRoute[]): Promise<void>
   //     tablomuz: eski kurulumlardan kalan yerli `table ip nat`, iptables-nft'nin aynı adlı tablosuyla çakışabilir.
   //     Firewall kurulumundaki nft pi5_nat masquerade'i ile çakışmaz (ilk eşleşen NAT uygulanır, sonuç aynı).
   //     Boş-tanımla → sil → yeniden-tanımla: her uygulamada idempotent; firewall'un include'u boot'ta da yükler.
+  //     Tek bacaklı ağ geçidi: Pi'yi ağ geçidi yapan LAN istemcilerinin modeme (aynı LAN'a) geri iletilen trafiği
+  //     de Pi'ye SNAT'lanır — aksi halde cevaplar modemden istemciye doğrudan döner (asimetrik) ve modem, Pi'nin
+  //     istemci adına gönderdiği paketleri düşürür (canlıda doğrulandı). Pi'nin kendi trafiği ve LAN içi hariç.
+  const gw = await detectGatewayLan();
+  const nftSet = (xs: string[], quote = false) => `{ ${xs.map(x => (quote ? `"${x}"` : x)).join(', ')} }`;
+  const lanClient = gw.nets.length
+    ? `ip saddr ${nftSet(gw.nets)}${gw.selfIps.length ? ` ip saddr != ${nftSet(gw.selfIps)}` : ''}`
+    : '';
   const wgNat = [
     'table ip pi5_wgnat {}',
     'delete table ip pi5_wgnat',
@@ -982,12 +1015,47 @@ export async function applyDomainRouting(domains?: DomainRoute[]): Promise<void>
     '  chain postrouting {',
     '    type nat hook postrouting priority 100; policy accept;',
     '    oifname "wg_vps*" masquerade',
+    ...(lanClient && gw.ifaces.length
+      ? [`    oifname ${nftSet(gw.ifaces, true)} ${lanClient} ip daddr != ${nftSet(gw.nets)} masquerade`]
+      : []),
     '  }',
     '}',
   ];
   try { fs.mkdirSync('/etc/nftables.d', { recursive: true }); } catch { /* */ }
-  try { fs.writeFileSync('/etc/nftables.d/pi5-wgnat.conf', wgNat.join('\n') + '\n'); } catch { /* */ }
-  await run('nft -f /etc/nftables.d/pi5-wgnat.conf 2>/dev/null || true');
+  try {
+    fs.writeFileSync('/etc/nftables.d/pi5-wgnat.conf', wgNat.join('\n') + '\n');
+    await execAsync('nft -f /etc/nftables.d/pi5-wgnat.conf', { timeout: 10000 });
+  } catch (e: any) {
+    console.error(`[routing] tünel/ağ geçidi NAT'ı (pi5_wgnat) yüklenemedi: ${String(e?.stderr || e?.message || e).trim()}`);
+  }
+
+  // 3c. Eski (v2.0–v2.5) firewall'un `inet filter` forward zinciri `policy drop` ve yalnız eth0→wlan0'a (iki kartlı
+  //     router varsayımı) izin veriyor; tek bacaklı topolojide istemci trafiği (LAN→modem, LAN→wg_vps*) düşüyordu.
+  //     Panele ait `pi5_gw` zinciri her uygulamada boşaltılıp doldurulur, forward'ın başına bir kez `jump pi5_gw`
+  //     eklenir; tek nft dosyası → hata olursa hiçbir kural değişmez. Dosya /etc/nftables.d dışında: firewall
+  //     include'u boot'ta eski tablo yokken hata vermesin. Forward politikası accept ise (ya da tablo yoksa) dokunulmaz.
+  const fwdChain = await run('nft list chain inet filter forward 2>/dev/null');
+  if (/policy drop/.test(fwdChain) && lanClient && gw.ifaces.length) {
+    const lanIfs = nftSet(gw.ifaces, true);
+    const gwRules = [
+      'add chain inet filter pi5_gw',
+      'flush chain inet filter pi5_gw',
+      // Tünel MTU'su (1420) LAN'dan küçük: SYN'de MSS'i rota MTU'suna indir (yalnız küçültür).
+      'add rule inet filter pi5_gw oifname "wg_vps*" tcp flags syn tcp option maxseg size set rt mtu',
+      'add rule inet filter pi5_gw ct state established,related accept',
+      `add rule inet filter pi5_gw iifname ${lanIfs} ${lanClient} oifname "wg_vps*" accept`,
+      // LAN → modem (tek bacak): ct state'e bakılmaz — SNAT kurulamazsa akış asimetrik kalır, sonraki paketler 'invalid' olur.
+      `add rule inet filter pi5_gw iifname ${lanIfs} ${lanClient} ip daddr != ${nftSet(gw.nets)} oifname ${lanIfs} accept`,
+      ...(/jump pi5_gw/.test(fwdChain) ? [] : ['insert rule inet filter forward jump pi5_gw']),
+    ];
+    try {
+      fs.mkdirSync('/opt/pi5-gateway/core', { recursive: true });
+      fs.writeFileSync(GW_NFT, gwRules.join('\n') + '\n');
+      await execAsync(`nft -f ${GW_NFT}`, { timeout: 10000 });
+    } catch (e: any) {
+      console.error(`[routing] ağ geçidi izni (inet filter pi5_gw) kurulamadı: ${String(e?.stderr || e?.message || e).trim()}`);
+    }
+  }
 
   // 4. VPS-çıkış markları (≥100) için ip rule + routing tablosu.
   //    mark 200 (yalnız DPI bypass) ISP ana tablosunu kullanır — zapret trafiği kendi hook'uyla işler.
