@@ -1708,8 +1708,11 @@ select:disabled,
   flex-shrink: 0;
 }
 
-.cron-delete { opacity: 0; transition: opacity 0.15s; }
-.cron-row:hover .cron-delete { opacity: 1; }
+/* Silme ikonu hep (soluk) görünür: eskiden yalnız .cron-row hover'ında görünüyordu → routing/DDNS/trafik
+   listelerinde ve dokunmatik ekranda hiç görünmüyordu. */
+.cron-delete { opacity: 0.55; transition: opacity 0.15s; }
+.cron-row:hover .cron-delete, .routing-row:hover .cron-delete, .list-item:hover .cron-delete,
+.cron-delete:hover, .cron-delete:focus-visible { opacity: 1; }
 
 .cron-add-form {
   padding: 16px;

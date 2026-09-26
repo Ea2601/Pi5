@@ -1,11 +1,10 @@
 {
-  "version": "2.16.2",
-  "build": 65,
+  "version": "2.16.3",
+  "build": 66,
   "date": "2026-09-26",
   "changelog": [
-    "Ağ geçidi: Pi'yi ağ geçidi yapan cihazların interneti hiç gelmiyordu — eski (v2.0) firewall'un forward zinciri yalnız eth0→wlan0'a izin verip gerisini düşürüyordu; tek bacaklı ağda LAN→modem ve LAN→VPS tüneli trafiği artık panelin kendi zinciriyle (pi5_gw) izinli",
-    "Ağ geçidi: modeme geri iletilen trafikte kaynak Pi'ye çevriliyor (NAT) — cevaplar Pi'ye dönüyor; modem, Pi'nin cihaz adına gönderdiği paketleri artık düşürmüyor",
-    "VPS tüneli: tünele giren TCP bağlantılarında paket boyutu tünel MTU'suna indiriliyor (MSS clamp) — büyük paketlerde takılma önlenir",
-    "Ağ geçidi/NAT kuralları yüklenemezse günlüğe sebebiyle birlikte yazılıyor"
+    "Routing: özel domain kurallarının silme düğmesi görünmüyordu (yalnız Cron listesinde fareyle üzerine gelince görünür yapılmıştı) — artık hep görünür; silmeden önce onay soruluyor, hata olursa bildirim çıkıyor",
+    "DDNS ve Trafik Kontrol listelerindeki gizli silme düğmeleri de görünür oldu; dokunmatik ekranda da çalışır",
+    "SSH Terminal: 'Kopyala' düğmesi — ekrandaki tüm çıktıyı tek tıkla panoya kopyalar (panel http üzerinden açıldığında da çalışır)"
   ]
 }

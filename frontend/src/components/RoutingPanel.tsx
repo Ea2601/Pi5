@@ -247,11 +247,15 @@ function DomainRoutingView() {
     } catch { /* */ }
   };
 
-  const handleDelete = async (id: number) => {
+  const handleDelete = async (id: number, domain: string) => {
+    if (!confirm(`${domain} kuralı silinsin mi?`)) return;
     try {
       await deleteApi(`/routing/domains/${id}`);
+      toast.success(`${domain} silindi`);
       await refetch();
-    } catch { /* */ }
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Silinemedi');
+    }
   };
 
   return (
@@ -409,7 +413,7 @@ function DomainRoutingView() {
                 </span>
 
                 <span className="routing-col-delete">
-                  <button className="icon-btn icon-btn-sm cron-delete" onClick={() => handleDelete(d.id)} title="Sil">
+                  <button className="icon-btn icon-btn-sm cron-delete" onClick={() => handleDelete(d.id, d.domain)} title="Sil">
                     <Trash2 size={13} />
                   </button>
                 </span>

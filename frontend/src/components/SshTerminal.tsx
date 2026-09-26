@@ -1,8 +1,28 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
-import { Terminal, Send, Trash2, ChevronDown, ChevronRight } from 'lucide-react';
+import { Terminal, Send, Trash2, ChevronDown, ChevronRight, Copy } from 'lucide-react';
 import { postApi } from '../hooks/useApi';
 import { Panel } from './ui';
 import { BRAND } from '../brand';
+import { toast } from '../toast';
+
+// Panel LAN'da düz http ile açılır (güvensiz bağlam) → navigator.clipboard yoktur; gizli textarea + execCommand yedeği.
+async function copyText(text: string): Promise<boolean> {
+  if (window.isSecureContext && navigator.clipboard) {
+    try { await navigator.clipboard.writeText(text); return true; } catch { /* yedeğe düş */ }
+  }
+  const ta = document.createElement('textarea');
+  ta.value = text;
+  ta.setAttribute('readonly', '');
+  ta.style.position = 'fixed';
+  ta.style.opacity = '0';
+  document.body.appendChild(ta);
+  ta.select();
+  ta.setSelectionRange(0, text.length); // iOS Safari select() ile tüm metni seçmez
+  let ok = false;
+  try { ok = document.execCommand('copy'); } catch { ok = false; }
+  document.body.removeChild(ta);
+  return ok;
+}
 
 interface TerminalLine {
   type: 'input' | 'output' | 'error' | 'system';
@@ -211,6 +231,14 @@ export function SshTerminal() {
                 <button className="btn-outline btn-sm"
                   onClick={() => setShowQuickCmds(!showQuickCmds)}>
                   {showQuickCmds ? 'Komutları Gizle' : 'Komutları Göster'}
+                </button>
+                <button className="btn-outline btn-sm" title="Tüm terminal çıktısını panoya kopyala"
+                  onClick={async () => {
+                    const ok = await copyText(lines.map(l => l.text).join('\n'));
+                    if (ok) toast.success(`Terminal çıktısı kopyalandı (${lines.length} satır)`);
+                    else toast.error('Kopyalanamadı — metni seçip elle kopyalayın');
+                  }}>
+                  <Copy size={13} /> Kopyala
                 </button>
                 <button className="btn-outline btn-sm"
                   onClick={() => setLines([{ type: 'system', text: 'Terminal temizlendi.' }])}>
