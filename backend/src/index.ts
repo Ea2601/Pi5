@@ -12,8 +12,9 @@ import {
   getNetworkDevices, getBandwidthLive, getWireguardStatus,
   getFail2banStatus, getDnsQueries, getCurrentExternalIp,
   runSpeedTest, executeCommand, applyDomainRouting, applyBlockedDevices,
-  sampleMetrics, detectInterfaces, recoverInterruptedFtlRestart,
+  sampleMetrics, detectInterfaces, recoverInterruptedFtlRestart, VALID_DNSMASQ_DOMAIN,
 } from './system';
+import { getRoutingSuggestions, MAX_HOURS as SUGGEST_MAX_HOURS } from './domainSuggest';
 import {
   shq, sedEscape, isValidMac, isValidDomain, isValidTimezone,
   isValidHexColor, normalizeAnimation, sanitizeName,
@@ -1193,6 +1194,105 @@ app.delete('/api/routing/domains/:id', async (req, res) => {
   }
 });
 
+// ─── Routing önerileri: yönlendirilen siteyle birlikte açılan alan adları (öner → tek tıkla ekle / yoksay) ───
+// /api/routing/domains/... altında DEĞİL: PUT/DELETE /:id rotaları o yolu yakalar.
+const DOMAIN_ROUTING_COLUMNS = 'id, domain, route_type, description, enabled, exit_node, dpi_bypass, redirect_url, created_at';
+// Öneri adları sunucunun ürettiği hedeflerdir: yalnız kırpılır/küçültülür. POST /api/routing/domains'teki gibi 'www.'
+// SİLİNMEZ — tek görülen 'www.x.com' önerisi 'x.com' (tüm alt adresler) olarak kaydedilirse onaylanandan geniş olurdu.
+const cleanSuggestedDomain = (d: unknown) => (typeof d === 'string' ? d.trim().toLowerCase() : '');
+const isSuggestableDomain = (d: string) => d.includes('.') && !d.startsWith('*.') && VALID_DNSMASQ_DOMAIN.test(d);
+
+app.get('/api/routing/suggestions', async (req, res) => {
+  try {
+    const h = Number.parseInt(String(req.query.hours ?? '24'), 10);
+    const hours = Number.isFinite(h) ? Math.min(Math.max(h, 1), SUGGEST_MAX_HOURS) : 24;
+    // Başlangıç kuralları: etkin, özel çıkışlı (VPS ya da DPI), redirect değil, öneriden eklenmemiş.
+    const anchors = await dbAll(`SELECT id, domain FROM domain_routing WHERE enabled = 1
+      AND COALESCE(redirect_url, '') = '' AND (COALESCE(exit_node, 'isp') != 'isp' OR dpi_bypass = 1) AND parent_id IS NULL`);
+    // Kapsananlar: TÜM domain kuralları (kapalılar da — yoksa Ekle 'zaten ekli' hatası verir) ve yalnız etkin + gerçekten
+    // yönlendirilen uygulama kuralları (ISP/DPI kapalı uygulama adları normal hattan gider; önerilebilmeleri gerekir).
+    const domainRows = await dbAll('SELECT domain FROM domain_routing');
+    const appRows = await dbAll(`SELECT domains FROM traffic_routing WHERE enabled = 1
+      AND (COALESCE(exit_node, 'isp') != 'isp' OR dpi_bypass = 1)`);
+    const covered = [
+      ...domainRows.map((r: any) => String(r.domain)),
+      ...appRows.flatMap((r: any) => String(r.domains || '').split(',')),
+    ];
+    const dismissed = (await dbAll('SELECT domain FROM domain_suggestion_dismissed')).map((r: any) => String(r.domain));
+    res.json(await getRoutingSuggestions({ anchors, covered, dismissed, hours }));
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Tekli "Ekle" ve "Tümünü ekle" aynı yoldan: çıkış (exit_node/dpi) sunucuda ana kuraldan kopyalanır, tek uygulama → tek DNS restart.
+app.post('/api/routing/suggestions/accept', async (req, res) => {
+  try {
+    const ruleId = Number(req.body?.rule_id);
+    const list = req.body?.domains;
+    if (!Number.isInteger(ruleId) || !Array.isArray(list) || list.length < 1 || list.length > 20) {
+      return res.status(400).json({ error: 'Geçersiz istek' });
+    }
+    const parent = await dbGet('SELECT id, domain, exit_node, dpi_bypass, redirect_url, parent_id FROM domain_routing WHERE id = ?', [ruleId]);
+    if (!parent) return res.status(404).json({ error: 'Kural bulunamadı' });
+    if (parent.redirect_url || ((parent.exit_node || 'isp') === 'isp' && !parent.dpi_bypass)) {
+      return res.status(400).json({ error: 'Bu kural özel bir çıkış kullanmıyor' });
+    }
+    const clean = [...new Set(list.map(cleanSuggestedDomain))];
+    const bad = clean.filter(d => !isSuggestableDomain(d));
+    if (bad.length) return res.status(400).json({ error: `Geçersiz alan adı: ${bad.join(', ') || '(boş)'}` });
+    const added: string[] = [];
+    const skipped: string[] = [];
+    for (const d of clean) {
+      // Düz INSERT: eşzamanlı iki istekte ikincisi UNIQUE hatasıyla 'zaten ekli'ye düşer (yanlışlıkla 'eklendi' sayılmaz).
+      try {
+        await dbRun(`INSERT INTO domain_routing (domain, route_type, description, exit_node, dpi_bypass, redirect_url, parent_id)
+          VALUES (?, 'direct', ?, ?, ?, '', ?)`,
+          [d, `Öneri: ${parent.domain}`, parent.exit_node || 'isp', parent.dpi_bypass ? 1 : 0, parent.parent_id ?? parent.id]);
+        added.push(d);
+      } catch (e: any) {
+        if (!String(e?.message).includes('UNIQUE')) throw e;
+        skipped.push(d);
+      }
+    }
+    if (added.length) await applyAllRoutingRules();
+    const domains = await dbAll(`SELECT ${DOMAIN_ROUTING_COLUMNS} FROM domain_routing ORDER BY domain`);
+    res.json({ success: true, added, skipped, domains });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post('/api/routing/suggestions/dismiss', async (req, res) => {
+  try {
+    const domain = typeof req.body?.domain === 'string' ? req.body.domain.trim().toLowerCase() : '';
+    if (!isSuggestableDomain(domain)) return res.status(400).json({ error: 'Geçersiz alan adı' });
+    const ruleDomain = typeof req.body?.rule_domain === 'string' ? req.body.rule_domain.slice(0, 253) : '';
+    await dbRun('INSERT OR IGNORE INTO domain_suggestion_dismissed (domain, rule_domain) VALUES (?, ?)', [domain, ruleDomain]);
+    res.json({ success: true });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get('/api/routing/suggestions/dismissed', async (_req, res) => {
+  try {
+    const dismissed = await dbAll('SELECT id, domain, rule_domain, created_at FROM domain_suggestion_dismissed ORDER BY created_at DESC, id DESC');
+    res.json({ dismissed });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.delete('/api/routing/suggestions/dismissed/:id', async (req, res) => {
+  try {
+    await dbRun('DELETE FROM domain_suggestion_dismissed WHERE id = ?', [req.params.id]);
+    res.json({ success: true });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // Legacy VoIP endpoint for backward compat
 app.get('/api/voip/rules', async (_req, res) => {
   try {
@@ -1738,6 +1838,7 @@ const BACKUP_TABLES = [
   'service_config', 'service_status', 'traffic_routing', 'domain_routing', 'routing_rules',
   'pihole_lists', 'zapret_domains', 'bandwidth_limits', 'parental_rules', 'traffic_schedules',
   'device_groups', 'device_group_members', 'throttle_rules', 'app_settings', 'cron_jobs', 'dhcp_leases',
+  'domain_suggestion_dismissed',
 ];
 const BACKUP_TABLE_SET = new Set(BACKUP_TABLES);
 

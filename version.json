@@ -1,11 +1,11 @@
 {
-  "version": "2.16.4",
-  "build": 67,
+  "version": "2.17.0",
+  "build": 68,
   "date": "2026-09-26",
   "changelog": [
-    "Güncelleme: sistem paketleri (wireguard-tools, ipset, iptables, kiosk) artık panelden bağımsız bir systemd işinde kuruluyor — güncellemenin süre sınırı ya da panelin yeniden başlaması dpkg'yi yarıda kesip 'dpkg was interrupted' bırakamaz",
-    "Güncelleme: yarıda kalmış dpkg kendiliğinden onarılıyor, bozuk bağımlılıklar düzeltiliyor, kilit varsa bekleniyor; depoda olmayan paket adı (ör. trixie'de chromium-browser) diğerlerinin kurulmasını engellemiyor",
-    "Güncelleme: paket kurulumunun ayrıntıları ve hataları güncelleme günlüğüne '[pkg]' önekiyle yazılıyor (eskiden gizleniyordu)",
-    "Güncelleme: chromium kurulu sistemlerde kiosk paket kurulumu her güncellemede boşuna çalışmıyor"
+    "Routing: yönlendirilen bir siteyle birlikte açılan diğer alan adları (spor/oyun sağlayıcısı, yönlendirme adresleri, CDN) kuralın altında 'Önerilen alan adları' olarak gösteriliyor; tek tıkla aynı çıkışa eklenir ya da yoksayılır",
+    "Routing önerileri: arka planda sürekli sorgulanan adresler (telemetri, bildirim, uygulama trafiği) ziyaret içi/dışı karşılaştırmasıyla ayıklanıyor; Apple, Google, WhatsApp, reklam/analiz adları hiç önerilmiyor",
+    "Routing önerileri: paylaşımlı CDN adresleri tam haliyle, tek görülen adres yalnız o adres olarak önerilir — tek tıkla geniş bir alan VPS'e gitmez; öneriden eklenen kurallar kendileri öneri üretmez",
+    "Routing: domain eklerken tüm VPS/DPI yönlendirme listeleri artık boşaltılmıyor (açık tünel bağlantıları kopmuyor); yalnız bir domain çıkarılınca ilgili liste temizleniyor"
   ]
 }

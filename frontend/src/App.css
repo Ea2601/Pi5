@@ -1108,6 +1108,28 @@ select:disabled,
 }
 .config-select-sm { font-size: 12px; padding: 3px 8px; }
 
+/* Routing önerileri (yönlendirilen siteyle birlikte açılan alan adları) */
+.routing-suggest { padding: 2px 12px 8px 52px; font-size: 12px; }
+.routing-suggest-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.routing-suggest-toggle {
+  display: inline-flex; align-items: center; gap: 5px; background: none; border: none; cursor: pointer;
+  padding: 2px 0; font-family: var(--font-family); font-size: 12px; font-weight: 600; color: var(--accent-color);
+}
+.routing-suggest-toggle:hover { text-decoration: underline; }
+.routing-suggest-meta { color: var(--text-muted); font-size: 11px; }
+.routing-suggest-item {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap;
+  padding: 6px 0; border-top: 1px solid rgba(255, 255, 255, 0.05);
+}
+.routing-suggest-main { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1 1 220px; }
+.routing-suggest-domain { font-family: var(--font-mono, monospace); font-weight: 600; font-size: 13px; overflow-wrap: anywhere; }
+.routing-suggest-samples { color: var(--text-muted); font-size: 11px; overflow-wrap: anywhere; }
+.routing-suggest-actions { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.routing-suggest-note { color: var(--text-muted); font-size: 11px; margin-top: 6px; line-height: 1.5; }
+@media (max-width: 768px) {
+  .routing-suggest { padding-left: 12px; }
+}
+
 /* Toggle switch */
 .toggle-btn {
   width: 36px;

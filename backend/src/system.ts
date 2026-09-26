@@ -26,7 +26,7 @@ async function run(cmd: string, timeout: number = 10000): Promise<string> {
 // Pi-hole v6 removed the legacy admin/api.php; its REST API needs the embedded FTL
 // webserver + auth (which collides with our nginx on :80). Reading the FTL SQLite DB
 // directly is version-proof and needs no webserver/port/auth. Backend runs as root.
-const FTL_DB = '/etc/pihole/pihole-FTL.db';
+export const FTL_DB = '/etc/pihole/pihole-FTL.db';
 const GRAVITY_DB = '/etc/pihole/gravity.db';
 // FTL query status codes that mean "blocked" (gravity/blacklist/regex/upstream/special).
 const BLOCKED_STATUS = [1, 4, 5, 6, 7, 8, 9, 10, 11, 15, 16];
@@ -661,7 +661,7 @@ const DNS_RESTART_MIN_GAP_MS = 15000;
 const FTL_RESTART_INPROGRESS = '/opt/pi5-gateway/core/.ftl_restart_inprogress';
 // dnsmasq geçersiz bir satırda (ör. 63+ karakterlik etiket, ASCII dışı ad) tüm FTL'i düşürür → tüm ağın DNS'i
 // gider. Bu kalıba uymayan domainler dnsmasq dosyalarına hiç yazılmaz.
-const VALID_DNSMASQ_DOMAIN = /^(\*\.)?(?=.{1,253}$)[a-z0-9_-]{1,63}(\.[a-z0-9_-]{1,63})*$/i;
+export const VALID_DNSMASQ_DOMAIN = /^(\*\.)?(?=.{1,253}$)[a-z0-9_-]{1,63}(\.[a-z0-9_-]{1,63})*$/i;
 // Boşaltılması bekleyen setler: FTL eski ipset= satırlarıyla çalışırken boşaltılırsa eski domainlerin IP'leri
 // hemen geri dolar ve kalıcı olur → boşaltma FTL durmuşken (yeni yapılandırmayla başlamadan hemen önce) yapılır.
 const pendingFlush = new Set<string>();
@@ -882,6 +882,10 @@ export async function applyDomainRouting(domains?: DomainRoute[]): Promise<void>
   const redirectDomains = enabledDomains.filter(d => d.redirect_url);
   const routingDomains = enabledDomains.filter(d => !d.redirect_url);
 
+  // FTL diskteki (bu uygulamadan ÖNCEKİ) dosyalardan eski mi — ör. önceki restart başarısız oldu? Dosyalar YAZILMADAN
+  // önce ölçülür: yazdıktan sonra her değişiklikte doğru döner ve salt eklemede de tüm setleri boşalttırırdı.
+  const ftlStale = await ftlStartedBeforeFiles();
+
   // Generate dnsmasq address= lines for redirect domains (point to Pi5 local IP — detected, not hardcoded)
   // LAN IPv4 henüz yoksa (boot'ta DHCP bitmeden) ve redirect kuralı varsa dosyaya dokunma: tahmini bir IP
   // (eskiden 192.168.1.1 — çoğu evde modemin kendisi) yazılırsa redirect'ler yanlış hosta gider ve düzelmez.
@@ -957,7 +961,20 @@ export async function applyDomainRouting(domains?: DomainRoute[]): Promise<void>
     ipsetLines.push(`ipset=/${base}/${setName}`);
   }
 
+  // Önceki satırlar: bir satır ÇIKARILDIYSA (domain silindi / başka sete taşındı) o setteki eski IP'ler bayat kalır →
+  // yalnız o set boşaltılır. Salt eklemede bayat içerik yoktur; boşaltmak tüm açık tünel bağlantılarını koparırdı.
+  let oldRoutingLines: string[] = [];
+  try { oldRoutingLines = fs.readFileSync('/etc/dnsmasq.d/05-domain-routing.conf', 'utf8').split('\n').filter(Boolean); } catch { /* ilk kurulum */ }
   const routingChanged = writeIfChanged('/etc/dnsmasq.d/05-domain-routing.conf', ipsetLines.join('\n') + '\n');
+  const newRoutingLines = new Set(ipsetLines);
+  const setsWithRemovals = new Set<string>();
+  const oldSets = new Set<string>();
+  for (const line of oldRoutingLines) {
+    const m = line.match(/^ipset=\/[^/]+\/(rt_m\d+)$/);
+    if (!m) continue;
+    oldSets.add(m[1]);
+    if (!newRoutingLines.has(line)) setsWithRemovals.add(m[1]);
+  }
 
   // Eski nft tabanlı (bozuk) marklama dosyasını temizle
   await run('rm -f /etc/nftables.d/domain-routing.conf 2>/dev/null || true');
@@ -972,17 +989,19 @@ export async function applyDomainRouting(domains?: DomainRoute[]): Promise<void>
     }
   }
 
-  // 2. Kernel ipset'lerini oluştur (dnsmasq doldurur). Yalnız domain→set eşlemesi değiştiyse (ya da FTL
-  //    dosyaların son halinden önce başladıysa) boşaltılacak olarak işaretle; boşaltma DNS işinde FTL
-  //    durmuşken yapılır. Eşleme değişmediyse içerik hâlâ geçerlidir, boşaltılmaz.
-  const ftlStale = await ftlStartedBeforeFiles();
+  // 2. Kernel ipset'lerini oluştur (dnsmasq doldurur). Boşaltılacak olarak işaretlenenler (boşaltma DNS işinde FTL
+  //    durmuşken yapılır): sete ait bir satır çıkarıldıysa, set eski dosyada hiç yoksa (yeniden kullanılan setin
+  //    önceki domainlerden kalan IP'leri) ya da FTL diskteki eski dosyalardan önce başladıysa. Salt eklemede içerik
+  //    hâlâ geçerlidir, boşaltılmaz — boşaltmak açık tünel bağlantılarını koparırdı.
   const existingSets = new Set((await run('ipset list -n 2>/dev/null')).split('\n').map(s => s.trim()));
   let setCreated = false;
   for (const [, setName] of markSets) {
     if (!existingSets.has(setName)) setCreated = true;
     await run(`ipset create ${setName} hash:ip family inet -exist`);
-    if (routingChanged || ftlStale) pendingFlush.add(setName);
+    if (ftlStale || setsWithRemovals.has(setName) || !oldSets.has(setName)) pendingFlush.add(setName);
   }
+  // Son domaini de çıkarılan (artık kullanılmayan) setler de boşaltılır: yeniden kullanılırlarsa eski IP'ler taşınmasın.
+  for (const s of setsWithRemovals) pendingFlush.add(s);
 
   // 3. iptables mangle ile marklama — `-m set` kernel ipset'lerini DOĞRU okur (nft @set okuyamaz).
   await run('iptables -t mangle -N PI5_ROUTING 2>/dev/null || true');

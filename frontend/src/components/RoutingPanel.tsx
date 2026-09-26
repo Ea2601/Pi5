@@ -1,6 +1,7 @@
 import {
   Route, Globe, Tv, Gamepad2, MessageCircle, Apple,
-  Plus, Trash2, Check, X, Search, Link, Shield, Info
+  Plus, Trash2, Check, X, Search, Link, Shield, Info,
+  Lightbulb, ChevronDown, ChevronRight, RotateCcw
 } from 'lucide-react';
 import { useApi, putApi, postApi, deleteApi } from '../hooks/useApi';
 import { useState } from 'react';
@@ -207,6 +208,57 @@ interface DomainRule {
   created_at: string;
 }
 
+// ─── Routing önerileri: yönlendirilen siteyle birlikte açılan alan adları (GET /routing/suggestions) ───
+interface SuggestionItem { key: string; domain: string; samples: string[]; visits: number; clients: number; last_seen: string }
+interface RuleSuggestions { rule_id: number; domain: string; visits: number; hidden_background: number; more: number; suggestions: SuggestionItem[] }
+interface SuggestionsResponse { available: boolean; reason: string | null; window: { hours: number }; truncated: boolean; rules: RuleSuggestions[] }
+interface DismissedItem { id: number; domain: string; rule_domain: string; created_at: string }
+
+const EMPTY_SUGGESTIONS: SuggestionsResponse = { available: false, reason: null, window: { hours: 24 }, truncated: false, rules: [] };
+const SUGGEST_UNAVAILABLE: Record<string, string> = {
+  privacy: 'Öneriler kapalı: Pi-hole gizlilik düzeyi 0 değil, alan adı kayıtları tutulmuyor.',
+  db: 'Öneriler şu an alınamıyor: Pi-hole sorgu kaydı okunamadı.',
+  timeout: 'Öneriler şu an alınamıyor: Pi-hole sorgu kaydı zaman aşımına uğradı.',
+};
+
+// Açılınca mount edilir; her yoksay/geri al sonrası üst bileşen `key` değiştirip yeniden yükletir.
+function DismissedList({ onChange }: { onChange: () => void }) {
+  const { data, loading, error, refetch } = useApi<{ dismissed: DismissedItem[] }>('/routing/suggestions/dismissed', { dismissed: [] });
+  const [undoing, setUndoing] = useState<number | null>(null);
+  const undo = async (item: DismissedItem) => {
+    setUndoing(item.id);
+    try {
+      await deleteApi(`/routing/suggestions/dismissed/${item.id}`);
+      toast.success(`${item.domain} yeniden önerilebilir`);
+      await refetch();
+      onChange();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Geri alınamadı');
+    }
+    setUndoing(null);
+  };
+  if (loading) return <div className="routing-suggest-note">Yükleniyor…</div>;
+  if (error) return <div className="routing-suggest-note">Yoksayılan öneriler alınamadı: {error}</div>;
+  if (data.dismissed.length === 0) return <div className="routing-suggest-note">Yoksayılan öneri yok</div>;
+  return (
+    <div className="routing-suggest">
+      {data.dismissed.map(item => (
+        <div key={item.id} className="routing-suggest-item">
+          <div className="routing-suggest-main">
+            <span className="routing-suggest-domain">{item.domain}</span>
+            {item.rule_domain && <span className="routing-suggest-samples">{item.rule_domain} için yoksayıldı</span>}
+          </div>
+          <div className="routing-suggest-actions">
+            <button className="btn-outline btn-sm" disabled={undoing !== null} onClick={() => undo(item)}>
+              <RotateCcw size={12} /> {undoing === item.id ? 'Geri alınıyor…' : 'Geri al'}
+            </button>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function DomainRoutingView() {
   const { data, refetch } = useApi<{ domains: DomainRule[] }>('/routing/domains', { domains: [] });
   const { data: vpsData } = useApi<{ servers: VpsServer[] }>('/vps/list', { servers: [] });
@@ -217,10 +269,65 @@ function DomainRoutingView() {
   const [newDesc, setNewDesc] = useState('');
   const [newRedirectUrl, setNewRedirectUrl] = useState('');
   const [filter, setFilter] = useState('');
+  // Öneriler: sunucu 60 sn önbellekler; FTL diske dakikada bir yazar → 2 dk'da bir yoklamak yeter.
+  const { data: sug, refetch: refetchSug } = useApi<SuggestionsResponse>('/routing/suggestions', EMPTY_SUGGESTIONS, 120000);
+  const [openSug, setOpenSug] = useState<Set<number>>(() => new Set());
+  const [busy, setBusy] = useState<string | null>(null);
+  const [showDismissed, setShowDismissed] = useState(false);
+  const [dismissedNonce, setDismissedNonce] = useState(0);
 
   const vpsList = vpsData.servers;
   const domains = data.domains;
   const filtered = filter ? domains.filter(d => d.domain.includes(filter.toLowerCase())) : domains;
+  const sugByRule = new Map(sug.rules.map(r => [r.rule_id, r]));
+
+  const exitLabel = (rule: DomainRule) => {
+    const vps = vpsList.find(v => String(v.id) === rule.exit_node);
+    const base = rule.exit_node && rule.exit_node !== 'isp' ? `VPS ${vps?.location || rule.exit_node}` : 'ISP';
+    return rule.dpi_bypass ? `${base} + DPI` : base;
+  };
+
+  const toggleSug = (id: number) => setOpenSug(prev => {
+    const next = new Set(prev);
+    if (next.has(id)) next.delete(id); else next.add(id);
+    return next;
+  });
+
+  // Tekli "Ekle" ve "Tümünü ekle" aynı uç noktadan: çıkış sunucuda ana kuraldan kopyalanır, tek DNS yenilemesi.
+  const acceptSuggestions = async (rule: DomainRule, list: SuggestionItem[]) => {
+    if (list.length > 1 && !confirm(`Şu alan adları ${rule.domain} ile aynı çıkışa (${exitLabel(rule)}) eklensin mi?\n\n${list.map(s => s.domain).join('\n')}`)) return;
+    setBusy(list.length > 1 ? `all:${rule.id}` : list[0].domain);
+    try {
+      const r = await postApi('/routing/suggestions/accept', { rule_id: rule.id, domains: list.map(s => s.domain) });
+      const added = Array.isArray(r.added) ? r.added.length : 0;
+      const skipped = Array.isArray(r.skipped) ? r.skipped.length : 0;
+      if (added) {
+        toast.success(`${added} alan adı eklendi (${exitLabel(rule)})${skipped ? ` · ${skipped} tanesi zaten ekliydi` : ''}`);
+        toast.info('DNS birkaç saniye içinde yenilenecek; siteyi yeniden açın.');
+      } else {
+        toast.info('Seçilen alan adları zaten ekliydi');
+      }
+      await refetch();
+      await refetchSug();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Eklenemedi');
+    }
+    setBusy(null);
+  };
+
+  // Yoksay kayıtlı alan adı bazında ve globaldir: aynı sitenin başka alt adresleri de bir daha önerilmez.
+  const dismissSuggestion = async (rule: DomainRule, s: SuggestionItem) => {
+    setBusy(`x:${s.key}`);
+    try {
+      await postApi('/routing/suggestions/dismiss', { domain: s.key, rule_domain: rule.domain });
+      toast.info(`${s.key} artık önerilmeyecek`);
+      setDismissedNonce(n => n + 1);
+      await refetchSug();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Yoksayılamadı');
+    }
+    setBusy(null);
+  };
 
   const handleAdd = async () => {
     if (!newDomain.trim()) return;
@@ -235,6 +342,7 @@ function DomainRoutingView() {
       if (result.error) { toast.error(result.error); return; }
       setNewDomain(''); setNewDesc(''); setNewExitNode('isp'); setNewDpi(0); setNewRedirectUrl(''); setShowAdd(false);
       await refetch();
+      await refetchSug(); // kapsam ve başlangıç kuralları değişti
     } catch (e: any) {
       toast.error(e.message || 'Eklenemedi');
     }
@@ -244,6 +352,7 @@ function DomainRoutingView() {
     try {
       await putApi(`/routing/domains/${id}`, { [field]: value });
       await refetch();
+      await refetchSug(); // kural artık başlangıç kuralı olmayabilir (kapalı / ISP)
     } catch { /* */ }
   };
 
@@ -253,6 +362,7 @@ function DomainRoutingView() {
       await deleteApi(`/routing/domains/${id}`);
       toast.success(`${domain} silindi`);
       await refetch();
+      await refetchSug();
     } catch (e) {
       toast.error(e instanceof Error ? e.message : 'Silinemedi');
     }
@@ -273,6 +383,10 @@ function DomainRoutingView() {
         <p className="subtitle">
           Belirli domain'leri farklı VPS'ler üzerinden yönlendirin. Wildcard desteklenir: <code style={{ fontSize: 11, background: 'rgba(255,255,255,0.06)', padding: '1px 4px', borderRadius: 8 }}>*.example.com</code> veya kelime (alan-adı son eki): <code style={{ fontSize: 11, background: 'rgba(255,255,255,0.06)', padding: '1px 4px', borderRadius: 8 }}>youtube</code> (youtube.com ve tüm alt alan adları — DNS son-ek eşleşmesi)
         </p>
+        {!sug.available && sug.reason && SUGGEST_UNAVAILABLE[sug.reason] && (
+          <p className="routing-suggest-note">{SUGGEST_UNAVAILABLE[sug.reason]}</p>
+        )}
+        {sug.truncated && <p className="routing-suggest-note">Çok fazla kayıt var; öneriler için yalnız en yeni kayıtlar incelendi.</p>}
 
         {showAdd && (
           <div className="cron-add-form">
@@ -356,9 +470,13 @@ function DomainRoutingView() {
           {filtered.map(d => {
             const exitNode = d.exit_node || 'isp';
             const dpi = d.dpi_bypass || 0;
+            // Yalnız öneri üretebilen kural (etkin, redirect değil, VPS ya da DPI) — sunucu yanıtı 2 dk'ya kadar eski olabilir.
+            const rs = d.enabled && !d.redirect_url && (exitNode !== 'isp' || dpi) ? sugByRule.get(d.id) : undefined;
+            const sugOpen = openSug.has(d.id);
 
             return (
-              <div key={d.id} className={`routing-row ${!d.enabled ? 'routing-row-disabled' : ''} ${d.enabled && exitNode !== 'isp' ? 'routing-row-active' : ''}`}>
+              <div key={d.id}>
+              <div className={`routing-row ${!d.enabled ? 'routing-row-disabled' : ''} ${d.enabled && exitNode !== 'isp' ? 'routing-row-active' : ''}`}>
                 <span className="routing-col-toggle">
                   <button
                     className={`toggle-btn toggle-sm ${d.enabled ? 'toggle-on' : 'toggle-off'}`}
@@ -418,9 +536,74 @@ function DomainRoutingView() {
                   </button>
                 </span>
               </div>
+
+              {rs && rs.suggestions.length > 0 && (
+                <div className="routing-suggest">
+                  <div className="routing-suggest-head">
+                    <button className="routing-suggest-toggle" onClick={() => toggleSug(d.id)} aria-expanded={sugOpen}>
+                      {sugOpen ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
+                      <Lightbulb size={12} />
+                      <span>Önerilen alan adları ({rs.suggestions.length + rs.more})</span>
+                    </button>
+                    <span className="routing-suggest-meta">
+                      bu siteyle birlikte açılan adresler · son {sug.window.hours} saat · {rs.visits} ziyaret
+                    </span>
+                    {sugOpen && rs.suggestions.length > 1 && (
+                      <button className="btn-outline btn-sm" disabled={busy !== null} onClick={() => acceptSuggestions(d, rs.suggestions)}>
+                        <Plus size={12} /> {busy === `all:${d.id}` ? 'Ekleniyor…' : rs.more > 0 ? `Listelenenleri ekle (${rs.suggestions.length})` : 'Tümünü ekle'}
+                      </button>
+                    )}
+                  </div>
+                  {sugOpen && (
+                    <>
+                      {rs.suggestions.map(s => (
+                        <div key={s.key} className="routing-suggest-item">
+                          <div className="routing-suggest-main">
+                            <span className="routing-suggest-domain">{s.domain}</span>
+                            {(s.samples.length > 1 || s.samples[0] !== s.domain) && (
+                              <span className="routing-suggest-samples">örn. {s.samples.join(', ')}</span>
+                            )}
+                          </div>
+                          <div className="routing-suggest-actions">
+                            <Badge variant="neutral">{s.visits} ziyaret</Badge>
+                            {s.clients > 1 && <Badge variant="neutral">{s.clients} cihaz</Badge>}
+                            <span className="routing-suggest-meta">
+                              son: {new Date(s.last_seen).toLocaleTimeString('tr-TR', { hour: '2-digit', minute: '2-digit' })}
+                            </span>
+                            <button className="btn-primary btn-sm" disabled={busy !== null} onClick={() => acceptSuggestions(d, [s])}>
+                              <Plus size={12} /> {busy === s.domain ? 'Ekleniyor…' : 'Ekle'}
+                            </button>
+                            <button className="btn-outline btn-sm" disabled={busy !== null} onClick={() => dismissSuggestion(d, s)}>
+                              <X size={12} /> Yoksay
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                      <div className="routing-suggest-note">
+                        Eklenen adres bu kuralla aynı çıkışı kullanır: {exitLabel(d)}.
+                        {rs.hidden_background > 0 && ` ${rs.hidden_background} arka plan adresi gizlendi.`}
+                        {rs.more > 0 && ` +${rs.more} öneri daha.`}
+                        {' '}Pi-hole kayıtları yaklaşık 1 dk gecikmeyle işlenir; yeni bir ziyaretin önerileri 2–3 dk içinde görünür.
+                        Yeni eklenen adresin ilk isteği normal hattan gidebilir; sayfayı yenileyin.
+                      </div>
+                    </>
+                  )}
+                </div>
+              )}
+              </div>
             );
           })}
         </div>
+
+        {domains.length > 0 && (
+          <div style={{ marginTop: 8 }}>
+            <button className="routing-suggest-toggle" onClick={() => setShowDismissed(v => !v)} aria-expanded={showDismissed}>
+              {showDismissed ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
+              <span>Yoksayılan öneriler</span>
+            </button>
+            {showDismissed && <DismissedList key={dismissedNonce} onChange={refetchSug} />}
+          </div>
+        )}
 
         {domains.length > 0 && (
           <div className="list-summary">

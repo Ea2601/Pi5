@@ -123,6 +123,15 @@ export const initDb = () => {
     db.run(`ALTER TABLE domain_routing ADD COLUMN exit_node TEXT DEFAULT 'isp'`, () => {});
     db.run(`ALTER TABLE domain_routing ADD COLUMN dpi_bypass INTEGER DEFAULT 0`, () => {});
     db.run(`ALTER TABLE domain_routing ADD COLUMN redirect_url TEXT DEFAULT ''`, () => {});
+    // Routing önerisinden eklenen kuralın kaynak kuralı: bu kurallar kendileri öneri üretmez (siteler arası zincir olmasın).
+    db.run(`ALTER TABLE domain_routing ADD COLUMN parent_id INTEGER DEFAULT NULL`, () => {});
+    // Yoksayılan öneriler (kayıtlı alan adı; global — hiçbir kural için yeniden önerilmez)
+    db.run(`CREATE TABLE IF NOT EXISTS domain_suggestion_dismissed (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      domain TEXT NOT NULL UNIQUE,
+      rule_domain TEXT DEFAULT '',
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )`);
 
     db.run(`CREATE TABLE IF NOT EXISTS devices (
       mac_address TEXT PRIMARY KEY, ip_address TEXT, hostname TEXT,
