@@ -1,10 +1,11 @@
 {
-  "version": "2.16.3",
-  "build": 66,
+  "version": "2.16.4",
+  "build": 67,
   "date": "2026-09-26",
   "changelog": [
-    "Routing: özel domain kurallarının silme düğmesi görünmüyordu (yalnız Cron listesinde fareyle üzerine gelince görünür yapılmıştı) — artık hep görünür; silmeden önce onay soruluyor, hata olursa bildirim çıkıyor",
-    "DDNS ve Trafik Kontrol listelerindeki gizli silme düğmeleri de görünür oldu; dokunmatik ekranda da çalışır",
-    "SSH Terminal: 'Kopyala' düğmesi — ekrandaki tüm çıktıyı tek tıkla panoya kopyalar (panel http üzerinden açıldığında da çalışır)"
+    "Güncelleme: sistem paketleri (wireguard-tools, ipset, iptables, kiosk) artık panelden bağımsız bir systemd işinde kuruluyor — güncellemenin süre sınırı ya da panelin yeniden başlaması dpkg'yi yarıda kesip 'dpkg was interrupted' bırakamaz",
+    "Güncelleme: yarıda kalmış dpkg kendiliğinden onarılıyor, bozuk bağımlılıklar düzeltiliyor, kilit varsa bekleniyor; depoda olmayan paket adı (ör. trixie'de chromium-browser) diğerlerinin kurulmasını engellemiyor",
+    "Güncelleme: paket kurulumunun ayrıntıları ve hataları güncelleme günlüğüne '[pkg]' önekiyle yazılıyor (eskiden gizleniyordu)",
+    "Güncelleme: chromium kurulu sistemlerde kiosk paket kurulumu her güncellemede boşuna çalışmıyor"
   ]
 }

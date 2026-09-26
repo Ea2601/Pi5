@@ -8,6 +8,38 @@ LOG="$BASE/core/update.log"
 
 echo "$(date '+%Y-%m-%d %H:%M:%S') — Post-update başlatıldı" >> "$LOG"
 
+# Sistem paketleri pi5-backend cgroup'unun DIŞINDA kurulur (systemd-run → scripts/pkg-ensure.sh): güncellemenin 300 sn
+# exec sınırı ya da backend yeniden başlatması dpkg'yi yarıda kesemesin ("dpkg was interrupted" — canlıda yaşandı).
+# En çok ~150 sn beklenir; aşılırsa birim arka planda sürer ve güncelleme derlemeye devam eder. Önceki birim hâlâ
+# çalışıyorsa yenisi başlatılmaz. set -e: çağrılar `|| true` / `if` içinde yapılır.
+pkg_ensure() {
+  local worker="$BASE/scripts/pkg-ensure.sh" unit rcf state rc waited=0
+  if systemctl list-units --state=active,activating --no-legend 'pi5-pkg-*' 2>/dev/null | grep -q .; then
+    echo "  [pkg] önceki paket işlemi hâlâ sürüyor — bu tur atlandı" >> "$LOG"; return 0
+  fi
+  unit="pi5-pkg-$(date +%s)-$$-$RANDOM"
+  rcf="/run/pi5-pkg-rc.$$.$RANDOM"
+  if command -v systemd-run >/dev/null 2>&1 && systemd-run --quiet --collect --service-type=exec --unit="$unit" \
+       -p StandardOutput=append:"$LOG" -p StandardError=append:"$LOG" --setenv=PI5_PKG_RC="$rcf" \
+       /bin/bash "$worker" "$@" 2>>"$LOG"; then
+    while [ "$waited" -lt 150 ]; do
+      state=$(systemctl show -p ActiveState --value "$unit" 2>/dev/null)
+      case "$state" in
+        active|activating|deactivating|reloading) sleep 2; waited=$((waited + 2)) ;;
+        *) break ;;
+      esac
+    done
+    if [ "$waited" -ge 150 ]; then
+      echo "  [pkg] paket işlemi uzun sürüyor — arka planda devam ediyor ($unit)" >> "$LOG"; return 0
+    fi
+    rc=$(cat "$rcf" 2>/dev/null || echo 1); rm -f "$rcf"
+    [ "$rc" = 0 ]
+  else
+    echo "  [pkg] systemd-run kullanılamadı — paket işlemi doğrudan çalıştırılıyor" >> "$LOG"
+    /bin/bash "$worker" "$@" >> "$LOG" 2>&1 </dev/null
+  fi
+}
+
 # 1. Backend npm install (if package.json changed)
 # NOT: --production KULLANMA — tsc (typescript) devDependencies'te; --production onu siler ve build kırılır.
 if git diff HEAD@{1} --name-only 2>/dev/null | grep -q "backend/package"; then
@@ -61,29 +93,22 @@ LCDEOF
   systemctl restart pi5-lcd.service 2>/dev/null && echo "  pi5-lcd.service yeniden başlatıldı" >> "$LOG" || true
 fi
 
-# 4b. WireGuard araçları (Pi5 ↔ VPS tüneli wg / wg-quick ister; eski kurulumlarda hiç kurulmamıştı)
-if ! dpkg -s wireguard-tools >/dev/null 2>&1; then
-  echo "  wireguard-tools kuruluyor..." >> "$LOG"
-  apt-get install -y -qq wireguard-tools >> "$LOG" 2>&1 || true
+# 4b. Sistem paketleri: wireguard-tools (Pi5 ↔ VPS tüneli wg / wg-quick) + ipset/iptables (domain/uygulama
+#     yönlendirmesi: dnsmasq ipset'i doldurur, iptables mangle `-m set` ile işaretler). Yarıda kalmış dpkg'yi onarır,
+#     eksikleri tek işlemde kurar.
+if ! pkg_ensure wireguard-tools ipset iptables; then
+  echo "  [pkg] UYARI: sistem paketleri kurulamadı (ayrıntı yukarıda)" >> "$LOG"
 fi
-
-# 4c. Domain/uygulama yönlendirmesi: ipset (dnsmasq çözülen IP'leri buraya yazar) + iptables (mangle `-m set`
-#     ile fwmark). v2.16.0'da yalnız install.sh'ye eklenmişti; mevcut kurulumlarda yoktu → yönlendirme hiç çalışmıyordu.
-for pkg in ipset iptables; do
-  if ! dpkg -s "$pkg" >/dev/null 2>&1; then
-    echo "  $pkg kuruluyor..." >> "$LOG"
-    DEBIAN_FRONTEND=noninteractive apt-get install -y -qq "$pkg" >> "$LOG" 2>&1 || true
-  fi
-done
 
 # 5. Enable I2C/SPI if not already
 raspi-config nonint do_i2c 0 2>/dev/null || true
 raspi-config nonint do_spi 0 2>/dev/null || true
 
-# 6. Kiosk bağımlılıkları (Lite OS için minimal X11 + Chromium)
-if ! command -v chromium-browser &>/dev/null; then
+# 6. Kiosk bağımlılıkları (Lite OS için minimal X11 + Chromium). Trixie'de ikili adı `chromium`; eskiden yalnız
+#    chromium-browser arandığı için bu apt her güncellemede boşuna (ve backend cgroup'unda) çalışıyordu.
+if ! command -v chromium-browser &>/dev/null && ! command -v chromium &>/dev/null; then
   echo "  Kiosk bağımlılıkları kuruluyor (X11 + Chromium)..." >> "$LOG"
-  apt install -y -qq xserver-xorg x11-xserver-utils xinit openbox chromium-browser 2>/dev/null >> "$LOG" || true
+  pkg_ensure xserver-xorg x11-xserver-utils xinit openbox chromium-browser || true
 fi
 
 # 7. Kiosk script ve servis dosyalarını oluştur/güncelle

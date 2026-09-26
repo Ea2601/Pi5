@@ -92,6 +92,8 @@ for hw in /sys/class/hwmon/hwmon*; do echo "$hw $(cat "$hw/name" 2>/dev/null) fa
 h "Araçlar, saat dilimi, bakım"
 for c in dig etherwake wakeonlan speedtest-cli qrencode conntrack nmcli wg; do printf '%-14s %s\n' "$c" "$(command -v "$c" || echo YOK)"; done
 echo "Saat dilimi: $(timedatectl show -p Timezone --value)"; cat /etc/cron.d/pi5-maintenance 2>/dev/null
+echo "dpkg sağlığı: yarım işlem (journal) $(find /var/lib/dpkg/updates -maxdepth 1 -regex '.*/[0-9]+$' 2>/dev/null | wc -l) dosya, 'dpkg --audit' $(dpkg --audit 2>/dev/null | grep -c .) satır, çalışan pi5-pkg birimi $(systemctl list-units --no-legend 'pi5-pkg-*' 2>/dev/null | grep -c .)"
+grep '\[pkg\]' /opt/pi5-gateway/core/update.log 2>/dev/null | tail -5
 
 h "Panel son hatalar (pi5-backend, son 30 satır routing/hata)"
 journalctl -u pi5-backend --since '-1 day' --no-pager 2>/dev/null | grep -iE 'routing|error|hata|failed|tunnel|wg ' | grep -v 'X-Forwarded-For' | redact | tail -30
