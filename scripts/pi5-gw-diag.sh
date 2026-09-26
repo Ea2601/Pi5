@@ -29,27 +29,28 @@ snap(){ nstat -asz IpForwDatagrams IpInAddrErrors IpOutNoRoutes IpExtInNoRoutes 
       "$(sysctl -n net.ipv4.conf.$i.send_redirects)" "$(sysctl -n net.ipv4.conf.$i.arp_ignore)" \
       "$(sysctl -n net.ipv4.conf.$i.arp_filter)"
   done
-  echo "--- nft forward kuralları (drop/reject var mı):"
-  nft list ruleset 2>/dev/null | grep -nE 'hook forward|policy drop|drop|reject' | head -10
+  echo "--- nft tabloları, input/forward politikaları ve eski 'inet filter' forward zinciri:"
+  nft list ruleset 2>/dev/null | grep -E '^table|hook (input|forward)'
+  nft list chain inet filter forward 2>/dev/null | grep -vE '^[[:space:]]*$'
   echo "--- sayaçlar (önce):"; snap
 } > "$OUT"
 
 {
   echo "table inet $T {"
-  echo "  chain pre {"
+  echo "  chain c_pre {"
   echo "    type filter hook prerouting priority -350; policy accept;"
   for i in $LAN_IFS; do
     echo "    $CLI fib daddr type unicast iifname \"$i\" counter comment \"1_gelen_$i\""
   done
   echo "  }"
-  echo "  chain fwd {"
+  echo "  chain c_fwd {"
   echo "    type filter hook forward priority -350; policy accept;"
   for o in $LAN_IFS 'wg_vps*'; do
     echo "    $CLI oifname \"$o\" counter comment \"2_iletilen_${o//\*/}\""
   done
   echo "    ip daddr { $NETS } ip daddr != { $SELF } counter comment \"4_istemciye_donen_yanit\""
   echo "  }"
-  echo "  chain post {"
+  echo "  chain c_post {"
   echo "    type filter hook postrouting priority 350; policy accept;"
   echo "    $CLI oifname != \"lo\" counter comment \"3_pi_den_cikan\""
   echo "  }"
