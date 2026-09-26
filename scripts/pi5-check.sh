@@ -1,0 +1,109 @@
+#!/usr/bin/env bash
+# Klyrix Gate — salt okunur canlı doğrulama. Hiçbir şeyi değiştirmez (DB'ler read-only açılır).
+# Çalıştırma: sudo bash /opt/pi5-gateway/scripts/pi5-check.sh 2>&1 | tee /tmp/pi5-check.txt
+set +e
+export LC_ALL=C
+h(){ printf '\n===== %s =====\n' "$*"; }
+DB=/opt/pi5-gateway/core/pi5router.sqlite
+LANIP=$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src"){print $(i+1); exit}}')
+
+h "Sürümler"
+grep PRETTY_NAME /etc/os-release; pihole -v 2>/dev/null; unbound -V 2>/dev/null | head -1
+fail2ban-client version 2>/dev/null; node -v 2>/dev/null; head -4 /opt/pi5-gateway/version.json 2>/dev/null
+
+h "Topoloji: arayüzler, varsayılan rota, IPv6, yönlendirme"
+ip -br addr; ip -4 route show default; ip -6 route show default; ip -6 addr show scope global | grep inet6
+echo "Pi LAN IP: $LANIP"; GW=$(ip -4 route show default | awk '{print $3; exit}'); echo "Varsayılan ağ geçidi: $GW"
+sysctl net.ipv4.ip_forward net.ipv4.conf.all.send_redirects net.ipv6.conf.all.forwarding
+grep '^Ip:' /proc/net/snmp   # ForwDatagrams > 0 ise Pi üzerinden yönlendirilen istemci var
+nmcli -t -f NAME,DEVICE,TYPE con show --active 2>/dev/null
+for d in $(ip -o -4 route show default | awk '{print $5}' | sort -u); do
+  echo "$d ipv4.method: $(nmcli -g ipv4.method connection show "$(nmcli -g GENERAL.CONNECTION device show "$d" 2>/dev/null)" 2>/dev/null)"
+done
+
+h "Servis durumları (ActiveState / UnitFileState)"
+for u in pihole-FTL unbound nftables fail2ban zapret nginx pi5-backend pi5-lcd pi5-kiosk pironman5 getty@tty1; do
+  printf '%-20s %s / %s\n' "$u" "$(systemctl show -p ActiveState --value "$u" 2>/dev/null)" "$(systemctl show -p UnitFileState --value "$u" 2>/dev/null)"
+done
+systemctl list-units 'wg-quick@*' --all --no-legend --no-pager
+
+h "WireGuard tünelleri ve el sıkışma yaşı"
+wg show interfaces
+wg show all latest-handshakes | awk -v now="$(date +%s)" '{printf "%s peer=%s... yas=%s\n", $1, substr($2,1,8), ($3==0 ? "HIC" : (now-$3) "s")}'
+
+h "Pi-hole v6: web sunucusu, parola, DNS, DHCP"
+for k in webserver.port dns.upstreams dns.listeningMode dns.blocking.active misc.etc_dnsmasq_d misc.privacylevel dhcp.active dhcp.start dhcp.end dhcp.router dhcp.hosts; do
+  printf '%-22s %s\n' "$k" "$(pihole-FTL --config "$k" 2>/dev/null)"
+done
+if [ -n "$(pihole-FTL --config webserver.api.pwhash 2>/dev/null)" ]; then echo "webserver.api.pwhash: AYARLI"; else echo "webserver.api.pwhash: BOS (parolasız API)"; fi
+echo -n "FTL API :443 -> "; curl -sk --max-time 3 https://127.0.0.1/api/auth; echo
+echo -n "FTL API :8080 -> "; curl -s --max-time 3 http://127.0.0.1:8080/api/auth; echo
+ss -ltnp | grep -E ':(80|443|8080|53|5335) '; ss -lunp | grep -E ':(53|67|547|5353) '
+ls -l /etc/pihole/setupVars.conf /etc/pihole/pihole.toml /etc/pihole/dhcp.leases 2>&1
+ls -l /etc/dnsmasq.d/ 2>&1
+
+h "Unbound"
+ls /etc/unbound/unbound.conf.d/
+grep -rnE 'forward-zone|extended-statistics|num-threads|control-enable' /etc/unbound/ 2>/dev/null
+unbound-control status 2>&1 | head -5
+echo -n "Unbound 5335 test: "; dig +short +time=2 @127.0.0.1 -p 5335 example.com 2>&1 | head -1
+
+h "nftables / iptables / policy routing"
+nft list tables; head -3 /etc/nftables.conf; grep -n include /etc/nftables.conf; ls -l /etc/nftables.d/ 2>/dev/null
+nft list chain inet pi5_filter input 2>/dev/null | grep -E 'policy|dport'
+iptables -t mangle -S PI5_ROUTING 2>/dev/null | head -20; iptables -t nat -S POSTROUTING 2>/dev/null | grep -i masq
+ipset list -n 2>/dev/null | grep '^rt_m'; ip rule show | grep fwmark
+
+h "Fail2Ban"
+fail2ban-client status 2>/dev/null
+for o in ignoreip bantime maxretry findtime; do printf '%-9s %s\n' "$o" "$(fail2ban-client get sshd "$o" 2>/dev/null | tr '\n' ' ')"; done
+
+h "Zapret"
+systemctl cat zapret 2>/dev/null | grep -E '^(ExecStart|ExecStop)='; ls -d /opt/zapret/binaries 2>&1
+grep -E '^(FWTYPE|MODE_FILTER|NFQWS_ENABLE|TPWS_ENABLE|DESYNC_MARK)=' /opt/zapret/config 2>/dev/null
+pgrep -a nfqws; pgrep -a tpws
+
+h "Panel erişimi (nginx Basic Auth)"
+grep -rnE 'auth_basic|satisfy' /etc/nginx/sites-enabled/ /etc/nginx/snippets/ /etc/nginx/conf.d/ 2>/dev/null
+curl -s -o /dev/null -w "LAN IP'den /api/status: HTTP %{http_code} (200 = korumasız, 401 = korumalı)\n" --max-time 3 "http://$LANIP/api/status"
+
+h "Kasa / kiosk / donanım"
+for c in chromium chromium-browser; do printf '%-16s %s\n' "$c" "$(command -v "$c" || echo YOK)"; done
+grep -nE 'chromium|no-sandbox' /opt/pi5-gateway/scripts/kiosk.sh 2>/dev/null
+grep -nE '^(User|ExecStart)=' /etc/systemd/system/pi5-kiosk.service 2>/dev/null
+journalctl -u pi5-kiosk -n 15 --no-pager 2>/dev/null
+for hw in /sys/class/hwmon/hwmon*; do echo "$hw $(cat "$hw/name" 2>/dev/null) fan1_input=$(cat "$hw/fan1_input" 2>/dev/null || echo yok)"; done
+
+h "Araçlar, saat dilimi, bakım"
+for c in dig etherwake wakeonlan speedtest-cli qrencode conntrack nmcli wg; do printf '%-14s %s\n' "$c" "$(command -v "$c" || echo YOK)"; done
+echo "Saat dilimi: $(timedatectl show -p Timezone --value)"; cat /etc/cron.d/pi5-maintenance 2>/dev/null
+
+h "Panel son hatalar (pi5-backend, son 30 satır routing/hata)"
+journalctl -u pi5-backend --since '-1 day' --no-pager 2>/dev/null | grep -iE 'routing|error|hata|failed' | tail -30
+
+h "Panel ve gravity veritabanları (salt okunur)"
+python3 - "$DB" <<'PY'
+import sqlite3, sys
+try: c = sqlite3.connect(f"file:{sys.argv[1]}?mode=ro", uri=True)
+except Exception as e: print("Panel DB açılamadı:", e); c = None
+checks = [
+ ("cron_jobs (ad, adet)", "SELECT name, COUNT(*) FROM cron_jobs GROUP BY name ORDER BY 2 DESC"),
+ ("vps_servers", "SELECT id, ip, location, status FROM vps_servers"),
+ ("ddns_configs", "SELECT id, provider, enabled, status, last_update FROM ddns_configs"),
+ ("cihazlar (toplam, engelli)", "SELECT COUNT(*), SUM(blocked) FROM devices"),
+ ("routing: app kuralları (VPS/DPI)", "SELECT app_name, exit_node, dpi_bypass FROM traffic_routing WHERE enabled=1 AND (exit_node<>'isp' OR dpi_bypass=1)"),
+ ("routing: domain kuralları", "SELECT domain, exit_node, dpi_bypass, enabled FROM domain_routing"),
+ ("panel Pi-hole listeleri (yalnız DB)", "SELECT list_type, COUNT(*) FROM pihole_lists GROUP BY list_type"),
+ ("statik DHCP (yalnız DB)", "SELECT COUNT(*) FROM dhcp_leases WHERE is_static=1"),
+ ("ebeveyn / hız kuralı (yalnız DB)", "SELECT (SELECT COUNT(*) FROM parental_rules), (SELECT COUNT(*) FROM throttle_rules)"),
+]
+if c:
+    for label, sql in checks:
+        try: print(f"{label}: {c.execute(sql).fetchall()}")
+        except Exception as e: print(f"{label}: HATA {e}")
+try:
+    g = sqlite3.connect("file:/etc/pihole/gravity.db?mode=ro", uri=True)
+    print("gravity adlist (toplam, etkin):", g.execute("SELECT COUNT(*), SUM(enabled) FROM adlist").fetchall())
+    print("gravity domainlist (type, adet):", g.execute("SELECT type, COUNT(*) FROM domainlist GROUP BY type").fetchall())
+except Exception as e: print("gravity.db:", e)
+PY
