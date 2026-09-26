@@ -267,7 +267,7 @@ export const TOGGLEABLE_SERVICES: readonly ServiceName[] = ['pihole', 'unbound',
 export const isManagedService = (n: unknown): n is ServiceName =>
   typeof n === 'string' && Object.prototype.hasOwnProperty.call(MANAGED_SERVICE_UNITS, n);
 // pihole-FTL süreleri routing kuyruğuyla aynı (withFtlStopped / waitFtlHealthy): durdurma ya da başlatma 90 sn'ye,
-// DNS'in gelmesi 120 sn'ye kadar sürebilir (FTL :53'ü son 24 saatin sorgularını yükledikten sonra açar).
+// DNS'in gelmesi 120 sn'ye kadar beklenir (v6.5 :53'ü sorgu içe aktarımından önce açar; pay yavaş kart/prestart için).
 export const FTL_SYSTEMCTL_TIMEOUT = 90000;
 export const FTL_SETTLE_TIMEOUT = 120000;
 
@@ -392,7 +392,7 @@ export async function getServiceStatus(name: string): Promise<string> {
 
 // Aç/kapa/yeniden başlat sonrası servisin oturmasını bekler (Type=simple birimde `systemctl start` 0 dönmesi ayakta
 // kaldığını kanıtlamaz). 'running' için stableMs boyunca kesintisiz çalışmalı, NRestarts artarsa döngü sayılır;
-// Pi-hole'da ayrıca DNS'in gerçekten cevap vermesi beklenir (FTL :53'ü veritabanını yükledikten sonra açar).
+// Pi-hole'da ayrıca DNS'in gerçekten cevap vermesi beklenir (süreç ayakta olsa da :53 henüz bağlanmamış olabilir).
 export async function waitServiceSettled(name: ServiceName, expect: 'running' | 'stopped', timeoutMs: number, stableMs = 3000): Promise<ServiceState> {
   const deadline = Date.now() + timeoutMs;
   let baseRestarts: number | null = null;
@@ -864,7 +864,11 @@ const FTL_RESTART_INPROGRESS = '/opt/pi5-gateway/core/.ftl_restart_inprogress';
 export const VALID_DNSMASQ_DOMAIN = /^(\*\.)?(?=.{1,253}$)[a-z0-9_-]{1,63}(\.[a-z0-9_-]{1,63})*$/i;
 // Boşaltılması bekleyen setler: FTL eski ipset= satırlarıyla çalışırken boşaltılırsa eski domainlerin IP'leri
 // hemen geri dolar ve kalıcı olur → boşaltma FTL durmuşken (yeni yapılandırmayla başlamadan hemen önce) yapılır.
-const pendingFlush = new Set<string>();
+// Değer = işaretlenme sırası: yeniden kurulum, kendisi başladıktan sonra yeniden işaretlenen seti listeden düşmez
+// (arada gelen uygulamanın isteği kaybolmasın).
+const pendingFlush = new Map<string, number>();
+let pendingFlushSeq = 0;
+const markPendingFlush = (s: string) => { pendingFlush.set(s, ++pendingFlushSeq); };
 
 // Pi-hole v6 (FTL) /etc/dnsmasq.d'yi varsayılan olarak OKUMAZ (misc.etc_dnsmasq_d = false); routing (05-)
 // ve redirect (06-) dosyalarımız oradan yüklenir. Değer: 'true' | 'false'; v5'te `--config` yoktur → başka
@@ -883,8 +887,255 @@ async function ftlUnitState(): Promise<{ active: string; sub: string; restarts: 
 }
 
 async function flushPendingSets(): Promise<void> {
-  for (const s of pendingFlush) await run(`ipset flush ${s} 2>/dev/null || true`);
+  for (const s of pendingFlush.keys()) await run(`ipset flush ${s} 2>/dev/null || true`);
   pendingFlush.clear();
+}
+
+// ─── Routing uygulama durumu (panel "uygulanıyor… / hazır" bandı) ───
+// Yalnız bellekte; GET /api/routing/status bunu döner (ipset/systemctl çağırmaz — yoklama swap'ı meşgul etmesin).
+// Hazır = phase 'idle' ve restart_done_seq >= restart_needed_seq (DNS yenilemesi gerektiren her uygulama yüklendi).
+export type RoutingPhase = 'idle' | 'queued' | 'waiting' | 'restarting' | 'warming' | 'failed';
+interface PrewarmResult { kind: 'add' | 'restart'; at: number; names: number; ips: number; error: string }
+const routingStatus = {
+  phase: 'idle' as RoutingPhase, apply_seq: 0, restart_needed_seq: 0, restart_done_seq: 0,
+  restart_at: 0, updated_at: Date.now(), error: '', prewarm: null as PrewarmResult | null,
+};
+function setRoutingPhase(phase: RoutingPhase, extra: { restart_at?: number; error?: string } = {}): void {
+  routingStatus.phase = phase;
+  routingStatus.restart_at = extra.restart_at ?? 0;
+  routingStatus.error = extra.error ?? '';
+  routingStatus.updated_at = Date.now();
+}
+export function getRoutingApplyStatus() {
+  return { ...routingStatus, prewarm: routingStatus.prewarm && { ...routingStatus.prewarm }, now: Date.now() };
+}
+
+// ─── Tünel setlerini önceden doldurma ───
+// dnsmasq bir adresi sete YALNIZ yukarıdan (Unbound) gelen cevapta ekler, kendi önbelleğinden cevaplarken eklemez
+// (FTL v6.5: rfc1035.c extract_addresses ← forward.c process_reply). Telefon eski cevabı önbellekte tuttukça (TTL,
+// Cloudflare'de 300 sn) yeni kuralın adresleri sete girmez ve trafik modemden çıkar. Bu yüzden kural değişince Pi
+// adları kendisi çözüp adresleri doğrudan sete ekler. Adlar kabuğa hiç ulaşmaz: Node çözücü + dosyadan `ipset restore`.
+export interface RoutingLine { base: string; set: string }
+export function parseRoutingLines(lines: string[]): RoutingLine[] {
+  const out: RoutingLine[] = [];
+  for (const l of lines) {
+    const m = /^ipset=\/([^/]+)\/(rt_m\d+)$/.exec(l.trim());
+    if (m) out.push({ base: m[1].toLowerCase(), set: m[2] });
+  }
+  return out;
+}
+// dnsmasq domain_find_sets ile aynı (forward.c): büyük/küçük harf duyarsız, etiket sınırında son ek eşleşmesi; en
+// uzun taban kazanır, eşitlikte sonraki satır.
+export function setForName(name: string, lines: RoutingLine[]): string | null {
+  const n = name.toLowerCase().replace(/\.$/, '');
+  let best: RoutingLine | null = null;
+  for (const l of lines) {
+    if ((n === l.base || n.endsWith(`.${l.base}`)) && (!best || l.base.length >= best.base.length)) best = l;
+  }
+  return best ? best.set : null;
+}
+const IPV4_RE = /^(25[0-5]|2[0-4]\d|1?\d?\d)(\.(25[0-5]|2[0-4]\d|1?\d?\d)){3}$/;
+// 0.0.0.0/8 (engellenen adın NULL cevabı), 127/8 ve çok noktaya yayın/ayrılmış aralık sete yazılmaz: çekirdek 0.0.0.0'ı
+// reddeder ve `ipset restore` ilk hatada durup kalan satırları atlar.
+const isRoutableV4 = (ip: string) => {
+  if (!IPV4_RE.test(ip)) return false;
+  const a = Number(ip.split('.')[0]);
+  return a !== 0 && a !== 127 && a < 224;
+};
+const ROUTING_SET_RE = /^(rt|pi5n)_m\d+$/;
+const ROUTING_CONF = '/etc/dnsmasq.d/05-domain-routing.conf';
+const IPSET_RESTORE_FILE = '/opt/pi5-gateway/core/pi5-prewarm.ipset';
+const currentRoutingLines = (): RoutingLine[] => {
+  try { return parseRoutingLines(fs.readFileSync(ROUTING_CONF, 'utf8').split('\n')); } catch { return []; }
+};
+
+// Son maxAgeS saniyede sorulan adlar (en yeniden eskiye), FTL DB'den salt okunur. Görünüm yerine tablolar: `queries`
+// görünümü adı her satırda alt sorguyla çözer. Hata / süre aşımı → [] (doldurma yalnız kurallardaki adlarla sürer).
+async function ftlRecentNames(maxAgeS: number, limit: number, timeoutMs: number): Promise<string[]> {
+  if (!fs.existsSync(FTL_DB)) return [];
+  let db: sqlite3.Database | null = null;
+  let timer: ReturnType<typeof setInterval> | null = null;
+  try {
+    db = await new Promise<sqlite3.Database>((resolve, reject) => {
+      const d = new sqlite3.Database(FTL_DB, sqlite3.OPEN_READONLY, e => (e ? reject(e) : resolve(d)));
+    });
+    const conn = db;
+    conn.configure('busyTimeout', 3000);
+    const deadline = Date.now() + timeoutMs;
+    timer = setInterval(() => { if (Date.now() >= deadline) conn.interrupt(); }, 200);
+    const since = Math.floor(Date.now() / 1000) - maxAgeS;
+    const rows = await new Promise<any[]>((resolve, reject) => conn.all(
+      `SELECT d.domain AS domain FROM (SELECT domain AS id, MAX(timestamp) AS t FROM query_storage
+         WHERE timestamp > ? AND typeof(domain) = 'integer' GROUP BY domain) q
+       JOIN domain_by_id d ON d.id = q.id ORDER BY q.t DESC LIMIT ?`,
+      [since, limit], (e, r) => (e ? reject(e) : resolve(r))));
+    return rows.map(r => String(r.domain || '').toLowerCase()).filter(Boolean);
+  } catch {
+    return [];
+  } finally {
+    if (timer) clearInterval(timer);
+    db?.close();
+  }
+}
+
+// Adları kural setlerine göre çözer (A kayıtları; CNAME zinciri çözücüde izlenir). Pi-hole'un yukarısı Unbound ise
+// doğrudan ona sorulur: FTL dururken / eski yapılandırmayla çalışırken de çalışır, sorgu günlüğüne düşmez ve FTL'in
+// telefona ilettiği önbellekteki kaydı döner. Değilse FTL'e (127.0.0.1) sorulur. Süre dolunca eldekiyle döner.
+async function resolveToSets(names: string[], lines: RoutingLine[], deadline: number): Promise<Map<string, Set<string>>> {
+  const out = new Map<string, Set<string>>();
+  const upstreams = await run('pihole-FTL --config dns.upstreams 2>/dev/null', 5000);
+  const resolver = new dnsPromises.Resolver({ timeout: 1500, tries: 1 });
+  let viaUnbound = /127\.0\.0\.1#5335/.test(upstreams);
+  resolver.setServers([viaUnbound ? '127.0.0.1:5335' : '127.0.0.1']);
+  const cancel = setTimeout(() => resolver.cancel(), Math.max(0, deadline - Date.now()));
+  let next = 0;
+  const worker = async () => {
+    while (next < names.length && Date.now() < deadline) {
+      const name = names[next++];
+      const set = setForName(name, lines);
+      if (!set) continue;
+      for (let attempt = 0; attempt < 2; attempt++) {
+        try {
+          for (const ip of await resolver.resolve4(name)) {
+            if (!isRoutableV4(ip)) continue;
+            if (!out.has(set)) out.set(set, new Set());
+            out.get(set)!.add(ip);
+          }
+        } catch (e: any) {
+          // Unbound kapalıysa FTL'e düş ve bu adı bir kez daha dene (aynı anda reddedilen tüm işçiler de); diğer hatalar
+          // (NXDOMAIN, zaman aşımı) adı atlar.
+          if (e?.code === 'ECONNREFUSED' && attempt === 0) {
+            if (viaUnbound) { viaUnbound = false; resolver.setServers(['127.0.0.1']); }
+            continue;
+          }
+        }
+        break;
+      }
+    }
+  };
+  try {
+    await Promise.all(Array.from({ length: 16 }, worker));
+  } finally {
+    clearTimeout(cancel);
+  }
+  return out;
+}
+
+// Kurala ait adlar: tabanlar (+ www.) ve son 24 saatte sorulmuş, bu satırlardan birine düşen adlar (en yeniden).
+async function namesForLines(only: RoutingLine[], maxNames: number, dbTimeoutMs: number): Promise<string[]> {
+  const names = new Set<string>();
+  for (const l of only) {
+    if (!l.base.includes('.')) continue; // anahtar kelime tabanı (ör. "youtube") çözülebilir bir ad değil
+    names.add(l.base);
+    names.add(`www.${l.base}`);
+  }
+  for (const n of await ftlRecentNames(86400, 20000, dbTimeoutMs)) {
+    if (names.size >= maxNames) break;
+    if (setForName(n, only) && VALID_DNSMASQ_DOMAIN.test(n) && !n.startsWith('*.')) names.add(n);
+  }
+  return [...names].slice(0, maxNames);
+}
+
+// `ipset restore` ile toplu yazım (adresler ve set adları doğrulanmış; dosya kabuğa girmez). true = başarılı.
+// Her çağrı kendi dosyasını kullanır: uygulama kuyruğu ile DNS işi eşzamanlı çağırabilir.
+let ipsetRestoreSeq = 0;
+async function ipsetRestore(lines: string[]): Promise<boolean> {
+  if (!lines.length) return true;
+  const file = `${IPSET_RESTORE_FILE}.${process.pid}.${++ipsetRestoreSeq}`;
+  try {
+    fs.mkdirSync('/opt/pi5-gateway/core', { recursive: true });
+    fs.writeFileSync(file, lines.join('\n') + '\n');
+  } catch {
+    return false;
+  }
+  try {
+    const r = await runResult(`ipset -exist -file ${file} restore`, 10000);
+    if (r.code !== 0) console.error(`[routing] ipset restore başarısız: ${r.stderr.trim() || r.code}`);
+    return r.code === 0;
+  } finally {
+    try { fs.unlinkSync(file); } catch { /* */ }
+  }
+}
+const addLines = (target: (set: string) => string, map: Map<string, Set<string>>): string[] => {
+  const out: string[] = [];
+  for (const [set, ips] of map) {
+    const t = target(set);
+    if (!ROUTING_SET_RE.test(t)) continue;
+    for (const ip of ips) if (isRoutableV4(ip)) out.push(`add ${t} ${ip}`);
+  }
+  return out;
+};
+
+// only: yalnız bu satırlara düşen adlar çözülür; adresin gideceği set tüm satırlara göre (en uzun eşleşme) seçilir.
+// Yalnız ekler (-exist): eski FTL çalışırken de güvenlidir. Hiç hata fırlatmaz; sonuç durum bandına yazılır.
+async function prewarmSets(opts: {
+  kind: 'add' | 'restart'; lines: RoutingLine[]; only?: RoutingLine[]; deadlineMs: number; maxNames: number; dbTimeoutMs: number;
+}): Promise<void> {
+  const result: PrewarmResult = { kind: opts.kind, at: Date.now(), names: 0, ips: 0, error: '' };
+  try {
+    const deadline = Date.now() + opts.deadlineMs;
+    const names = await namesForLines(opts.only || opts.lines, opts.maxNames, opts.dbTimeoutMs);
+    result.names = names.length;
+    const bySet = await resolveToSets(names, opts.lines, deadline);
+    const adds = addLines(s => s, bySet);
+    if (await ipsetRestore(adds)) result.ips = adds.length;
+    else result.error = 'ipset restore başarısız';
+  } catch (e: any) {
+    result.error = String(e?.message || e);
+  }
+  routingStatus.prewarm = result;
+}
+
+// Boşaltılacak setler için yenisini FTL DURMADAN hazırlar (pi5n_m<mark>, betiklerin `^rt_m` listesine girmez): kalan
+// kuralların adları çözülüp doldurulur. FTL dururken `ipset swap` ile tek hamlede yer değiştirir — iptables ve dnsmasq
+// set'e adıyla/sırasıyla bağlı olduğundan yeni içeriği anında görür; silinen kuralın adresleri düşer, kalan siteler
+// setten hiç çıkmaz (eskiden boşaltılıp telefonun yeniden sormasına kadar modemden çıkıyordu).
+interface StagedSets { gens: Map<string, number>; ips: Map<string, Set<string>>; ok: boolean }
+async function stageRebuild(lines: RoutingLine[]): Promise<StagedSets> {
+  const gens = new Map(pendingFlush);
+  const staged: StagedSets = { gens, ips: new Map(), ok: false };
+  if (!gens.size) return staged;
+  try {
+    const only = lines.filter(l => gens.has(l.set));
+    const names = await namesForLines(only, 300, 3000);
+    const resolved = await resolveToSets(names, lines, Date.now() + 8000);
+    for (const s of gens.keys()) staged.ips.set(s, resolved.get(s) || new Set<string>());
+    const cmds: string[] = [];
+    for (const s of gens.keys()) {
+      const tmp = s.replace(/^rt_/, 'pi5n_');
+      if (!ROUTING_SET_RE.test(tmp)) continue;
+      cmds.push(`create ${tmp} hash:ip family inet`, `flush ${tmp}`);
+    }
+    cmds.push(...addLines(s => s.replace(/^rt_/, 'pi5n_'), staged.ips));
+    staged.ok = await ipsetRestore(cmds);
+  } catch (e: any) {
+    console.error('[routing] set yeniden kurulumu hazırlanamadı:', e?.message || e);
+  }
+  return staged;
+}
+
+// FTL durmuşken çağrılır; yalnız hazırlık anındaki (anlık görüntüdeki) setler işlenir. Hazırlanan set swap edilir
+// (meşgulse birkaç kez denenir, olmazsa boşalt + doldur); hazırlık başarısızsa eskisi gibi boşaltılır. Hazırlıktan sonra
+// işaretlenen setler (araya giren uygulama) listede kalır — o uygulamanın planladığı sonraki iş onları işler.
+async function swapStagedSets(staged: StagedSets): Promise<void> {
+  for (const s of staged.gens.keys()) {
+    let swapped = false;
+    if (staged.ok) {
+      for (let i = 0; i < 5 && !swapped; i++) {
+        swapped = (await runResult(`ipset swap ${s.replace(/^rt_/, 'pi5n_')} ${s}`, 5000)).code === 0;
+        if (!swapped) await new Promise(r => setTimeout(r, 100));
+      }
+    }
+    if (!swapped) {
+      await run(`ipset flush ${s} 2>/dev/null || true`);
+      if (staged.ok) await ipsetRestore(addLines(x => x, new Map([[s, staged.ips.get(s) || new Set<string>()]])));
+    }
+    if (pendingFlush.get(s) === staged.gens.get(s)) pendingFlush.delete(s);
+  }
+}
+async function destroyStagedSets(staged: StagedSets): Promise<void> {
+  if (!staged.ok) return;
+  for (const s of staged.gens.keys()) await run(`ipset destroy ${s.replace(/^rt_/, 'pi5n_')} 2>/dev/null || true`);
 }
 
 // FTL başlatma sınırına takılıp 'failed' kaldıysa kurtarır. Kullanıcının temiz durdurması (inactive) ve
@@ -907,8 +1158,8 @@ async function withFtlStopped<T>(work: () => Promise<T>): Promise<T> {
   }
 }
 
-// FTL başlatıldıktan sonra DNS'in gelmesini bekler; yavaş açılışı (FTL port 53'ü açmadan önce son 24 saatin
-// sorgularını DB'den yükler) çökmeden ayırır. Süreç aktif ve kendiliğinden yeniden başlamamışsa 120 sn'ye kadar
+// FTL başlatıldıktan sonra DNS'in gelmesini bekler; yavaş açılışı (prestart betiği, DB kurulumu — v6.5'te 24 saatlik
+// sorgu içe aktarımı :53'ü bekletmez, arka planda sürer) çökmeden ayırır. Süreç aktif ve kendiliğinden yeniden başlamamışsa 120 sn'ye kadar
 // beklemeye devam eder. true = DNS geldi; false = çöktü / çökme döngüsünde / 120 sn'de hiç yanıt yok.
 // restartsBefore, BİZİM başlatmamızdan SONRA okunmalı (elle start NRestarts'ı sıfırlayabilir).
 async function waitFtlHealthy(restartsBefore: number): Promise<boolean> {
@@ -934,25 +1185,52 @@ export async function recoverInterruptedFtlRestart(): Promise<void> {
 // v5/saf dnsmasq yedekleri yalnız pihole-FTL unit'i yoksa kullanılır (restart hatasını gizlemesinler).
 // Son güvenlik ağı: yeniden başlatma sonrası DNS gelmezse routing/redirect dosyalarımız boşaltılır (tüm ağın
 // DNS'i routing'den önemlidir); sonraki kural uygulaması onları yeniden yazar.
-async function restartFtlNow(): Promise<void> {
+// Boşaltılacak setler FTL durmadan hazırlanır, dururken swap edilir; açılınca tüm kuralların adları yeniden doldurulur
+// (açılışta setler boştur; swap yarışında kaçan adresler de geri gelir). true = DNS geldi.
+async function restartFtlNow(): Promise<boolean> {
   if (!(await ftlUnitExists())) {
     await flushPendingSets();
     await run('pihole restartdns 2>/dev/null || systemctl restart dnsmasq 2>/dev/null || true', 30000);
-    return;
+    return true;
   }
-  await withFtlStopped(flushPendingSets);
+  const staged = await stageRebuild(currentRoutingLines());
+  await withFtlStopped(() => swapStagedSets(staged));
+  await destroyStagedSets(staged);
+  setRoutingPhase('warming');
+  // Doldurma, FTL başladıktan SONRA okunan satırlarla: arada silinen kuralın adresleri geri eklenmesin.
+  const warm = prewarmSets({ kind: 'restart', lines: currentRoutingLines(), deadlineMs: 10000, maxNames: 300, dbTimeoutMs: 3000 });
   await ensureFtlActive();
-  if (await waitFtlHealthy((await ftlUnitState()).restarts)) return;
+  const healthy = await waitFtlHealthy((await ftlUnitState()).restarts);
+  await warm;
+  if (healthy) return true;
   console.error('[routing] FTL yeniden başlatıldıktan sonra yerel DNS yanıt vermiyor — 05/06 dnsmasq dosyaları boşaltılıyor');
   for (const f of DNSMASQ_D_FILES) writeIfChanged(f, '');
+  routingFilesCleared = true;
   await withFtlStopped(async () => {});
   await ensureFtlActive();
+  return false;
+}
+
+// Güvenlik ağı 05/06'yı boşalttı ve o günden beri hiçbir uygulama dosyaları DB'den yeniden yazmadı: routing kapalı.
+// Sonraki işler (boş dosyalarla sağlıklı açılsa da) 'Hazır' değil hata bildirir; uygulama dosyayı yazınca temizlenir.
+let routingFilesCleared = false;
+// Kalıcı routing hatası (bu durumlar sürdükçe panel 'Hazır' demez): dosyalar boşaltılmış ya da Pi-hole /etc/dnsmasq.d'yi
+// okumuyor (açma denemesi DNS'i düşürdüğü için geri alınmış).
+async function stickyRoutingError(): Promise<string> {
+  if (routingFilesCleared) {
+    return 'DNS yenilemesinden sonra yanıt gelmediği için yönlendirme kuralları geçici olarak kapatıldı — kuralı yeniden kaydedin';
+  }
+  if (fs.existsSync(DNSMASQ_D_REVERTED) && hasDnsmasqEntries() && (await readDnsmasqDirKey()) === 'false') {
+    return "Pi-hole /etc/dnsmasq.d dosyalarını okumuyor (açma denemesi DNS'i düşürdüğü için geri alındı) — yönlendirme kuralları DNS'e yüklenmiyor";
+  }
+  return '';
 }
 
 // /etc/dnsmasq.d okumasını FTL DURMUŞKEN açar: çalışan FTL pihole.toml değişikliğini inotify ile görüp kendini
 // yeniden başlatır (FLAG_RESTART_FTL) ve bizim restart'ımızla çakışırdı. DNS gelmezse anahtarı aynı şekilde
 // geri alır ve işaret bırakır.
-async function enableDnsmasqDirNow(): Promise<void> {
+// Dönen metin: '' = açıldı; değilse panelde gösterilecek hata.
+async function enableDnsmasqDirNow(): Promise<string> {
   const flipped = await withFtlStopped(async () => {
     await flushPendingSets();
     await run('pihole-FTL --config misc.etc_dnsmasq_d true 2>/dev/null');
@@ -960,16 +1238,21 @@ async function enableDnsmasqDirNow(): Promise<void> {
   });
   if (flipped && await waitFtlHealthy((await ftlUnitState()).restarts)) {
     console.log('[routing] Pi-hole v6: misc.etc_dnsmasq_d açıldı — /etc/dnsmasq.d routing/redirect dosyaları yükleniyor');
-    return;
+    await prewarmSets({ kind: 'restart', lines: currentRoutingLines(), deadlineMs: 10000, maxNames: 300, dbTimeoutMs: 3000 });
+    return '';
   }
+  let error: string;
   if (flipped) {
     // /etc/dnsmasq.d'deki bir dosya FTL'i düşürdüyse tüm ağın DNS'i gider → anahtarı geri al.
     console.error('[routing] /etc/dnsmasq.d açıldıktan sonra yerel DNS yanıt vermiyor — misc.etc_dnsmasq_d geri alınıyor');
     await withFtlStopped(() => run('pihole-FTL --config misc.etc_dnsmasq_d false 2>/dev/null'));
+    error = "Pi-hole /etc/dnsmasq.d dosyalarını yükleyince DNS yanıt vermedi — okuma geri kapatıldı, yönlendirme kuralları DNS'e yüklenmiyor";
   } else {
     console.error('[routing] pihole-FTL misc.etc_dnsmasq_d açmayı reddetti (dnsmasq.d içeriği geçersiz olabilir)');
+    error = "Pi-hole /etc/dnsmasq.d okumasını açmayı reddetti (oradaki bir dosya geçersiz olabilir) — yönlendirme kuralları DNS'e yüklenmiyor";
   }
   try { fs.writeFileSync(DNSMASQ_D_REVERTED, new Date().toISOString() + '\n'); } catch { /* */ }
+  return error;
 }
 
 // Dosyalarımızda yüklenecek bir satır var mı? Yoksa /etc/dnsmasq.d anahtarına hiç dokunulmaz.
@@ -1004,26 +1287,46 @@ async function ftlStartedBeforeFiles(): Promise<boolean> {
 // DNS yeniden başlatma arka planda birleştirilir: art arda gelen kural değişiklikleri tek restart'a iner, HTTP
 // yanıtı FTL'i beklemez ve iki restart arasında en az DNS_RESTART_MIN_GAP_MS bırakılır. İşler sırayla çalışır.
 let dnsJobPending = false;
+// İş beklemeyi bitirip FTL'i yeniden başlatırken true (pending ile aynı tikte değişir): bu sürede yapılan uygulamada
+// "FTL dosyalardan eski" ölçümü anlamsızdır (dosya zaten bu işten önce yazıldı) ve tüm setleri boşalttırırdı.
+let dnsJobRunning = false;
 let dnsJobChain: Promise<void> = Promise.resolve();
-// Backend açılışı "son restart" sayılır: boot'ta DB'den sorgu yükleyen FTL'i hemen (2 sn'de) durdurmayalım.
+// Backend açılışı "son restart" sayılır: açılışta yeni başlamış FTL'i hemen (2 sn'de) yeniden başlatmayalım.
 let lastDnsRestartAt = Date.now();
 function scheduleDnsRestart(): void {
+  routingStatus.restart_needed_seq = routingStatus.apply_seq;
   if (dnsJobPending) return; // bekleyen iş, çalıştığı anda en güncel dosyaları yükleyecek
   dnsJobPending = true;
+  if (dnsJobRunning) setRoutingPhase('queued');
   dnsJobChain = dnsJobChain.then(async () => {
-    await new Promise(res => setTimeout(res, Math.max(2000, DNS_RESTART_MIN_GAP_MS - (Date.now() - lastDnsRestartAt))));
+    const delay = Math.max(2000, DNS_RESTART_MIN_GAP_MS - (Date.now() - lastDnsRestartAt));
+    setRoutingPhase('waiting', { restart_at: Date.now() + delay });
+    await new Promise(res => setTimeout(res, delay));
     dnsJobPending = false; // bundan sonraki değişiklikler yeni bir iş planlar
+    dnsJobRunning = true;
+    const jobSeq = routingStatus.restart_needed_seq; // bu işin yükleyeceği dosyalar bu sıraya kadar yazıldı
     lastDnsRestartAt = Date.now();
+    let error = '';
     try {
       if ((await ftlUnitState()).active === 'inactive' && await ftlUnitExists()) {
         // Kullanıcı Pi-hole'u durdurmuş: başlatma. Setler boşaltılır; FTL bir sonraki açılışında dosyaları yükler.
         await flushPendingSets();
+        error = 'Pi-hole kapalı — kural Pi-hole açılınca etkinleşir';
         return;
       }
-      if (await dnsmasqDirNeedsEnable()) await enableDnsmasqDirNow();
+      setRoutingPhase('restarting');
+      if (await dnsmasqDirNeedsEnable()) error = await enableDnsmasqDirNow();
       else await restartFtlNow();
+      if (!error) error = await stickyRoutingError();
     } catch (e: any) {
+      error = `DNS yeniden başlatılamadı: ${e?.message || e}`;
       console.error('[routing] DNS yeniden başlatılamadı:', e?.message);
+    } finally {
+      dnsJobRunning = false;
+      routingStatus.restart_done_seq = Math.max(routingStatus.restart_done_seq, jobSeq);
+      // Hata, sırada iş olsa da yayımlanır (panel görsün); sıradaki iş kendi aşamalarını yazar.
+      if (error) setRoutingPhase('failed', { error });
+      else if (!dnsJobPending) setRoutingPhase('idle');
     }
   });
 }
@@ -1084,7 +1387,9 @@ export async function applyDomainRouting(domains?: DomainRoute[]): Promise<void>
 
   // FTL diskteki (bu uygulamadan ÖNCEKİ) dosyalardan eski mi — ör. önceki restart başarısız oldu? Dosyalar YAZILMADAN
   // önce ölçülür: yazdıktan sonra her değişiklikte doğru döner ve salt eklemede de tüm setleri boşalttırırdı.
-  const ftlStale = await ftlStartedBeforeFiles();
+  // Bekleyen ya da çalışan bir DNS işi varken ölçülmez: önceki uygulamanın yazdığı dosya o işi bekliyor (art arda iki
+  // eklemede ikincisi tüm setleri boşalttırıyordu); iş FTL'i zaten bu dosyalardan sonra başlatır.
+  const ftlStale = !(dnsJobPending || dnsJobRunning) && await ftlStartedBeforeFiles();
 
   // Generate dnsmasq address= lines for redirect domains (point to Pi5 local IP — detected, not hardcoded)
   // LAN IPv4 henüz yoksa (boot'ta DHCP bitmeden) ve redirect kuralı varsa dosyaya dokunma: tahmini bir IP
@@ -1166,6 +1471,7 @@ export async function applyDomainRouting(domains?: DomainRoute[]): Promise<void>
   let oldRoutingLines: string[] = [];
   try { oldRoutingLines = fs.readFileSync('/etc/dnsmasq.d/05-domain-routing.conf', 'utf8').split('\n').filter(Boolean); } catch { /* ilk kurulum */ }
   const routingChanged = writeIfChanged('/etc/dnsmasq.d/05-domain-routing.conf', ipsetLines.join('\n') + '\n');
+  routingFilesCleared = false; // dosya artık DB'deki kuralları yansıtıyor
   const newRoutingLines = new Set(ipsetLines);
   const setsWithRemovals = new Set<string>();
   const oldSets = new Set<string>();
@@ -1198,21 +1504,26 @@ export async function applyDomainRouting(domains?: DomainRoute[]): Promise<void>
   for (const [, setName] of markSets) {
     if (!existingSets.has(setName)) setCreated = true;
     await run(`ipset create ${setName} hash:ip family inet -exist`);
-    if (ftlStale || setsWithRemovals.has(setName) || !oldSets.has(setName)) pendingFlush.add(setName);
+    if (ftlStale || setsWithRemovals.has(setName) || !oldSets.has(setName)) markPendingFlush(setName);
   }
   // Son domaini de çıkarılan (artık kullanılmayan) setler de boşaltılır: yeniden kullanılırlarsa eski IP'ler taşınmasın.
-  for (const s of setsWithRemovals) pendingFlush.add(s);
+  for (const s of setsWithRemovals) markPendingFlush(s);
 
   // 3. iptables mangle ile marklama — `-m set` kernel ipset'lerini DOĞRU okur (nft @set okuyamaz).
-  await run('iptables -t mangle -N PI5_ROUTING 2>/dev/null || true');
-  await run('iptables -t mangle -F PI5_ROUTING 2>/dev/null || true');
+  //    Zincir tek iptables-restore işlemiyle (atomik) yeniden kurulur: eski yöntemde -F ile -A'lar arasındaki boşlukta
+  //    işaretsiz kalan tünel paketleri, masquerade arayüz değişimi yüzünden çekirdekçe kesiliyordu (her kural
+  //    değişikliğinde açık tünel bağlantıları sıfırlanıyordu). Olmazsa eski adım adım yönteme düşülür (aynı kurallar).
+  if (!(await rebuildRoutingChainAtomic(markSets))) {
+    await run('iptables -t mangle -N PI5_ROUTING 2>/dev/null || true');
+    await run('iptables -t mangle -F PI5_ROUTING 2>/dev/null || true');
+    for (const [mark, setName] of markSets) {
+      await run(`iptables -t mangle -A PI5_ROUTING -m set --match-set ${setName} dst -j CONNMARK --restore-mark`);
+      await run(`iptables -t mangle -A PI5_ROUTING -m set --match-set ${setName} dst -j MARK --set-mark ${mark}`);
+      await run(`iptables -t mangle -A PI5_ROUTING -m set --match-set ${setName} dst -j CONNMARK --save-mark`);
+    }
+  }
   await run('iptables -t mangle -C PREROUTING -j PI5_ROUTING 2>/dev/null || iptables -t mangle -A PREROUTING -j PI5_ROUTING');
   await run('iptables -t mangle -C OUTPUT -j PI5_ROUTING 2>/dev/null || iptables -t mangle -A OUTPUT -j PI5_ROUTING');
-  for (const [mark, setName] of markSets) {
-    await run(`iptables -t mangle -A PI5_ROUTING -m set --match-set ${setName} dst -j CONNMARK --restore-mark`);
-    await run(`iptables -t mangle -A PI5_ROUTING -m set --match-set ${setName} dst -j MARK --set-mark ${mark}`);
-    await run(`iptables -t mangle -A PI5_ROUTING -m set --match-set ${setName} dst -j CONNMARK --save-mark`);
-  }
 
   // 3b. Tünel çıkışına SNAT. VPS, Pi peer'ından yalnız 10.66.66.2 kaynaklı paketi kabul eder (AllowedIPs);
   //     NAT'sız giren LAN kaynaklı (192.168.x.x) paketleri sessizce düşürür. iptables yerine kendi nft
@@ -1306,10 +1617,59 @@ export async function applyDomainRouting(domains?: DomainRoute[]): Promise<void>
     }
   }
 
+  // 4b. Yeni eklenen kuralların adresleri HEMEN sete: FTL yeni satırları ancak yeniden başlayınca yükler (2-15 sn) ve
+  //     önbellekten verdiği cevapları hiç eklemez; telefon da eski cevabı dakikalarca kullanır. En çok 4 sn sürer,
+  //     yalnız ekler; açılış ve tünel yeniden uygulamalarında (dosya değişmediği için) çalışmaz.
+  const addedLines = parseRoutingLines(ipsetLines.filter(l => !oldRoutingLines.includes(l)));
+  if (addedLines.length) {
+    await prewarmSets({ kind: 'add', lines: parseRoutingLines(ipsetLines), only: addedLines, deadlineMs: 4000, maxNames: 40, dbTimeoutMs: 1500 });
+  }
+
   // 5. dnsmasq/FTL'i yeniden başlat (ipset config'i alsın) — yalnız gerektiğinde ve arka planda birleştirerek:
   //    dnsmasq dosyaları değiştiyse, yeni set oluştuysa (boot sonrası FTL önbelleğindeki adlar sete eklenmez),
   //    /etc/dnsmasq.d okuması açılmalıysa (v6) ya da FTL dosyaların son halinden önce başladıysa.
+  routingStatus.apply_seq++;
   if (routingChanged || redirectChanged || setCreated || ftlStale || await dnsmasqDirNeedsEnable()) {
     scheduleDnsRestart();
+  } else if (!dnsJobPending && !dnsJobRunning && routingStatus.phase === 'failed') {
+    // DNS yenilemesi gerekmeyen değişiklik: önceki işin geçici hatası bu değişikliğe ait değil; kalıcıysa yeniden yazılır.
+    const sticky = await stickyRoutingError();
+    setRoutingPhase(sticky ? 'failed' : 'idle', { error: sticky });
   }
+}
+
+// PI5_ROUTING'i tek iptables-restore işlemiyle kurar (--noflush: diğer zincirlere dokunmaz; zincir bildirimi yalnız
+// bu zinciri aynı işlem içinde boşaltır). iptables ile iptables-restore farklı altyapıya (nf_tables/legacy) bağlıysa
+// ya da işlem başarısızsa false → çağıran eski adım adım yöntemi kullanır.
+let restoreBackendOk: boolean | null = null;
+export function buildRoutingChainRestore(markSets: Map<number, string>): string {
+  const out = ['*mangle', ':PI5_ROUTING - [0:0]'];
+  for (const [mark, setName] of markSets) {
+    out.push(
+      `-A PI5_ROUTING -m set --match-set ${setName} dst -j CONNMARK --restore-mark`,
+      `-A PI5_ROUTING -m set --match-set ${setName} dst -j MARK --set-mark ${mark}`,
+      `-A PI5_ROUTING -m set --match-set ${setName} dst -j CONNMARK --save-mark`,
+    );
+  }
+  out.push('COMMIT');
+  return out.join('\n') + '\n';
+}
+async function rebuildRoutingChainAtomic(markSets: Map<number, string>): Promise<boolean> {
+  if (restoreBackendOk === null) {
+    const tag = (s: string) => /\((nf_tables|legacy)\)/.exec(s)?.[1] || '';
+    const a = tag((await runResult('iptables -V', 5000)).stdout);
+    restoreBackendOk = !!a && a === tag((await runResult('iptables-restore -V', 5000)).stdout);
+    if (!restoreBackendOk) console.warn('[routing] iptables-restore altyapısı iptables ile aynı değil — zincir adım adım kurulacak');
+  }
+  if (!restoreBackendOk) return false;
+  const file = '/opt/pi5-gateway/core/pi5-routing.rules';
+  try {
+    fs.mkdirSync('/opt/pi5-gateway/core', { recursive: true });
+    fs.writeFileSync(file, buildRoutingChainRestore(markSets));
+  } catch {
+    return false;
+  }
+  const r = await runResult(`iptables-restore -w 5 --noflush ${file}`, 15000);
+  if (r.code !== 0) console.error(`[routing] PI5_ROUTING atomik kurulamadı (${r.stderr.trim() || r.code}) — adım adım kuruluyor`);
+  return r.code === 0;
 }

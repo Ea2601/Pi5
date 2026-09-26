@@ -1129,6 +1129,18 @@ select:disabled,
 @media (max-width: 768px) {
   .routing-suggest { padding-left: 12px; }
 }
+/* Kural uygulama durumu bandı */
+.routing-apply {
+  display: flex; align-items: center; gap: 8px; margin-top: 12px; padding: 9px 12px; border-radius: 10px;
+  font-size: 12px; line-height: 1.5; border: 1px solid rgba(255, 255, 255, 0.08); background: rgba(255, 255, 255, 0.04);
+}
+.routing-apply span { flex: 1; }
+.routing-apply-ok { background: var(--success-glow); border-color: var(--success-color); }
+.routing-apply-err { background: var(--danger-glow); border-color: var(--danger-color); }
+.routing-apply button {
+  background: none; border: none; cursor: pointer; color: var(--text-muted); padding: 2px; display: inline-flex;
+}
+.routing-apply button:hover { color: var(--text-primary); }
 
 /* Toggle switch */
 .toggle-btn {

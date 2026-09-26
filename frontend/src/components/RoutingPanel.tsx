@@ -3,8 +3,8 @@ import {
   Plus, Trash2, Check, X, Search, Link, Shield, Info,
   Lightbulb, ChevronDown, ChevronRight, RotateCcw
 } from 'lucide-react';
-import { useApi, putApi, postApi, deleteApi } from '../hooks/useApi';
-import { useState } from 'react';
+import { useApi, getApi, putApi, postApi, deleteApi } from '../hooks/useApi';
+import { useState, useRef, useCallback, useEffect } from 'react';
 import { Panel, Badge } from './ui';
 import { AppLogo } from './AppLogos';
 import { toast } from '../toast';
@@ -23,8 +23,97 @@ const categoryMeta: Record<string, { label: string; icon: React.ReactNode; color
 
 interface VpsServer { id: number; ip: string; location: string }
 
+// ─── Kural uygulama durumu: değişiklikten sonra "uygulanıyor… / hazır" ───
+// Sunucu kuralı yazıp yanıt döner; DNS yenilemesi arka planda (2-15 sn + yeniden başlatma) sürer.
+interface RoutingApplyStatus {
+  phase: 'idle' | 'queued' | 'waiting' | 'restarting' | 'warming' | 'failed';
+  apply_seq: number; restart_needed_seq: number; restart_done_seq: number; restart_at: number; now: number; error: string;
+  prewarm: { kind: 'add' | 'restart'; names: number; ips: number; error: string } | null;
+}
+const APPLY_WATCH_MS = 180000;
+// apply_seq > 0: sunucu süreci en az bir uygulama yaptı — panel arada yeniden başladıysa açılış uygulaması bitmeden
+// (durum sıfırdan başlar) 'Hazır' denmez.
+const isApplied = (s: RoutingApplyStatus) =>
+  s.phase === 'idle' && s.apply_seq > 0 && s.restart_done_seq >= s.restart_needed_seq;
+
+function useRoutingApplyWatch() {
+  const [status, setStatus] = useState<RoutingApplyStatus | null>(null);
+  const [polling, setPolling] = useState(false);
+  const [visible, setVisible] = useState(false);
+  const timer = useRef<ReturnType<typeof setInterval> | null>(null);
+  const startedAt = useRef(0);
+  // Her watch() yeni bir döngü: önceki döngünün geç gelen cevabı yok sayılır; aynı anda tek istek.
+  const cycle = useRef(0);
+  const inFlight = useRef(false);
+
+  const stop = useCallback(() => {
+    if (timer.current) clearInterval(timer.current);
+    timer.current = null;
+    setPolling(false);
+  }, []);
+  const poll = useCallback(async (id: number) => {
+    if (inFlight.current) return;
+    inFlight.current = true;
+    const expired = Date.now() - startedAt.current > APPLY_WATCH_MS;
+    try {
+      const s = await getApi<RoutingApplyStatus>('/routing/status');
+      if (id !== cycle.current) return;
+      setStatus(s);
+      if (isApplied(s) || s.phase === 'failed' || expired) stop();
+    } catch {
+      if (id === cycle.current && expired) stop();
+    } finally {
+      inFlight.current = false;
+    }
+  }, [stop]);
+  const watch = useCallback(() => {
+    const id = ++cycle.current;
+    startedAt.current = Date.now();
+    setStatus(null);
+    setVisible(true);
+    setPolling(true);
+    if (timer.current) clearInterval(timer.current);
+    timer.current = setInterval(() => { void poll(id); }, 1000);
+    void poll(id);
+  }, [poll]);
+  const dismiss = useCallback(() => { cycle.current++; stop(); setVisible(false); }, [stop]);
+  useEffect(() => stop, [stop]);
+  return { status, polling, visible, watch, dismiss };
+}
+
+function ApplyBanner({ w }: { w: ReturnType<typeof useRoutingApplyWatch> }) {
+  if (!w.visible) return null;
+  const s = w.status;
+  const warmed = s?.prewarm?.kind === 'add' && s.prewarm.ips > 0 && !s.prewarm.error
+    ? `${s.prewarm.ips} adres tünel listesine eklendi. ` : '';
+  let tone: 'info' | 'ok' | 'err' = 'info';
+  let text = 'Kural uygulanıyor…';
+  if (s?.phase === 'failed') {
+    tone = 'err'; text = s.error || 'Kural uygulanamadı';
+  } else if (s && isApplied(s)) {
+    tone = 'ok'; text = 'Hazır. Siteyi telefonda kapatıp yeniden açın; hâlâ eski yoldan açılırsa uçak modunu 5 sn açıp kapatın.';
+  } else if (s?.phase === 'waiting') {
+    text = `${warmed}DNS ${Math.max(0, Math.ceil((s.restart_at - s.now) / 1000))} sn içinde yenilenecek…`;
+  } else if (s?.phase === 'queued') {
+    text = `${warmed}Önceki DNS yenilemesi bitince uygulanacak…`;
+  } else if (s?.phase === 'restarting') {
+    text = 'DNS yeniden başlatılıyor (birkaç saniye yanıt gelmeyebilir)…';
+  } else if (s?.phase === 'warming') {
+    text = 'DNS açıldı, tünel listesi dolduruluyor…';
+  }
+  if (tone === 'info' && !w.polling) { tone = 'err'; text = 'Durum 3 dakikada netleşmedi; sayfayı yenileyip kuralı kontrol edin.'; }
+  return (
+    <div className={`routing-apply routing-apply-${tone}`} role="status">
+      <Info size={14} />
+      <span>{text}</span>
+      <button onClick={w.dismiss} aria-label="Kapat"><X size={13} /></button>
+    </div>
+  );
+}
+
 export function RoutingPanel() {
   const [activeTab, setActiveTab] = useState<RoutingTab>('apps');
+  const apply = useRoutingApplyWatch();
 
   return (
     <div className="fade-in">
@@ -40,16 +129,17 @@ export function RoutingPanel() {
             <Link size={14} /><span>Özel Domain'ler</span>
           </button>
         </div>
+        <ApplyBanner w={apply} />
       </Panel>
 
-      {activeTab === 'apps' && <AppRoutingView />}
-      {activeTab === 'domains' && <DomainRoutingView />}
+      {activeTab === 'apps' && <AppRoutingView onApplied={apply.watch} />}
+      {activeTab === 'domains' && <DomainRoutingView onApplied={apply.watch} />}
     </div>
   );
 }
 
 // ─── App Routing — inline controls per row ───
-function AppRoutingView() {
+function AppRoutingView({ onApplied }: { onApplied: () => void }) {
   const { data: rulesData, refetch } = useApi<{ rules: TrafficRule[] }>('/routing/rules', { rules: [] });
   const { data: vpsData } = useApi<{ servers: VpsServer[] }>('/vps/list', { servers: [] });
   const [filterCat, setFilterCat] = useState<string>('all');
@@ -69,8 +159,11 @@ function AppRoutingView() {
   const handleChange = async (id: number, field: string, value: any) => {
     try {
       await putApi(`/routing/rules/${id}`, { [field]: value });
+      onApplied();
       await refetch();
-    } catch { /* */ }
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Kural güncellenemedi');
+    }
   };
 
   const activeCount = rules.filter(r => r.enabled && r.exit_node !== 'isp').length;
@@ -259,8 +352,9 @@ function DismissedList({ onChange }: { onChange: () => void }) {
   );
 }
 
-function DomainRoutingView() {
+function DomainRoutingView({ onApplied }: { onApplied: () => void }) {
   const { data, refetch } = useApi<{ domains: DomainRule[] }>('/routing/domains', { domains: [] });
+  const [adding, setAdding] = useState(false);
   const { data: vpsData } = useApi<{ servers: VpsServer[] }>('/vps/list', { servers: [] });
   const [showAdd, setShowAdd] = useState(false);
   const [newDomain, setNewDomain] = useState('');
@@ -303,7 +397,7 @@ function DomainRoutingView() {
       const skipped = Array.isArray(r.skipped) ? r.skipped.length : 0;
       if (added) {
         toast.success(`${added} alan adı eklendi (${exitLabel(rule)})${skipped ? ` · ${skipped} tanesi zaten ekliydi` : ''}`);
-        toast.info('DNS birkaç saniye içinde yenilenecek; siteyi yeniden açın.');
+        onApplied();
       } else {
         toast.info('Seçilen alan adları zaten ekliydi');
       }
@@ -330,30 +424,39 @@ function DomainRoutingView() {
   };
 
   const handleAdd = async () => {
-    if (!newDomain.trim()) return;
+    const domain = newDomain.trim();
+    if (!domain || adding) return;
+    setAdding(true);
     try {
       const result = await postApi('/routing/domains', {
-        domain: newDomain.trim(),
+        domain,
         exit_node: newRedirectUrl ? 'isp' : newExitNode,
         dpi_bypass: newRedirectUrl ? 0 : newDpi,
         description: newDesc.trim(),
         redirect_url: newRedirectUrl.trim(),
       });
       if (result.error) { toast.error(result.error); return; }
+      toast.success(`${domain} eklendi`);
+      onApplied();
       setNewDomain(''); setNewDesc(''); setNewExitNode('isp'); setNewDpi(0); setNewRedirectUrl(''); setShowAdd(false);
       await refetch();
       await refetchSug(); // kapsam ve başlangıç kuralları değişti
     } catch (e: any) {
       toast.error(e.message || 'Eklenemedi');
+    } finally {
+      setAdding(false);
     }
   };
 
   const handleChange = async (id: number, field: string, value: any) => {
     try {
       await putApi(`/routing/domains/${id}`, { [field]: value });
+      onApplied();
       await refetch();
       await refetchSug(); // kural artık başlangıç kuralı olmayabilir (kapalı / ISP)
-    } catch { /* */ }
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Kural güncellenemedi');
+    }
   };
 
   const handleDelete = async (id: number, domain: string) => {
@@ -361,6 +464,7 @@ function DomainRoutingView() {
     try {
       await deleteApi(`/routing/domains/${id}`);
       toast.success(`${domain} silindi`);
+      onApplied();
       await refetch();
       await refetchSug();
     } catch (e) {
@@ -431,8 +535,8 @@ function DomainRoutingView() {
               </div>
             </div>
             <div className="cron-add-actions" style={{ marginTop: 10 }}>
-              <button className="btn-primary btn-sm" onClick={handleAdd} disabled={!newDomain.trim()}>
-                <Check size={13} /> Ekle
+              <button className="btn-primary btn-sm" onClick={handleAdd} disabled={!newDomain.trim() || adding}>
+                <Check size={13} /> {adding ? 'Ekleniyor…' : 'Ekle'}
               </button>
               <button className="btn-outline btn-sm" onClick={() => setShowAdd(false)}>
                 <X size={13} /> İptal

@@ -13,7 +13,7 @@ import {
   getNetworkDevices, getBandwidthLive, getWireguardStatus,
   getFail2banStatus, getDnsQueries, getCurrentExternalIp,
   runSpeedTest, executeCommand, applyDomainRouting, applyBlockedDevices,
-  sampleMetrics, detectInterfaces, recoverInterruptedFtlRestart, VALID_DNSMASQ_DOMAIN,
+  sampleMetrics, detectInterfaces, recoverInterruptedFtlRestart, VALID_DNSMASQ_DOMAIN, getRoutingApplyStatus,
 } from './system';
 import { getRoutingSuggestions, MAX_HOURS as SUGGEST_MAX_HOURS } from './domainSuggest';
 import {
@@ -1169,6 +1169,11 @@ app.put('/api/routing/rules/:id', async (req, res) => {
   } catch (e: any) {
     res.status(500).json({ error: e.message });
   }
+});
+
+// Kural değişikliğinin uygulanma durumu (panel bandı yoklar). Yalnız bellekteki durum — sistem komutu çalıştırmaz.
+app.get('/api/routing/status', (_req, res) => {
+  res.json(getRoutingApplyStatus());
 });
 
 // ─── Domain-Based Routing ───

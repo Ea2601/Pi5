@@ -1,16 +1,13 @@
 {
-  "version": "2.18.0",
-  "build": 69,
-  "date": "2026-09-26",
+  "version": "2.19.0",
+  "build": 70,
+  "date": "2026-09-27",
   "changelog": [
-    "Servisler: durum artık gerçek — duran servis 'Kurulu Değil' yerine 'Durdu/Kapalı', çöken ya da sürekli yeniden başlayan servis 'Hata' görünüyor; WireGuard satırı Pi'deki gerçek tünellere (wg_vps) bakıyor",
-    "Servisler: aç/kapa kalıcı (Pi yeniden başlasa da seçilen durumda kalır) ve sonuç servis oturduktan sonra doğrulanıyor; başarısız başlatma/durdurma/yeniden başlatma artık hata mesajıyla bildiriliyor (eskiden hep 'başarılı' diyordu)",
-    "Güvenlik: panel API'si yalnız kendi servislerini (Pi-hole, Unbound, Zapret, Fail2Ban; yeniden başlatmada nftables ve WireGuard) yönetebiliyor — ssh, nginx, panelin kendisi gibi birimler artık durdurulamıyor; nftables aç/kapa kapatıldı (tüm firewall'u siliyordu)",
-    "Pi-hole ve Unbound kapatılırken onay soruluyor (DNS'i Pi olan cihazların interneti kesilir); Unbound ve Fail2Ban anahtarları hataları gösteriyor",
-    "Uyarılar: çöken, sürekli yeniden başlayan ya da beklenmedik şekilde duran servisler ve kapanan WireGuard tünelleri bildiriliyor; aynı uyarı tekrarlanmıyor, düzelme okunmuş bilgi olarak düşülüyor; açılışta sırası henüz gelmemiş servis ve tünel için yanlış 'durdu' uyarısı çıkmıyor",
-    "Pi-hole aç/yeniden başlat: büyük sorgu veritabanıyla yavaş açılan Pi-hole artık 'başlatılamadı' diye raporlanmıyor (120 sn'ye kadar beklenir)",
-    "SSH Terminal: hata koduyla biten komutların çıktısı artık görünüyor (eskiden '(bos cikti)'), çıkış kodu / zaman aşımı satırı kırmızı",
-    "Güncelleme: git artık sudo yedeğine düşmüyor ('Git OK: unknown' düzeldi); hangi adımın başarısız olduğu doğru bildiriliyor",
-    "Kasa OLED ve kiosk: WireGuard göstergesi gerçek tünellere bakıyor; kiosk 'Hata' ve 'Geçişte' durumlarını gösteriyor"
+    "Yönlendirme anında etkin: eklenen alan adının adresleri (ve son 24 saatte görülen alt adresleri) Pi tarafından hemen tünel listesine yazılıyor — telefonun eski DNS cevabının süresinin dolmasını beklemek gerekmiyor",
+    "Art arda iki değişiklik yapınca bütün tünel listelerinin boşalması (önceden çalışan sitelerin de bir süre normal hatta düşmesi) düzeltildi",
+    "Kural silinince tünel listesi boşaltılmıyor: kalan kurallarla yenisi hazırlanıp tek hamlede değiştiriliyor, diğer siteler tünelden hiç düşmüyor",
+    "Pi-hole yeniden başladıktan ve Pi açıldıktan sonra tünel listeleri kendiliğinden dolduruluyor",
+    "Kural zinciri tek işlemde kuruluyor: her değişiklikte açık tünel bağlantılarının sıfırlanması önlendi",
+    "Routing sayfası değişikliğin durumunu gösteriyor: 'DNS X sn içinde yenilenecek…', 'yeniden başlatılıyor…', 'Hazır'; alan adı eklerken 'Ekleniyor…' ve bildirim; uygulama kuralı hataları artık gösteriliyor"
   ]
 }

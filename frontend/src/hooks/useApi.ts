@@ -43,6 +43,12 @@ export function useApi<T>(endpoint: string, initialData: T, pollInterval?: numbe
   return { data, loading, error, refetch: fetchData };
 }
 
+export async function getApi<T>(endpoint: string): Promise<T> {
+  const res = await fetch(`${API_BASE}${endpoint}`);
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json();
+}
+
 export async function postApi(endpoint: string, body: Record<string, unknown>) {
   const res = await fetch(`${API_BASE}${endpoint}`, {
     method: 'POST',
