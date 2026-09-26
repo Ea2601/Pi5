@@ -1,11 +1,16 @@
 {
-  "version": "2.17.0",
-  "build": 68,
+  "version": "2.18.0",
+  "build": 69,
   "date": "2026-09-26",
   "changelog": [
-    "Routing: yönlendirilen bir siteyle birlikte açılan diğer alan adları (spor/oyun sağlayıcısı, yönlendirme adresleri, CDN) kuralın altında 'Önerilen alan adları' olarak gösteriliyor; tek tıkla aynı çıkışa eklenir ya da yoksayılır",
-    "Routing önerileri: arka planda sürekli sorgulanan adresler (telemetri, bildirim, uygulama trafiği) ziyaret içi/dışı karşılaştırmasıyla ayıklanıyor; Apple, Google, WhatsApp, reklam/analiz adları hiç önerilmiyor",
-    "Routing önerileri: paylaşımlı CDN adresleri tam haliyle, tek görülen adres yalnız o adres olarak önerilir — tek tıkla geniş bir alan VPS'e gitmez; öneriden eklenen kurallar kendileri öneri üretmez",
-    "Routing: domain eklerken tüm VPS/DPI yönlendirme listeleri artık boşaltılmıyor (açık tünel bağlantıları kopmuyor); yalnız bir domain çıkarılınca ilgili liste temizleniyor"
+    "Servisler: durum artık gerçek — duran servis 'Kurulu Değil' yerine 'Durdu/Kapalı', çöken ya da sürekli yeniden başlayan servis 'Hata' görünüyor; WireGuard satırı Pi'deki gerçek tünellere (wg_vps) bakıyor",
+    "Servisler: aç/kapa kalıcı (Pi yeniden başlasa da seçilen durumda kalır) ve sonuç servis oturduktan sonra doğrulanıyor; başarısız başlatma/durdurma/yeniden başlatma artık hata mesajıyla bildiriliyor (eskiden hep 'başarılı' diyordu)",
+    "Güvenlik: panel API'si yalnız kendi servislerini (Pi-hole, Unbound, Zapret, Fail2Ban; yeniden başlatmada nftables ve WireGuard) yönetebiliyor — ssh, nginx, panelin kendisi gibi birimler artık durdurulamıyor; nftables aç/kapa kapatıldı (tüm firewall'u siliyordu)",
+    "Pi-hole ve Unbound kapatılırken onay soruluyor (DNS'i Pi olan cihazların interneti kesilir); Unbound ve Fail2Ban anahtarları hataları gösteriyor",
+    "Uyarılar: çöken, sürekli yeniden başlayan ya da beklenmedik şekilde duran servisler ve kapanan WireGuard tünelleri bildiriliyor; aynı uyarı tekrarlanmıyor, düzelme okunmuş bilgi olarak düşülüyor; açılışta sırası henüz gelmemiş servis ve tünel için yanlış 'durdu' uyarısı çıkmıyor",
+    "Pi-hole aç/yeniden başlat: büyük sorgu veritabanıyla yavaş açılan Pi-hole artık 'başlatılamadı' diye raporlanmıyor (120 sn'ye kadar beklenir)",
+    "SSH Terminal: hata koduyla biten komutların çıktısı artık görünüyor (eskiden '(bos cikti)'), çıkış kodu / zaman aşımı satırı kırmızı",
+    "Güncelleme: git artık sudo yedeğine düşmüyor ('Git OK: unknown' düzeldi); hangi adımın başarısız olduğu doğru bildiriliyor",
+    "Kasa OLED ve kiosk: WireGuard göstergesi gerçek tünellere bakıyor; kiosk 'Hata' ve 'Geçişte' durumlarını gösteriyor"
   ]
 }

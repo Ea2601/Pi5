@@ -45,12 +45,13 @@ export function ServiceSettings({ service, categoryLabels = {}, categoryIcons = 
   const handleRestart = async () => {
     setRestarting(true);
     try {
+      // Yanıt, servis yeniden başlayıp durumu doğrulandıktan sonra gelir (başarısızsa hata döner).
       await postApi(`/services/${service}/restart`, {});
-      toast.success('Servis yeniden başlatılıyor...');
+      toast.success('Servis yeniden başlatıldı');
     } catch (e: any) {
       toast.error(e.message);
     }
-    setTimeout(() => setRestarting(false), 2500);
+    setRestarting(false);
   };
 
   const toggleCollapse = (cat: string) => {

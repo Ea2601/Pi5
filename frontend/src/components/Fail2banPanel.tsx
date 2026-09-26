@@ -4,6 +4,7 @@ import { useState } from 'react';
 import { Panel, StatCard, Badge } from './ui';
 import { ServiceSettings } from './ui/ServiceSettings';
 import type { ServiceStatus } from '../types';
+import { toast } from '../toast';
 
 type F2bTab = 'overview' | 'settings';
 
@@ -29,12 +30,19 @@ export function Fail2banPanel() {
   const f2bSvc = svcData.services.find(s => s.name === 'fail2ban');
   const isEnabled = f2bSvc?.enabled === 1;
   const [refreshing, setRefreshing] = useState(false);
+  const [toggling, setToggling] = useState(false);
 
+  // Anahtar kalıcıdır (açılışta da geçerli); hata artık yutulmuyor.
   const handleToggle = async () => {
+    setToggling(true);
     try {
       await postApi('/services/toggle', { name: 'fail2ban', enabled: !isEnabled });
-      await refetch();
-    } catch { /* */ }
+      toast.success(isEnabled ? 'Fail2Ban durduruldu' : 'Fail2Ban başlatıldı');
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'İşlem başarısız');
+    }
+    await refetch();
+    setToggling(false);
   };
 
   const handleRefresh = async () => {
@@ -81,6 +89,7 @@ export function Fail2banPanel() {
             <button
               className={`toggle-btn ${isEnabled ? 'toggle-on' : 'toggle-off'}`}
               onClick={handleToggle}
+              disabled={toggling}
               title={isEnabled ? 'Durdur' : 'Başlat'}
             >
               <div className="toggle-knob" />

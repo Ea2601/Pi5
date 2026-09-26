@@ -7,9 +7,16 @@ export type TabId =
 
 export interface ServiceStatus {
   name: string;
-  enabled: number;
-  status: string;
+  enabled: number;          // 1 = şu an çalışıyor
+  status: string;           // running | stopped | error | restarting | not_installed
   last_check: string;
+  unit?: string;
+  active_state?: string;
+  sub_state?: string;
+  boot_enabled?: boolean;   // açılışta başlatılır mı
+  restarts?: number;
+  detail?: string;
+  checked_at?: string;
 }
 
 export interface Device {

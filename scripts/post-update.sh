@@ -5,6 +5,11 @@
 set -e
 BASE="/opt/pi5-gateway"
 LOG="$BASE/core/update.log"
+# Bu dosyayı getiren güncellemede update.sh henüz eski olabilir: HOME ve sistem geneli safe.directory burada da kurulur
+# ki aşağıdaki `git diff HEAD@{1}` (npm install tespiti) "dubious ownership" ile sessizce boş dönmesin. set -e: || true.
+export HOME="${HOME:-/root}"
+git config --system --get-all safe.directory 2>/dev/null | grep -xF "$BASE" >/dev/null \
+  || git config --system --add safe.directory "$BASE" 2>/dev/null || true
 
 echo "$(date '+%Y-%m-%d %H:%M:%S') — Post-update başlatıldı" >> "$LOG"
 

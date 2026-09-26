@@ -1,20 +1,34 @@
 import { exec } from 'child_process';
 import util from 'util';
 import fs from 'fs';
-import { isLinux, systemctlAction, detectInterfaces } from './system';
+import {
+  isLinux, systemctlAction, detectInterfaces, MANAGED_SERVICE_UNITS, isManagedService, TOGGLEABLE_SERVICES,
+  listWireguardTunnels, runResult, FTL_SYSTEMCTL_TIMEOUT,
+} from './system';
 import { shq, isValidDomain } from './util';
 
 const execAsync = util.promisify(exec);
 
-// DB name → actual systemd service name
-const SERVICE_NAME_MAP: Record<string, string> = {
-  pihole: 'pihole-FTL',
-  unbound: 'unbound',
-  zapret: 'zapret',
-  wireguard: 'wg-quick@wg0',
-  fail2ban: 'fail2ban',
-  nftables: 'nftables',
-};
+// WireGuard "yeniden başlat": ayakta ya da açılışta etkin her wg_vps tünelini systemd üzerinden yeniden kurar
+// (panel bağlantısı wg-quick'i doğrudan çalıştırdığı için önce birim + arayüz indirilir; ssh.ts connect ile aynı sıra).
+async function restartWireguardTunnels(): Promise<string> {
+  const targets = (await listWireguardTunnels()).filter(t => t.up || t.state.bootEnabled);
+  if (!targets.length) throw new Error('Yeniden başlatılacak WireGuard tüneli yok (VPS sayfasından bağlanın)');
+  const errors: string[] = [];
+  for (const t of targets) {
+    if (!/^wg_vps\d+$/.test(t.iface)) continue;
+    await runResult(`systemctl stop ${t.unit}`, 20000);
+    await runResult(`wg-quick down ${t.iface}`, 15000);
+    try {
+      await systemctlAction('start', t.unit);
+    } catch (e: any) {
+      const up = (await runResult(`wg-quick up ${t.iface}`, 15000)).code === 0;
+      errors.push(`${t.iface}: ${e.message}${up ? ' (wg-quick ile açıldı)' : ''}`);
+    }
+  }
+  if (errors.length) throw new Error(errors.join('; '));
+  return `${targets.length} tünel yeniden başlatıldı`;
+}
 
 export const systemServices = {
     async installPihole() {
@@ -108,16 +122,26 @@ include "/etc/nftables.d/*.conf"`;
         return { stdout: `nftables yapılandırıldı (WAN=${wan}, LAN=${lan}).`, stderr: '' };
     },
 
+    // Kalıcı aç/kapa (enable --now / disable --now): eskiden yalnız start/stop — kapatılan servis açılışta geri geliyordu.
+    // Başlatmadan önce reset-failed: başlatma sınırına takılmış birim aksi halde 60 sn başlatılamaz.
     async toggleService(name: string, enable: boolean) {
         if (!isLinux) throw new Error('Servis kontrolü sadece Pi5 üzerinde çalışır');
-        const action = enable ? 'start' : 'stop';
-        const svcName = SERVICE_NAME_MAP[name] || name;
-        return await systemctlAction(action, svcName);
+        if (!isManagedService(name) || !TOGGLEABLE_SERVICES.includes(name)) {
+            throw new Error(name === 'wireguard' ? 'WireGuard tünelleri VPS sayfasından (Bağla/Kes) yönetilir' : `Geçersiz servis: ${name}`);
+        }
+        const unit = MANAGED_SERVICE_UNITS[name]!;
+        const timeout = name === 'pihole' ? FTL_SYSTEMCTL_TIMEOUT : undefined;
+        if (!enable) return await systemctlAction('disable-now', unit, timeout);
+        await systemctlAction('reset-failed', unit).catch(() => { /* failed değilse ya da birim yoksa */ });
+        return await systemctlAction('enable-now', unit, timeout);
     },
 
     async restartService(name: string) {
         if (!isLinux) throw new Error('Servis kontrolü sadece Pi5 üzerinde çalışır');
-        const svcName = SERVICE_NAME_MAP[name] || name;
-        return await systemctlAction('restart', svcName);
+        if (!isManagedService(name)) throw new Error(`Geçersiz servis: ${name}`);
+        if (name === 'wireguard') return await restartWireguardTunnels();
+        const unit = MANAGED_SERVICE_UNITS[name]!;
+        await systemctlAction('reset-failed', unit).catch(() => { /* failed değilse ya da birim yoksa */ });
+        return await systemctlAction('restart', unit, name === 'pihole' ? FTL_SYSTEMCTL_TIMEOUT : undefined);
     },
 };

@@ -402,12 +402,15 @@ async function buildServicesPage() {
   const d = await fetchJSON('/services');
   const svcs = (d && d.services) || [];
   if (!svcs.length) return empty('Servis kaydı yok');
-  // status alanı enabled'dan daha bilgilendirici: running / stopped / not_installed
+  // status: running / stopped / error (çöktü, döngü) / restarting (geçişte) / not_installed.
+  // Duran servis açılışta etkinse 'Durdu' (beklenmedik), değilse 'Kapalı' (bilerek kapatılmış).
   const label = s => s.status === 'running' ? 'Çalışıyor'
     : s.status === 'not_installed' ? 'Kurulu Değil'
-    : s.enabled ? 'Durdu' : 'Kapalı';
+    : s.status === 'error' ? 'Hata'
+    : s.status === 'restarting' ? 'Geçişte'
+    : s.boot_enabled ? 'Durdu' : 'Kapalı';
   const cls = s => s.status === 'running' ? 'text-green'
-    : s.status === 'not_installed' ? 'text-orange' : 'text-red';
+    : (s.status === 'not_installed' || s.status === 'restarting') ? 'text-orange' : 'text-red';
   return `<div class="kiosk-grid kiosk-grid-4">${svcs.map(s =>
     card(esc(s.name), label(s),
       `<span class="dot ${s.status === 'running' ? 'dot-on' : 'dot-off'}"></span>${since(s.last_check)}`, cls(s))

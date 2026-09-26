@@ -149,8 +149,12 @@ export function SshTerminal() {
     try {
       const result = await postApi('/terminal/execute', { command: cmd });
       const output = result.output || 'Komut çalıştırıldı.';
+      // Sıfır olmayan çıkış / zaman aşımı / kesilme: son satır ([çıkış kodu: N] vb.) hata rengiyle gösterilir.
+      const failed = (typeof result.exitCode === 'number' && result.exitCode !== 0)
+        || result.timedOut === true || result.truncated === true;
       if (typeof output === 'string') {
-        output.split('\n').forEach((line: string) => addLine('output', line));
+        const outLines = output.split('\n');
+        outLines.forEach((line: string, i: number) => addLine(failed && i === outLines.length - 1 ? 'error' : 'output', line));
       }
     } catch (e: unknown) {
       addLine('error', e instanceof Error ? e.message : 'Komut çalıştırılamadı.');

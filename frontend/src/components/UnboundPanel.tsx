@@ -4,6 +4,7 @@ import { useState } from 'react';
 import { Panel, StatCard, Badge } from './ui';
 import { ServiceSettings } from './ui/ServiceSettings';
 import type { ServiceStatus } from '../types';
+import { toast } from '../toast';
 
 type UnboundTab = 'overview' | 'settings';
 
@@ -30,12 +31,20 @@ export function UnboundPanel() {
   const unboundSvc = svcData.services.find(s => s.name === 'unbound');
   const isEnabled = unboundSvc?.enabled === 1;
   const [refreshing, setRefreshing] = useState(false);
+  const [toggling, setToggling] = useState(false);
 
+  // Anahtar kalıcıdır (açılışta da geçerli). Unbound, Pi-hole'un tek üst DNS'i: durursa ağın DNS'i kesilir.
   const handleToggle = async () => {
+    if (isEnabled && !confirm('Unbound durdurulursa Pi-hole alan adlarını çözemez; Pi\'yi DNS olarak kullanan tüm cihazların interneti kesilir ve Pi yeniden başlasa da kapalı kalır. Devam edilsin mi?')) return;
+    setToggling(true);
     try {
       await postApi('/services/toggle', { name: 'unbound', enabled: !isEnabled });
-      await refetch();
-    } catch { /* */ }
+      toast.success(isEnabled ? 'Unbound durduruldu' : 'Unbound başlatıldı');
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'İşlem başarısız');
+    }
+    await refetch();
+    setToggling(false);
   };
 
   const handleRefresh = async () => {
@@ -71,7 +80,7 @@ export function UnboundPanel() {
             <button className="btn-outline btn-sm" onClick={handleRefresh} disabled={refreshing} title="Yenile">
               {refreshing ? <Loader2 size={13} className="spin" /> : <RefreshCw size={13} />}
             </button>
-            <button className={`toggle-btn ${isEnabled ? 'toggle-on' : 'toggle-off'}`} onClick={handleToggle} title={isEnabled ? 'Durdur' : 'Başlat'}>
+            <button className={`toggle-btn ${isEnabled ? 'toggle-on' : 'toggle-off'}`} onClick={handleToggle} disabled={toggling} title={isEnabled ? 'Durdur' : 'Başlat'}>
               <div className="toggle-knob" />
             </button>
           </div>

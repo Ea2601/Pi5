@@ -620,6 +620,15 @@ def _sh(cmd, timeout=3):
         return ''
 
 
+# Pi'de WireGuard tünelleri wg_vps<ID> arayüzleridir (wg0 yoktur); panel bağlantısı wg-quick'i doğrudan çalıştırdığı
+# için systemd birimi 'inactive' kalabilir → durum arayüzün varlığından okunur.
+def _wg_up():
+    try:
+        return any(n.startswith('wg_vps') for n in os.listdir('/sys/class/net'))
+    except Exception:
+        return False
+
+
 def _rf(path):
     try:
         with open(path) as f:
@@ -815,9 +824,13 @@ class Live(Source):
         if rows is None:
             rows = [(r[0], r[1], 0) for r in (_db("SELECT hostname, ip_address FROM devices ORDER BY last_seen DESC", one=False) or [])]
         s['clients'] = [{'name': str(r[0] or r[1] or '?').upper()[:12], 'blocked': bool(r[2])} for r in rows]
-        units = [('PI-HOLE', 'pihole-FTL'), ('UNBOUND', 'unbound'), ('WIREGUARD', 'wg-quick@wg0'), ('NFTABLES', 'nftables'),
+        units = [('PI-HOLE', 'pihole-FTL'), ('UNBOUND', 'unbound'), ('NFTABLES', 'nftables'),
                  ('FAIL2BAN', 'fail2ban'), ('ZAPRET', 'zapret'), ('TAILSCALE', 'tailscaled')]
         layers = [{'name': n, 'up': _sh('systemctl is-active ' + u) == 'active'} for n, u in units]
+        for l in layers:  # panelle aynı ölçüt: firewall kurulumu kuralları `nft -f` ile yükler, birim pasif kalabilir
+            if l['name'] == 'NFTABLES' and not l['up']:
+                l['up'] = _sh('nft list table inet pi5_filter >/dev/null 2>&1 && echo ok') == 'ok'
+        layers.insert(2, {'name': 'WIREGUARD', 'up': _wg_up()})  # eski sırası korunur
         layers.append({'name': 'DDNS', 'up': s['ddns'] == 'OK'})
         for r in (_db("SELECT location, status FROM vps_servers", one=False) or []):
             layers.append({'name': str(r[0] or 'VPS').upper()[:12], 'up': r[1] == 'connected'})

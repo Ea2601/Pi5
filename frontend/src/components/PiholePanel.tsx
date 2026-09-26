@@ -20,17 +20,21 @@ export function PiholePanel() {
   const isEnabled = piholeSvc?.enabled === 1;
   const [toggling, setToggling] = useState(false);
 
+  // Anahtar kalıcıdır (açılışta da geçerli): Pi-hole kapanırsa Pi'yi DNS olarak kullanan cihazların interneti kesilir.
   const handleToggle = async () => {
+    if (isEnabled && !confirm('Pi-hole durdurulursa Pi\'yi DNS olarak kullanan tüm cihazların interneti kesilir ve Pi yeniden başlasa da kapalı kalır. Devam edilsin mi?')) return;
     setToggling(true);
     try {
       const result = await postApi('/services/toggle', { name: 'pihole', enabled: !isEnabled });
       if (!result.success) {
         toast.error(result.error || 'Servis değiştirilemedi');
+      } else {
+        toast.success(isEnabled ? 'Pi-hole durduruldu' : 'Pi-hole başlatıldı');
       }
-      await refetchSvc();
-    } catch (e: any) {
-      toast.error(e.message || 'İstek başarısız');
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'İstek başarısız');
     }
+    await refetchSvc();
     setToggling(false);
   };
 

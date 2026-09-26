@@ -8,7 +8,8 @@ import { systemServices } from './services';
 import { startHealthMonitor, getHealthStatus } from './monitor';
 import { startCronJobs, getSystemLogs, clearSystemLogs } from './maintenance';
 import {
-  isLinux, getSystemStats, getServiceStatus, getPiholeStats,
+  isLinux, getSystemStats, getPiholeStats, getServiceStates, isManagedService, waitServiceSettled,
+  MANAGED_SERVICE_NAMES, TOGGLEABLE_SERVICES, FTL_SETTLE_TIMEOUT,
   getNetworkDevices, getBandwidthLive, getWireguardStatus,
   getFail2banStatus, getDnsQueries, getCurrentExternalIp,
   runSpeedTest, executeCommand, applyDomainRouting, applyBlockedDevices,
@@ -134,17 +135,22 @@ app.post('/api/system/reboot', (_req, res) => {
 });
 
 // ─── Services ───
+// Servis listesi: yalnız izin listesindeki satırlar (yedekten enjekte edilmiş adlar kabuğa hiç ulaşmaz); durum tek
+// `systemctl show` çağrısıyla okunur. enabled = şu an çalışıyor (1/0) — anlamı değişmedi; ek alanlar geriye uyumlu.
 app.get('/api/services', async (_req, res) => {
   try {
-    const services = await dbAll('SELECT * FROM service_status');
-    // On Linux, enrich with real systemctl status
-    if (isLinux) {
-      for (const svc of services as any[]) {
-        const realStatus = await getServiceStatus(svc.name);
-        if (realStatus) {
-          svc.status = realStatus;
-          svc.enabled = realStatus === 'running' ? 1 : 0;
-        }
+    const services = (await dbAll('SELECT * FROM service_status') as any[]).filter(r => isManagedService(r.name));
+    if (isLinux && services.length) {
+      const states = await getServiceStates(services.map(s => s.name));
+      const checked_at = new Date().toISOString();
+      for (const svc of services) {
+        const st = states[svc.name as keyof typeof states];
+        if (!st) continue;
+        Object.assign(svc, {
+          status: st.status, enabled: st.status === 'running' ? 1 : 0, unit: st.unit, active_state: st.active_state,
+          sub_state: st.sub_state, boot_enabled: st.boot_enabled, restarts: st.restarts, detail: st.detail, checked_at,
+          ...(st.tunnels ? { tunnels: st.tunnels } : {}),
+        });
       }
     }
     res.json({ services });
@@ -153,28 +159,31 @@ app.get('/api/services', async (_req, res) => {
   }
 });
 
+// Kalıcı aç/kapa. Sonuç, servis oturduktan sonra ölçülen GERÇEK durumdur; her iki yönde başarısızlık 500 döner.
 app.post('/api/services/toggle', async (req, res) => {
   try {
-    const { name, enabled } = req.body;
-    if (isLinux) {
-      const result = await systemServices.toggleService(name, enabled);
-      // nftables stop/start `nft flush ruleset` çalıştırır → iptables-nft routing zinciri (PI5_ROUTING) ve NAT silinir.
-      if (name === 'nftables') await applyAllRoutingRules().catch((e: any) => console.error('Routing yeniden uygulanamadı:', e.message));
-      // Verify the service actually changed state
-      const newStatus = await getServiceStatus(name);
-      const actuallyRunning = newStatus === 'running';
-      if (enabled && !actuallyRunning) {
-        return res.status(500).json({
-          success: false, name, enabled: false,
-          error: `Servis başlatılamadı. systemctl çıktısı: ${result}. Durum: ${newStatus}. Servis kurulu olmayabilir.`,
-        });
-      }
-      await dbRun('UPDATE service_status SET enabled = ?, status = ?, last_check = CURRENT_TIMESTAMP WHERE name = ?',
-        [actuallyRunning ? 1 : 0, newStatus, name]);
-      res.json({ success: true, name, enabled: actuallyRunning, status: newStatus });
-    } else {
-      res.status(400).json({ success: false, error: 'Servis kontrolü sadece Pi5 üzerinde çalışır' });
+    const { name, enabled } = req.body ?? {};
+    if (!isLinux) return res.status(400).json({ success: false, error: 'Servis kontrolü sadece Pi5 üzerinde çalışır' });
+    if (!isManagedService(name) || !TOGGLEABLE_SERVICES.includes(name)) {
+      const error = name === 'wireguard' ? 'WireGuard tünelleri VPS sayfasından (Bağla/Kes) yönetilir'
+        : name === 'nftables' ? 'nftables aç/kapa ile yönetilmez (durdurmak tüm firewall kurallarını siler); Firewall sayfasını kullanın'
+        : `Geçersiz servis: ${name}`;
+      return res.status(400).json({ success: false, name, error });
     }
+    if (typeof enabled !== 'boolean') return res.status(400).json({ success: false, name, error: 'enabled alanı true/false olmalı' });
+    let actionError = '';
+    try { await systemServices.toggleService(name, enabled); } catch (e: any) { actionError = e.message; }
+    const timeout = actionError ? 3000 : enabled ? (name === 'pihole' ? FTL_SETTLE_TIMEOUT : 15000) : 10000;
+    const st = await waitServiceSettled(name, enabled ? 'running' : 'stopped', timeout);
+    const ok = !actionError && (enabled ? st.status === 'running' : st.status !== 'running' && st.status !== 'restarting');
+    await dbRun('UPDATE service_status SET enabled = ?, status = ?, last_check = CURRENT_TIMESTAMP WHERE name = ?',
+      [st.status === 'running' ? 1 : 0, st.status, name]);
+    if (!ok) {
+      const why = actionError || `durum ${st.status}${st.detail ? ` — ${st.detail}` : ''} (${st.active_state || '?'}/${st.sub_state || '?'})`;
+      return res.status(500).json({ success: false, name, enabled: st.status === 'running', status: st.status,
+        error: `${name} ${enabled ? 'başlatılamadı' : 'durdurulamadı'}: ${why}` });
+    }
+    res.json({ success: true, name, enabled: st.status === 'running', status: st.status });
   } catch (e: any) {
     res.status(500).json({ success: false, error: e.message });
   }
@@ -205,9 +214,19 @@ app.post('/api/services/setup', async (req, res) => {
   try {
     const action = req.body.action;
     let result;
+    // Kurulum sonrası DB'ye zorla 'running' yazılmaz; ölçülen durum yazılır (kurulum ve blockcheck davranışı: Faz 5).
+    const recordState = async (svc: 'pihole' | 'zapret' | 'nftables') => {
+      if (!isLinux) return undefined;
+      const st = (await getServiceStates([svc]))[svc];
+      if (!st) return undefined;
+      await dbRun('UPDATE service_status SET enabled = ?, status = ?, last_check = CURRENT_TIMESTAMP WHERE name = ?',
+        [st.status === 'running' ? 1 : 0, st.status, svc]);
+      return st.status;
+    };
+    let status: string | undefined;
     if (action === 'pihole') {
       result = await systemServices.installPihole();
-      await dbRun("UPDATE service_status SET enabled=1, status='running' WHERE name='pihole'");
+      status = await recordState('pihole');
     }
     if (action === 'zapret') {
       const domain = req.body.domain || 'discord.com';
@@ -215,7 +234,7 @@ app.post('/api/services/setup', async (req, res) => {
         return res.status(400).json({ success: false, error: 'Geçersiz domain' });
       }
       result = await systemServices.installZapret(domain);
-      await dbRun("UPDATE service_status SET enabled=1, status='running' WHERE name='zapret'");
+      status = await recordState('zapret');
     }
     if (action === 'firewall') {
       const cfg = await dbAll("SELECT key, value FROM service_config WHERE service = 'nftables' AND key IN ('lan_iface', 'wan_iface')");
@@ -225,9 +244,9 @@ app.post('/api/services/setup', async (req, res) => {
       const customRows = await dbAll('SELECT type, target, action FROM routing_rules');
       const custom = buildCustomFwRules(customRows);
       result = await systemServices.configureNftables({ lan: m.lan_iface, wan: m.wan_iface }, custom);
-      await dbRun("UPDATE service_status SET enabled=1, status='running' WHERE name='nftables'");
+      status = await recordState('nftables');
     }
-    res.json({ success: true, message: `Action ${action} executed.`, log: result });
+    res.json({ success: true, message: `Action ${action} executed.`, log: result, status });
   } catch (e: any) {
     res.status(500).json({ success: false, error: e.message });
   }
@@ -431,16 +450,34 @@ app.delete('/api/zapret/domains/:id', async (req, res) => {
 });
 
 // ─── Service Actions (restart, apply config) ───
+// Yeniden başlat: yanıt servis oturduktan sonra gelir ve GERÇEK durumu taşır (eskiden hata olsa da 'running' yazılıyordu).
 app.post('/api/services/:name/restart', async (req, res) => {
   try {
-    await dbRun("UPDATE service_status SET status='restarting', last_check=CURRENT_TIMESTAMP WHERE name=?", [req.params.name]);
-    await systemServices.restartService(req.params.name);
-    // nftables restart `nft flush ruleset` çalıştırır → iptables-nft routing zinciri (PI5_ROUTING) ve NAT silinir.
-    if (req.params.name === 'nftables') await applyAllRoutingRules().catch((e: any) => console.error('Routing yeniden uygulanamadı:', e.message));
-    await dbRun("UPDATE service_status SET status='running', last_check=CURRENT_TIMESTAMP WHERE name=?", [req.params.name]);
-    res.json({ success: true, message: `${req.params.name} yeniden başlatılıyor...` });
+    const name = req.params.name;
+    if (!isLinux) return res.status(400).json({ success: false, error: 'Servis kontrolü sadece Pi5 üzerinde çalışır' });
+    if (!isManagedService(name)) return res.status(400).json({ success: false, error: `Geçersiz servis: ${name}` });
+    await dbRun("UPDATE service_status SET status='restarting', last_check=CURRENT_TIMESTAMP WHERE name=?", [name]);
+    let actionError = '';
+    try {
+      await systemServices.restartService(name);
+    } catch (e: any) {
+      actionError = e.message;
+    }
+    // nftables restart `nft flush ruleset` çalıştırır (routing zinciri ve NAT silinir); tünel yeniden kurulunca tablo
+    // rotaları kaybolur → başarısızlıkta da yeniden uygulanır (idempotent, sıralı kuyruk).
+    if (name === 'nftables' || name === 'wireguard') {
+      await applyAllRoutingRules().catch((e: any) => console.error('Routing yeniden uygulanamadı:', e.message));
+    }
+    const st = await waitServiceSettled(name, 'running', actionError ? 3000 : name === 'pihole' ? FTL_SETTLE_TIMEOUT : 15000);
+    await dbRun('UPDATE service_status SET enabled = ?, status = ?, last_check = CURRENT_TIMESTAMP WHERE name = ?',
+      [st.status === 'running' ? 1 : 0, st.status, name]);
+    if (actionError || st.status !== 'running') {
+      const why = actionError || `yeniden başlatıldı ama çalışmıyor: ${st.status}${st.detail ? ` — ${st.detail}` : ''} (${st.active_state || '?'}/${st.sub_state || '?'})`;
+      return res.status(500).json({ success: false, status: st.status, error: `${name}: ${why}` });
+    }
+    res.json({ success: true, message: `${name} yeniden başlatıldı`, status: 'running' });
   } catch (e: any) {
-    res.status(500).json({ error: e.message });
+    res.status(500).json({ success: false, error: e.message });
   }
 });
 
@@ -1594,6 +1631,70 @@ if (isLinux) {
 
 // ─── Health Check (every 5 minutes) ───
 if (isLinux) {
+  // Servis uyarıları DURUM DEĞİŞİMİNE göre: aynı kaynağın son satırı aynı önemdeyse yeniden yazılmaz (eskiden saatlik
+  // tekrar). Düzelme, 2 ardışık sağlıklı ölçümden sonra bir kez ve okunmuş (acknowledged=1) bilgi satırı olarak düşülür —
+  // okunmamış sayacını şişirmez, dalgalanan servis her 5 dk'da uyarı+düzelme çifti üretmez.
+  // 'warning' (durmuş / tünel kapalı) ancak 2 ardışık ölçümde sürerse yazılır — tek ölçümlük pencere (açılışta sırası
+  // gelmemiş birim, Bağla/yeniden başlatma arası) uyarı üretmez. Çökme ('critical') hemen yazılır.
+  const healthyStreak = new Map<string, number>();
+  const badStreak = new Map<string, number>();
+  const lastRestarts = new Map<string, number>();
+  const lastServiceAlert = (source: string) =>
+    dbGet(`SELECT severity FROM alerts WHERE type = 'health' AND source = ? ORDER BY id DESC LIMIT 1`, [source]);
+  const serviceAlert = async (source: string, severity: 'critical' | 'warning', message: string) => {
+    healthyStreak.set(source, 0);
+    const n = (badStreak.get(source) || 0) + 1;
+    badStreak.set(source, n);
+    if (severity === 'warning' && n < 2) return;
+    const last = await lastServiceAlert(source);
+    if (last && last.severity === severity) return;
+    await dbRun(`INSERT INTO alerts (type, severity, message, source) VALUES ('health', ?, ?, ?)`, [severity, message, source]);
+  };
+  const serviceHealthy = async (source: string, message: string) => {
+    badStreak.set(source, 0);
+    const n = (healthyStreak.get(source) || 0) + 1;
+    healthyStreak.set(source, n);
+    if (n !== 2) return;
+    const last = await lastServiceAlert(source);
+    if (last && (last.severity === 'critical' || last.severity === 'warning')) {
+      await dbRun(`INSERT INTO alerts (type, severity, message, source, acknowledged) VALUES ('health', 'info', ?, ?, 1)`, [message, source]);
+    }
+  };
+  const checkServiceHealth = async () => {
+    const states = await getServiceStates(MANAGED_SERVICE_NAMES);
+    // Eski aç/kapa yalnız `systemctl stop` yapıyordu (birim açılışta etkin kaldı) ve durmuş servisi 'not_installed'
+    // yazıyordu: kurulu birimde bu iz = kullanıcı bilerek kapatmış. Yeni aç/kapa satırı gerçek durumla ezer.
+    const legacyOff = new Set((await dbAll(`SELECT name FROM service_status WHERE enabled = 0 AND status = 'not_installed'`) as any[]).map(r => r.name));
+    for (const name of MANAGED_SERVICE_NAMES) {
+      const st = states[name];
+      if (!st || st.probe_failed) continue; // durum okunamadı: "çöktü" değil, bu tur uyarı yok
+      if (name === 'wireguard') {
+        for (const t of st.tunnels || []) {
+          const src = `service:wireguard:${t.iface}`;
+          if (t.up) { await serviceHealthy(src, `WireGuard tüneli yeniden ayakta: ${t.iface}`); continue; }
+          // Açılışta etkin olmayan (bilerek kesilmiş) ya da hâlâ açılmakta olan (başlatma işi sırada dahil) tünel için uyarı yok.
+          if (!t.boot_enabled || t.status === 'restarting' || t.active_state === 'activating') { badStreak.set(src, 0); continue; }
+          await serviceAlert(src, t.active_state === 'failed' ? 'critical' : 'warning', `WireGuard tüneli kapalı: ${t.iface}`);
+        }
+        continue;
+      }
+      const src = `service:${name}`;
+      // Yeniden başlatma sayacı iki kontrol arasında arttıysa, anlık görüntü 'running' olsa da çökme döngüsüdür.
+      const prev = lastRestarts.get(name);
+      lastRestarts.set(name, st.restarts);
+      const looping = prev !== undefined && st.restarts > prev;
+      if (st.status === 'error' || looping) {
+        const extra = looping ? `, ${st.restarts - (prev as number)} yeniden başlatma` : '';
+        await serviceAlert(src, 'critical', `Servis çöktü: ${name} (${st.unit}: ${st.active_state}/${st.sub_state}${extra})`);
+      } else if (st.status === 'stopped' && st.boot_enabled && !legacyOff.has(name)) {
+        await serviceAlert(src, 'warning', `Servis beklenmedik şekilde durmuş: ${name} (${st.unit})`);
+      } else if (st.status === 'running') {
+        await serviceHealthy(src, `Servis yeniden çalışıyor: ${name}`);
+      } else {
+        badStreak.set(src, 0); // restarting / not_installed / bilerek kapatılmış (açılışta devre dışı) → sessiz
+      }
+    }
+  };
   const healthCheck = async () => {
     try {
       const exec = require('util').promisify(require('child_process').exec);
@@ -1630,21 +1731,11 @@ if (isLinux) {
       if (diskPercent > 85) await addAlert('health', 'warning', `Disk kullanımı %${diskPercent} — alan azalıyor`, 'disk');
       else if (diskPercent > 0) await addAlert('health', 'info', `Disk kullanımı normal: %${diskPercent}`, 'disk');
 
-      // Services
-      const services = ['pihole-FTL', 'unbound', 'wg-quick@wg0', 'nftables', 'fail2ban'];
-      const runningServices: string[] = [];
-      const failedServices: string[] = [];
-      for (const svc of services) {
-        const { stdout: status } = await exec(`systemctl is-active ${svc} 2>/dev/null`, { timeout: 3000 }).catch(() => ({ stdout: 'inactive' }));
-        if (status.trim() === 'failed') {
-          failedServices.push(svc);
-          await addAlert('health', 'critical', `Servis çöktü: ${svc}`, 'service');
-        } else if (status.trim() === 'active') {
-          runningServices.push(svc);
-        }
-      }
-      if (runningServices.length > 0) {
-        await addAlert('health', 'info', `${runningServices.length}/${services.length} servis çalışıyor`, 'service');
+      // Services — kendi try'ı: bir hata sonraki DNS/İnternet kontrollerini ve temizliği atlatmasın.
+      try {
+        await checkServiceHealth();
+      } catch (e: any) {
+        console.error('[health] servis kontrolü başarısız:', e?.message || e);
       }
 
       // DNS check
@@ -2938,11 +3029,13 @@ app.get('/api/system/update-check', async (_req, res) => {
       return res.json({ available: false, commits: [], currentVersion: 'v2.0-dev' });
     }
     const exec = require('util').promisify(require('child_process').exec);
-    // Fetch latest from remote
-    await exec('cd /opt/pi5-gateway && git config --global --add safe.directory /opt/pi5-gateway 2>/dev/null; git fetch origin master', { timeout: 15000 }).catch(() => {});
+    // Servis ortamında HOME yok → ~/.gitconfig'teki safe.directory görünmez ("dubious ownership"); her çağrıda
+    // --global --add yeni kopya ekliyordu. Güvenli dizin komut satırından verilir (git ≥ 2.36).
+    const git = 'git -c safe.directory=/opt/pi5-gateway -C /opt/pi5-gateway';
+    await exec(`${git} fetch origin master`, { timeout: 15000 }).catch(() => {});
     // Compare HEAD with origin/master
     const { stdout: logOutput } = await exec(
-      'cd /opt/pi5-gateway && git log HEAD..origin/master --format="%h|%s|%cr" 2>/dev/null',
+      `${git} log HEAD..origin/master --format="%h|%s|%cr" 2>/dev/null`,
       { timeout: 5000 }
     ).catch(() => ({ stdout: '' }));
     const commits = logOutput.trim().split('\n').filter(Boolean).map((line: string) => {
@@ -2957,7 +3050,7 @@ app.get('/api/system/update-check', async (_req, res) => {
       currentVersion = `v${ver.version} (build ${ver.build})`;
     } catch {
       const { stdout: currentHash } = await exec(
-        'cd /opt/pi5-gateway && git rev-parse --short HEAD', { timeout: 5000 }
+        `${git} rev-parse --short HEAD`, { timeout: 5000 }
       ).catch(() => ({ stdout: 'unknown' }));
       currentVersion = `v2.0-${currentHash.trim()}`;
     }
@@ -2978,36 +3071,42 @@ app.post('/api/system/update', async (_req, res) => {
     if (!isLinux) {
       return res.json({ success: false, error: 'Guncelleme sadece Pi5 uzerinde calisir.' });
     }
-    const steps: { step: string; output: string; success: boolean }[] = [];
+    const steps: { step: string; output: string; success: boolean; warning?: boolean }[] = [];
     const exec = require('util').promisify(require('child_process').exec);
+    // update.sh düşülen adımı '@@STEP_FAILED=<adım> rc=N', post-update çıkış kodunu '@@POSTUPDATE_RC=N' ile bildirir
+    // (eskiden çıktıdaki kelimelerden tahmin ediliyordu; 'Git OK: unknown' gibi durumlar görünmüyordu).
+    const STEP_LABEL: Record<string, string> = { hazirlik: 'Hazırlık', git: 'Git Pull', backend: 'Backend Build', frontend: 'Frontend Build' };
+    const STEP_ORDER = ['hazirlik', 'git', 'backend', 'frontend'];
 
     // Run entire update via single script (handles permissions, chown, git, builds)
     try {
-      const { stdout, stderr } = await exec(
+      const { stdout } = await exec(
         'bash /opt/pi5-gateway/scripts/update.sh 2>&1',
         { timeout: 300000 } // 5 min total
       );
-      const output = stdout.trim().slice(-500);
-      steps.push({ step: 'Git Pull', output: 'OK', success: true });
+      const head = /Git OK: (\S+)/.exec(stdout)?.[1];
+      const viaSudo = /Normal fetch başarısız/.test(stdout) ? ' — sudo ile' : '';
+      steps.push({ step: 'Git Pull', output: head ? `OK (${head})${viaSudo}` : 'OK', success: true });
+      const pu = /@@POSTUPDATE_RC=(\d+)/.exec(stdout);
+      if (pu) steps.push({ step: 'Post-Update', output: `çıkış kodu ${pu[1]} — ayrıntı: core/update.log`, success: true, warning: true });
       steps.push({ step: 'Backend Build', output: 'OK', success: true });
-      steps.push({ step: 'Frontend Build', output: output, success: true });
+      steps.push({ step: 'Frontend Build', output: stdout.trim().slice(-500), success: true });
     } catch (e: any) {
-      const output = (e.stdout || e.message || '').trim().slice(-500);
-      // Try to determine which step failed from output
-      if (output.includes('Git fetch') || output.includes('fatal:') || output.includes('FETCH_HEAD')) {
-        steps.push({ step: 'Git Pull', output, success: false });
-      } else if (output.includes('Backend build') || output.includes('tsc')) {
-        steps.push({ step: 'Git Pull', output: 'OK', success: true });
-        steps.push({ step: 'Backend Build', output, success: false });
+      const full = String(e?.stdout || '');
+      const tail = (full || String(e?.message || '')).trim().slice(-500);
+      const failed = /@@STEP_FAILED=(\w+) rc=(\d+)/.exec(full);
+      if (failed && STEP_ORDER.includes(failed[1])) {
+        for (const s of STEP_ORDER.slice(1, STEP_ORDER.indexOf(failed[1]))) steps.push({ step: STEP_LABEL[s], output: 'OK', success: true });
+        steps.push({ step: STEP_LABEL[failed[1]], output: tail, success: false });
+      } else if (e?.killed) {
+        steps.push({ step: 'Zaman aşımı', output: 'Güncelleme 5 dk içinde bitmedi; işlem arka planda sürebilir — ayrıntı: core/update.log', success: false });
       } else {
-        steps.push({ step: 'Git Pull', output: 'OK', success: true });
-        steps.push({ step: 'Backend Build', output: 'OK', success: true });
-        steps.push({ step: 'Frontend Build', output, success: false });
+        steps.push({ step: 'Güncelleme', output: tail, success: false });
       }
     }
 
     const allSuccess = steps.every(s => s.success);
-    steps.push({ step: 'Servis Restart', output: '3 saniye sonra yeniden baslatilacak...', success: true });
+    if (allSuccess) steps.push({ step: 'Servis Restart', output: '3 saniye sonra yeniden baslatilacak...', success: true });
     res.json({ success: allSuccess, steps });
 
     // 4. Delayed restart — response already sent

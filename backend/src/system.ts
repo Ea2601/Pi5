@@ -22,6 +22,23 @@ async function run(cmd: string, timeout: number = 10000): Promise<string> {
   }
 }
 
+// Ayrıntılı çalıştırma: run() sıfır olmayan çıkışta stdout'u da atar (ör. `systemctl status` 3 ile çıkar); başarı/durum
+// bilgisi gereken yerler bunu kullanır. Asla fırlatmaz. code: 0 başarı; null → öldürüldü, çıktı sınırı ya da başlatılamadı.
+export interface RunResult { stdout: string; stderr: string; code: number | null; signal: string | null; timedOut: boolean; truncated: boolean }
+export async function runResult(cmd: string, timeout = 10000, maxBuffer = 1024 * 1024): Promise<RunResult> {
+  try {
+    const { stdout, stderr } = await execAsync(cmd, { timeout, maxBuffer });
+    return { stdout: String(stdout), stderr: String(stderr), code: 0, signal: null, timedOut: false, truncated: false };
+  } catch (e: any) {
+    const truncated = e?.code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER';
+    const code = typeof e?.code === 'number' ? e.code : null;
+    const timedOut = e?.killed === true && !truncated;
+    let stderr = String(e?.stderr ?? '');
+    if (!stderr && code === null && !timedOut && !truncated) stderr = String(e?.message ?? '');
+    return { stdout: String(e?.stdout ?? ''), stderr, code, signal: e?.signal ?? null, timedOut, truncated };
+  }
+}
+
 // ─── Pi-hole v6 (FTL) direct-DB access ───
 // Pi-hole v6 removed the legacy admin/api.php; its REST API needs the embedded FTL
 // webserver + auth (which collides with our nginx on :80). Reading the FTL SQLite DB
@@ -235,21 +252,173 @@ export async function sampleMetrics(): Promise<MetricSample | null> {
 }
 
 // ─── 2. Service Status ───
-// DB name → actual systemd unit name
-const SYSTEMD_NAME_MAP: Record<string, string> = {
-  pihole: 'pihole-FTL',
-  wireguard: 'wg-quick@wg0',
-};
+// Panelin yönettiği servisler — TEK kaynak ve izin listesi (DB adı → systemd birimi). Eskiden dört ayrı kopya vardı ve
+// `|| name` geri dönüşü her birimi (ssh, nginx, pi5-backend…) API'ye açıyordu. 'wireguard' tek bir birim değil:
+// Pi'deki wg_vps<ID> tünellerinin toplamı (wg0 Pi'de yoktur).
+export type ServiceName = 'pihole' | 'unbound' | 'zapret' | 'fail2ban' | 'nftables' | 'wireguard';
+export type ServiceStatusValue = 'running' | 'stopped' | 'error' | 'restarting' | 'not_installed';
+export const MANAGED_SERVICE_UNITS: Readonly<Record<ServiceName, string | null>> = Object.freeze({
+  pihole: 'pihole-FTL', unbound: 'unbound', zapret: 'zapret', fail2ban: 'fail2ban', nftables: 'nftables', wireguard: null,
+});
+export const MANAGED_SERVICE_NAMES = Object.keys(MANAGED_SERVICE_UNITS) as ServiceName[];
+// Aç/kapa yalnız arayüzün gönderdiği 4 servis: nftables'ı durdurmak `nft flush ruleset` ile tüm firewall'u (+ routing,
+// cihaz engeli, fail2ban tabloları) siler; WireGuard tünelleri VPS sayfasından yönetilir. Yeniden başlatma: 6'sı da.
+export const TOGGLEABLE_SERVICES: readonly ServiceName[] = ['pihole', 'unbound', 'zapret', 'fail2ban'];
+export const isManagedService = (n: unknown): n is ServiceName =>
+  typeof n === 'string' && Object.prototype.hasOwnProperty.call(MANAGED_SERVICE_UNITS, n);
+// pihole-FTL süreleri routing kuyruğuyla aynı (withFtlStopped / waitFtlHealthy): durdurma ya da başlatma 90 sn'ye,
+// DNS'in gelmesi 120 sn'ye kadar sürebilir (FTL :53'ü son 24 saatin sorgularını yükledikten sonra açar).
+export const FTL_SYSTEMCTL_TIMEOUT = 90000;
+export const FTL_SETTLE_TIMEOUT = 120000;
 
-// Returns actual systemctl status. Empty = service not found.
+export interface UnitState {
+  unit: string; load: string; active: string; sub: string; fileState: string; restarts: number;
+  bootEnabled: boolean; status: ServiceStatusValue; probeFailed: boolean; detail: string;
+}
+// systemd durumu → panel durumu. 'error' = çöktü (failed) ya da yeniden başlatma döngüsü (auto-restart[-queued]).
+export function mapUnitStatus(load: string, active: string, sub: string): ServiceStatusValue {
+  if (load === 'not-found') return 'not_installed';
+  if (!load || load === 'error' || load === 'bad-setting') return 'error';
+  if (active === 'active' || active === 'reloading') return 'running';
+  if (active === 'failed') return 'error';
+  if (active === 'activating') return /^auto-restart/.test(sub) ? 'error' : 'restarting';
+  if (active === 'deactivating') return 'restarting';
+  return 'stopped'; // inactive (masked dahil)
+}
+
+// `systemctl show` ile toplu okuma (tek süreç, her zaman 0 ile çıkar; is-active durmuşta 3 ile çıkıp run()'da kayboluyordu).
+// Komutun kendisi başarısızsa birimler probeFailed işaretlenir: "durum okunamadı" demektir, "servis çöktü" değil.
+export async function getUnitStates(units: string[]): Promise<Record<string, UnitState>> {
+  const out: Record<string, UnitState> = {};
+  const blank = (unit: string, detail: string, probeFailed: boolean): UnitState => ({
+    unit, load: '', active: '', sub: '', fileState: '', restarts: 0, bootEnabled: false, status: 'error', probeFailed, detail,
+  });
+  const valid = [...new Set(units)].filter(u => VALID_UNIT.test(u));
+  for (const u of units) if (!VALID_UNIT.test(u)) out[u] = blank(u, 'geçersiz birim adı', false);
+  if (!valid.length) return out;
+  const r = await runResult(`systemctl show -p Id -p LoadState -p ActiveState -p SubState -p UnitFileState -p NRestarts -p Job ${valid.join(' ')}`);
+  if (r.code !== 0 || r.timedOut) {
+    for (const u of valid) out[u] = blank(u, r.stderr.trim() || 'durum okunamadı', true);
+    return out;
+  }
+  const byId = new Map<string, Record<string, string>>();
+  const blocks = r.stdout.trim().split(/\n\s*\n/).map(b => {
+    const kv: Record<string, string> = {};
+    for (const line of b.split('\n')) { const k = line.indexOf('='); if (k > 0) kv[line.slice(0, k)] = line.slice(k + 1).trim(); }
+    if (kv.Id) byId.set(kv.Id.replace(/\.service$/, ''), kv);
+    return kv;
+  });
+  valid.forEach((u, i) => {
+    const kv = byId.get(u.replace(/\.service$/, '')) || blocks[i] || {};
+    const load = kv.LoadState || '';
+    const active = kv.ActiveState || '';
+    const sub = kv.SubState || '';
+    const fileState = kv.UnitFileState || '';
+    // Bekleyen başlatma işi (ör. açılışta network-online'ı bekleyen birim) iş çalışana dek 'inactive' görünür → durmuş değil.
+    const queued = active === 'inactive' && Number(kv.Job) > 0;
+    out[u] = {
+      unit: u, load, active, sub, fileState, restarts: Number(kv.NRestarts) || 0,
+      bootEnabled: ['enabled', 'enabled-runtime', 'generated'].includes(fileState),
+      status: queued ? 'restarting' : mapUnitStatus(load, active, sub), probeFailed: !load,
+      detail: queued ? 'başlatma sırada bekliyor' : load === 'masked' ? 'masked' : '',
+    };
+  });
+  return out;
+}
+
+// Pi'deki WireGuard tünelleri: /etc/wireguard/wg_vps<ID>.conf + arayüz (panel bağlantısı wg-quick'i doğrudan çalıştırdığı
+// için birim 'inactive' kalabilir — ayakta olup olmadığı arayüzden okunur).
+export interface WgTunnel { iface: string; unit: string; up: boolean; state: UnitState }
+export async function listWireguardTunnels(): Promise<WgTunnel[]> {
+  let ifaces: string[] = [];
+  try {
+    ifaces = fs.readdirSync('/etc/wireguard').map(f => /^(wg_vps\d+)\.conf$/.exec(f)?.[1]).filter((x): x is string => !!x);
+  } catch { /* dizin yok */ }
+  if (!ifaces.length) return [];
+  const units = ifaces.map(i => `wg-quick@${i}`);
+  const st = await getUnitStates(units);
+  return ifaces.map((iface, k) => ({ iface, unit: units[k], up: fs.existsSync(`/sys/class/net/${iface}`), state: st[units[k]] }));
+}
+
+export interface ServiceState {
+  name: ServiceName; status: ServiceStatusValue; unit: string; active_state: string; sub_state: string;
+  boot_enabled: boolean; restarts: number; detail: string; probe_failed: boolean;
+  tunnels?: { iface: string; up: boolean; status: ServiceStatusValue; active_state: string; sub_state: string; boot_enabled: boolean }[];
+}
+export async function getServiceStates(names: ServiceName[]): Promise<Partial<Record<ServiceName, ServiceState>>> {
+  const res: Partial<Record<ServiceName, ServiceState>> = {};
+  const unitNames = names.filter(n => MANAGED_SERVICE_UNITS[n]);
+  const st = await getUnitStates(unitNames.map(n => MANAGED_SERVICE_UNITS[n]!));
+  for (const n of unitNames) {
+    const u = st[MANAGED_SERVICE_UNITS[n]!];
+    let status = u.status;
+    let detail = u.detail;
+    // Routing değişikliğinde FTL bilerek durdurulup başlatılır (withFtlStopped) — o pencere "çöktü" değil.
+    if (n === 'pihole' && status !== 'running' && fs.existsSync(FTL_RESTART_INPROGRESS)) { status = 'restarting'; detail = 'DNS yeniden başlatılıyor'; }
+    // Firewall kurulumu birimi yalnız enable eder, kuralları `nft -f` ile yükler: kurallar yüklüyse çalışıyor sayılır.
+    if (n === 'nftables' && status === 'stopped' && (await runResult('nft list table inet pi5_filter', 5000)).code === 0) {
+      status = 'running'; detail = 'kurallar yüklü (birim pasif)';
+    }
+    res[n] = { name: n, status, unit: u.unit, active_state: u.active, sub_state: u.sub, boot_enabled: u.bootEnabled,
+      restarts: u.restarts, detail, probe_failed: u.probeFailed };
+  }
+  if (names.includes('wireguard')) {
+    const tunnels = await listWireguardTunnels();
+    let status: ServiceStatusValue = 'not_installed';
+    let detail = 'tünel yapılandırması yok';
+    if (tunnels.length) {
+      const up = tunnels.filter(t => t.up).length;
+      if (up) { status = 'running'; detail = `${up}/${tunnels.length} tünel ayakta`; }
+      else if (tunnels.some(t => t.state.status === 'error' && !t.state.probeFailed)) { status = 'error'; detail = 'tünel başlatılamadı'; }
+      else if (tunnels.some(t => t.state.status === 'restarting')) { status = 'restarting'; detail = 'tünel açılıyor'; }
+      else { status = 'stopped'; detail = `0/${tunnels.length} tünel ayakta`; }
+    }
+    res.wireguard = {
+      name: 'wireguard', status, unit: 'wg-quick@wg_vps*', active_state: '', sub_state: '',
+      boot_enabled: tunnels.some(t => t.state.bootEnabled), restarts: 0, detail,
+      probe_failed: tunnels.some(t => t.state.probeFailed),
+      tunnels: tunnels.map(t => ({ iface: t.iface, up: t.up, status: t.state.status, active_state: t.state.active, sub_state: t.state.sub, boot_enabled: t.state.bootEnabled })),
+    };
+  }
+  return res;
+}
+
+// Eski imza korunur ('' = Linux değil). Bilinmeyen ad kabuk komutuna hiç ulaşmaz.
 export async function getServiceStatus(name: string): Promise<string> {
   if (!isLinux) return '';
-  const svcName = SYSTEMD_NAME_MAP[name] || name;
-  const result = await run(`systemctl is-active ${svcName}`);
-  if (result === 'active') return 'running';
-  if (result === 'inactive') return 'stopped';
-  if (result === 'failed') return 'error';
-  return result || 'not_installed';
+  if (!isManagedService(name)) return 'not_installed';
+  return (await getServiceStates([name]))[name]?.status || 'error';
+}
+
+// Aç/kapa/yeniden başlat sonrası servisin oturmasını bekler (Type=simple birimde `systemctl start` 0 dönmesi ayakta
+// kaldığını kanıtlamaz). 'running' için stableMs boyunca kesintisiz çalışmalı, NRestarts artarsa döngü sayılır;
+// Pi-hole'da ayrıca DNS'in gerçekten cevap vermesi beklenir (FTL :53'ü veritabanını yükledikten sonra açar).
+export async function waitServiceSettled(name: ServiceName, expect: 'running' | 'stopped', timeoutMs: number, stableMs = 3000): Promise<ServiceState> {
+  const deadline = Date.now() + timeoutMs;
+  let baseRestarts: number | null = null;
+  let runningSince = 0;
+  let st = (await getServiceStates([name]))[name]!;
+  for (;;) {
+    if (expect === 'stopped') {
+      if (st.status !== 'running' && st.status !== 'restarting') return st;
+    } else {
+      if (st.status === 'error' || st.status === 'not_installed') return st;
+      if (st.status === 'running') {
+        if (baseRestarts === null) baseRestarts = st.restarts;
+        else if (st.restarts > baseRestarts) return { ...st, status: 'error', detail: 'yeniden başlatma döngüsü' };
+        if (!runningSince) runningSince = Date.now();
+        if (Date.now() - runningSince >= stableMs) {
+          if (name !== 'pihole' || await waitLocalDns(Math.max(1000, deadline - Date.now()))) return st;
+          return { ...st, status: 'error', detail: 'Pi-hole çalışıyor ama DNS cevap vermiyor' };
+        }
+      } else {
+        runningSince = 0;
+      }
+    }
+    if (Date.now() >= deadline) return st;
+    await new Promise(r => setTimeout(r, 1000));
+    st = (await getServiceStates([name]))[name]!;
+  }
 }
 
 // ─── 3. Pi-hole Stats ───
@@ -556,7 +725,11 @@ export async function runSpeedTest(): Promise<{
 }
 
 // ─── 11. Terminal (unrestricted) ───
-export async function executeCommand(cmd: string): Promise<{ output: string; command: string; timestamp: string }> {
+export interface TerminalResult {
+  output: string; command: string; timestamp: string;
+  stdout?: string; stderr?: string; exitCode?: number | null; signal?: string | null; timedOut?: boolean; truncated?: boolean;
+}
+export async function executeCommand(cmd: string): Promise<TerminalResult> {
   const trimmed = cmd.trim();
   const timestamp = new Date().toISOString();
 
@@ -568,8 +741,22 @@ export async function executeCommand(cmd: string): Promise<{ output: string; com
     return { output: '', command: trimmed, timestamp };
   }
 
-  const output = await run(trimmed, 120000);
-  return { output: output || '(bos cikti)', command: trimmed, timestamp };
+  // Eskiden sıfır olmayan çıkışta tüm çıktı kayboluyor ve '(bos cikti)' görünüyordu (ör. `systemctl status` → 3).
+  // Artık stdout + stderr + tek satırlık durum; baştaki boşluklar korunur (tablo hizası), sondakiler kırpılır.
+  const r = await runResult(trimmed, 120000);
+  const parts: string[] = [];
+  const out = r.stdout.replace(/\s+$/, '');
+  const err = r.stderr.replace(/\s+$/, '');
+  if (out) parts.push(out);
+  if (err) parts.push(err);
+  if (r.timedOut) parts.push('[zaman aşımı: 120 sn — komut sonlandırıldı; alt süreçler arka planda sürebilir]');
+  else if (r.truncated) parts.push('[çıktı 1 MB sınırında kesildi — komut sonlandırıldı]');
+  else if (r.code !== null && r.code !== 0) parts.push(`[çıkış kodu: ${r.code}]`);
+  else if (r.code === null && r.signal) parts.push(`[sinyal: ${r.signal}]`);
+  return {
+    output: parts.join('\n') || '(bos cikti)', command: trimmed, timestamp,
+    stdout: r.stdout, stderr: r.stderr, exitCode: r.code, signal: r.signal, timedOut: r.timedOut, truncated: r.truncated,
+  };
 }
 
 // ─── Health Check ───
@@ -601,12 +788,25 @@ export async function applyBlockedDevices(macs: string[]): Promise<void> {
 }
 
 // ─── Service Control ───
-export async function systemctlAction(action: 'start' | 'stop' | 'restart' | 'enable' | 'disable', service: string): Promise<string> {
+// Başarısızlıkta systemd'nin mesajıyla FIRLATIR (eskiden her durumda "tamamlandi" dönüyordu).
+type SystemctlAction = 'start' | 'stop' | 'restart' | 'enable' | 'disable' | 'enable-now' | 'disable-now' | 'reset-failed';
+const SYSTEMCTL_ARGV: Record<SystemctlAction, string> = {
+  start: 'start', stop: 'stop', restart: 'restart', enable: 'enable', disable: 'disable',
+  'enable-now': 'enable --now', 'disable-now': 'disable --now', 'reset-failed': 'reset-failed',
+};
+export async function systemctlAction(action: SystemctlAction, service: string, timeoutMs?: number): Promise<string> {
   if (!isLinux) throw new Error(`systemctl sadece Pi5 üzerinde çalışır: ${action} ${service}`);
-  const allowed = ['start', 'stop', 'restart', 'enable', 'disable'];
-  if (!allowed.includes(action)) throw new Error(`Geçersiz systemctl aksiyonu: ${action}`);
+  if (!Object.prototype.hasOwnProperty.call(SYSTEMCTL_ARGV, action)) throw new Error(`Geçersiz systemctl aksiyonu: ${action}`);
   if (!VALID_UNIT.test(service)) throw new Error(`Geçersiz servis adı: ${service}`);
-  return await run(`systemctl ${action} ${service}`) || `${action} ${service} tamamlandi`;
+  const argv = SYSTEMCTL_ARGV[action];
+  const timeout = timeoutMs ?? (action === 'enable' || action === 'disable' || action === 'reset-failed' ? 20000 : 60000);
+  const r = await runResult(`systemctl ${argv} ${service}`, timeout);
+  if (r.timedOut) throw new Error(`systemctl ${argv} ${service} ${timeout / 1000} sn içinde tamamlanmadı (iş arka planda sürebilir)`);
+  if (r.code !== 0) {
+    const msg = r.stderr.trim() || r.stdout.trim() || `systemctl ${argv} ${service} başarısız`;
+    throw new Error(`${msg}${r.code !== null ? ` (çıkış kodu ${r.code})` : ''}`);
+  }
+  return r.stdout.trim() || `${argv} ${service} tamamlandi`;
 }
 
 // ─── Interface / IP detection (supports both eth0=WAN and wlan0=WAN topologies) ───
