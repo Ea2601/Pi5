@@ -56,7 +56,11 @@ nft list chain inet pi5_filter input 2>/dev/null | grep -E 'policy|dport'
 for c in iptables ipset nft; do printf '%-9s %s\n' "$c" "$(command -v "$c" || echo YOK)"; done
 iptables -V 2>&1; ipset version 2>&1 | head -1
 echo "--- mangle PI5_ROUTING:"; iptables -t mangle -S PI5_ROUTING 2>&1 | head -20
-echo "--- nat POSTROUTING:"; iptables -t nat -S POSTROUTING 2>&1 | head -10
+echo "--- tünel NAT (nft pi5_wgnat):"; nft list table ip pi5_wgnat 2>&1 | grep -E 'masquerade|Error'
+echo "--- eski yerli 'table ip nat':"; nft list table ip nat 2>&1 | grep -vE '^\s*$' | head -10
+echo "--- çekirdek modülleri:"; lsmod | awk '{print $1}' | grep -E '^(ip_set|ip_set_hash_ip|xt_set|nft_compat|xt_connmark|xt_mark)$' | tr '\n' ' '; echo
+echo "--- pihole-FTL CAP_NET_ADMIN (ipset'e yazabilmek için): $(systemctl show -p AmbientCapabilities --value pihole-FTL | grep -qi net_admin && echo VAR || echo YOK)"
+echo "--- FTL ipset hataları:"; grep -i ipset /var/log/pihole/FTL.log 2>/dev/null | tail -3
 echo "--- ipset'ler:"; for s in $(ipset list -n 2>/dev/null | grep '^rt_m'); do echo "$s: $(ipset list "$s" | sed '1,/^Members:/d' | grep -c .) IP"; done
 echo "--- ip rule (fwmark, tekrar sayısıyla):"; ip rule show | grep fwmark | sed -E 's/^[0-9]+:\s*//' | sort | uniq -c
 for t in $(ip rule show | grep -o 'lookup [0-9]*' | awk '{print $2}' | sort -u); do echo "tablo $t: $(ip route show table "$t" 2>&1 | tr '\n' ' ')"; done

@@ -67,6 +67,15 @@ if ! dpkg -s wireguard-tools >/dev/null 2>&1; then
   apt-get install -y -qq wireguard-tools >> "$LOG" 2>&1 || true
 fi
 
+# 4c. Domain/uygulama yönlendirmesi: ipset (dnsmasq çözülen IP'leri buraya yazar) + iptables (mangle `-m set`
+#     ile fwmark). v2.16.0'da yalnız install.sh'ye eklenmişti; mevcut kurulumlarda yoktu → yönlendirme hiç çalışmıyordu.
+for pkg in ipset iptables; do
+  if ! dpkg -s "$pkg" >/dev/null 2>&1; then
+    echo "  $pkg kuruluyor..." >> "$LOG"
+    DEBIAN_FRONTEND=noninteractive apt-get install -y -qq "$pkg" >> "$LOG" 2>&1 || true
+  fi
+done
+
 # 5. Enable I2C/SPI if not already
 raspi-config nonint do_i2c 0 2>/dev/null || true
 raspi-config nonint do_spi 0 2>/dev/null || true

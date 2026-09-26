@@ -938,6 +938,15 @@ export async function applyDomainRouting(domains?: DomainRoute[]): Promise<void>
   await run('rm -f /etc/nftables.d/domain-routing.conf 2>/dev/null || true');
   await run('nft delete table inet domain_routing 2>/dev/null || true');
 
+  // run() hata yuttuğu için araç yoksa aşağıdaki adımların hepsi sessizce boşa gider — en azından günlükte görünsün.
+  if (markSets.size > 0) {
+    const missing: string[] = [];
+    for (const bin of ['ipset', 'iptables']) if (!(await run(`command -v ${bin} 2>/dev/null`))) missing.push(bin);
+    if (missing.length) {
+      console.error(`[routing] ${missing.join(' + ')} kurulu değil — domain/uygulama yönlendirmesi çalışmaz (Ayarlar → Güncelle kurar)`);
+    }
+  }
+
   // 2. Kernel ipset'lerini oluştur (dnsmasq doldurur). Yalnız domain→set eşlemesi değiştiyse (ya da FTL
   //    dosyaların son halinden önce başladıysa) boşaltılacak olarak işaretle; boşaltma DNS işinde FTL
   //    durmuşken yapılır. Eşleme değişmediyse içerik hâlâ geçerlidir, boşaltılmaz.
@@ -962,17 +971,46 @@ export async function applyDomainRouting(domains?: DomainRoute[]): Promise<void>
   }
 
   // 3b. Tünel çıkışına SNAT. VPS, Pi peer'ından yalnız 10.66.66.2 kaynaklı paketi kabul eder (AllowedIPs);
-  //     NAT'sız giren LAN kaynaklı (192.168.x.x) paketleri sessizce düşürür. Firewall kurulumundaki
-  //     nft pi5_nat masquerade'i ile çakışmaz (ilk eşleşen NAT uygulanır, sonuç aynı).
-  await run('iptables -t nat -C POSTROUTING -o wg_vps+ -j MASQUERADE 2>/dev/null || iptables -t nat -A POSTROUTING -o wg_vps+ -j MASQUERADE');
+  //     NAT'sız giren LAN kaynaklı (192.168.x.x) paketleri sessizce düşürür. iptables yerine kendi nft
+  //     tablomuz: eski kurulumlardan kalan yerli `table ip nat`, iptables-nft'nin aynı adlı tablosuyla çakışabilir.
+  //     Firewall kurulumundaki nft pi5_nat masquerade'i ile çakışmaz (ilk eşleşen NAT uygulanır, sonuç aynı).
+  //     Boş-tanımla → sil → yeniden-tanımla: her uygulamada idempotent; firewall'un include'u boot'ta da yükler.
+  const wgNat = [
+    'table ip pi5_wgnat {}',
+    'delete table ip pi5_wgnat',
+    'table ip pi5_wgnat {',
+    '  chain postrouting {',
+    '    type nat hook postrouting priority 100; policy accept;',
+    '    oifname "wg_vps*" masquerade',
+    '  }',
+    '}',
+  ];
+  try { fs.mkdirSync('/etc/nftables.d', { recursive: true }); } catch { /* */ }
+  try { fs.writeFileSync('/etc/nftables.d/pi5-wgnat.conf', wgNat.join('\n') + '\n'); } catch { /* */ }
+  await run('nft -f /etc/nftables.d/pi5-wgnat.conf 2>/dev/null || true');
 
   // 4. VPS-çıkış markları (≥100) için ip rule + routing tablosu.
   //    mark 200 (yalnız DPI bypass) ISP ana tablosunu kullanır — zapret trafiği kendi hook'uyla işler.
+  //    `ip rule add` varlık kontrolü yapmaz, her uygulamada yeni kopya ekler → mevcut "fwmark N lookup N"
+  //    (100–999) kurallarını say: istenen marklarda fazlayı sil (biri hep kalır, trafik ISP'ye kaçmaz),
+  //    artık kullanılmayan markların kurallarını tamamen kaldır, eksikse bir kez ekle.
+  const ruleCounts = new Map<number, number>();
+  for (const line of (await run('ip rule show 2>/dev/null')).split('\n')) {
+    const m = line.match(/fwmark (0x[0-9a-f]+|\d+) lookup (\d+)/i);
+    if (!m) continue;
+    const mark = Number(m[1]);
+    if (mark !== Number(m[2]) || mark < 100 || mark > 999) continue;
+    ruleCounts.set(mark, (ruleCounts.get(mark) || 0) + 1);
+  }
+  for (const [mark, count] of ruleCounts) {
+    const extra = markSets.has(mark) ? count - 1 : count;
+    for (let i = 0; i < extra; i++) await run(`ip rule del fwmark ${mark} table ${mark} 2>/dev/null || true`);
+  }
   for (const [mark] of markSets) {
     if (mark < 100) continue;
     const vpsId = mark >= 300 ? mark - 300 : mark - 100;
     const iface = `wg_vps${vpsId}`;
-    await run(`ip rule add fwmark ${mark} table ${mark} 2>/dev/null || true`);
+    if (!ruleCounts.has(mark)) await run(`ip rule add fwmark ${mark} table ${mark} 2>/dev/null || true`);
     const ifaceCheck = await run(`ip link show ${iface} 2>/dev/null`);
     if (ifaceCheck) {
       await run(`ip route replace default dev ${iface} table ${mark} 2>/dev/null || true`);
