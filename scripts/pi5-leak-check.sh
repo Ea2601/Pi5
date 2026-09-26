@@ -1,14 +1,22 @@
 #!/usr/bin/env bash
 # Klyrix Gate — yönlendirme kaçağı teşhisi: yönlendirilen bir site neden hâlâ yerel IP'yi / ülkeyi görüyor?
 # Salt okunur (hiçbir ayarı değiştirmez), ~40 sn; panel terminalinde de çalışır:
-#   sudo bash /opt/pi5-gateway/scripts/pi5-leak-check.sh <istemci-ip> [alan-adı ...]
-# Sorunu sitede yaşadıktan hemen sonra (1-2 dk içinde) çalıştırın: bağlantı kayıtları kısa ömürlüdür.
+#   sudo bash /opt/pi5-gateway/scripts/pi5-leak-check.sh [--izle [sn]] <istemci-ip> [alan-adı ...]
+# --izle: betik önce sn (varsayılan 50) saniye bekler — bu sürede sorunu cihazda yeniden yaşayın; pencere içindeki
+#   DNS sorguları (Pi-hole günlüğü, anlık), tünel işaret sayacı ve tünel trafiği farkı raporlanır.
+# --izle olmadan: sorunu yaşadıktan hemen sonra (1 dk içinde) çalıştırın; bağlantı kayıtları kısa ömürlüdür.
 # Alan adı verilmezse yönlendirme listesindeki ilk 8 alan adı denetlenir.
 set +e
 export LC_ALL=C
+IZLE=0
+if [ "$1" = "--izle" ]; then
+  IZLE=50; shift
+  if [[ $1 =~ ^[0-9]+$ ]]; then IZLE=$1; shift; fi
+  [ "$IZLE" -gt 70 ] && IZLE=70   # panel terminali komutu 120 sn'de keser
+fi
 CLIENT=$1; shift
 if ! [[ $CLIENT =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]]; then
-  echo "kullanım: sudo bash $0 <istemci-ip> [alan-adı ...]   (ör. 192.168.1.187 site.com)"; exit 1
+  echo "kullanım: sudo bash $0 [--izle [sn]] <istemci-ip> [alan-adı ...]   (ör. --izle 192.168.1.187 site.com)"; exit 1
 fi
 CONF=/etc/dnsmasq.d/05-domain-routing.conf
 FTLDB=/etc/pihole/pihole-FTL.db
@@ -29,6 +37,50 @@ WG_IFS=$(ls /sys/class/net | grep '^wg_vps')
 WGADDR=$(for i in $WG_IFS; do ip -4 -o addr show dev "$i" | awk '{split($4,a,"/"); print a[1]}'; done | paste -sd, -)
 echo "Klyrix sızıntı teşhisi $(date '+%F %T') — istemci $CLIENT | LAN: $(echo $LAN_IFS) | tünel: ${WG_IFS:-YOK} ${WGADDR:+($WGADDR)}"
 
+# Alan adının yönlendirme kuralı (en uzun sonek eşleşmesi, dnsmasq gibi): "taban → set" ya da boş.
+rule_for(){
+  awk -F/ -v d="$1" '$1=="ipset=" && (d==$2 || (length(d) > length($2) && substr(d, length(d)-length($2)) == "."$2)) {print length($2), $2" → "$3}' "$CONF" 2>/dev/null | sort -rn | head -1 | cut -d' ' -f2-
+}
+# Tünel setlerinin o anki içeriği ("ip set"); dig de seti doldurduğu için betiğin kendi sorgularından ÖNCE alınır.
+snapset(){
+  for s in $(ipset list -n 2>/dev/null | grep '^rt_m'); do
+    ipset list "$s" 2>/dev/null | grep -E '^[0-9]+\.' | awk -v s="$s" '{print $1, s}'
+  done > "$TMP/set.txt"
+  SNAP=1
+}
+marks(){ iptables -t mangle -L PI5_ROUTING -v -n -x 2>/dev/null | awk '/MARK set/ {p += $1; b += $2} END {print p + 0, b + 0}'; }
+wgbytes(){ for i in $WG_IFS; do echo "$i $(cat /sys/class/net/$i/statistics/tx_bytes 2>/dev/null) $(cat /sys/class/net/$i/statistics/rx_bytes 2>/dev/null)"; done; }
+
+if [ "$IZLE" -gt 0 ]; then
+  LOG=/var/log/pihole/pihole.log
+  L0=$(stat -c %s "$LOG" 2>/dev/null || echo 0)
+  M0=$(marks); wgbytes > "$TMP/wg0"
+  sleep "$IZLE"
+  M1=$(marks); wgbytes > "$TMP/wg1"
+  snapset
+  h "0) İzleme penceresi ($IZLE sn)"
+  read -r p0 b0 <<<"$M0"; read -r p1 b1 <<<"$M1"
+  echo "Tünele işaretlenen paket: +$((p1 - p0)) ($(( (b1 - b0) / 1024 )) KB)"
+  join "$TMP/wg0" "$TMP/wg1" | awk '{printf "%s: tünelden gönderilen +%d KB, alınan +%d KB\n", $1, ($4 - $2) / 1024, ($5 - $3) / 1024}'
+  [ $((p1 - p0)) -gt 0 ] && flag WMARK
+  # Pi-hole günlüğü anlıktır (veritabanı 60 sn geriden gelir). Satır: "... query[A] ad from 192.168.1.187"
+  tail -c +$((L0 + 1)) "$LOG" 2>/dev/null \
+    | awk -v c="$CLIENT" '{ for (i = 1; i <= NF - 3; i++) if ($i ~ /^query\[/ && $(i+2) == "from" && $(i+3) == c) print tolower($(i+1)) }' \
+    | sort | uniq -c | sort -rn > "$TMP/wq.txt"
+  echo "Cihazın bu sürede sorduğu alan adları: $(wc -l < "$TMP/wq.txt") (adet | ad | kural)"
+  n=0
+  while read -r cnt name; do
+    [[ $name =~ ^[a-z0-9.-]+$ ]] || continue
+    r=$(rule_for "$name")
+    printf '  %3d  %-45s %s\n' "$cnt" "$name" "${r:-— kural yok}"
+    [ -n "$r" ] && flag WRULED
+    n=$((n + 1)); [ $n -le 25 ] || continue
+    for ip in $(dig +short +time=2 +tries=1 @127.0.0.1 A "$name" 2>/dev/null | grep -E '^[0-9.]+$'); do echo "$ip $name ${r:+1}" >> "$TMP/ipmap.txt"; done
+  done < <(head -40 "$TMP/wq.txt")
+  [ -s "$TMP/wq.txt" ] || flag NOQUERY
+fi
+
+if [ "$IZLE" -eq 0 ]; then
 h "1) IPv6 — modem IPv6 dağıtıyor mu?"
 echo "(Dağıtıyorsa telefon IPv6 trafiğini Pi'yi atlayıp doğrudan modemden gönderir; tünel yalnız IPv4 taşır.)"
 for i in $LAN_IFS; do
@@ -93,15 +145,13 @@ for ifn in sys.argv[1:]:
 PY
 grep -v '^@@' "$TMP/ra.txt"
 grep -q '^@@RA6' "$TMP/ra.txt" && flag RA6
+fi
 
 h "2) Alan adları — kural, DNS cevabı, ipset"
-echo "([rt_mN] = adres telefonun sorgusuyla tünel setine girmiş; [sette yok] = girmemiş)"
-# Set içeriği BU betiğin sorgularından ÖNCE alınır (aşağıdaki dig de seti doldurur).
-for s in $(ipset list -n 2>/dev/null | grep '^rt_m'); do
-  ipset list "$s" 2>/dev/null | grep -E '^[0-9]+\.' | awk -v s="$s" '{print $1, s}'
-done > "$TMP/set.txt"
+echo "([rt_mN] = adres cihazın sorgusuyla tünel setine girmiş; [sette yok] = girmemiş)"
+[ -n "$SNAP" ] || snapset
 for d in "${DOMAINS[@]}"; do
-  rule=$(awk -F/ -v d="$d" '$1=="ipset=" && (d==$2 || (length(d) > length($2) && substr(d, length(d)-length($2)) == "."$2)) {print length($2), $2" → "$3}' "$CONF" 2>/dev/null | sort -rn | head -1 | cut -d' ' -f2-)
+  rule=$(rule_for "$d")
   printf '\n%s\n' "$d"
   if [ -n "$rule" ]; then echo "  kural : $rule"; else echo "  kural : YOK — listede değil, normal hattan çıkar"; flag "NORULE $d"; fi
   A=$(dig +short +time=2 +tries=1 @127.0.0.1 A "$d" 2>/dev/null | grep -E '^[0-9.]+$')
@@ -140,16 +190,17 @@ fi
 
 h "4) İstemcinin Pi üzerinden geçen bağlantıları"
 # Kernel bağlantı tablosunu netlink ile okur (conntrack aracı gerekmez); yalnız okuma.
-python3 - "$CLIENT" "$SELF" "$WGADDR" "$TMP/ipmap.txt" > "$TMP/ct.txt" 2>&1 <<'PY'
+python3 - "$CLIENT" "$SELF" "$WGADDR" "$TMP/ipmap.txt" "$TMP/set.txt" > "$TMP/ct.txt" 2>&1 <<'PY'
 import socket, struct, sys
 from collections import Counter
 client, self_ips = sys.argv[1], set(filter(None, sys.argv[2].split(',')))
 wg_ips = set(filter(None, sys.argv[3].split(',')))
-ipmap = {}
+ipmap = {}  # ip -> (alan adı, kurallı mı); paylaşılan adreste (CDN) kurallı ad öncelikli
 for line in open(sys.argv[4]):
     p = line.split()
-    if len(p) >= 2:
-        ipmap.setdefault(p[0], (p[1], len(p) > 2))
+    if len(p) >= 2 and (p[0] not in ipmap or (len(p) > 2 and not ipmap[p[0]][1])):
+        ipmap[p[0]] = (p[1], len(p) > 2)
+inset = {l.split()[0] for l in open(sys.argv[5]) if l.strip()}  # tünel setlerindeki adresler
 def attrs(b):
     out, i = {}, 0
     while i + 4 <= len(b):
@@ -202,17 +253,18 @@ for (osrc, odst, proto, dport), (_, rdst, _, _), mark in flows:
     fwd += 1
     path = 'TÜNEL' if rdst in wg_ips else 'MODEM' if rdst in self_ips else 'NAT yok'
     tun += path == 'TÜNEL'
-    if odst in ipmap:
-        dom, ruled = ipmap[odst]
-        leak = ruled and path != 'TÜNEL'
+    if odst in ipmap or odst in inset:
+        dom, ruled = ipmap.get(odst, ('?', False))
+        leak = (ruled or odst in inset) and path != 'TÜNEL'
         miss += leak
-        matched.append(f"  {PROTO.get(proto, proto)} {odst}:{dport}  {dom}  → {path} (işaret {mark}){'   ← KAÇAK' if leak else ''}")
+        tag = ' [tünel setinde]' if odst in inset else ''
+        matched.append(f"  {PROTO.get(proto, proto)} {odst}:{dport}  {dom}{tag}  → {path} (işaret {mark}){'   ← KAÇAK' if leak else ''}")
     else:
         others[(odst, dport, path)] += 1
 print(f"Pi'ye doğrudan (DNS vb.): {direct} bağlantı")
 print(f"Pi üzerinden yönlendirilen: {fwd} bağlantı — tünelden {tun}, modemden {fwd - tun}")
 if matched:
-    print('Denetlenen alan adlarının adreslerine giden bağlantılar:')
+    print('Denetlenen alan adlarına / tünel setindeki adreslere giden bağlantılar:')
     print('\n'.join(sorted(set(matched))[:30]))
 if others:
     print('Diğer hedefler (en çok 12):')
@@ -225,13 +277,20 @@ FWD=$(sed -n 's/^@@FWD=//p' "$TMP/ct.txt"); MISS=$(sed -n 's/^@@MISS=//p' "$TMP/
 [ "${FWD:-1}" = 0 ] && flag NOFWD
 [ "${MISS:-0}" -gt 0 ] 2>/dev/null && flag "MISS $MISS"
 
-h "5) Sayaçlar"
+h "5) Yönlendirme zinciri ve sayaçlar"
+echo "Pi açılışı: $(uptime -s 2>/dev/null) | panel başlangıcı: $(systemctl show -p ActiveEnterTimestamp --value pi5-backend 2>/dev/null)"
+echo "(işaret sayaçları her routing uygulamasında — panel başlangıcı dahil — sıfırlanır)"
 awk '/^Ip:/ { if (!n) { for (i = 1; i <= NF; i++) k[i] = $i; n = 1; next } for (i = 1; i <= NF; i++) if (k[i] == "ForwDatagrams") print "Pi üzerinden yönlendirilen paket (açılıştan beri):", $i }' /proc/net/snmp
-for i in $WG_IFS; do
-  echo "$i: alınan $(( $(cat /sys/class/net/$i/statistics/rx_bytes) / 1048576 )) MB, gönderilen $(( $(cat /sys/class/net/$i/statistics/tx_bytes) / 1048576 )) MB"
-done
+echo "PREROUTING → PI5_ROUTING: $(iptables -t mangle -S PREROUTING 2>/dev/null | grep -c -- '-j PI5_ROUTING') bağlantı"
 iptables -t mangle -L PI5_ROUTING -v -n -x 2>/dev/null | sed -n '3,10p'
+ip rule show 2>/dev/null | grep fwmark | head -4
+for i in $WG_IFS; do
+  echo "$i rota: $(ip route show table all 2>/dev/null | grep -E "^default dev $i " | head -2 | paste -sd';' -)"
+  wg show "$i" latest-handshakes 2>/dev/null | awk -v now="$(date +%s)" '{print "  el sıkışma yaşı:", ($2 > 0 ? now - $2 " sn" : "HİÇ")}'
+  echo "  arayüz kurulduğundan beri: gönderilen $(( $(cat /sys/class/net/$i/statistics/tx_bytes) / 1024 )) KB, alınan $(( $(cat /sys/class/net/$i/statistics/rx_bytes) / 1024 )) KB"
+done
 
+if [ "$IZLE" -eq 0 ]; then
 h "6) Çıkış IP'leri (sitelerin gördüğü adres)"
 geo(){
   curl -4 -s --max-time 8 "$@" https://ipinfo.io/json | python3 -c '
@@ -243,6 +302,7 @@ print(j.get("ip", "?"), "|", j.get("city", "?"), j.get("country", "?"), "|", j.g
 for i in $WG_IFS; do echo "Tünel $i : $(geo --interface "$i")"; done
 isp=$(geo); ip0=${isp%% *}
 echo "Normal hat: $(mask4 "$ip0")${isp#"$ip0"}"
+fi
 
 h "SONUÇ"
 grep -q '^RA6' "$TMP/flags" && echo "• Modem IPv6 dağıtıyor. Telefon, IPv6 adresi olan sitelere Pi'yi atlayıp doğrudan modemden gider (tünel yalnız IPv4 taşır) — site yerel IPv6 adresinizi ve ülkenizi görür."
@@ -250,8 +310,13 @@ V6=$(sed -n 's/^V6RULED //p' "$TMP/flags" | paste -sd' ' -)
 [ -n "$V6" ] && echo "• Yönlendirilen ama IPv6 adresi de olan alan adları: $V6"
 grep -q '^NOFWD' "$TMP/flags" && echo "• $CLIENT'in Pi üzerinden geçen bağlantısı yok → cihaz Pi'yi ağ geçidi olarak kullanmıyor (Wi-Fi → Yönlendirici Pi'nin IP'si olmalı) ya da son dakikalarda trafik yok."
 M=$(sed -n 's/^MISS //p' "$TMP/flags")
-[ -n "$M" ] && echo "• Kurallı sitelere $M bağlantı tünel yerine modemden çıkmış → adres tünel setine girmemiş (cihaz eski DNS cevabını kullanıyor olabilir: uçak modunu aç/kapa)."
+[ -n "$M" ] && echo "• Kurallı / tünel setindeki adreslere $M bağlantı tünel yerine modemden çıkmış → bağlantı adres sete girmeden kurulmuş (eski DNS cevabı ya da açık kalmış bağlantı: uçak modunu aç/kapa) ya da işaretleme çalışmıyor."
+grep -q '^NOQUERY' "$TMP/flags" && echo "• İzleme süresinde cihazdan hiç DNS sorgusu gelmedi → sayfa açılmadı ya da cihaz DNS olarak Pi'yi kullanmıyor."
+WR=0; grep -q '^WRULED' "$TMP/flags" && WR=1
+WM=0; grep -q '^WMARK' "$TMP/flags" && WM=1
+[ $WR = 1 ] && [ $WM = 0 ] && echo "• Kurallı alan adları soruldu ama tünele tek paket işaretlenmedi → cihaz bu adreslere Pi üzerinden bağlanmıyor ya da işaretleme çalışmıyor (4. ve 5. bölüm)."
+[ $WM = 1 ] && echo "• İzleme süresinde trafik tünele yönlendi (işaret sayacı arttı) → Pi tarafında yönlendirme çalışıyor."
 NR=$(sed -n 's/^NORULE //p' "$TMP/flags" | paste -sd' ' -)
 [ -n "$NR" ] && echo "• Listede olmayan alan adları: $NR → normal hattan çıkar; gerekliyse Routing → Özel Domain'ler'e ekleyin."
-[ -s "$TMP/flags" ] || echo "• Belirgin bir kaçak bulunmadı."
+grep -qE '^(RA6|V6RULED|NOFWD|MISS|NORULE|NOQUERY)' "$TMP/flags" || [ $WR = 1 -a $WM = 0 ] || echo "• Belirgin bir kaçak bulunmadı."
 exit 0
