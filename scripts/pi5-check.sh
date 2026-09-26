@@ -5,7 +5,9 @@ set +e
 export LC_ALL=C
 h(){ printf '\n===== %s =====\n' "$*"; }
 # Günlük satırlarındaki sırları maskele (DDNS token, parola vb. — çıktı paylaşılabilir kalsın)
-redact(){ sed -E 's/((token|password|passwd|pass|key|secret|apikey|api_key)=)[^&[:space:]"]+/\1***/Ig'; }
+redact(){ sed -E -e 's/((token|password|passwd|pass|key|secret|apikey|api_key)=)[^&[:space:]"]+/\1***/Ig' \
+  -e 's/(Authorization:[[:space:]]*(Bearer|Basic)[[:space:]]+)[^[:space:]"]+/\1***/Ig' \
+  -e 's#(//[^/[:space:]:@]+:)[^@[:space:]/]+@#\1***@#g'; }
 DB=/opt/pi5-gateway/core/pi5router.sqlite
 LANIP=$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src"){print $(i+1); exit}}')
 
@@ -79,7 +81,8 @@ grep -E '^(FWTYPE|MODE_FILTER|NFQWS_ENABLE|TPWS_ENABLE|DESYNC_MARK)=' /opt/zapre
 pgrep -a nfqws; pgrep -a tpws
 
 h "Panel erişimi (nginx Basic Auth)"
-grep -rnE 'auth_basic|satisfy' /etc/nginx/sites-enabled/ /etc/nginx/snippets/ /etc/nginx/conf.d/ 2>/dev/null
+bash /opt/pi5-gateway/scripts/panel-auth.sh status 2>/dev/null | grep -E '^(state|password_set|trial_ends)='
+grep -rnE 'auth_basic|satisfy|include' /etc/nginx/sites-enabled/ /etc/nginx/snippets/ /etc/nginx/conf.d/ 2>/dev/null
 curl -s -o /dev/null -w "LAN IP'den /api/status: HTTP %{http_code} (200 = korumasız, 401 = korumalı)\n" --max-time 3 "http://$LANIP/api/status"
 
 h "Kasa / kiosk / donanım"

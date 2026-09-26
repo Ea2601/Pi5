@@ -1,13 +1,12 @@
 {
-  "version": "2.19.0",
-  "build": 70,
+  "version": "2.20.0",
+  "build": 71,
   "date": "2026-09-27",
   "changelog": [
-    "Yönlendirme anında etkin: eklenen alan adının adresleri (ve son 24 saatte görülen alt adresleri) Pi tarafından hemen tünel listesine yazılıyor — telefonun eski DNS cevabının süresinin dolmasını beklemek gerekmiyor",
-    "Art arda iki değişiklik yapınca bütün tünel listelerinin boşalması (önceden çalışan sitelerin de bir süre normal hatta düşmesi) düzeltildi",
-    "Kural silinince tünel listesi boşaltılmıyor: kalan kurallarla yenisi hazırlanıp tek hamlede değiştiriliyor, diğer siteler tünelden hiç düşmüyor",
-    "Pi-hole yeniden başladıktan ve Pi açıldıktan sonra tünel listeleri kendiliğinden dolduruluyor",
-    "Kural zinciri tek işlemde kuruluyor: her değişiklikte açık tünel bağlantılarının sıfırlanması önlendi",
-    "Routing sayfası değişikliğin durumunu gösteriyor: 'DNS X sn içinde yenilenecek…', 'yeniden başlatılıyor…', 'Hazır'; alan adı eklerken 'Ekleniyor…' ve bildirim; uygulama kuralı hataları artık gösteriliyor"
+    "Güvenlik: panel şifre koruması — üstteki banttan kendi şifreni belirleyip korumayı 5 dakikalık deneme olarak açarsın; şifreyle girip 'Kalıcı yap' demezsen koruma kendiliğinden kapanır (kilitlenme olmaz). Pi'nin kendisi (kiosk, OLED) muaf; güncellemeler korumayı asla kendiliğinden açmaz; şifre düz metin saklanmaz",
+    "Güvenlik: başka bir sitenin tarayıcın üzerinden panele komut göndermesi (yeniden başlat, güncelle vb.) engellendi",
+    "DDNS: token ve parolalar panel yanıtlarında, sistem günlüğünde ve hata mesajlarında artık görünmüyor; düzenlerken boş bırakılan kayıtlı sır korunuyor, token alanı gizli",
+    "Sistem: hız sınırlayıcı cihazları ayrı sayıyor (günlükteki X-Forwarded-For uyarıları bitti); bozuk ya da çok büyük istekler 400/413 dönüyor ve içerikleri günlüğe yazılmıyor",
+    "Kurtarma: panel şifresi unutulursa Pi'de  sudo bash /opt/pi5-gateway/scripts/panel-auth.sh off  (korumayı kapatır) ya da  ... reset  (yeni şifre)"
   ]
 }

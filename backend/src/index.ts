@@ -21,11 +21,14 @@ import {
   isValidHexColor, normalizeAnimation, sanitizeName,
 } from './util';
 import { promisify } from 'util';
-import { execFile as _execFile } from 'child_process';
+import { execFile as _execFile, spawn as _spawn } from 'child_process';
 const execFileP = promisify(_execFile);
 
 const app = express();
 const port = process.env.PORT || 3001;
+// Tek yerel nginx arkasında: yalnız loopback'ten gelen X-Forwarded-For'a güvenilir (istemci IP'si = gerçek LAN adresi;
+// rate limit istemci başına ayrılır). `true` sahtelenebilir ve express-rate-limit tarafından reddedilir.
+app.set('trust proxy', 'loopback');
 
 // Not: DNS-redirect edilen domain'ler için 302 yönlendirme artık NGINX (:80) katmanında yapılır
 // (bkz. /etc/nginx/conf.d/pi5-redirect-map.conf + applyDomainRouting). Backend'e o trafik hiç ulaşmıyordu.
@@ -41,6 +44,33 @@ app.use(cors({
   maxAge: 86400,
 }));
 app.use(express.json({ limit: '1mb' }));
+
+// CSRF: başka bir sitenin tarayıcı üzerinden gövdesiz POST atmasını engeller — CORS yalnız yanıtın okunmasını engeller,
+// form POST'u preflight'a girmez ve tarayıcı kayıtlı Basic kimliğini ekler. Yazma isteklerinde Origin varsa ana makine
+// adı Host ile aynı olmalı (port karşılaştırılmaz); Origin yoksa (curl, Pi'deki betikler) geçer. DNS rebinding'de
+// Origin ve Host aynı saldırgan adıdır — bu kontrol onu DURDURMAZ; koruma açıkken Basic Auth, panel koruması
+// işlemlerinde ise trustedPanelHost durdurur.
+const urlHostname = (u: string) => {
+  try { return new URL(u).hostname.toLowerCase().replace(/^\[(.*)\]$/, '$1'); } catch { return ''; }
+};
+app.use('/api', (req, res, next) => {
+  if (req.method === 'GET' || req.method === 'HEAD' || req.method === 'OPTIONS') return next();
+  const origin = req.headers.origin;
+  if (origin === undefined) return next();
+  const originHost = origin === 'null' ? '' : urlHostname(origin);
+  const host = urlHostname(`http://${String(req.headers.host || '').trim()}`);
+  if (originHost && host && originHost === host) return next();
+  res.status(403).json({ error: 'İstek başka bir siteden geldi — reddedildi (paneli kendi adresinden kullanın)' });
+});
+// Panel koruması işlemleri yalnız IP adresi ya da Pi'nin kendi adlarıyla açılmış panelden kabul edilir: DNS rebinding
+// sayfası (koruma henüz kapalıyken) kendi şifresini koyup korumayı açarak sahibini kilitleyemesin.
+const trustedPanelHost = (hostHeader: string) => {
+  const h = urlHostname(`http://${hostHeader.trim()}`);
+  if (!h) return false;
+  if (/^\d{1,3}(\.\d{1,3}){3}$/.test(h) || h.includes(':')) return true; // IPv4 / IPv6 sabit adres
+  const me = require('os').hostname().toLowerCase();
+  return ['localhost', 'pi.hole', me, `${me}.local`, `${me}.lan`, `${me}.home`].includes(h);
+};
 
 // Rate limiting — genel API
 const apiLimiter = rateLimit({
@@ -2482,10 +2512,32 @@ app.get('/api/unbound/status', async (_req, res) => {
 });
 
 // ─── DDNS ───
+// Sırlar (parola, token; özel sağlayıcıda sır içerebilen URL) yanıtlarda maskelenir. Düzenleme formu maskeyi geri
+// gönderirse "değişmedi" sayılır ve saklı değer korunur; sağlayıcıya giden değer her zaman DB'den okunur.
+const DDNS_MASK = '••••••••';
+const DDNS_SECRET_FIELDS = ['password', 'token'] as const;
+function publicDdns(row: any) {
+  if (!row) return row;
+  const out: any = { ...row };
+  for (const f of DDNS_SECRET_FIELDS) {
+    out[`has_${f}`] = !!row[f];
+    out[f] = row[f] ? DDNS_MASK : '';
+  }
+  // Özel sağlayıcının URL'si (ya da sağlayıcı değiştirilse de alanda kalan herhangi bir URL) sır içerebilir.
+  if (row.domain && (String(row.provider || '').toLowerCase() === 'custom' || String(row.domain).includes('://'))) {
+    let host = '';
+    try { host = new URL(String(row.domain)).hostname; } catch { /* geçersiz URL */ }
+    out.domain = DDNS_MASK;
+    out.domain_display = host || 'özel URL';
+  }
+  return out;
+}
+const ddnsList = async () => (await dbAll('SELECT * FROM ddns_configs ORDER BY id')).map(publicDdns);
+app.use('/api/ddns', (_req, res, next) => { res.set('Cache-Control', 'no-store'); next(); });
+
 app.get('/api/ddns/configs', async (_req, res) => {
   try {
-    const configs = await dbAll('SELECT * FROM ddns_configs ORDER BY id');
-    res.json({ configs });
+    res.json({ configs: await ddnsList() });
   } catch (e: any) {
     res.status(500).json({ error: e.message });
   }
@@ -2495,12 +2547,12 @@ app.post('/api/ddns/configs', async (req, res) => {
   try {
     const { provider, hostname, username, password, token, domain, update_interval_min } = req.body;
     if (!provider || !hostname) return res.status(400).json({ error: 'provider ve hostname gerekli' });
+    const unmask = (v: unknown) => (v === DDNS_MASK ? '' : v || '');
     await dbRun(
       'INSERT INTO ddns_configs (provider, hostname, username, password, token, domain, update_interval_min) VALUES (?, ?, ?, ?, ?, ?, ?)',
-      [provider, hostname, username || '', password || '', token || '', domain || '', update_interval_min || 5]
+      [provider, hostname, username || '', unmask(password), unmask(token), unmask(domain), update_interval_min || 5]
     );
-    const configs = await dbAll('SELECT * FROM ddns_configs ORDER BY id');
-    res.json({ success: true, configs });
+    res.json({ success: true, configs: await ddnsList() });
   } catch (e: any) {
     res.status(500).json({ error: e.message });
   }
@@ -2509,19 +2561,20 @@ app.post('/api/ddns/configs', async (req, res) => {
 app.put('/api/ddns/configs/:id', async (req, res) => {
   try {
     // Partial-merge: yalnızca gönderilen alanları güncelle (toggle'ın kimlik bilgilerini silmesini önler).
+    // Maskeli değer = "değişmedi" (saklı sır korunur); boş dize alanı siler.
     const body = req.body || {};
     const updates: string[] = [];
     const params: any[] = [];
     for (const field of ['provider', 'hostname', 'username', 'password', 'token', 'domain', 'update_interval_min']) {
-      if (body[field] !== undefined) { updates.push(`${field} = ?`); params.push(body[field]); }
+      if (body[field] === undefined || body[field] === DDNS_MASK) continue;
+      updates.push(`${field} = ?`); params.push(body[field]);
     }
     if (body.enabled !== undefined) { updates.push('enabled = ?'); params.push(body.enabled ? 1 : 0); }
     if (updates.length > 0) {
       params.push(req.params.id);
       await dbRun(`UPDATE ddns_configs SET ${updates.join(', ')} WHERE id = ?`, params);
     }
-    const configs = await dbAll('SELECT * FROM ddns_configs ORDER BY id');
-    res.json({ success: true, configs });
+    res.json({ success: true, configs: await ddnsList() });
   } catch (e: any) {
     res.status(500).json({ error: e.message });
   }
@@ -2537,11 +2590,33 @@ app.delete('/api/ddns/configs/:id', async (req, res) => {
 });
 
 // ─── DDNS Provider Update Functions ───
-// All HTTP calls use execFile('curl', [...args]) — no shell, so config fields (hostname/token/
-// url/credentials) cannot inject commands. URL query values are percent-encoded.
-async function curlGet(args: string[]): Promise<string> {
-  const { stdout } = await execFileP('curl', ['-s', '--max-time', '10', ...args], { timeout: 15000 });
-  return stdout.trim();
+// curl kabuksuz çalışır ve URL/başlıklar/gövde argv'ye DEĞİL stdin'den config olarak (-K -) verilir: token ve Basic
+// kimlik /proc/<pid>/cmdline'da ve Node'un "Command failed: …" hata mesajında (→ journald, test yanıtı) görünmez.
+// Hata mesajı yalnız curl çıkış kodunu taşır. URL sorgu değerleri percent-encoded.
+interface CurlRequest { url: string; headers?: string[]; method?: string; data?: string }
+const curlQuote = (v: string) => `"${v.replace(/[\r\n]/g, '').replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
+function curlGet(req: CurlRequest): Promise<string> {
+  const config = [
+    `url = ${curlQuote(req.url)}`,
+    ...(req.headers || []).map(h => `header = ${curlQuote(h)}`),
+    ...(req.method ? [`request = ${curlQuote(req.method)}`] : []),
+    ...(req.data !== undefined ? [`data = ${curlQuote(req.data)}`] : []),
+  ].join('\n') + '\n';
+  return new Promise((resolve, reject) => {
+    const child = _spawn('curl', ['-s', '--max-time', '10', '-K', '-'], { stdio: ['pipe', 'pipe', 'ignore'] });
+    let out = '';
+    let timedOut = false;
+    const timer = setTimeout(() => { timedOut = true; child.kill('SIGKILL'); }, 15000);
+    child.stdout.on('data', d => { if (out.length < 65536) out += d; });
+    child.on('error', () => { clearTimeout(timer); reject(new Error('curl çalıştırılamadı')); });
+    child.on('close', code => {
+      clearTimeout(timer);
+      if (timedOut) return reject(new Error('zaman aşımı'));
+      if (code !== 0) return reject(new Error(`bağlantı hatası (curl çıkış kodu ${code})`));
+      resolve(out.trim());
+    });
+    child.stdin.end(config);
+  });
 }
 
 async function updateDdnsProvider(config: any, ip: string): Promise<{ success: boolean; message: string }> {
@@ -2553,32 +2628,31 @@ async function updateDdnsProvider(config: any, ip: string): Promise<{ success: b
       // DuckDNS: https://www.duckdns.org/spec.jsp
       const subdomain = String(config.hostname || '').replace('.duckdns.org', '');
       const url = `https://www.duckdns.org/update?domains=${enc(subdomain)}&token=${enc(config.token || '')}&ip=${enc(ip)}`;
-      const result = await curlGet([url]);
+      const result = await curlGet({ url });
       if (result === 'OK') return { success: true, message: 'DuckDNS güncellendi' };
       return { success: false, message: `DuckDNS yanıtı: ${result}` };
 
     } else if (provider === 'noip' || provider === 'no-ip') {
       const url = `https://dynupdate.no-ip.com/nic/update?hostname=${enc(config.hostname || '')}&myip=${enc(ip)}`;
       const auth = Buffer.from(`${config.username}:${config.password}`).toString('base64');
-      const result = await curlGet(['-H', `Authorization: Basic ${auth}`, url]);
+      const result = await curlGet({ url, headers: [`Authorization: Basic ${auth}`] });
       if (result.startsWith('good') || result.startsWith('nochg')) return { success: true, message: `No-IP: ${result}` };
       return { success: false, message: `No-IP yanıtı: ${result}` };
 
     } else if (provider === 'cloudflare') {
       const zoneId = enc(config.domain || ''); // Zone ID stored in domain field
-      const listOut = await curlGet([
-        '-H', `Authorization: Bearer ${config.token}`, '-H', 'Content-Type: application/json',
-        `https://api.cloudflare.com/client/v4/zones/${zoneId}/dns_records?type=A&name=${enc(config.hostname || '')}`,
-      ]);
+      const listOut = await curlGet({
+        url: `https://api.cloudflare.com/client/v4/zones/${zoneId}/dns_records?type=A&name=${enc(config.hostname || '')}`,
+        headers: [`Authorization: Bearer ${config.token}`, 'Content-Type: application/json'],
+      });
       const listData = JSON.parse(listOut);
       if (!listData.success || !listData.result?.[0]) return { success: false, message: 'Cloudflare DNS kaydı bulunamadı' };
       const recordId = enc(listData.result[0].id);
       const body = JSON.stringify({ type: 'A', name: config.hostname, content: ip, ttl: 300 });
-      const updateOut = await curlGet([
-        '-X', 'PUT', '-H', `Authorization: Bearer ${config.token}`, '-H', 'Content-Type: application/json',
-        '-d', body,
-        `https://api.cloudflare.com/client/v4/zones/${zoneId}/dns_records/${recordId}`,
-      ]);
+      const updateOut = await curlGet({
+        url: `https://api.cloudflare.com/client/v4/zones/${zoneId}/dns_records/${recordId}`,
+        method: 'PUT', headers: [`Authorization: Bearer ${config.token}`, 'Content-Type: application/json'], data: body,
+      });
       const updateData = JSON.parse(updateOut);
       if (updateData.success) return { success: true, message: 'Cloudflare güncellendi' };
       return { success: false, message: `Cloudflare hatası: ${JSON.stringify(updateData.errors)}` };
@@ -2586,7 +2660,7 @@ async function updateDdnsProvider(config: any, ip: string): Promise<{ success: b
     } else if (provider === 'dynu') {
       const url = `https://api.dynu.com/nic/update?hostname=${enc(config.hostname || '')}&myip=${enc(ip)}`;
       const auth = Buffer.from(`${config.username}:${config.password}`).toString('base64');
-      const result = await curlGet(['-H', `Authorization: Basic ${auth}`, url]);
+      const result = await curlGet({ url, headers: [`Authorization: Basic ${auth}`] });
       if (result.startsWith('good') || result.startsWith('nochg')) return { success: true, message: `Dynu: ${result}` };
       return { success: false, message: `Dynu yanıtı: ${result}` };
 
@@ -2595,19 +2669,28 @@ async function updateDdnsProvider(config: any, ip: string): Promise<{ success: b
       let url = String(config.domain || '');
       url = url.replace('{ip}', ip).replace('{hostname}', String(config.hostname || ''));
       if (!/^https?:\/\//i.test(url)) return { success: false, message: 'Custom URL http(s):// ile başlamalı' };
-      const extra = (config.username && config.password)
-        ? ['-H', `Authorization: Basic ${Buffer.from(`${config.username}:${config.password}`).toString('base64')}`]
+      const headers = (config.username && config.password)
+        ? [`Authorization: Basic ${Buffer.from(`${config.username}:${config.password}`).toString('base64')}`]
         : [];
-      // "--" stops curl option parsing so a URL starting with "-" can't be read as a flag
-      const out = await curlGet([...extra, '--', url]);
+      // URL config'te tırnaklı `url =` satırı: "-" ile başlasa da seçenek sayılmaz
+      const out = await curlGet({ url, headers });
       return { success: true, message: `Custom: ${out.slice(0, 100)}` };
 
     } else {
       return { success: false, message: `Bilinmeyen provider: ${provider}` };
     }
   } catch (e: any) {
-    return { success: false, message: e.message || 'Bağlantı hatası' };
+    // curlGet hataları sır taşımaz; JSON.parse gibi diğerleri sağlayıcı cevabından gelir. Yine de ek güvence olarak maskelenir.
+    return { success: false, message: redactSecrets(e.message || 'Bağlantı hatası') };
   }
+}
+
+// Günlüğe / yanıta gidecek metinde URL'deki token=…, Authorization başlığı ve kullanıcı:şifre@ biçimlerini maskeler.
+function redactSecrets(s: string): string {
+  return String(s)
+    .replace(/((?:token|key|password|pass|secret|api_key|apikey)=)[^&\s"']+/gi, '$1***')
+    .replace(/(Authorization:\s*(?:Bearer|Basic)\s+)\S+/gi, '$1***')
+    .replace(/(\/\/[^/\s:@]+:)[^@\s/]+@/g, '$1***@');
 }
 
 // DDNS auto-update: check IP and update all enabled configs
@@ -2661,7 +2744,7 @@ app.post('/api/ddns/configs/:id/test', async (req, res) => {
     await dbRun('UPDATE ddns_configs SET status = ?, last_ip = ?, last_update = datetime(?) WHERE id = ?',
       [result.success ? 'active' : 'error', currentIp, new Date().toISOString(), req.params.id]);
     const updated = await dbGet('SELECT * FROM ddns_configs WHERE id = ?', [req.params.id]);
-    res.json({ success: result.success, message: result.message, config: updated, detected_ip: currentIp });
+    res.json({ success: result.success, message: result.message, config: publicDdns(updated), detected_ip: currentIp });
   } catch (e: any) {
     res.status(500).json({ error: e.message });
   }
@@ -3125,8 +3208,96 @@ app.post('/api/system/update', async (_req, res) => {
   }
 });
 
+// ─── Panel erişim koruması (nginx Basic Auth) — scripts/panel-auth.sh ───
+// Şifreyi kullanıcı belirler; stdin'den verilir (argv/log/SQLite'a girmez), Pi yalnız SHA-512 crypt özetini saklar.
+// Açma her zaman 5 dk'lık denemedir: tarayıcı şifreyle girip "Kalıcı yap" (confirm) demezse zamanlayıcı geri alır.
+// Koruma açıkken bu uçlara yalnız şifreyle girmiş tarayıcı ulaşır — confirm, girişin gerçekten çalıştığının kanıtıdır.
+const PANEL_AUTH_SCRIPT = '/opt/pi5-gateway/scripts/panel-auth.sh';
+const PANEL_AUTH_TRIAL_S = 300;
+function runPanelAuth(args: string[], input = ''): Promise<{ code: number | null; kv: Record<string, string> }> {
+  return new Promise(resolve => {
+    const child = _spawn('bash', [PANEL_AUTH_SCRIPT, ...args], { stdio: ['pipe', 'pipe', 'pipe'] });
+    let out = '';
+    const timer = setTimeout(() => child.kill('SIGKILL'), 90000);
+    child.stdout.on('data', d => { if (out.length < 16384) out += d; });
+    child.stderr.on('data', d => { if (out.length < 16384) out += d; });
+    child.on('error', () => { clearTimeout(timer); resolve({ code: -1, kv: { error: 'panel-auth.sh çalıştırılamadı' } }); });
+    child.on('close', code => {
+      clearTimeout(timer);
+      const kv: Record<string, string> = {};
+      for (const line of out.split('\n')) { const i = line.indexOf('='); if (i > 0) kv[line.slice(0, i).trim()] = line.slice(i + 1).trim(); }
+      resolve({ code, kv });
+    });
+    child.stdin.end(input);
+  });
+}
+const panelAuthError = (r: { code: number | null; kv: Record<string, string> }, fallback: string) =>
+  [r.kv.error || fallback, r.kv.detail].filter(Boolean).join(' — ');
+app.use('/api/panel-auth', (req, res, next) => {
+  res.set('Cache-Control', 'no-store');
+  if (req.method !== 'GET' && !trustedPanelHost(String(req.headers.host || ''))) {
+    return res.status(403).json({ error: 'Bu işlem için paneli IP adresiyle açın (ör. http://192.168.1.153)' });
+  }
+  next();
+});
+// Pi'nin kendisi (kiosk tarayıcısı) şifresiz girer — onun "Kalıcı yap"ı şifrenin çalıştığını kanıtlamaz.
+const isLoopbackClient = (ip: string | undefined) => ['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(String(ip || ''));
+
+app.get('/api/panel-auth/status', async (_req, res) => {
+  if (!isLinux) return res.json({ state: 'unsupported' });
+  const r = await runPanelAuth(['status']);
+  if (r.code !== 0) return res.json({ state: 'error', error: panelAuthError(r, 'durum okunamadı') });
+  res.json({
+    state: r.kv.state || 'pending', user: r.kv.user || 'admin', password_set: r.kv.password_set === '1',
+    trial_ends: Number(r.kv.trial_ends) || 0, now: Number(r.kv.now) || Math.floor(Date.now() / 1000),
+  });
+});
+
+app.post('/api/panel-auth/password', async (req, res) => {
+  if (!isLinux) return res.status(400).json({ error: 'Yalnız Pi5 üzerinde çalışır' });
+  const pw = req.body?.password;
+  const chars = typeof pw === 'string' ? [...pw].length : 0;
+  if (typeof pw !== 'string' || /[\r\n\0]/.test(pw) || chars < 12 || chars > 128 || Buffer.byteLength(pw, 'utf8') > 512) {
+    return res.status(400).json({ error: 'Şifre 12-128 karakter olmalı ve satır sonu içermemeli' });
+  }
+  const r = await runPanelAuth(['set-password'], `${pw}\n`);
+  if (r.code !== 0) return res.status(500).json({ error: panelAuthError(r, 'şifre kaydedilemedi') });
+  res.json({ success: true });
+});
+
+app.post('/api/panel-auth/activate', async (_req, res) => {
+  if (!isLinux) return res.status(400).json({ error: 'Yalnız Pi5 üzerinde çalışır' });
+  const r = await runPanelAuth(['on', '--trial', String(PANEL_AUTH_TRIAL_S)]);
+  if (r.code !== 0) return res.status(500).json({ error: panelAuthError(r, 'koruma açılamadı') });
+  res.json({ success: true, trial_ends: Number(r.kv.trial_ends) || 0 });
+});
+
+app.post('/api/panel-auth/confirm', async (req, res) => {
+  if (!isLinux) return res.status(400).json({ error: 'Yalnız Pi5 üzerinde çalışır' });
+  if (isLoopbackClient(req.ip)) {
+    return res.status(403).json({ error: 'Onayı, şifreyle girdiğin başka bir cihazdan (PC/telefon) ver — Pi\'nin kendi ekranı şifre sormaz' });
+  }
+  const r = await runPanelAuth(['confirm']);
+  if (r.code !== 0) return res.status(409).json({ error: panelAuthError(r, 'onaylanamadı') });
+  res.json({ success: true });
+});
+
+app.post('/api/panel-auth/rollback', async (_req, res) => {
+  if (!isLinux) return res.status(400).json({ error: 'Yalnız Pi5 üzerinde çalışır' });
+  const r = await runPanelAuth(['rollback']);
+  if (r.code !== 0) return res.status(500).json({ error: panelAuthError(r, 'geri alınamadı') });
+  res.json({ success: true });
+});
+
 // ─── Global Error Handler ───
+// Gövde ayrıştırma hataları (bozuk JSON / çok büyük gövde) 400/413 döner ve mesajları loglanmaz: body-parser mesajı
+// gövdenin ilk baytlarını içerir (elle gönderilmiş bir istekteki sır parçası loga düşebilirdi).
 app.use((err: any, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+  if (err?.type === 'entity.parse.failed' || err?.type === 'entity.too.large') {
+    const status = err.type === 'entity.too.large' ? 413 : 400;
+    console.error(`İstek gövdesi reddedildi: ${err.type}`);
+    return res.status(status).json({ error: status === 413 ? 'İstek gövdesi çok büyük.' : 'Geçersiz JSON gövdesi.' });
+  }
   console.error('Unhandled error:', err.message || err);
   res.status(500).json({ error: 'Sunucu hatası oluştu.' });
 });
@@ -3145,6 +3316,10 @@ const server = app.listen(Number(port), bindHost, () => {
   void restoreLedConfig();
   // VPS tünelleri + domain/app routing kuralları (kernel durumu reboot'ta sıfırlanır).
   void restoreTunnelsAndRouting();
+  // Panel koruması: deneme sırasında Pi yeniden başladıysa (zamanlayıcı kalıcı değil) süresi geçen deneme geri alınır.
+  if (isLinux && require('fs').existsSync(PANEL_AUTH_SCRIPT)) {
+    void runPanelAuth(['ensure']).then(r => { if (r.code !== 0 || r.kv.warning) console.error('[panel-auth]', r.kv.error || r.kv.warning); });
+  }
 });
 
 server.keepAliveTimeout = 65000;

@@ -8,7 +8,8 @@ export default defineConfig({
     proxy: {
       '/api': {
         target: 'http://localhost:3001',
-        changeOrigin: true,
+        // Host tarayıcının adresi olarak kalmalı: backend yazma isteklerinde Origin ile Host'u karşılaştırır (CSRF).
+        changeOrigin: false,
       },
     },
   },

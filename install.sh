@@ -470,33 +470,37 @@ server {
 }
 NGXEOF
 
-# ─── Panel Erişim Koruması (Basic Auth — opt-in) ───
-# PI5_ADMIN_PASSWORD verildiyse Basic Auth etkinleşir (localhost/kiosk muaf tutulur).
-# Verilmediyse koruma kapalı kalır (kişisel/güvenilir LAN varsayımı) ama /api/terminal/execute gibi
-# uç noktalar açıkta kalır — üretim/uzaktan erişimde MUTLAKA ayarlanmalı.
+# ─── Panel Erişim Koruması (Basic Auth) ───
+# scripts/panel-auth.sh yönetir: koruma http seviyesindeki /etc/nginx/conf.d/pi5-auth.conf ile gelir, Pi'nin kendisi
+# (127.0.0.1/::1: kiosk, OLED) muaftır. Site dosyasının eski include satırı için snippet yalnız yorum olarak kalır.
 mkdir -p /etc/nginx/snippets
-if [ -n "${PI5_ADMIN_PASSWORD:-}" ]; then
-  PI5_ADMIN_USER="${PI5_ADMIN_USER:-admin}"
-  htpasswd -bc /etc/nginx/.htpasswd "$PI5_ADMIN_USER" "$PI5_ADMIN_PASSWORD" 2>/dev/null
-  cat > /etc/nginx/snippets/pi5-auth.conf << 'AUTHEOF'
-satisfy any;
-allow 127.0.0.1;
-allow ::1;
-deny all;
-auth_basic "Pi5 Gateway";
-auth_basic_user_file /etc/nginx/.htpasswd;
-AUTHEOF
-  log "Panel Basic Auth etkin (kullanıcı: $PI5_ADMIN_USER, localhost muaf)"
-else
-  echo "# Basic Auth kapalı — etkinleştirmek için PI5_ADMIN_PASSWORD ile yeniden çalıştırın" \
-    > /etc/nginx/snippets/pi5-auth.conf
-  warn "Panel erişim koruması KAPALI. Uzaktan/üretim için: PI5_ADMIN_PASSWORD=... sudo ./install.sh"
-fi
+[ -f /etc/nginx/snippets/pi5-auth.conf ] || \
+  echo "# Panel koruması conf.d/pi5-auth.conf ile yönetilir (scripts/panel-auth.sh)" > /etc/nginx/snippets/pi5-auth.conf
 
 # Nginx aktifleştir
 ln -sf /etc/nginx/sites-available/pi5-gateway /etc/nginx/sites-enabled/
 rm -f /etc/nginx/sites-enabled/default
 nginx -t && systemctl restart nginx
+
+# Şifre terminalde iki kez sorulup yalnız KAYDEDİLİR; koruma burada açılmaz. Açma, panelin üstündeki banttan 5 dk'lık
+# denemeyle yapılır: şifreyle girebilen tarayıcı "Kalıcı yap" demezse kendiliğinden geri alınır (yanlış yazılan şifre
+# kilitlemez). Şifre ortam değişkeniyle verilmez (sudo'nun argv'sinde görünür).
+bash "$INSTALL_DIR/scripts/panel-auth.sh" ensure >/dev/null 2>&1 || true
+if [ -t 0 ]; then
+  read -rsp "Panel şifresi belirleyin (en az 12 karakter; boş bırakırsanız panelden belirlersiniz): " PANEL_PW; echo
+  if [ -n "$PANEL_PW" ]; then
+    read -rsp "Tekrar: " PANEL_PW2; echo
+    if [ "$PANEL_PW" != "$PANEL_PW2" ]; then
+      warn "Şifreler eşleşmedi — panelin üstündeki banttan belirleyin"
+    elif printf '%s\n' "$PANEL_PW" | bash "$INSTALL_DIR/scripts/panel-auth.sh" set-password >/dev/null; then
+      log "Panel şifresi kaydedildi — korumayı panelin üstündeki banttan açın (5 dk deneme)"
+    else
+      warn "Panel şifresi kaydedilemedi (en az 12 karakter) — panelin üstündeki banttan belirleyin"
+    fi
+  fi
+  unset PANEL_PW PANEL_PW2
+fi
+warn "Panel koruması KAPALI — panelin üstündeki banttan şifreyi belirleyip korumayı açın"
 
 # Servisleri etkinleştir
 systemctl daemon-reload

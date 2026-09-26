@@ -1129,6 +1129,24 @@ select:disabled,
 @media (max-width: 768px) {
   .routing-suggest { padding-left: 12px; }
 }
+/* Panel erişim koruması bandı */
+.panel-auth-banner {
+  display: flex; align-items: flex-start; gap: 10px; margin: 0 0 14px; padding: 10px 14px; border-radius: 12px;
+  font-size: 13px; line-height: 1.5; background: var(--danger-glow); border: 1px solid var(--danger-color);
+}
+.panel-auth-banner > svg { flex-shrink: 0; margin-top: 2px; color: var(--danger-color); }
+.panel-auth-trial { background: var(--success-glow); border-color: var(--success-color); align-items: center; }
+.panel-auth-trial > svg { color: var(--success-color); }
+.panel-auth-trial > span { flex: 1; }
+.panel-auth-body { flex: 1; display: flex; flex-direction: column; gap: 8px; }
+.panel-auth-form, .panel-auth-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.panel-auth-form .config-input { max-width: 240px; }
+.panel-auth-banner code { font-size: 12px; background: rgba(255, 255, 255, 0.08); padding: 1px 5px; border-radius: 6px; }
+@media (max-width: 768px) {
+  .panel-auth-trial { align-items: flex-start; flex-direction: column; }
+  .panel-auth-form .config-input { max-width: none; flex: 1 1 100%; }
+}
+
 /* Kural uygulama durumu bandı */
 .routing-apply {
   display: flex; align-items: center; gap: 8px; margin-top: 12px; padding: 9px 12px; border-radius: 10px;

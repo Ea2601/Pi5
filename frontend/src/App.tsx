@@ -27,6 +27,7 @@ import { SshTerminal } from './components/SshTerminal';
 import { DdnsPanel } from './components/DdnsPanel';
 import { CaseControlPanel } from './components/CaseControlPanel';
 import { KioskSettingsPanel } from './components/KioskSettingsPanel';
+import { PanelAuthBanner } from './components/PanelAuthBanner';
 import type { TabId } from './types';
 import { seedThemeFromBackend } from './theme';
 import { Toaster } from './toast';
@@ -89,6 +90,7 @@ function App() {
         <Sidebar activeTab={activeTab} onTabChange={setActiveTab} />
         <main className="main-content">
           <Topbar onShowAlerts={() => setActiveTab('alerts')} />
+          <PanelAuthBanner />
           <div className="dashboard-content" key={activeTab}>
             <ErrorBoundary>
               {renderTab()}

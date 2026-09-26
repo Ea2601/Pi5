@@ -187,4 +187,8 @@ except: print('0')
   fi
 fi
 
+# 8. Panel erişim koruması: durum dosyasını kurar, açık korumayı onarır, süresi geçen denemeyi geri alır. Korumayı
+#    ASLA kendiliğinden açmaz (gece 03:30 güncellemesi kimse başında değilken kilitlemesin); şifre yazdırmaz.
+bash "$BASE/scripts/panel-auth.sh" ensure >> "$LOG" 2>&1 || echo "  [auth] UYARI: panel koruması denetlenemedi" >> "$LOG"
+
 echo "$(date '+%Y-%m-%d %H:%M:%S') — Post-update tamamlandı" >> "$LOG"

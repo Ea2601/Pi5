@@ -17,7 +17,14 @@ interface DdnsConfig {
   last_update: string;
   last_ip: string;
   status: string;
+  // Sunucu sırları maskeli döner: password/token '••••••••'; özel sağlayıcıda URL maskeli, domain_display = ana makine adı
+  has_password?: boolean;
+  has_token?: boolean;
+  domain_display?: string;
 }
+
+const DDNS_MASK = '••••••••';
+const displayDomain = (c: DdnsConfig) => (c.provider === 'custom' ? c.domain_display || '' : c.domain);
 
 interface IpHistoryEntry {
   id: number;
@@ -53,6 +60,7 @@ export function DdnsPanel() {
   const [checking, setChecking] = useState(false);
   const [form, setForm] = useState(emptyForm);
   const [editingId, setEditingId] = useState<number | null>(null);
+  const [editingOrig, setEditingOrig] = useState<DdnsConfig | null>(null);
   const [showForm, setShowForm] = useState(false);
   const [testing, setTesting] = useState<number | null>(null);
 
@@ -73,18 +81,36 @@ export function DdnsPanel() {
     setTesting(null);
   };
 
+  // Düzenlemede sır alanları boş gelir (sunucu sırrı göndermez); boş bırakılan kayıtlı sır maskeyle "değişmedi" olarak
+  // gönderilir ve sunucu saklı değeri korur.
   const handleSave = async () => {
     try {
-      if (editingId) await putApi(`/ddns/configs/${editingId}`, form as unknown as Record<string, unknown>);
-      else await postApi('/ddns/configs', form as unknown as Record<string, unknown>);
-      refetchConfigs(); setForm(emptyForm); setEditingId(null); setShowForm(false);
-    } catch { /* */ }
+      if (editingId) {
+        const payload: Record<string, unknown> = { ...form };
+        if (editingOrig) {
+          if (form.password === '' && editingOrig.has_password) payload.password = DDNS_MASK;
+          if (form.token === '' && editingOrig.has_token) payload.token = DDNS_MASK;
+          // Maskeli URL yalnız sağlayıcı değişmediyse korunur; değiştiyse boş gider (eski URL sırrı yeni türde açıkta kalmasın).
+          if (form.domain === '' && editingOrig.domain === DDNS_MASK && form.provider === editingOrig.provider) payload.domain = DDNS_MASK;
+        }
+        await putApi(`/ddns/configs/${editingId}`, payload);
+      } else {
+        await postApi('/ddns/configs', form as unknown as Record<string, unknown>);
+      }
+      refetchConfigs(); setForm(emptyForm); setEditingId(null); setEditingOrig(null); setShowForm(false);
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Kaydedilemedi');
+    }
   };
 
   const handleEdit = (c: DdnsConfig) => {
-    setForm({ provider: c.provider, hostname: c.hostname, username: c.username, password: c.password, token: c.token, domain: c.domain, update_interval_min: c.update_interval_min, enabled: c.enabled });
-    setEditingId(c.id); setShowForm(true);
+    setForm({
+      provider: c.provider, hostname: c.hostname, username: c.username, password: '', token: '',
+      domain: c.domain === DDNS_MASK ? '' : c.domain, update_interval_min: c.update_interval_min, enabled: c.enabled,
+    });
+    setEditingOrig(c); setEditingId(c.id); setShowForm(true);
   };
+  const keptHint = (has: boolean | undefined) => (editingId && has ? 'Kayıtlı — değiştirmek için yazın' : undefined);
 
   const handleDelete = async (id: number) => {
     await deleteApi(`/ddns/configs/${id}`); refetchConfigs();
@@ -152,7 +178,7 @@ export function DdnsPanel() {
                   <div key={c.id} className="list-item">
                     <div className="list-item-content">
                       <span className="list-item-value">
-                        <strong>{PROVIDER_LABELS[c.provider]}</strong> — {c.domain || c.hostname}
+                        <strong>{PROVIDER_LABELS[c.provider]}</strong> — {displayDomain(c) || c.hostname}
                       </span>
                       <span className="list-item-comment">
                         Son IP: {c.last_ip || '---'} — {c.last_update ? new Date(c.last_update).toLocaleString('tr-TR') : 'Guncellenmedi'}
@@ -173,7 +199,7 @@ export function DdnsPanel() {
         <div style={{ marginTop: 14 }}>
           <Panel title="DDNS Yapilandirmalari" icon={<Shield size={18} style={{ marginRight: 8 }} />}
             actions={!showForm ? (
-              <button className="btn-primary btn-sm" onClick={() => { setForm(emptyForm); setEditingId(null); setShowForm(true); }}>
+              <button className="btn-primary btn-sm" onClick={() => { setForm(emptyForm); setEditingId(null); setEditingOrig(null); setShowForm(true); }}>
                 <Plus size={14} /> Yeni DDNS Ekle
               </button>
             ) : undefined}>
@@ -196,8 +222,9 @@ export function DdnsPanel() {
                   {showTokenField && (
                     <div className="form-group">
                       <label>{form.provider === 'cloudflare' ? 'API Key' : 'Token'}</label>
-                      <input className="config-input" value={form.token}
-                        onChange={e => setForm({ ...form, token: e.target.value })} placeholder="Token / API Key" />
+                      <input className="config-input" type="password" autoComplete="off" value={form.token}
+                        onChange={e => setForm({ ...form, token: e.target.value })}
+                        placeholder={keptHint(editingOrig?.has_token) || 'Token / API Key'} />
                     </div>
                   )}
                   {showUserPassFields && (
@@ -209,8 +236,9 @@ export function DdnsPanel() {
                       </div>
                       <div className="form-group">
                         <label>Sifre</label>
-                        <input className="config-input" type="password" value={form.password}
-                          onChange={e => setForm({ ...form, password: e.target.value })} />
+                        <input className="config-input" type="password" autoComplete="off" value={form.password}
+                          onChange={e => setForm({ ...form, password: e.target.value })}
+                          placeholder={keptHint(editingOrig?.has_password)} />
                       </div>
                     </>
                   )}
@@ -218,7 +246,8 @@ export function DdnsPanel() {
                     <div className="form-group">
                       <label>{form.provider === 'cloudflare' ? 'Zone (Domain)' : 'Update URL'}</label>
                       <input className="config-input" value={form.domain}
-                        onChange={e => setForm({ ...form, domain: e.target.value })} />
+                        onChange={e => setForm({ ...form, domain: e.target.value })}
+                        placeholder={keptHint(editingOrig?.domain === DDNS_MASK && form.provider === editingOrig?.provider)} />
                     </div>
                   )}
                   <div className="form-group">
@@ -231,7 +260,7 @@ export function DdnsPanel() {
                   <button className="btn-primary btn-sm" onClick={handleSave}>
                     <Check size={13} /> {editingId ? 'Guncelle' : 'Kaydet'}
                   </button>
-                  <button className="btn-outline btn-sm" onClick={() => { setShowForm(false); setEditingId(null); }}>
+                  <button className="btn-outline btn-sm" onClick={() => { setShowForm(false); setEditingId(null); setEditingOrig(null); }}>
                     <X size={13} /> Iptal
                   </button>
                 </div>
@@ -248,7 +277,7 @@ export function DdnsPanel() {
                   <div className="list-item-content">
                     <span className="list-item-value">
                       <strong>{PROVIDER_LABELS[c.provider]}</strong> — {c.hostname}
-                      {c.domain && <span className="text-muted"> ({c.domain})</span>}
+                      {displayDomain(c) && <span className="text-muted"> ({displayDomain(c)})</span>}
                     </span>
                     <span className="list-item-comment">Her {c.update_interval_min} dk — Son IP: {c.last_ip || '---'}</span>
                   </div>
