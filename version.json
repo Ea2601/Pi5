@@ -1,16 +1,15 @@
 {
-  "version": "2.15.0",
-  "build": 62,
-  "date": "2026-09-08",
+  "version": "2.16.0",
+  "build": 63,
+  "date": "2026-09-26",
   "changelog": [
-    "Kiosk: 4 yeni sayfa — Trend/Geçmiş (sıcaklık, CPU, bellek, ağ sparkline'ları), WAN/DDNS (genel IP + değişim geçmişi), DNS Sorguları (unbound + son sorgular), Güvenlik (fail2ban, firewall, sistem sağlığı, okunmamış uyarı)",
-    "Kiosk: saat artık saniyede bir işliyor — eskiden yalnız sayfa değişince hesaplandığı için 10 saniye donuyordu",
-    "Kiosk: görünen sayfanın verisi 5 saniyede bir yerinde tazeleniyor (animasyonsuz); sekme gizliyken duruyor, geri dönünce hemen yenileniyor",
-    "Kiosk: sayfa geçiş ilerleme çubuğu, API erişilemediğinde offline şeridi, ok tuşlarıyla gezinme",
-    "Düzeltme: ağ hızları düşük trafikte hep '0 KB/s' görünüyordu — rx_speed_bps bayt/sn olduğu halde her değer KB'ye bölünüp yuvarlanıyordu; artık B/s → KB/s → MB/s",
-    "Kiosk: Aktif Cihazlar sayfası gerçek listeye dönüştü (IP, ad, profil rozeti, son görülme, engelli sayısı); Servisler sayfası status alanını kullanıyor (Çalışıyor / Kurulu Değil / Durdu)",
-    "Kiosk: cihazdan gelen metinler (hostname, domain, uyarı) HTML'e kaçışlanıyor",
-    "Panel: kiosk aç/kapa anahtarı eklendi — KioskConfig.enabled alanı vardı ama arayüzde kontrolü yoktu, her kayıtta açık gidiyordu",
-    "Panel: sayfa sırası yukarı/aşağı taşınabiliyor, sıfırla düğmesi eklendi, kayıtlı ayar kod listesiyle birleştiriliyor (yeni sayfalar eski kayıt yüzünden gizlenmiyor)"
+    "VPS yönlendirme: Pi-hole v6 /etc/dnsmasq.d'yi okumuyordu (misc.etc_dnsmasq_d=false) — domain/uygulama kurallarının ipset satırları hiç yüklenmiyordu; anahtar artık FTL durdurulmuşken açılıyor, DNS gelmezse geri alınıp bir daha denenmiyor",
+    "VPS yönlendirme: 'pihole restartdns' v6'da yok (yardım basıp başarılı çıkıyordu) — DNS artık systemctl ile yeniden başlatılıyor; art arda kural değişiklikleri tek restart'ta birleşiyor, FTL başlatma sınırına (60 sn'de 5) takılmıyor, takılırsa kurtarılıyor",
+    "VPS yönlendirme: tünele giren LAN trafiğine NAT eklendi (wg_vps* MASQUERADE) — VPS yalnız 10.66.66.2 kaynaklı paketi kabul ettiği için trafik sessizce düşüyordu",
+    "VPS yönlendirme: kurallar tünel bağlanınca/kesilince, VPS silinince, nftables yeniden başlatılınca ve backend açılışında yeniden uygulanıyor (eskiden reboot/yeniden bağlanma sonrası tablo boş kalıp trafik ISP'ye düşüyordu)",
+    "Tünel: 'Tünel Bağla' ile reboot'ta kalıcı (systemd enable), 'Tünel Kes' ile kalıcılık kaldırılıyor; açılışta geç kalkan tünel beklenip kurallar yeniden uygulanıyor",
+    "Tünel: wireguard-tools Pi'ye kuruluyor (eksikse tünel hiç kurulamıyordu); tünel arayüzünde rp_filter gevşek (2)",
+    "Panel: VPS kartı Bağla/Kes düğmesini gerçek tünel durumuna göre gösteriyor, 'Tünel açık/kapalı' rozeti ve bağlantı hatasının sebebi eklendi; 'Hızlı Ekle' artık 'tünel kuruldu' demiyor",
+    "Güvenlik ağı: geçersiz domainler dnsmasq'a yazılmıyor; yeniden başlatma sonrası DNS gelmezse routing dosyaları boşaltılıyor; kullanıcının durdurduğu Pi-hole routing değişikliğiyle yeniden başlatılmıyor"
   ]
 }

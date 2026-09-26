@@ -61,6 +61,12 @@ LCDEOF
   systemctl restart pi5-lcd.service 2>/dev/null && echo "  pi5-lcd.service yeniden başlatıldı" >> "$LOG" || true
 fi
 
+# 4b. WireGuard araçları (Pi5 ↔ VPS tüneli wg / wg-quick ister; eski kurulumlarda hiç kurulmamıştı)
+if ! dpkg -s wireguard-tools >/dev/null 2>&1; then
+  echo "  wireguard-tools kuruluyor..." >> "$LOG"
+  apt-get install -y -qq wireguard-tools >> "$LOG" 2>&1 || true
+fi
+
 # 5. Enable I2C/SPI if not already
 raspi-config nonint do_i2c 0 2>/dev/null || true
 raspi-config nonint do_spi 0 2>/dev/null || true

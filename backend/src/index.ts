@@ -12,7 +12,7 @@ import {
   getNetworkDevices, getBandwidthLive, getWireguardStatus,
   getFail2banStatus, getDnsQueries, getCurrentExternalIp,
   runSpeedTest, executeCommand, applyDomainRouting, applyBlockedDevices,
-  sampleMetrics, detectInterfaces,
+  sampleMetrics, detectInterfaces, recoverInterruptedFtlRestart,
 } from './system';
 import {
   shq, sedEscape, isValidMac, isValidDomain, isValidTimezone,
@@ -157,6 +157,8 @@ app.post('/api/services/toggle', async (req, res) => {
     const { name, enabled } = req.body;
     if (isLinux) {
       const result = await systemServices.toggleService(name, enabled);
+      // nftables stop/start `nft flush ruleset` çalıştırır → iptables-nft routing zinciri (PI5_ROUTING) ve NAT silinir.
+      if (name === 'nftables') await applyAllRoutingRules().catch((e: any) => console.error('Routing yeniden uygulanamadı:', e.message));
       // Verify the service actually changed state
       const newStatus = await getServiceStatus(name);
       const actuallyRunning = newStatus === 'running';
@@ -432,6 +434,8 @@ app.post('/api/services/:name/restart', async (req, res) => {
   try {
     await dbRun("UPDATE service_status SET status='restarting', last_check=CURRENT_TIMESTAMP WHERE name=?", [req.params.name]);
     await systemServices.restartService(req.params.name);
+    // nftables restart `nft flush ruleset` çalıştırır → iptables-nft routing zinciri (PI5_ROUTING) ve NAT silinir.
+    if (req.params.name === 'nftables') await applyAllRoutingRules().catch((e: any) => console.error('Routing yeniden uygulanamadı:', e.message));
     await dbRun("UPDATE service_status SET status='running', last_check=CURRENT_TIMESTAMP WHERE name=?", [req.params.name]);
     res.json({ success: true, message: `${req.params.name} yeniden başlatılıyor...` });
   } catch (e: any) {
@@ -569,16 +573,20 @@ async function runSetupInBackground(vpsId: number, ip: string, username: string,
     }
   }
 
-  progress.overall = 'success';
-
-  // Auto-connect Pi5 as gateway client to VPS
+  // Auto-connect Pi5 as gateway client to VPS.
+  // 'success' tünel denemesinden SONRA yazılır: kurulum ekranı bunu görünce kartı yeniler ve kart
+  // tunnel-status'u okur — önce yazılırsa tünel henüz yokken "Tünel kapalı" görünür.
+  let tunnelOk = false;
   try {
     await connectPi5ToVps({ ip, username, password }, vpsId);
-    await dbRun('UPDATE vps_servers SET status = ? WHERE id = ?', ['connected', vpsId]);
+    tunnelOk = true;
   } catch (err: any) {
     console.error('Pi5 auto-connect failed:', err.message);
-    await dbRun('UPDATE vps_servers SET status = ? WHERE id = ?', ['connected', vpsId]); // VPS is up, just Pi5 tunnel failed
   }
+  await dbRun('UPDATE vps_servers SET status = ? WHERE id = ?', ['connected', vpsId]); // VPS is up (Pi5 tüneli başarısız olsa da)
+  progress.overall = 'success';
+  // Tünel artık var → bu VPS'e yönlenen kuralların tablo rotası kurulsun.
+  if (tunnelOk) await applyAllRoutingRules().catch((e: any) => console.error('Routing yeniden uygulanamadı:', e.message));
 
   // Clean up after 5 minutes
   setTimeout(() => setupJobs.delete(vpsId), 5 * 60 * 1000);
@@ -958,6 +966,7 @@ app.post('/api/vps/:id/connect', async (req, res) => {
 
     // Try Pi5 WireGuard tunnel (may fail on non-Linux — that's OK)
     let tunnelResult: any = null;
+    let tunnelError = '';
     try {
       tunnelResult = await connectPi5ToVps(
         { ip: server.ip, username: server.username, password: server.password || undefined },
@@ -966,9 +975,13 @@ app.post('/api/vps/:id/connect', async (req, res) => {
     } catch (tunnelErr: any) {
       // Pi5 tunnel failed but VPS itself is connected
       console.log('Pi5 tunnel not established:', tunnelErr.message);
+      tunnelError = tunnelErr.message || String(tunnelErr);
     }
 
-    res.json({ success: true, tunnel: tunnelResult ? true : false, message: tunnelResult ? 'VPS bağlı + tünel aktif' : 'VPS bağlı (tünel Pi5 üzerinde kurulacak)' });
+    // wg-quick down/up arayüzün tablo rotalarını siler → routing'i yeniden uygula (tünel yoksa rota eklenmez).
+    if (tunnelResult) await applyAllRoutingRules().catch((e: any) => console.error('Routing yeniden uygulanamadı:', e.message));
+
+    res.json({ success: true, tunnel: tunnelResult ? true : false, tunnelError: tunnelError || undefined, message: tunnelResult ? 'VPS bağlı + tünel aktif' : 'VPS bağlı (tünel Pi5 üzerinde kurulacak)' });
   } catch (e: any) {
     await dbRun('UPDATE vps_servers SET status = ? WHERE id = ?', ['error', req.params.id]);
     res.status(500).json({ error: e.message || 'Bağlantı başarısız' });
@@ -979,6 +992,7 @@ app.post('/api/vps/:id/disconnect', async (req, res) => {
   try {
     await disconnectPi5FromVps(Number(req.params.id));
     await dbRun('UPDATE vps_servers SET status = ? WHERE id = ?', ['disconnected', req.params.id]);
+    await applyAllRoutingRules().catch((e: any) => console.error('Routing yeniden uygulanamadı:', e.message));
     res.json({ success: true });
   } catch (e: any) {
     res.status(500).json({ error: e.message });
@@ -998,6 +1012,7 @@ app.delete('/api/vps/:id', async (req, res) => {
     await disconnectPi5FromVps(Number(req.params.id));
     await dbRun('DELETE FROM wg_clients WHERE vps_id = ?', [req.params.id]);
     await dbRun('DELETE FROM vps_servers WHERE id = ?', [req.params.id]);
+    await applyAllRoutingRules().catch((e: any) => console.error('Routing yeniden uygulanamadı:', e.message));
     res.json({ success: true });
   } catch (e: any) {
     res.status(500).json({ error: e.message });
@@ -1006,8 +1021,17 @@ app.delete('/api/vps/:id', async (req, res) => {
 
 // ─── Traffic Routing (app-based + domain-based, unified engine) ───
 
+// Çağrılar sıraya alınır: eşzamanlı iki uygulama PI5_ROUTING'i birbirinin ortasında boşaltıp eski kuralları
+// bırakabilir. Her sıradaki çalışma DB'yi kendi başında okur → en güncel durumu uygular.
+let routingQueue: Promise<void> = Promise.resolve();
+function applyAllRoutingRules(): Promise<void> {
+  const next = routingQueue.then(applyAllRoutingRulesNow, applyAllRoutingRulesNow);
+  routingQueue = next.catch(() => {});
+  return next;
+}
+
 // Helper: collect all routing domains from both tables and apply
-async function applyAllRoutingRules() {
+async function applyAllRoutingRulesNow() {
   if (!isLinux) return;
   // 1. App routing: expand domains column into individual domain entries
   const appRules = await dbAll('SELECT app_name, domains, exit_node, dpi_bypass, enabled FROM traffic_routing WHERE enabled = 1 AND domains != ""');
@@ -1031,6 +1055,45 @@ async function applyAllRoutingRules() {
   }
 
   await applyDomainRouting(allDomains);
+}
+
+// Boot/restart sonrası Pi tünellerini (wg_vps*) ve routing çekirdek durumunu geri kurar: ipset, mangle,
+// ip rule ve tablo rotaları kalıcı değildir. Kullanıcı niyeti systemd enable durumundan okunur
+// (Bağla → enable, Kes → disable); status alanı internet-check ile kendiliğinden 'connected' olabildiği için
+// kullanılmaz. Eski kurulumlar (unit enable edilmemiş ama tünel ayakta) kalıcı hale getirilir.
+async function restoreTunnelsAndRouting() {
+  if (!isLinux) return;
+  const fs = require('fs');
+  try {
+    // Önceki süreç FTL'i durdurup yeniden başlatamadan öldüyse (güncelleme restart'ı, çökme) DNS'i geri aç.
+    await recoverInterruptedFtlRestart();
+    const servers: any[] = await dbAll('SELECT id FROM vps_servers');
+    for (const s of servers) {
+      const iface = `wg_vps${Number(s.id)}`;
+      if (!fs.existsSync(`/etc/wireguard/${iface}.conf`)) continue;
+      const up = fs.existsSync(`/sys/class/net/${iface}`);
+      const enabled = (await execFileP('systemctl', ['is-enabled', `wg-quick@${iface}`], { timeout: 5000 })
+        .then(r => r.stdout.trim()).catch(() => '')) === 'enabled';
+      if (up && !enabled) {
+        await execFileP('systemctl', ['enable', `wg-quick@${iface}`], { timeout: 10000 }).catch(() => {});
+      } else if (!up && enabled) {
+        // Boot'ta systemd zaten başlatıyor olabilir; start o işi bekler → aşağıdaki routing tünel varken uygulanır.
+        const unit = `wg-quick@${iface}`;
+        const started = await execFileP('systemctl', ['start', unit], { timeout: 20000 }).then(() => true, () => false);
+        if (!started) {
+          // wg-quick@ network-online'ı bekler; ağ geç gelirse arka planda beklemeye devam et, tünel gelince
+          // routing'i yeniden uygula (yoksa tablo rotası eksik kalır ve trafik sessizce ISP'ye düşer).
+          console.error(`${iface} 20 sn içinde kalkmadı — arka planda bekleniyor`);
+          void execFileP('systemctl', ['start', unit], { timeout: 180000 })
+            .then(() => applyAllRoutingRules())
+            .catch((e: any) => console.error(`${iface} başlatılamadı:`, e.message));
+        }
+      }
+    }
+    await applyAllRoutingRules();
+  } catch (e: any) {
+    console.error('Tünel/routing geri yüklenemedi:', e.message);
+  }
 }
 
 app.get('/api/routing/rules', async (_req, res) => {
@@ -2875,6 +2938,8 @@ const server = app.listen(Number(port), bindHost, () => {
   // Kayıtlı kasa LED ayarını geri yükle — boot/restart sonrası kullanıcının seçimi
   // korunsun (aksi halde pironman5 RGB'yi kendi varsayılanıyla geri açıyor).
   void restoreLedConfig();
+  // VPS tünelleri + domain/app routing kuralları (kernel durumu reboot'ta sıfırlanır).
+  void restoreTunnelsAndRouting();
 });
 
 server.keepAliveTimeout = 65000;

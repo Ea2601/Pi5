@@ -206,13 +206,16 @@ interface RepairResult {
   check: string; status: 'ok' | 'fixed' | 'failed'; detail: string;
 }
 
-function VpsCard({ server, onConnect, onDisconnect, onDelete, onRefresh }: {
+function VpsCard({ server, onConnect, onDisconnect, onDelete, onRefresh, tunnelNonce }: {
   server: VpsServer; onConnect: () => Promise<void>; onDisconnect: () => Promise<void>; onDelete: () => void; onRefresh: () => void;
+  tunnelNonce: number;
 }) {
   const [netStatus, setNetStatus] = useState<InternetStatus | null>(null);
   const [checking, setChecking] = useState(false);
   const [repairing, setRepairing] = useState(false);
   const [repairResults, setRepairResults] = useState<RepairResult[] | null>(null);
+  // Pi5 tarafındaki wg_vps<ID> arayüzü gerçekten ayakta mı (status alanı yalnız VPS erişilebilirliğini gösterir).
+  const [tunnelUp, setTunnelUp] = useState<boolean | null>(null);
 
   // Client management
   const [showClients, setShowClients] = useState(false);
@@ -244,8 +247,17 @@ function VpsCard({ server, onConnect, onDisconnect, onDelete, onRefresh }: {
     setAdding(false);
   };
 
+  const loadTunnel = async () => {
+    try {
+      const res = await fetch(`/api/vps/${server.id}/tunnel-status`);
+      const data = await res.json();
+      setTunnelUp(!!data.connected);
+    } catch { setTunnelUp(false); }
+  };
+
   const checkInternet = async () => {
     setChecking(true);
+    void loadTunnel();
     try {
       const res = await fetch(`/api/vps/${server.id}/internet-check`);
       setNetStatus(await res.json());
@@ -258,6 +270,18 @@ function VpsCard({ server, onConnect, onDisconnect, onDelete, onRefresh }: {
   useEffect(() => {
     checkInternet();
   }, [server.id]);
+
+  // Durum değişince ya da kurulum bitince (tunnelNonce) tünel durumunu yeniden oku; kart yeniden mount
+  // edilmediği için mount'taki okuma tünel kurulmadan önceki değerde kalırdı (internet-check status'u kurulum
+  // sırasında zaten 'connected' yapabildiğinden yalnız status'a bakmak yetmez).
+  useEffect(() => {
+    let cancelled = false;
+    fetch(`/api/vps/${server.id}/tunnel-status`)
+      .then(r => r.json())
+      .then(d => { if (!cancelled) setTunnelUp(!!d.connected); })
+      .catch(() => { if (!cancelled) setTunnelUp(false); });
+    return () => { cancelled = true; };
+  }, [server.id, server.status, tunnelNonce]);
 
   const StatusDot = ({ ok, label }: { ok: boolean; label: string }) => (
     <span title={label} style={{ display: 'inline-flex', alignItems: 'center', gap: 3, fontSize: 10, color: ok ? 'var(--success-color)' : 'var(--danger-color)' }}>
@@ -282,6 +306,11 @@ function VpsCard({ server, onConnect, onDisconnect, onDelete, onRefresh }: {
         <span className={`badge ${server.status === 'connected' ? 'badge-success' : server.status === 'error' ? 'badge-error' : 'badge-neutral'}`}>
           {server.status === 'connected' ? 'Bağlı' : server.status === 'installing' ? 'Kuruluyor' : server.status === 'error' ? 'Hata' : 'Bağlı Değil'}
         </span>
+        {tunnelUp !== null && (
+          <span className={`badge ${tunnelUp ? 'badge-success' : 'badge-neutral'}`} title="Pi5 ↔ VPS WireGuard tüneli (wg_vps)">
+            {tunnelUp ? 'Tünel açık' : 'Tünel kapalı'}
+          </span>
+        )}
       </div>
 
       {/* Internet status badges */}
@@ -342,13 +371,17 @@ function VpsCard({ server, onConnect, onDisconnect, onDelete, onRefresh }: {
       })()}
 
       <div style={{ display: 'flex', gap: 4, marginTop: 6 }}>
-        {server.status === 'connected' ? (
-          <button className="btn-outline btn-sm" style={{ flex: 1, fontSize: 11 }} onClick={onDisconnect}>
+        {tunnelUp === null ? null : tunnelUp ? (
+          <button className="btn-outline btn-sm" style={{ flex: 1, fontSize: 11 }} onClick={async () => {
+            try { await onDisconnect(); } catch (e) { toast.error(e instanceof Error ? e.message : 'Tünel kesilemedi'); }
+            await loadTunnel();
+          }}>
             Tünel Kes
           </button>
         ) : server.status !== 'installing' ? (
           <button className="btn-primary btn-sm" style={{ flex: 1, fontSize: 11 }} onClick={async () => {
-            try { await onConnect(); } catch { /* */ }
+            try { await onConnect(); } catch (e) { toast.error(e instanceof Error ? e.message : 'Bağlantı başarısız'); }
+            await loadTunnel();
           }}>
             Tünel Bağla
           </button>
@@ -429,6 +462,8 @@ export function VpsSetup() {
   const [showPassword, setShowPassword] = useState(false);
   const [location, setLocation] = useState('');
   const [state, setState] = useState<SetupState>('idle');
+  // Kurulum bitince artırılır → kartlar tünel durumunu yeniden okur.
+  const [tunnelNonce, setTunnelNonce] = useState(0);
   const [showForm, setShowForm] = useState(false);
   const [steps, setSteps] = useState<SetupStep[]>([]);
 
@@ -489,6 +524,7 @@ export function VpsSetup() {
           stopPolling();
           setState('success');
           setIp(''); setPassword(''); setLocation('');
+          setTunnelNonce(n => n + 1);
           refetch();
         } else if (data.overall === 'error') {
           stopPolling();
@@ -566,7 +602,7 @@ export function VpsSetup() {
       });
       if (result.success) {
         setState('success');
-        toast.success('WireGuard tuneli basariyla kuruldu!');
+        toast.success('VPS kaydedildi — Pi5 tüneli için kartta "Tünel Bağla"ya basın');
         setIp(''); setPassword(''); setLocation('');
         setShowForm(false);
         await refetch();
@@ -637,10 +673,16 @@ export function VpsSetup() {
               <div className="vps-grid">
                 {data.servers.map(server => (
                   <VpsCard key={server.id} server={server}
-                    onConnect={async () => { await postApi(`/vps/${server.id}/connect`, {}); await refetch(); }}
+                    onConnect={async () => {
+                      const r = await postApi(`/vps/${server.id}/connect`, {});
+                      if (r.tunnel) toast.success('Pi5 tüneli kuruldu');
+                      else toast.error(`Pi5 tüneli kurulamadı${r.tunnelError ? `: ${r.tunnelError}` : ''}`);
+                      await refetch();
+                    }}
                     onDisconnect={async () => { await postApi(`/vps/${server.id}/disconnect`, {}); await refetch(); }}
                     onDelete={() => handleDelete(server.id)}
-                    onRefresh={refetch} />
+                    onRefresh={refetch}
+                    tunnelNonce={tunnelNonce} />
                 ))}
               </div>
             </div>

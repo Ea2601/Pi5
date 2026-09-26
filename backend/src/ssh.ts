@@ -451,11 +451,14 @@ PEEREOF`);
     // Table = off: wg-quick otomatik varsayılan-rota/fwmark kurallarını EKLEMEZ; böylece policy routing
     // (applyDomainRouting'in fwmark tabloları) ezilmez. AllowedIPs=0.0.0.0/0 kalır ki tünel internet
     // trafiğini de taşıyabilsin — hangi trafiğin tünele gireceğine bizim ip rule'larımız karar verir.
+    // PostUp: tünelden dönen yanıtlar işaretsiz gelir, katı rp_filter onları düşürür → arayüzde gevşek (2).
+    // `|| true`: sysctl başarısız olsa da tünel ayağa kalksın.
     const serverAddr = opts.ip;
     const pi5Config = `[Interface]
 PrivateKey = ${pi5Priv}
 Address = ${pi5Ip}
 Table = off
+PostUp = sysctl -q -w net.ipv4.conf.%i.rp_filter=2 || true
 
 [Peer]
 PublicKey = ${serverPub}
@@ -467,8 +470,10 @@ PersistentKeepalive = 25`;
     fs.writeFileSync(confPath, pi5Config, { mode: 0o600 });
 
     // Bring down old interface if exists, then bring up new
+    // (boot'ta systemd unit'i başlattıysa önce unit'i durdur ki durumu tutarlı kalsın)
     const { exec } = require('child_process');
     const execP = require('util').promisify(exec);
+    await execP(`systemctl stop wg-quick@${interfaceName} 2>/dev/null || true`, { timeout: 10000 });
     await execP(`wg-quick down ${interfaceName} 2>/dev/null || true`, { timeout: 10000 });
     await execP(`wg-quick up ${interfaceName}`, { timeout: 15000 });
 
@@ -477,6 +482,9 @@ PersistentKeepalive = 25`;
     if (!verify.stdout.includes('endpoint')) {
       throw new Error(`${interfaceName} arayüzü başlatılamadı`);
     }
+
+    // Kalıcılık: reboot sonrası tünel systemd ile geri gelsin ("Tünel Kes" disable eder).
+    await execP(`systemctl enable wg-quick@${interfaceName} 2>/dev/null || true`, { timeout: 10000 });
 
     return { success: true, interfaceName, pi5Ip, config: pi5Config };
   } catch (err: any) {
@@ -495,6 +503,8 @@ export async function disconnectPi5FromVps(vpsId: number): Promise<void> {
   const interfaceName = `wg_vps${vpsId}`;
   const { exec } = require('child_process');
   const execP = require('util').promisify(exec);
+  // Kalıcılığı da kaldır: aksi halde reboot'ta kullanıcının kestiği tünel geri açılır.
+  await execP(`systemctl disable --now wg-quick@${interfaceName} 2>/dev/null || true`, { timeout: 10000 });
   await execP(`wg-quick down ${interfaceName} 2>/dev/null || true`, { timeout: 10000 });
 }
 

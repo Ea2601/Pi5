@@ -604,7 +604,7 @@ pihole -g                  # Gravity güncelleme (adlist indir)
 pihole -up                 # Pi-hole güncelleme
 pihole -w example.com      # Beyaz listeye ekle
 pihole -b example.com      # Kara listeye ekle
-pihole restartdns          # DNS servisini yeniden başlat
+systemctl restart pihole-FTL  # DNS servisini yeniden başlat (v6'da 'pihole restartdns' yok)
 pihole -q example.com      # Domain sorgula (engelli mi?)`}</CodeBlock>
       </DocBlock>
 
