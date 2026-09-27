@@ -835,7 +835,15 @@ function parseCidr(s: string): { ip: string; prefix: number; network: string } |
 // Sabit adres modu (scripts/net-mode.sh) durumu: eth0'da tek profil, iki adres — TRANSIT (modem tarafı, varsayılan rota)
 // ve CLIENT (Pi DHCP'sinin dağıttığı ağ, ör. 192.168.0.1/24). Dosyayı yalnız betik yazar (root, 0700 dizin); yine de
 // değerler nft kurallarına girdiği için biçim dışı olan alan boş sayılır. Dosya yoksa null.
-export interface NetModeState { stage: 'none' | 'trial' | 'static'; iface: string; transit: string; client: string; gw: string }
+// Kurulum Wi-Fi'ı (net-mode.sh `ap`, aynı dosyada ap_stage/ap_iface): Pi'nin dahili Wi-Fi'ı yalnız yönetim için bir erişim
+// noktası yayar (internet yok). eth0 aşamasından bağımsızdır; biçim dışı değer 'none' / '' sayılır.
+export interface NetModeState {
+  stage: 'none' | 'trial' | 'static'; iface: string; transit: string; client: string; gw: string;
+  apStage: 'none' | 'trial' | 'on'; apIface: string;
+}
+// Kurulum Wi-Fi'ının Pi adresi ve ağı (net-mode.sh AP_ADDR/AP_NET ile aynı; istemciler 192.168.50.20–200 alır).
+export const AP_ADDR = '192.168.50.1';
+export const AP_NET = '192.168.50.0/24';
 const NET_MODE_STATE = '/etc/pi5-gateway/net/state';
 export function readNetModeState(): NetModeState | null {
   let text: string;
@@ -846,6 +854,7 @@ export function readNetModeState(): NetModeState | null {
     if (i > 0) kv[line.slice(0, i).trim()] = line.slice(i + 1).trim();
   }
   const stage = kv.stage === 'trial' || kv.stage === 'static' ? kv.stage : 'none';
+  const apStage = kv.ap_stage === 'trial' || kv.ap_stage === 'on' ? kv.ap_stage : 'none';
   // /8'den geniş bir ağ (bozuk dosya, ör. /0) iç içe ağ elemesinde diğer tüm LAN ağlarını silerdi.
   const cidrOk = (s: string) => (parseCidr(s)?.prefix ?? 0) >= 8;
   return {
@@ -854,9 +863,14 @@ export function readNetModeState(): NetModeState | null {
     transit: cidrOk(kv.transit || '') ? kv.transit : '',
     client: cidrOk(kv.client || '') ? kv.client : '',
     gw: isIpv4(kv.gw || '') ? kv.gw : '',
+    apStage,
+    apIface: /^[A-Za-z0-9_.-]{1,15}$/.test(kv.ap_iface || '') ? kv.ap_iface : '',
   };
 }
 const netModeActive = (s: NetModeState | null): s is NetModeState => !!s && (s.stage === 'trial' || s.stage === 'static');
+// Kurulum Wi-Fi'ı deneme ya da kalıcı. Arayüz adı geçersizse apIface '' kalır: arayüze bağlı kurallar (giriş izni,
+// 07 DHCP dosyası) yazılmaz, AP_NET yine de ağ geçidi listelerinden çıkarılır.
+const apActive = (s: NetModeState | null): s is NetModeState => !!s && (s.apStage === 'trial' || s.apStage === 'on');
 
 // Pi'nin LAN kimliği: en düşük metrikli varsayılan rotanın arayüzü ve adresi. Pi tek bacaklı ağ geçididir (modem aynı
 // LAN'da); aynı alt ağda ikinci bir bacak (ör. eth0 .153 + wlan0 .144) varsa `secondary`'de döner. Eskiden LAN,
@@ -917,15 +931,18 @@ export async function getLanIdentity(): Promise<LanIdentity | null> {
 // wan = varsayılan rotanın arayüzü. Tek bacaklı ağ geçidinde (LAN'a açılan başka bir alt ağ yok) lan = wan: istemciler
 // aynı arayüzden gelip aynı arayüzden modeme çıkar. Farklı alt ağlı ikinci bir kart (ör. Pi'nin Wi-Fi yayını) varsa
 // o kart lan olur (eski iki kartlı davranış). Sabit adres modunda transit ve client ağları aynı karttadır: başka bir
-// kart ancak ikisinin de dışında bir adresi varsa ayrı LAN sayılır.
+// kart ancak ikisinin de dışında bir adresi varsa ayrı LAN sayılır. Kurulum Wi-Fi'ı (yalnız panel, iletim yok) LAN
+// sayılmaz: yoksa firewall kurulumu iki kartlı yola sapıp NAT'ı yanlış karta yazardı.
 export async function detectInterfaces(): Promise<{ wan: string; lan: string }> {
   const id = await getLanIdentity();
   const wan = id?.iface || (await run(`ip -o -4 route show to default | awk '{print $5}' | head -1`)).trim() || 'eth0';
+  const ns = readNetModeState();
+  const apIface = apActive(ns) ? ns.apIface : '';
   let other = '';
   try {
     const addrs: any[] = JSON.parse((await run('ip -j -4 addr show 2>/dev/null')) || '[]');
     for (const a of addrs) {
-      if (!a.ifname || a.ifname === wan || /^(wg|lo|docker|veth|br-)/.test(a.ifname)) continue;
+      if (!a.ifname || a.ifname === wan || (apIface && a.ifname === apIface) || /^(wg|lo|docker|veth|br-)/.test(a.ifname)) continue;
       const ips = (a.addr_info || []).filter((x: any) => x.family === 'inet' && x.local).map((x: any) => x.local);
       const outside = (ip: string) => !!id
         && !sameSubnet(ip, id.transit.ip, id.transit.prefix) && !sameSubnet(ip, id.client.ip, id.client.prefix);
@@ -996,7 +1013,44 @@ function writeIfChanged(file: string, content: string): boolean {
   return true;
 }
 
-const DNSMASQ_D_FILES = ['/etc/dnsmasq.d/05-domain-routing.conf', '/etc/dnsmasq.d/06-domain-redirect.conf'];
+// Kurulum Wi-Fi'ı DHCP'si (07): Pi-hole'un dnsmasq'ı AP ağına adres dağıtır. Listede olduğu için DNS güvenlik ağı
+// (yeniden başlatma sonrası DNS gelmezse) onu da 05/06 ile birlikte boşaltır; sonraki uygulama yeniden yazar.
+const AP_DNSMASQ = '/etc/dnsmasq.d/07-pi5-ap.conf';
+const DNSMASQ_D_FILES = ['/etc/dnsmasq.d/05-domain-routing.conf', '/etc/dnsmasq.d/06-domain-redirect.conf', AP_DNSMASQ];
+// İşletim sistemlerinin bağlantı denetimi adları (Android, Apple, Windows, Firefox, GNOME): kurulum Wi-Fi'ı açıkken nginx
+// bunları giriş sayfasına yönlendirir → telefon "ağa giriş yap" sayfasını kendiliğinden açar. www.google.com ve
+// www.apple.com bilerek yok (sıradan siteler; denetim için yukarıdakiler yeter).
+const CAPTIVE_CHECK_HOSTS = [
+  'connectivitycheck.gstatic.com', 'connectivitycheck.android.com', 'clients3.google.com', 'captive.apple.com',
+  'www.msftconnecttest.com', 'www.msftncsi.com', 'detectportal.firefox.com', 'nmcheck.gnome.org',
+];
+const AP_PORTAL_URL = `http://${AP_ADDR}/portal.html`;
+// dnsmasq'ın derlemedeki varsayılan kira dosyası: Pi DHCP'si kapalıyken (FTL dhcp-leasefile yazmaz) kurulum Wi-Fi'ının
+// kiraları buraya yazılır. /var/lib/misc root'un olduğundan FTL kullanıcısı dosyayı kendisi oluşturamaz.
+const DNSMASQ_DEFAULT_LEASES = '/var/lib/misc/dnsmasq.leases';
+async function ensureDnsmasqLeaseFile(): Promise<boolean> {
+  const user = (await run('systemctl show -p User --value pihole-FTL 2>/dev/null')).trim();
+  if (!user || user === 'root') return true; // root olarak çalışan FTL dosyayı kendisi oluşturur
+  if (!/^[a-z_][a-z0-9_-]{0,31}$/.test(user)) return false;
+  // run() hatada boş döner ve Number('') = 0 (root) olurdu → dosya root'a devredilir, FTL açamaz, DNS düşerdi.
+  // Yalnız gerçek sayısal kimlik kabul edilir; sorgu başarısızsa dosyaya hiç dokunulmaz.
+  const uidS = (await run(`id -u ${user} 2>/dev/null`)).trim();
+  const gidS = (await run(`id -g ${user} 2>/dev/null`)).trim();
+  if (!/^\d+$/.test(uidS) || !/^\d+$/.test(gidS)) return false;
+  const uid = Number(uidS);
+  const gid = Number(gidS);
+  try {
+    fs.mkdirSync('/var/lib/misc', { recursive: true });
+    if (!fs.existsSync(DNSMASQ_DEFAULT_LEASES)) fs.writeFileSync(DNSMASQ_DEFAULT_LEASES, '', { mode: 0o644 });
+    const st = fs.statSync(DNSMASQ_DEFAULT_LEASES);
+    if (!st.isFile()) return false;
+    if (st.uid !== uid) fs.chownSync(DNSMASQ_DEFAULT_LEASES, uid, gid);
+    fs.chmodSync(DNSMASQ_DEFAULT_LEASES, 0o644);
+    return fs.statSync(DNSMASQ_DEFAULT_LEASES).uid === uid;
+  } catch {
+    return false;
+  }
+}
 // /etc/dnsmasq.d açılıp DNS gelmeyince geri alındığında bırakılan işaret: varken anahtar yeniden açılmaz
 // (her uygulamada aç → DNS'siz bekle → geri al döngüsü olmasın). Dosya silinirse sonraki uygulamada yeniden denenir.
 const DNSMASQ_D_REVERTED = '/opt/pi5-gateway/core/.etc_dnsmasq_d_reverted';
@@ -1349,7 +1403,7 @@ async function restartFtlNow(): Promise<boolean> {
   const healthy = await waitFtlHealthy((await ftlUnitState()).restarts);
   await warm;
   if (healthy) return true;
-  console.error('[routing] FTL yeniden başlatıldıktan sonra yerel DNS yanıt vermiyor — 05/06 dnsmasq dosyaları boşaltılıyor');
+  console.error('[routing] FTL yeniden başlatıldıktan sonra yerel DNS yanıt vermiyor — 05/06/07 dnsmasq dosyaları boşaltılıyor');
   for (const f of DNSMASQ_D_FILES) writeIfChanged(f, '');
   routingFilesCleared = true;
   await withFtlStopped(async () => {});
@@ -1509,9 +1563,12 @@ async function waitLocalDns(maxMs: number = 15000): Promise<boolean> {
 // wg_* ve lo hariç). nft anonim setinde iç içe aralık hata verir → başka bir ağın içinde kalan ağ elenir.
 // Sabit adres modunda (deneme/kalıcı) durum dosyasındaki transit ve client ağları, kart ve iki adres de eklenir: kablo
 // o an çıkmışken ya da profil yeniden kalkarken uygulanan kurallar client ağını düşürmesin.
+// Kurulum Wi-Fi'ı açıkken (deneme/kalıcı) AP kartı ve AP_NET listelere girmez: o ağın istemcileri NAT/iletim izni almaz,
+// yalnız Pi'nin kendisine (panel, DNS, DHCP) ulaşır — iletimi ayrıca net-mode.sh'nin pi5_ap tablosu düşürür.
+// 192.168.50.1 Pi'nin kendi adresi olarak selfIps'te kalır (AP o an kalkmamış olsa da eklenir).
 const GW_NFT = '/opt/pi5-gateway/core/pi5-gw.nft';
 const IN_NFT = '/opt/pi5-gateway/core/pi5-in.nft';
-async function detectGatewayLan(): Promise<{ nets: string[]; ifaces: string[]; selfIps: string[] }> {
+async function detectGatewayLan(ns: NetModeState | null = readNetModeState()): Promise<{ nets: string[]; ifaces: string[]; selfIps: string[] }> {
   const ipNum = (ip: string) => ip.split('.').reduce((a, o) => a * 256 + Number(o), 0);
   const within = (net: string, outer: string) => {
     const [a, pa] = net.split('/');
@@ -1519,22 +1576,26 @@ async function detectGatewayLan(): Promise<{ nets: string[]; ifaces: string[]; s
     const div = 2 ** (32 - Number(pb));
     return Number(pb) <= Number(pa) && Math.floor(ipNum(a) / div) === Math.floor(ipNum(b) / div);
   };
+  const apOn = apActive(ns);
+  const apIf = apActive(ns) ? ns.apIface : '';
+  const isApIface = (dev: string) => !!apIf && dev === apIf;
+  const inApNet = (net: string) => apOn && within(net, AP_NET);
   const nets = new Set<string>();
   const ifaces = new Set<string>();
   const selfIps = new Set<string>();
   for (const line of (await run('ip -4 -o route show proto kernel scope link 2>/dev/null')).split('\n')) {
     const m = line.match(/^(\d+\.\d+\.\d+\.\d+\/\d+)\s+dev\s+([A-Za-z0-9_.-]{1,15})\s/);
-    if (!m || /^(wg|lo)/.test(m[2])) continue;
+    if (!m || /^(wg|lo)/.test(m[2]) || isApIface(m[2]) || inApNet(m[1])) continue;
     nets.add(m[1]);
     ifaces.add(m[2]);
   }
   for (const m of (await run('ip -4 -o addr show 2>/dev/null')).matchAll(/\sinet\s(\d+\.\d+\.\d+\.\d+)\//g)) selfIps.add(m[1]);
-  const ns = readNetModeState();
+  if (apOn) selfIps.add(AP_ADDR);
   if (netModeActive(ns)) {
-    if (ns.iface && !/^(wg|lo)/.test(ns.iface)) ifaces.add(ns.iface);
+    if (ns.iface && !/^(wg|lo)/.test(ns.iface) && !isApIface(ns.iface)) ifaces.add(ns.iface);
     for (const c of [parseCidr(ns.transit), parseCidr(ns.client)]) {
       if (!c) continue;
-      nets.add(c.network);
+      if (!inApNet(c.network)) nets.add(c.network);
       selfIps.add(c.ip);
     }
   }
@@ -1584,6 +1645,34 @@ export async function applyDomainRouting(domains?: DomainRoute[]): Promise<void>
     console.warn('[routing] Pi5 LAN IPv4 bulunamadı — 06-domain-redirect.conf korunuyor');
   }
 
+  // Kurulum Wi-Fi'ı (net-mode.sh durumu; tek okuma — 07 dosyası, yönlendirme haritası, ağ geçidi listeleri ve giriş izni
+  // aynı anlık görüntüyü kullanır). Deneme/kalıcıyken Pi-hole'un dnsmasq'ı AP ağına adres dağıtır: router ve DNS Pi'nin
+  // AP adresi, 114 (RFC 8910) telefona giriş sayfasının yerini söyler. Seçenekler pi5ap etiketli: yalnız bu aralığa gider,
+  // Pi DHCP'sinin cihaz ağıyla karışmaz. Kapalıyken dosya boş; değişiklik DNS yenilemesi planlar (aşağıda, 5. adım).
+  const netState = readNetModeState();
+  const apOn = apActive(netState);
+  let apIf = apOn ? netState.apIface : '';
+  // Pi DHCP'si kapalıyken FTL, dnsmasq'a kira dosyası yolu vermez → dnsmasq varsayılan kira dosyasını kullanır ve FTL
+  // kullanıcısı (pihole) onu oluşturamaz: dnsmasq başlamaz, TÜM EVİN DNS'İ gider (gerçek FTL 6.5 ile görüldü). Dosya
+  // önceden FTL kullanıcısına ait açılır; açılamazsa 07 yazılmaz (kurulum Wi-Fi'ı adres dağıtamaz ama DNS korunur).
+  if (apIf && !(await ensureDnsmasqLeaseFile())) {
+    console.error(`[routing] ${DNSMASQ_DEFAULT_LEASES} hazırlanamadı — kurulum Wi-Fi'ı DHCP'si (07) yazılmadı, DNS korunuyor`);
+    apIf = '';
+  }
+  // dhcp-authoritative: Pi DHCP'si kapalıyken FTL bunu yazmaz; yoksa bilinmeyen kirayla yeniden bağlanan telefon
+  // yanıtsız bekler (dhclient 22 sn). Aralığı olmayan ağlara (eth0 / ev ağı) etkisi yok — oradaki isteklere yanıt verilmez.
+  const apConf = apIf
+    ? [
+      "# Klyrix Gate kurulum Wi-Fi'ı — backend yazar (net-mode.sh durumu), elle düzenlemeyin",
+      'dhcp-range=set:pi5ap,192.168.50.20,192.168.50.200,255.255.255.0,1h',
+      `dhcp-option=tag:pi5ap,option:router,${AP_ADDR}`,
+      `dhcp-option=tag:pi5ap,option:dns-server,${AP_ADDR}`,
+      `dhcp-option=tag:pi5ap,114,"http://${AP_ADDR}/api/captive"`,
+      'dhcp-authoritative',
+    ].join('\n') + '\n'
+    : '';
+  const apChanged = writeIfChanged(AP_DNSMASQ, apConf);
+
   // Write redirect URL map for the HTTP redirect server (backward-compat / diagnostics)
   const redirectMap: Record<string, string> = {};
   for (const d of redirectDomains) {
@@ -1598,10 +1687,21 @@ export async function applyDomainRouting(domains?: DomainRoute[]): Promise<void>
   // Redirect'i DOĞRU katmanda yap: nginx (:80). dnsmasq domaini Pi5'e yönlendirir, nginx 302 döner.
   // (Backend'in eski 302 middleware'ine nginx trafiği hiç ulaşmıyordu — C1.)
   const mapLines = ['map $host $pi5_redirect {', '    default "";'];
+  const mappedHosts = new Set<string>(); // nginx map anahtarları büyük/küçük harf duyarsız
   for (const [domain, url] of Object.entries(redirectMap)) {
     const safeHost = domain.replace(/[^a-zA-Z0-9._-]/g, '');
     const safeUrl = String(url).replace(/["\r\n\\]/g, '').trim();
-    if (safeHost && /^https?:\/\//i.test(safeUrl)) mapLines.push(`    "${safeHost}" "${safeUrl}";`);
+    if (safeHost && /^https?:\/\//i.test(safeUrl)) {
+      mapLines.push(`    "${safeHost}" "${safeUrl}";`);
+      mappedHosts.add(safeHost.toLowerCase());
+    }
+  }
+  // Kurulum Wi-Fi'ı açıkken bağlantı denetimi adları giriş sayfasına: bu adlarla Pi'nin nginx'ine yalnız AP istemcileri
+  // gelir (80. port trafikleri pi5_ap ile Pi'ye DNAT'lanır; LAN istemcileri internete gider). `return 302` rewrite
+  // aşamasında, auth_basic'ten önce çalışır. dnsmasq address= satırlarına eklenmez. Aynı ad için kullanıcı kuralı varsa o
+  // kalır: map'te yinelenen anahtar ("conflicting parameter") nginx yapılandırmasını bozar.
+  if (apOn) {
+    for (const host of CAPTIVE_CHECK_HOSTS) if (!mappedHosts.has(host)) mapLines.push(`    "${host}" "${AP_PORTAL_URL}";`);
   }
   mapLines.push('}');
   try {
@@ -1707,7 +1807,7 @@ export async function applyDomainRouting(domains?: DomainRoute[]): Promise<void>
   //     Kural ağ başınadır: istemci KENDİ ağının dışına giderken SNAT'lanır. Sabit adres modunda (aynı kartta iki ağ)
   //     192.168.0.x → modem 192.168.1.1 Pi'nin transit adresine (.153) SNAT'lanır; 0.x → 0.x'e hiç dokunulmaz.
   //     (Tek birleşik "daddr != tüm ağlar" kuralı 0.x → modem trafiğini hariç tutuyordu.) Tek ağda sonuç eskisiyle aynı.
-  const gw = await detectGatewayLan();
+  const gw = await detectGatewayLan(netState);
   const nftSet = (xs: string[], quote = false) => `{ ${xs.map(x => (quote ? `"${x}"` : x)).join(', ')} }`;
   const notSelf = gw.selfIps.length ? ` ip saddr != ${nftSet(gw.selfIps)}` : '';
   const lanClient = gw.nets.length ? `ip saddr ${nftSet(gw.nets)}${notSelf}` : '';
@@ -1767,13 +1867,21 @@ export async function applyDomainRouting(domains?: DomainRoute[]): Promise<void>
   //     gelen istekler ve istemci testindeki ping düşer. Panele ait `pi5_in` zinciri pi5_gw gibi her uygulamada
   //     boşaltılıp doldurulur, input'un başına bir kez `jump pi5_in` eklenir (açılışta pi5-gw-restore da yükler).
   //     Input politikası accept ise (ya da tablo yoksa) dokunulmaz.
+  //     Kurulum Wi-Fi'ı açıkken AP kartına DNS (53), DHCP (67) ve panel (80) izni de eklenir; LAN kartı yoksa zincir
+  //     yalnız bunun için de kurulur.
   const inChain = await run('nft list chain inet filter input 2>/dev/null');
-  if (/policy drop/.test(inChain) && gw.ifaces.length) {
+  if (/policy drop/.test(inChain) && (gw.ifaces.length || apIf)) {
     const inRules = [
       'add chain inet filter pi5_in',
       'flush chain inet filter pi5_in',
-      `add rule inet filter pi5_in iifname ${nftSet(gw.ifaces, true)} udp dport 67 accept`,
+      ...(gw.ifaces.length ? [`add rule inet filter pi5_in iifname ${nftSet(gw.ifaces, true)} udp dport 67 accept`] : []),
       'add rule inet filter pi5_in icmp type echo-request accept',
+      ...(apIf
+        ? [
+          `add rule inet filter pi5_in iifname "${apIf}" udp dport { 53, 67 } accept`,
+          `add rule inet filter pi5_in iifname "${apIf}" tcp dport { 53, 80 } accept`,
+        ]
+        : []),
       ...(/jump pi5_in\b/.test(inChain) ? [] : ['insert rule inet filter input jump pi5_in']),
     ];
     try {
@@ -1824,10 +1932,10 @@ export async function applyDomainRouting(domains?: DomainRoute[]): Promise<void>
   }
 
   // 5. dnsmasq/FTL'i yeniden başlat (ipset config'i alsın) — yalnız gerektiğinde ve arka planda birleştirerek:
-  //    dnsmasq dosyaları değiştiyse, yeni set oluştuysa (boot sonrası FTL önbelleğindeki adlar sete eklenmez),
+  //    dnsmasq dosyaları (05/06/07) değiştiyse, yeni set oluştuysa (boot sonrası FTL önbelleğindeki adlar sete eklenmez),
   //    /etc/dnsmasq.d okuması açılmalıysa (v6) ya da FTL dosyaların son halinden önce başladıysa.
   routingStatus.apply_seq++;
-  if (routingChanged || redirectChanged || setCreated || ftlStale || await dnsmasqDirNeedsEnable()) {
+  if (routingChanged || redirectChanged || apChanged || setCreated || ftlStale || await dnsmasqDirNeedsEnable()) {
     scheduleDnsRestart();
   } else if (!dnsJobPending && !dnsJobRunning && routingStatus.phase === 'failed') {
     // DNS yenilemesi gerekmeyen değişiklik: önceki işin geçici hatası bu değişikliğe ait değil; kalıcıysa yeniden yazılır.

@@ -14,7 +14,7 @@ import {
   getFail2banStatus, getDnsQueries, getCurrentExternalIp,
   runSpeedTest, executeCommand, applyDomainRouting, applyBlockedDevices,
   sampleMetrics, detectInterfaces, recoverInterruptedFtlRestart, VALID_DNSMASQ_DOMAIN, getRoutingApplyStatus,
-  getLanIdentity, protectedMacs, getPi5LanIp, readNetModeState, runExclusiveDnsTask,
+  getLanIdentity, protectedMacs, getPi5LanIp, readNetModeState, runExclusiveDnsTask, AP_ADDR, AP_NET,
 } from './system';
 import { getRoutingSuggestions, MAX_HOURS as SUGGEST_MAX_HOURS } from './domainSuggest';
 import {
@@ -1820,10 +1820,16 @@ if (isLinux) {
             dhcpProbeTick = 0;
           }
         }
-        if (fs.existsSync(NET_MODE_SCRIPT) && readNetModeState()?.stage === 'static') {
+        // Kurulum Wi-Fi'ı kalıcıyken yayın düşmüşse uyarı (ev için kritik değil; Pi açılışta ve NetworkManager yeniden
+        // başlayınca yayını yeniden açmayı dener).
+        const ns = readNetModeState();
+        if (fs.existsSync(NET_MODE_SCRIPT) && (ns?.stage === 'static' || ns?.apStage === 'on')) {
           const n = await runKvScript(NET_MODE_SCRIPT, ['status'], 30000);
-          if (n.code === 0 && n.kv.guard_result === 'emergency') {
+          if (n.code === 0 && ns?.stage === 'static' && n.kv.guard_result === 'emergency') {
             await addAlert('health', 'critical', 'Sabit IP profili yüklenemedi — Pi adresini acil modda tutuyor (Pi-hole → Ayarlar → DHCP kartı)', 'netmode');
+          }
+          if (n.code === 0 && n.kv.ap_stage === 'on' && n.kv.ap_active !== '1') {
+            await addAlert('health', 'warning', 'Kurulum Wi-Fi yayını kapalı — Pi bir sonraki açılışta ya da NetworkManager yeniden başlayınca yeniden açmayı dener', 'netmode-ap');
           }
         }
       } catch (e: any) {
@@ -2079,6 +2085,9 @@ function runKvScript(script: string, args: string[], timeoutMs: number, input = 
       }
       resolve({ code, exited, kv });
     });
+    // Betik stdin'i okumadan çıkarsa yazma EPIPE verir; dinleyicisiz 'error' olayı tüm backend'i düşürürdü. Sonuç yine
+    // 'close' ile (çıkış kodu + çıktı) bildirilir.
+    child.stdin.on('error', () => { /* betik stdin'i okumadan çıktı */ });
     child.stdin.end(input);
   });
 }
@@ -2100,8 +2109,8 @@ const kvTyped = (kv: Record<string, string>, nums: string[], bools: string[]) =>
   if ('now' in out && !out.now) out.now = Math.floor(Date.now() / 1000);
   return out;
 };
-const NET_NUMS = ['trial_ends', 'now', 'guard_at', 'lease_until'];
-const NET_BOOLS = ['nm', 'carrier', 'profile_ok', 'pi_dhcp', 'wifi_off'];
+const NET_NUMS = ['trial_ends', 'now', 'guard_at', 'lease_until', 'ap_trial_ends'];
+const NET_BOOLS = ['nm', 'carrier', 'profile_ok', 'pi_dhcp', 'wifi_off', 'ap_capable', 'ap_active'];
 const PI_DHCP_NUMS = ['trial_ends', 'now', 'leases', 'modem_warn'];
 const PI_DHCP_BOOLS = ['active', 'ipv6', 'port67', 'input_ok'];
 const splitList = (s?: string) => String(s || '').split(',').map(x => x.trim()).filter(Boolean);
@@ -2139,6 +2148,12 @@ const hasPiLease = (ip: string) => {
     return String(require('fs').readFileSync('/etc/pihole/dhcp.leases', 'utf8')).split('\n')
       .some((l: string) => { const p = l.trim().split(/\s+/); return /^\d+$/.test(p[0]) && p[2] === ip; });
   } catch { return false; }
+};
+// Adres bu IPv4 ağının (ör. 192.168.50.0/24) içinde mi.
+const inIpv4Net = (ip: string, cidr: string) => {
+  const [net, p] = cidr.split('/');
+  const size = 2 ** (32 - Number(p));
+  return /^\d{1,3}(\.\d{1,3}){3}$/.test(ip) && Math.floor(ipv4Num(ip) / size) === Math.floor(ipv4Num(net) / size);
 };
 // Ağ değişikliğinden sonra kurallar güncel adreslere göre yeniden yazılır; betik zaman aşımına uğrayıp arka planda
 // sürüyorsa bittiğinde yazılır.
@@ -2215,6 +2230,83 @@ app.post('/api/netmode/wifi', async (req, res) => {
   res.json({ success: true });
 });
 
+// ─── Kurulum Wi-Fi'ı: Pi'nin kendi Wi-Fi kartından yayınlanan yönetim ağı (net-mode.sh ap …) ───
+// Pi 192.168.50.1, telefonlar 192.168.50.20–200 alır; bu ağda internet YOK (yalnız panel). Telefon bağlanınca işletim
+// sisteminin "ağa giriş yap" sayfası kendiliğinden /portal.html'i açar — modemin DHCP'si kapalıyken de panele ulaşma yolu.
+// Açma her zaman 5 dk'lık denemedir; "Kalıcı yap" yalnız o ağa bağlı telefondan kabul edilir. Her değişiklikten sonra
+// kurallar (07 DHCP dosyası, pi5_in, giriş sayfası yönlendirmesi, FTL yeniden başlatma) güncel duruma göre yazılır.
+const AP_TRIAL_S = 300;
+const AP_DEFAULT_SSID = 'Klyrix-Kurulum';
+const AP_PORTAL_URL = `http://${AP_ADDR}/portal.html`;
+// Betikle (net-mode.sh ap on) birebir aynı kurallar: ağ adı harf/rakam/boşluk/_.- (1–32); WPA2 şifresi 8–63 yazdırılabilir
+// ASCII, ters bölü yok; ikisinde de başta/sonda boşluk yok.
+const validApSsid = (s: string) => /^[A-Za-z0-9 _.-]{1,32}$/.test(s) && !/^ | $/.test(s);
+const validApPassword = (s: string) => /^[\x20-\x5b\x5d-\x7e]{8,63}$/.test(s) && !/^ | $/.test(s);
+// Şifre yalnız stdin'den verilir (argv/log'a girmez); bir araç hata metninde yine de yazarsa yanıtta maskelenir.
+const maskSecret = (msg: string, secret: string) => (secret ? msg.split(secret).join('***') : msg);
+
+// 5 dk'lık deneme: Pi'nin Wi-Fi'si ev ağından ayrılıp kurulum Wi-Fi'ını yayınlar. Başarısız denemede betik eski Wi-Fi
+// ayarını geri getirmiştir; kurallar her iki durumda da yeniden yazılır.
+app.post('/api/netmode/ap', async (req, res) => {
+  if (scriptMissing(NET_MODE_SCRIPT, res)) return;
+  const rawSsid = req.body?.ssid;
+  const ssid = rawSsid === undefined || rawSsid === null || rawSsid === '' ? AP_DEFAULT_SSID : rawSsid;
+  const password = req.body?.password;
+  if (typeof ssid !== 'string' || !validApSsid(ssid)) {
+    return res.status(400).json({ error: 'Ağ adı 1-32 karakter olmalı: harf (Türkçe harf olmadan), rakam, boşluk, _ . - ; başta/sonda boşluk olmadan' });
+  }
+  if (typeof password !== 'string' || !validApPassword(password)) {
+    return res.status(400).json({ error: 'Wi-Fi şifresi 8-63 karakter olmalı: Türkçe harf (ç ğ ı ö ş ü) ve ters bölü (\\) olmadan, başta/sonda boşluk olmadan' });
+  }
+  const r = await runKvScript(NET_MODE_SCRIPT, ['ap', 'on', '--trial', String(AP_TRIAL_S), '--ssid', ssid], 180000, `${password}\n`);
+  await routingAfterNetChange(r);
+  if (r.code !== 0) return res.status(500).json({ error: maskSecret(kvError(r, 'kurulum Wi-Fi\'ı açılamadı'), password) });
+  res.json({ success: true, ap_trial_ends: Number(r.kv.ap_trial_ends) || 0 });
+});
+
+// "Kalıcı yap" yalnız kurulum Wi-Fi'ına bağlı bir cihazdan kabul edilir — yayının, DHCP'nin ve giriş sayfasının gerçekten
+// çalıştığının kanıtı (Pi'nin kendi ekranı ya da ev ağındaki bir bilgisayar bunu kanıtlamaz).
+app.post('/api/netmode/ap/confirm', async (req, res) => {
+  if (scriptMissing(NET_MODE_SCRIPT, res)) return;
+  const ip = String(req.ip || '').replace(/^::ffff:/, '');
+  if (!inIpv4Net(ip, AP_NET)) {
+    const st = await runKvScript(NET_MODE_SCRIPT, ['status'], 30000);
+    const ssid = (st.code === 0 && st.kv.ap_ssid) || AP_DEFAULT_SSID;
+    return res.status(403).json({ error: `Onayı kurulum Wi-Fi'ına bağlı telefondan verin: telefonu '${ssid}' ağına bağlayın, açılan sayfadan panele girip bu karttan 'Kalıcı yap'a basın` });
+  }
+  const r = await runKvScript(NET_MODE_SCRIPT, ['ap', 'confirm'], 90000);
+  // Onay reddedildiyse deneme o an geri alınmış olabilir: kurallar her durumda güncel duruma göre yazılır.
+  await routingAfterNetChange(r);
+  if (r.code !== 0) return res.status(409).json({ error: kvError(r, 'onaylanamadı') });
+  res.json({ success: true });
+});
+
+app.post('/api/netmode/ap/rollback', async (_req, res) => {
+  if (scriptMissing(NET_MODE_SCRIPT, res)) return;
+  const r = await runKvScript(NET_MODE_SCRIPT, ['ap', 'rollback'], 150000);
+  await routingAfterNetChange(r);
+  if (r.code !== 0) return res.status(500).json({ error: kvError(r, 'geri alınamadı') });
+  res.json({ success: true, rolled_back: r.kv.rolled_back === '1' });
+});
+
+// Bilinçli kapatma (kalıcı ya da deneme): yayın kalkar, Pi'nin Wi-Fi'si kapalı kalır (ev ağına kendiliğinden dönmez).
+app.post('/api/netmode/ap/off', async (_req, res) => {
+  if (scriptMissing(NET_MODE_SCRIPT, res)) return;
+  const r = await runKvScript(NET_MODE_SCRIPT, ['ap', 'off'], 150000);
+  await routingAfterNetChange(r);
+  if (r.code !== 0) return res.status(409).json({ error: kvError(r, 'kurulum Wi-Fi\'ı kapatılamadı') });
+  // Yayın kalktı ama Wi-Fi kapatılamadıysa (warning=…) arayüz bunu gösterir: Pi'nin Wi-Fi'si ev ağına dönebilir.
+  res.json({ success: true, warning: r.kv.warning || undefined });
+});
+
+// RFC 8908 giriş sayfası API'si: kurulum Wi-Fi'ının DHCP yanıtı (seçenek 114) bu adresi verir; telefon ağın giriş
+// istediğini ve sayfanın adresini buradan öğrenir. nginx bu yolu şifresiz bırakır (salt okunur, sabit yanıt).
+app.get('/api/captive', (_req, res) => {
+  res.set('Cache-Control', 'no-store');
+  res.type('application/captive+json');
+  res.json({ captive: true, 'user-portal-url': AP_PORTAL_URL });
+});
+
 // Ağda başka DHCP sunucusu var mı: keşif paketi gönderilir, kira alınmaz. own = Pi'nin kendi yanıtı.
 app.post('/api/dhcp/pi/probe', async (_req, res) => {
   if (scriptMissing(PI_DHCP_SCRIPT, res)) return;
@@ -2252,6 +2344,10 @@ app.post('/api/dhcp/pi/confirm', async (req, res) => {
     if (!plan) return res.status(409).json({ error: 'Pi\'nin sabit adresi yok — önce 1. adımı tamamlayın' });
     const ip = String(req.ip || '').replace(/^::ffff:/, '');
     if (!plan.contains(ip) || !hasPiLease(ip)) {
+      // Kurulum Wi-Fi'ındaki telefon da Pi'den adres alır ama ev ağında değildir: evdeki DHCP'nin çalıştığını kanıtlamaz.
+      if (!plan.contains(ip) && inIpv4Net(ip, AP_NET)) {
+        return res.status(403).json({ error: `Bu onay ev ağından verilmeli: telefonu kurulum Wi-Fi'ından çıkarıp ev Wi-Fi'ına bağlayın, sonra http://${plan.ip} adresini açıp Pi-hole → Ayarlar → DHCP kartından onaylayın` });
+      }
       return res.status(403).json({ error: `Onayı Pi'den adres almış bir cihazdan verin: telefonun Wi-Fi'ını kapatıp açın, sonra http://${plan.ip} adresini açıp Pi-hole → Ayarlar → DHCP kartından onaylayın` });
     }
     const r = await runPiDhcpExclusive(['confirm', '--lease', '12h'], 240000);

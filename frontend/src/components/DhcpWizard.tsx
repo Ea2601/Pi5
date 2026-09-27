@@ -5,8 +5,9 @@ import { postApi } from '../hooks/useApi';
 import { toast } from '../toast';
 import { Badge } from './ui';
 
-// Faz 2 sihirbazı: Pi'ye sabit adres → istemci testi → Pi'nin Wi-Fi'sini ayır → modemin DHCP'sini kapat → Pi DHCP'sini aç.
-// Riskli adımlar (1 ve 5) denemedir: "Kalıcı yap"a basılmazsa Pi kendi zamanlayıcısıyla geri döner (panel kapalı olsa da).
+// Faz 2 sihirbazı: Pi'ye sabit adres → istemci testi → Pi'nin Wi-Fi'si (kurulum Wi-Fi'ına çevir ya da yalnız ayır) →
+// modemin DHCP'sini kapat → Pi DHCP'sini aç. Riskli adımlar (1, 3'teki kurulum Wi-Fi'ı ve 5) denemedir: "Kalıcı yap"a
+// basılmazsa Pi kendi zamanlayıcısıyla geri döner (panel kapalı olsa da).
 export interface LanInfo {
   iface: string; ip: string; prefix: number; gateway: string; network: string;
   secondary: { iface: string; ip: string; net?: 'transit' | 'client' }[];
@@ -32,8 +33,18 @@ export interface NetModeStatus {
   planned_iface?: string; planned_transit?: string; planned_gw?: string; planned_client?: string;
   planned_type?: string; planned_mac?: string; mac?: string; lease_until?: number;
   wifi?: string; wlan_addrs?: string; guard_result?: string; guard_at?: number; guard_detail?: string; pi_dhcp?: boolean;
+  // Kurulum Wi-Fi'ı: Pi'nin kendi Wi-Fi kartından yayınladığı yönetim ağı (Pi 192.168.50.1, internet yok).
+  ap_stage?: 'none' | 'trial' | 'on'; ap_trial_ends?: number; ap_ssid?: string; ap_iface?: string; ap_capable?: boolean;
+  ap_active?: boolean; ap_addr?: string; ap_guard_result?: string; ap_guard_detail?: string;
 }
 interface ProbeResult { servers: string[]; own: string[] }
+
+export const AP_DEFAULT_SSID = 'Klyrix-Kurulum';
+export const AP_DEFAULT_IP = '192.168.50.1';
+// Betik ve backend ile aynı kurallar: ağ adı harf/rakam/boşluk/_.- (1–32); WPA2 şifresi 8–63 yazdırılabilir ASCII, ters
+// bölü yok; ikisinde de başta/sonda boşluk yok.
+const validApSsid = (s: string) => /^[A-Za-z0-9 _.-]{1,32}$/.test(s) && !/^ | $/.test(s);
+const validApPassword = (s: string) => /^[\x20-\x5b\x5d-\x7e]{8,63}$/.test(s) && !/^ | $/.test(s);
 
 // ip/önek → ağ adresi + n (ör. 192.168.0.1/24, 50 → 192.168.0.50). Biçim dışıysa boş.
 function hostOf(cidr: string | undefined, n: number): string {
@@ -116,6 +127,11 @@ export function DhcpWizard({ dhcp, net, netErr, reload }: Props) {
   const netLeft = useCountdown(net?.stage === 'trial' ? net.trial_ends || 0 : 0, net?.now || 0);
   const pi = dhcp.pi && !dhcp.pi.error ? dhcp.pi : null;
   const piLeft = useCountdown(pi?.stage === 'trial' ? pi.trial_ends || 0 : 0, pi?.now || 0);
+  const apLeft = useCountdown(net?.ap_stage === 'trial' ? net.ap_trial_ends || 0 : 0, net?.now || 0);
+  // Kurulum Wi-Fi'ı formu (şifre yalnız bu bileşende tutulur; başarılı açılıştan sonra silinir).
+  const [apSsid, setApSsid] = useState(AP_DEFAULT_SSID);
+  const [apPw, setApPw] = useState('');
+  const [apPw2, setApPw2] = useState('');
 
   if (!net) {
     return <p className="subtitle dhcp-note">{netErr ? `Sabit adres durumu okunamadı: ${netErr}` : 'Sihirbaz yükleniyor…'}</p>;
@@ -130,11 +146,22 @@ export function DhcpWizard({ dhcp, net, netErr, reload }: Props) {
   const clientIp = ipOf(clientCidr);
   const transitIp = ipOf(stage !== 'none' ? net.transit : net.planned_transit);
   const gw = (stage !== 'none' ? net.gw : net.planned_gw) || dhcp.lan?.gateway || '';
-  const wlanAddrs = (net.wlan_addrs || '').split(',').map(s => s.trim()).filter(Boolean);
-  // Pi DHCP yalnız Wi-Fi kapalıyken (nmcli radio wifi off) açılır: adresi olmayan ama açık Wi-Fi'yi NetworkManager
-  // modeme kendiliğinden yeniden bağlayabilir (Pi aynı ağa iki yoldan bağlanır).
+  // Kurulum Wi-Fi'ı (deneme ya da kalıcı): yayın açıkken wlan0'daki yayın adresi (192.168.50.1) ev ağı adresi sayılmaz.
+  const apStage = net.ap_stage || 'none';
+  const apOn = apStage === 'on';
+  const apTrial = apStage === 'trial';
+  const apIp = ipOf(net.ap_addr) || AP_DEFAULT_IP;
+  const apSsidLive = net.ap_ssid || AP_DEFAULT_SSID;
+  const wlanAddrs = (net.wlan_addrs || '').split(',').map(s => s.trim()).filter(Boolean)
+    .filter(a => apStage === 'none' || ipOf(a) !== apIp);
+  // Pi DHCP yalnız Pi'nin Wi-Fi'si ev ağından ayrılmışken açılır: Wi-Fi kapalı (nmcli radio wifi off) ya da kurulum
+  // Wi-Fi'ı kalıcı. Adresi olmayan ama açık Wi-Fi'yi NetworkManager modeme kendiliğinden yeniden bağlayabilir (Pi aynı ağa
+  // iki yoldan bağlanır); kurulum Wi-Fi'ının profili ev ağı bağlantısından önceliklidir.
   const wifiOff = net.wifi === 'disabled';
+  const wifiReady = wifiOff || apOn;
   const viaWifi = wlanAddrs.some(a => ipOf(a) === window.location.hostname);
+  // Panel şu an kurulum Wi-Fi'ından açılmış (yayın kapanınca bu tarayıcının bağlantısı kopar).
+  const viaAp = apStage !== 'none' && window.location.hostname === apIp;
   const piStage = pi?.stage || 'off';
   const piOn = piStage === 'on' || !!dhcp.pi_dhcp_active;
   // Durum kaydı kapalı ama Pi-hole DHCP'si açık (kayıt kaybı / geri alma dhcp.active'i kapatamadı / Pi-hole arayüzünden
@@ -221,6 +248,57 @@ export function DhcpWizard({ dhcp, net, netErr, reload }: Props) {
       toast.success(enabled ? 'Pi\'nin Wi-Fi\'si yeniden açıldı' : 'Pi\'nin Wi-Fi bağlantısı ayrıldı');
     });
   };
+  const startAp = () => {
+    const ssid = apSsid.trim() || AP_DEFAULT_SSID;
+    if (!validApSsid(ssid)) {
+      toast.error('Ağ adı 1-32 karakter olmalı: harf (Türkçe harf olmadan), rakam, boşluk, _ . -');
+      return;
+    }
+    if (!validApPassword(apPw)) {
+      toast.error('Wi-Fi şifresi 8-63 karakter olmalı: Türkçe harf (ç ğ ı ö ş ü) ve ters bölü (\\) olmadan, başta/sonda boşluk olmadan');
+      return;
+    }
+    if (apPw !== apPw2) { toast.error('Şifreler eşleşmiyor'); return; }
+    if (!window.confirm(
+      'Pi\'nin Wi-Fi\'si kurulum Wi-Fi\'ına çevrilecek (5 dakikalık deneme):\n\n' +
+      `• Pi'nin Wi-Fi'si ev ağından ayrılır ve "${ssid}" adlı ayrı bir ağ yayınlar (2,4 GHz, Pi ${apIp}). Bu ağda internet yok — yalnız panele erişim içindir; Pi'nin interneti kablodan gelmeye devam eder.\n` +
+      `• Telefonun Wi-Fi ayarlarından "${ssid}" ağına bu şifreyle bağlanın. "Ağa giriş yap" sayfası kendiliğinden açılır → "Paneli aç" (panel şifresi sorulur, kullanıcı admin). Açılmazsa telefonun tarayıcısında http://${apIp} adresini açın.\n` +
+      `• 5 dakika içinde TELEFONDAN, bu ağa bağlıyken ${settingsPath} → 3. adım → "Kalıcı yap"a basın. Onay yalnız bu ağa bağlı telefondan kabul edilir.\n\n` +
+      '5 dakika içinde onaylanmazsa Pi kurulum Wi-Fi\'ını kapatır ve Wi-Fi\'si eski ayarına kendiliğinden döner.\n\n' +
+      'Devam edilsin mi?',
+    )) return;
+    void act('ap', async () => {
+      toast.info('Kurulum Wi-Fi\'ı açılıyor — bir dakikaya kadar sürebilir');
+      await postApi('/netmode/ap', { ssid, password: apPw });
+      setApPw(''); setApPw2('');
+      toast.success(`Kurulum Wi-Fi'ı deneme olarak açık — telefonu "${ssid}" ağına bağlayıp oradan kalıcı yapın`);
+    });
+  };
+  const confirmAp = () => act('ap-confirm', async () => {
+    await postApi('/netmode/ap/confirm', {});
+    toast.success('Kurulum Wi-Fi\'ı kalıcı — Pi yeniden başlasa da yayınlar');
+  });
+  const rollbackAp = () => act('ap-rollback', async () => {
+    if (viaAp) toast.info('Kurulum Wi-Fi\'ı kapanıyor — bu cihazın bağlantısı kopacak');
+    await postApi('/netmode/ap/rollback', {});
+    toast.info('Kurulum Wi-Fi\'ı kapatıldı — Pi\'nin Wi-Fi\'si eski ayarına döndü');
+  });
+  const turnOffAp = () => {
+    if (!window.confirm(
+      'Kurulum Wi-Fi\'ı kapatılacak.\n\n' +
+      `• Modemin DHCP'si kapalıyken ya da bir sorun çıktığında panele "${apSsidLive}" ağından ulaşma yolu kalmaz — o zaman panele yalnız kablolu ya da elle IP verilmiş bir cihazdan ulaşılır.\n` +
+      '• Pi\'nin Wi-Fi\'si kapalı kalır (ev ağına kendiliğinden yeniden bağlanmaz).\n' +
+      (viaAp ? '• Paneli şu an bu ağdan açtınız — bağlantı kopacak.\n' : '') +
+      '\nDevam edilsin mi?',
+    )) return;
+    void act('ap-off', async () => {
+      if (viaAp) toast.info('Kurulum Wi-Fi\'ı kapanıyor — bu cihazın bağlantısı kopacak');
+      const r: { warning?: string } = await postApi('/netmode/ap/off', {});
+      // Yayın kalktı ama Wi-Fi kapatılamadıysa betiğin uyarısı gösterilir (Pi'nin Wi-Fi'si ev ağına dönebilir).
+      if (r.warning) toast.error(`Kurulum Wi-Fi'ı kapatıldı, ancak: ${r.warning}`);
+      else toast.info('Kurulum Wi-Fi\'ı kapatıldı — Pi\'nin Wi-Fi\'si kapalı');
+    });
+  };
   const check = () => act('probe', async () => {
     const r = await runProbe();
     if (r) toast.info(r.servers.length ? 'Başka bir DHCP sunucusu yanıt veriyor' : 'Başka DHCP sunucusu yok');
@@ -230,7 +308,7 @@ export function DhcpWizard({ dhcp, net, netErr, reload }: Props) {
       'Pi DHCP sunucusu 5 dakikalık deneme olarak açılacak:\n\n' +
       `• Havuz: ${poolStart}–${poolEnd}, ağ geçidi ve DNS: ${clientIp}\n` +
       '• Modemin DHCP\'si kapalı olmalı (4. adım)\n\n' +
-      `Sonra telefonun Wi-Fi'ını kapatıp açın; ${hostOf(clientCidr, 0).replace(/\.0$/, '.x')} almalı. Telefondan http://${clientIp} adresini açıp ${settingsPath} içinde "Kalıcı yap"a basın.\n` +
+      `Sonra telefonun Wi-Fi'ını kapatıp açın; ${hostOf(clientCidr, 0).replace(/\.0$/, '.x')} almalı${apStage !== 'none' ? ' (telefon ev Wi-Fi\'ına bağlı olmalı, kurulum Wi-Fi\'ına değil)' : ''}. Telefondan http://${clientIp} adresini açıp ${settingsPath} içinde "Kalıcı yap"a basın.\n` +
       '5 dakika içinde onaylanmazsa Pi DHCP\'si kendiliğinden kapanır — o zaman modemin DHCP\'sini hemen geri açın.\n\n' +
       'Devam edilsin mi?',
     )) return;
@@ -279,9 +357,9 @@ export function DhcpWizard({ dhcp, net, netErr, reload }: Props) {
 
   const guardEmergency = net.guard_result === 'emergency';
   const step1: StepState = isStatic ? 'done' : 'active';
-  const step3: StepState = wifiOff ? 'done' : isStatic ? 'active' : 'todo';
-  const step4: StepState = piOn || (probe && !probe.servers.length) ? 'done' : isStatic && wifiOff ? 'active' : 'todo';
-  const step5: StepState = piStage === 'on' ? 'done' : isStatic && wifiOff ? 'active' : 'todo';
+  const step3: StepState = wifiReady ? 'done' : isStatic || apTrial ? 'active' : 'todo';
+  const step4: StepState = piOn || (probe && !probe.servers.length) ? 'done' : isStatic && wifiReady ? 'active' : 'todo';
+  const step5: StepState = piStage === 'on' ? 'done' : isStatic && wifiReady ? 'active' : 'todo';
 
   return (
     <div className="dhcp-wizard">
@@ -383,34 +461,138 @@ export function DhcpWizard({ dhcp, net, netErr, reload }: Props) {
         <span>Bitince cihazı yeniden otomatik (DHCP) ayara alın.</span>
       </Step>
 
-      <Step n={3} title="Pi'nin Wi-Fi bağlantısını ayır" state={step3}>
-        {wifiOff ? (
-          <>
-            <span>Pi'nin Wi-Fi'si kapalı — Pi yalnız kabloyla bağlı.</span>
-            <div className="panel-auth-actions">
-              <button className="btn-outline btn-sm" onClick={() => setWifi(true)} disabled={!!busy || piOn}
-                title={piOn ? 'Pi DHCP sunucusu açıkken Pi\'nin Wi-Fi\'si modeme bağlanamaz' : undefined}>
-                {busy === 'wifi' ? 'Uygulanıyor…' : 'Wi-Fi\'yi geri bağla'}
-              </button>
-            </div>
-          </>
-        ) : (
+      <Step n={3} title="Pi'nin Wi-Fi'si" state={step3}>
+        {apStage === 'none' && (
           <>
             <span>
-              {wlanAddrs.length > 0
-                ? `Pi'nin Wi-Fi'si de modem ağına bağlı (${wlanAddrs.join(', ')}). DHCP açılmadan önce bu bağlantı ayrılır — Pi aynı ağa iki yoldan bağlıyken cihazlara yanlış karttan yanıt verebilir.`
-                : 'Pi\'nin Wi-Fi\'si açık ama şu an bir ağa bağlı değil — kendiliğinden modeme yeniden bağlanabilir. DHCP açılmadan önce Wi-Fi kapatılır.'}
-              {' '}Pi'nin kendi Wi-Fi yayını sonraki adımda gelecek.
+              {wifiOff
+                ? 'Pi\'nin Wi-Fi\'si kapalı — Pi yalnız kabloyla bağlı.'
+                : wlanAddrs.length > 0
+                  ? `Pi'nin Wi-Fi'si de modem ağına bağlı (${wlanAddrs.join(', ')}). DHCP açılmadan önce bu bağlantı ayrılır — Pi aynı ağa iki yoldan bağlıyken cihazlara yanlış karttan yanıt verebilir.`
+                  : 'Pi\'nin Wi-Fi\'si açık ama şu an bir ağa bağlı değil — kendiliğinden modeme yeniden bağlanabilir. DHCP açılmadan önce ev ağından ayrılır.'}
             </span>
             {viaWifi && (
               <Alert kind="err">
-                Paneli Pi'nin Wi-Fi adresinden açtınız — ayırınca bağlantı kopar. Önce kablolu adresi açın: http://{transitIp || net.transit}
+                Paneli Pi'nin Wi-Fi adresinden açtınız — Wi-Fi ev ağından ayrılınca bağlantı kopar. Önce kablolu adresi açın: http://{transitIp || net.transit}
               </Alert>
             )}
+            <div className="dhcp-option dhcp-option-main">
+              <strong>Kurulum Wi-Fi'ına çevir (önerilen)</strong>
+              <span>
+                Pi'nin Wi-Fi'si ev ağından ayrılır ve kendi ağını yayınlar (2,4 GHz, Pi <code>{apIp}</code>). Telefon bu ağa
+                bağlanınca "ağa giriş yap" sayfası kendiliğinden açılır ve panele götürür — modemin DHCP'si kapalıyken de. Bu ağda
+                internet yok, yalnız panel içindir; açık kaldıkça panele her zaman bu yoldan ulaşılır.
+              </span>
+              {net.ap_capable === false && (
+                <Alert kind="err">
+                  Pi'nin Wi-Fi kartı bulunamadı ya da yayın (erişim noktası) kipini desteklemiyor — "Yalnız ayır"ı kullanın.
+                </Alert>
+              )}
+              <div className="panel-auth-form">
+                <input className="config-input" type="text" autoComplete="off" spellCheck={false} maxLength={32}
+                  placeholder={`Ağ adı (${AP_DEFAULT_SSID})`} aria-label="Kurulum Wi-Fi'ının adı"
+                  value={apSsid} onChange={e => setApSsid(e.target.value)} />
+                {/* maxLength yok: yapıştırılan uzun şifre sessizce kesilmesin (telefon tam şifreyle bağlanamazdı); 8-63 kuralını
+                    doğrulama gösterir. */}
+                <input className="config-input" type="password" autoComplete="new-password"
+                  placeholder="Wi-Fi şifresi" aria-label="Kurulum Wi-Fi'ının şifresi (8-63 karakter)"
+                  value={apPw} onChange={e => setApPw(e.target.value)} />
+                <input className="config-input" type="password" autoComplete="new-password"
+                  placeholder="Şifre (tekrar)" aria-label="Kurulum Wi-Fi'ının şifresi (tekrar)"
+                  value={apPw2} onChange={e => setApPw2(e.target.value)} />
+              </div>
+              <span className="dhcp-muted">
+                Şifre 8-63 karakter: İngilizce harf, rakam, boşluk ve işaretler; Türkçe harf (ç ğ ı ö ş ü) ve ters bölü (\) olmaz,
+                başta/sonda boşluk olmaz. Telefona da aynı şifreyi yazacaksınız. Ağ adı en çok 32 karakter: harf, rakam, boşluk, _ . -
+              </span>
+              <div className="panel-auth-actions">
+                <button className="btn-primary btn-sm" onClick={startAp}
+                  disabled={!!busy || !isStatic || viaWifi || net.ap_capable === false || !apPw || !apPw2}
+                  title={!isStatic ? 'Önce 1. adımı tamamlayın' : undefined}>
+                  {busy === 'ap' ? 'Açılıyor…' : 'Kurulum Wi-Fi\'ını aç (5 dk deneme)'}
+                </button>
+              </div>
+            </div>
+            <div className="dhcp-option">
+              <strong>Yalnız ayır</strong>
+              {wifiOff ? (
+                <>
+                  <span>
+                    Seçili: Pi'nin Wi-Fi'si kapalı. Modemin DHCP'si kapalıyken panele yalnız kablolu ya da elle IP verilmiş bir
+                    cihazdan ulaşılır.
+                  </span>
+                  <div className="panel-auth-actions">
+                    <button className="btn-outline btn-sm" onClick={() => setWifi(true)} disabled={!!busy || piOn}
+                      title={piOn ? 'Pi DHCP sunucusu açıkken Pi\'nin Wi-Fi\'si modeme bağlanamaz' : undefined}>
+                      {busy === 'wifi' ? 'Uygulanıyor…' : 'Wi-Fi\'yi geri bağla'}
+                    </button>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <span>
+                    Wi-Fi kapatılır, Pi yalnız kabloyla bağlı kalır. Modemin DHCP'si kapalıyken panele yalnız kablolu ya da elle IP
+                    verilmiş bir cihazdan ulaşılır.
+                  </span>
+                  <div className="panel-auth-actions">
+                    <button className="btn-outline btn-sm" onClick={() => setWifi(false)} disabled={!!busy || !isStatic || viaWifi}
+                      title={!isStatic ? 'Önce 1. adımı tamamlayın' : undefined}>
+                      {busy === 'wifi' ? 'Uygulanıyor…' : 'Wi-Fi bağlantısını ayır'}
+                    </button>
+                  </div>
+                </>
+              )}
+            </div>
+          </>
+        )}
+        {apTrial && (
+          <>
+            <span>
+              <strong>Kurulum Wi-Fi'ı deneniyor</strong> — kalan {fmtLeft(apLeft)}. Ağ <code>{apSsidLive}</code>, Pi{' '}
+              <code>{apIp}</code>{net.ap_active === false ? ' (yayın şu an görünmüyor)' : ''}.
+            </span>
+            <ol>
+              <li>Telefonun Wi-Fi ayarlarından <code>{apSsidLive}</code> ağına bağlanın (panelde yazdığınız şifreyle).</li>
+              <li>
+                "Ağa giriş yap" sayfası kendiliğinden açılır → "Paneli aç" (panel şifresi sorulur, kullanıcı <code>admin</code>).
+                Açılmazsa telefonun tarayıcısında <code>http://{apIp}</code> adresini açın.
+              </li>
+              <li>Telefonda {settingsPath} → 3. adım → "Kalıcı yap".</li>
+            </ol>
+            <span className="dhcp-muted">
+              "Kalıcı yap" yalnız bu ağa bağlı telefondan kabul edilir. Süre dolarsa Pi kurulum Wi-Fi'ını kapatır ve Wi-Fi'si eski
+              ayarına döner.
+            </span>
             <div className="panel-auth-actions">
-              <button className="btn-primary btn-sm" onClick={() => setWifi(false)} disabled={!!busy || !isStatic || viaWifi}
-                title={!isStatic ? 'Önce 1. adımı tamamlayın' : undefined}>
-                {busy === 'wifi' ? 'Uygulanıyor…' : 'Wi-Fi bağlantısını ayır'}
+              <button className="btn-primary btn-sm" onClick={confirmAp} disabled={!!busy}>Kalıcı yap</button>
+              <button className="btn-outline btn-sm" onClick={rollbackAp} disabled={!!busy}>Geri al</button>
+            </div>
+          </>
+        )}
+        {apOn && (
+          <>
+            <span>
+              <Badge variant="success">Açık</Badge>{' '}
+              Kurulum Wi-Fi'ı <code>{apSsidLive}</code> — panel <code>http://{apIp}</code>; bu ağda internet yok, yalnız yönetim.
+              {net.ap_active ? ' Yayında.' : ''}
+            </span>
+            {net.ap_active === false && (
+              <Alert kind="err">
+                Yayın şu an kapalı — Pi bir sonraki açılışta ya da NetworkManager yeniden başlayınca yeniden açmayı dener.
+              </Alert>
+            )}
+            {net.ap_guard_result === 'failed' && (
+              <Alert kind="err">
+                Kurulum Wi-Fi'ı kendiliğinden yeniden açılamadı{net.ap_guard_detail ? ` (${net.ap_guard_detail})` : ''}.
+              </Alert>
+            )}
+            <span className="dhcp-muted">
+              Modemin DHCP'si kapalıyken ya da bir sorun çıktığında telefonu <code>{apSsidLive}</code> ağına bağlayıp panele
+              buradan ulaşın.
+            </span>
+            <div className="panel-auth-actions">
+              <button className="btn-outline btn-sm" onClick={turnOffAp} disabled={!!busy}>
+                {busy === 'ap-off' ? 'Kapatılıyor…' : 'Kurulum Wi-Fi\'ını kapat'}
               </button>
             </div>
           </>
@@ -463,9 +645,11 @@ export function DhcpWizard({ dhcp, net, netErr, reload }: Props) {
               veritabanında duruyor).
             </span>
             {!isStatic && <span className="dhcp-muted">Önce 1. adım (sabit adres, kalıcı) tamamlanmalı.</span>}
-            {isStatic && !wifiOff && <span className="dhcp-muted">Önce 3. adım: Pi'nin Wi-Fi bağlantısını ayırın.</span>}
+            {isStatic && !wifiReady && (
+              <span className="dhcp-muted">Önce 3. adım: Pi'nin Wi-Fi'sini kurulum Wi-Fi'ına çevirip kalıcı yapın ya da yalnız ayırın.</span>
+            )}
             <div className="panel-auth-actions">
-              <button className="btn-primary btn-sm" onClick={enablePi} disabled={!!busy || !isStatic || !wifiOff}>
+              <button className="btn-primary btn-sm" onClick={enablePi} disabled={!!busy || !isStatic || !wifiReady}>
                 {busy === 'pi-enable' ? 'Açılıyor…' : 'Pi DHCP\'sini aç (5 dk deneme)'}
               </button>
             </div>
@@ -478,6 +662,12 @@ export function DhcpWizard({ dhcp, net, netErr, reload }: Props) {
               Telefonun Wi-Fi'ını kapatıp açın; <code>{hostOf(clientCidr, 0).replace(/\.0$/, '.x')}</code> almalı. Sonra telefondan{' '}
               <code>http://{clientIp}</code> adresini açıp {settingsPath} içinde "Kalıcı yap"a basın.
             </span>
+            {apStage !== 'none' && (
+              <span className="dhcp-muted">
+                Bu onay için telefon ev Wi-Fi'ına (modemin ağına) bağlı olmalı — kurulum Wi-Fi'ından ({apSsidLive}) verilen onay kabul
+                edilmez.
+              </span>
+            )}
             {pi.port67 === false && <Alert kind="err">Pi-hole DHCP portunu (67) dinlemiyor.</Alert>}
             <div className="panel-auth-actions">
               <button className="btn-primary btn-sm" onClick={confirmPi} disabled={!!busy}>Kalıcı yap</button>

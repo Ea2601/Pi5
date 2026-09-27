@@ -1,12 +1,12 @@
 {
-  "version": "2.22.0",
-  "build": 73,
-  "date": "2026-09-27",
+  "version": "2.23.0",
+  "build": 74,
+  "date": "2026-09-28",
   "changelog": [
-    "DHCP sihirbazı (Pi-hole → Ayarlar → DHCP kartı): Pi'yi adım adım evin DHCP sunucusu yapma — sabit adres, istemci testi, Pi'nin Wi-Fi'sini modemden ayırma, modemin DHCP'sini kapatıp kontrol etme, Pi DHCP'sini açma; riskli her adım deneme olarak açılır ve 'Kalıcı yap'a basılmazsa Pi panelden bağımsız, kendiliğinden eski hâline döner",
-    "Sabit adres: Pi'nin kablolu kartına iki adres verilir — modem tarafı mevcut adres (panel aynı adreste kalır) ve cihazlar için 192.168.0.1; ayar NetworkManager güncellemelerinde ve yeniden başlatmada korunur, profil yüklenemezse Pi adresini acil modda tutar ve panel uyarır",
-    "Pi DHCP: Pi-hole 192.168.0.20–139 arası adres dağıtır (ağ geçidi ve DNS Pi); ayarlar Pi-hole durdurulmuşken yazılıp geri okunur, sorun olursa yedekten geri yüklenir; 'Kalıcı yap' yalnız Pi'den adres almış bir cihazdan kabul edilir, geri alınınca kart 'modemin DHCP'sini hemen geri açın' uyarısı gösterir",
-    "Koruma: Pi-hole evin DHCP sunucusuyken kapatılamaz ve yeniden kurulamaz; Pi DHCP'si dinlemiyorsa, modemin DHCP'si kendiliğinden yeniden açılırsa ya da sabit adres profili yüklenemezse uyarı düşer",
-    "Ağ geçidi kuralları (NAT, forward izni) cihaz ağı ile modem ağını ayrı ayrı kapsar; Pi'nin kendi güvenlik duvarı açıksa DHCP portu otomatik açılır; DHCP kartı hata olunca gizlenmiyor, iki adresi ayrı gösteriyor"
+    "Kurulum Wi-Fi'ı (Pi-hole → Ayarlar → DHCP kartı, 3. adım): Pi'nin dahili Wi-Fi'si ev ağından ayrılıp kendi ağını yayınlar (varsayılan ad 'Klyrix-Kurulum', şifreyi siz belirlersiniz, 2,4 GHz); telefon bu ağa bağlanınca 'ağa giriş yap' sayfası kendiliğinden açılır ve 'Paneli aç' ile panele götürür — modemin DHCP'si kapalıyken de çalışır",
+    "Bu ağ yalnız yönetim içindir: internet yok, ev ağına geçiş yok; Pi 192.168.50.1, telefonlar 192.168.50.x adresini Pi'den alır. Giriş sayfası şifresiz açılır, panelin kendisi yine şifre ister",
+    "Açma 5 dakikalık denemedir: 'Kalıcı yap' yalnız bu ağa bağlı telefondan kabul edilir; onaylanmazsa Pi, Wi-Fi'sini kendiliğinden eski hâline döndürür. Kalıcı yayın yeniden başlatmada ve NetworkManager yeniden başlayınca geri kurulur; yayın düşerse panel uyarır",
+    "Pi DHCP'si artık Pi'nin Wi-Fi'si kapalıyken ya da kurulum Wi-Fi'ı kalıcıyken açılabilir; DHCP kartı kurulum Wi-Fi'ının durumunu (açık / deneme / kapalı) gösterir",
+    "Güvenlik: kurulum Wi-Fi'ı yalnız WPA2 yayınlar (bazı telefonların bağlanamadığı WPA2/WPA3 geçiş kipi kapalı); Pi-hole'un DNS dinleme modu bu ağa uygun değilse yayın açılmaz ve nedeni yazılır; Pi-hole'un kira dosyası önceden hazırlanır (Pi DHCP'si kapalıyken DNS'in düşmesi önlendi); panel arka ucu, stdin'i okumadan biten bir betik yüzünden artık çökmez"
   ]
 }

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Radio, AlertTriangle, RefreshCw } from 'lucide-react';
 import { Panel, Badge } from './ui';
-import { DhcpWizard } from './DhcpWizard';
+import { DhcpWizard, AP_DEFAULT_IP } from './DhcpWizard';
 import type { DhcpStatus, NetModeStatus } from './DhcpWizard';
 
 // Gerçek DHCP / ağ geçidi durumu + Faz 2 sihirbazı (sabit IP → Pi'nin Wi-Fi'si → modem DHCP'si → Pi DHCP). Eski "DHCP
@@ -41,7 +41,7 @@ export function DhcpModeCard() {
     // "Modemin DHCP'sini geri açın" uyarısı Pi'de kalıcıdır (pi.modem_warn): sayfa o an açık olmasa da görünür.
   }, []);
 
-  const trial = net?.stage === 'trial' || dhcp?.pi?.stage === 'trial';
+  const trial = net?.stage === 'trial' || dhcp?.pi?.stage === 'trial' || net?.ap_stage === 'trial';
   const interval = trial ? 5000 : 30000;
   useEffect(() => {
     const first = setTimeout(() => { void load(); }, 0);
@@ -52,6 +52,9 @@ export function DhcpModeCard() {
   const lan = dhcp?.lan;
   const pi = dhcp?.pi && !dhcp.pi.error ? dhcp.pi : null;
   const piTrial = pi?.stage === 'trial';
+  // Kurulum Wi-Fi'ı: Pi'nin kendi yönetim ağı (net-mode.sh durumu; sihirbazın 3. adımından açılır).
+  const apStage = net?.ap_stage || 'none';
+  const apIp = (net?.ap_addr || '').split('/')[0] || AP_DEFAULT_IP;
   return (
     <Panel title="DHCP ve Ağ Geçidi (canlı)" icon={<Radio size={18} style={{ marginRight: 8 }} />}>
       {!dhcp && !dhcpErr && <p className="subtitle dhcp-note">yükleniyor…</p>}
@@ -99,6 +102,23 @@ export function DhcpModeCard() {
                 <span className="list-item-value">Pi'nin ev ağı adresi</span>
                 <span className="list-item-comment">bulunamadı (varsayılan rota yok)</span>
               </div>
+            </div>
+          )}
+          {net?.supported && (
+            <div className="list-item">
+              <div className="list-item-content">
+                <span className="list-item-value">Kurulum Wi-Fi'ı</span>
+                <span className="list-item-comment">
+                  {apStage === 'on'
+                    ? `${net.ap_ssid || '?'} — panel http://${apIp} (internet yok, yalnız yönetim)${net.ap_active === false ? ' — yayın şu an kapalı' : ''}`
+                    : apStage === 'trial'
+                      ? `${net.ap_ssid || '?'} — deneme sürüyor, telefondan "Kalıcı yap" bekleniyor`
+                      : 'Pi\'nin kendi yönetim ağı (internet yok) — sihirbazın 3. adımından açılır'}
+                </span>
+              </div>
+              <Badge variant={apStage === 'on' ? (net.ap_active === false ? 'warning' : 'success') : apStage === 'trial' ? 'warning' : 'neutral'}>
+                {apStage === 'on' ? 'Açık' : apStage === 'trial' ? 'Deneme' : 'Kapalı'}
+              </Badge>
             </div>
           )}
           {lan && lan.secondary.length > 0 && (

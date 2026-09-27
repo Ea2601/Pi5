@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="color-scheme" content="dark">
+<!-- Kurulum Wi-Fi'ının giriş sayfası: telefon ağa bağlanınca işletim sisteminin "ağa giriş yap" penceresi bu sayfayı açar.
+     Şifresizdir (nginx muafiyeti) ve hiçbir dış kaynak yüklemez: simge satır içi, favicon data: adresi (tarayıcı şifreli
+     /favicon.ico'yu istemesin). Eski giriş pencerelerinde de çalışsın diye betik ve flex gap kullanılmaz. -->
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 128 128'%3E%3Crect width='128' height='128' rx='28' fill='%23334155'/%3E%3Cg transform='translate(64 64)' fill='%23fff'%3E%3Crect x='-27' y='-36' width='11' height='72' rx='2.5'/%3E%3Cpath d='M-8 0 19-27M-8 0 19 27' stroke='%23fff' stroke-width='8' stroke-linecap='round' fill='none'/%3E%3Crect x='16' y='-37' width='14' height='14' rx='3'/%3E%3Crect x='16' y='23' width='14' height='14' rx='3'/%3E%3C/g%3E%3C/svg%3E">
+<title>Klyrix Gate — Kurulum Wi-Fi'ı</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  :root {
+    --bg: #0a0e14; --fg: #e2e8f0; --muted: #64748b; --dim: #475569;
+    --blue: #3b82f6; --green: #22c55e; --orange: #f59e0b; --red: #ef4444;
+  }
+  html { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
+  body {
+    background: var(--bg); color: var(--fg);
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+    line-height: 1.5; min-height: 100vh; padding: 28px 16px;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .card {
+    width: 100%; max-width: 420px; padding: 24px 20px;
+    background: rgba(17, 24, 32, 0.72); border: 1px solid rgba(255, 255, 255, 0.08); border-radius: 12px;
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.30), inset 0 1px 0 rgba(255, 255, 255, 0.06);
+  }
+  .card > * + * { margin-top: 18px; }
+  .brand { display: flex; align-items: center; }
+  .brand svg { width: 48px; height: 48px; flex: none; margin-right: 14px; }
+  .brand-name { font-size: 20px; font-weight: 700; line-height: 1.2; }
+  .brand-sub { font-size: 14px; color: var(--muted); }
+  h1 { font-size: 22px; font-weight: 700; line-height: 1.3; }
+  .notice {
+    padding: 12px 14px; border-radius: 10px; font-size: 15px;
+    background: rgba(245, 158, 11, 0.10); border: 1px solid rgba(245, 158, 11, 0.45);
+  }
+  .notice strong { color: var(--orange); }
+  .btn {
+    display: block; text-align: center; text-decoration: none; -webkit-tap-highlight-color: transparent;
+    background: var(--blue); color: #fff; font-size: 19px; font-weight: 700;
+    padding: 16px 18px; border-radius: 12px; min-height: 56px;
+    box-shadow: 0 6px 20px rgba(59, 130, 246, 0.35);
+  }
+  .btn:active { background: #2563eb; }
+  .note { font-size: 14px; color: var(--muted); }
+  .note + .note { margin-top: 10px; }
+  code {
+    font-family: 'JetBrains Mono', ui-monospace, Menlo, Consolas, monospace; font-size: 13px; color: var(--fg);
+    background: rgba(255, 255, 255, 0.08); padding: 1px 6px; border-radius: 6px; white-space: nowrap;
+  }
+</style>
+</head>
+<body>
+<main class="card">
+  <div class="brand">
+    <svg viewBox="0 0 128 128" aria-hidden="true" focusable="false">
+      <defs>
+        <linearGradient id="kg-bg" x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0%" stop-color="#94A3B8" stop-opacity="0.95"/>
+          <stop offset="100%" stop-color="#1E293B" stop-opacity="0.85"/>
+        </linearGradient>
+      </defs>
+      <rect x="0" y="0" width="128" height="128" rx="28" fill="url(#kg-bg)"/>
+      <g transform="translate(64 64)">
+        <rect x="-27" y="-36" width="11" height="72" rx="2.5" fill="#FFFFFF"/>
+        <path d="M -8 0 L 19 -27" fill="none" stroke="#FFFFFF" stroke-width="8" stroke-linecap="round"/>
+        <path d="M -8 0 L 19 27" fill="none" stroke="#FFFFFF" stroke-width="8" stroke-linecap="round"/>
+        <rect x="16" y="-37" width="14" height="14" rx="3" fill="#FFFFFF"/>
+        <rect x="16" y="23" width="14" height="14" rx="3" fill="#FFFFFF"/>
+      </g>
+    </svg>
+    <div>
+      <div class="brand-name">Klyrix Gate</div>
+      <div class="brand-sub">Kurulum Wi-Fi'ı</div>
+    </div>
+  </div>
+
+  <h1>Pi'nin kurulum ağına bağlandınız</h1>
+
+  <p class="notice"><strong>Bu ağda internet yok.</strong> Yalnız Pi'nin paneline erişim içindir.</p>
+
+  <a class="btn" href="http://192.168.50.1/">Paneli aç</a>
+
+  <div>
+    <p class="note">
+      Sayfa açılmazsa tarayıcıda <code>http://192.168.50.1</code> adresini açın; panel şifresi sorulur (kullanıcı: <code>admin</code>).
+    </p>
+    <p class="note">Telefon "bu ağda internet yok" uyarısı verirse bu ağa bağlı kalmayı seçin.</p>
+  </div>
+</main>
+</body>
+</html>

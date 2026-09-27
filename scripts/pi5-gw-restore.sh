@@ -5,11 +5,12 @@
 #   - /opt/pi5-gateway/core/pi5-gw.nft: eski 'inet filter' forward (policy drop) içindeki pi5_gw izin zinciri
 #   - /opt/pi5-gateway/core/pi5-in.nft: eski 'inet filter' input (policy drop) içindeki pi5_in izin zinciri (DHCP, ping)
 #   - /etc/nftables.d/device-block.conf: cihaz engelleri
-# Dosyaları backend yazar ve her açılışta yeniden yazar; bu betik yalnız son hallerini erkenden yükler. Hatalar
-# günlüğe yazılır, açılışı durdurmaz.
+#   - /etc/nftables.d/pi5-ap.conf     : kurulum Wi-Fi'ı (80/tcp giriş sayfasına, bu ağdan / bu ağa iletim yok)
+# Dosyaları backend yazar ve her açılışta yeniden yazar (pi5-ap.conf'u net-mode.sh yazar, pi5-net-guard her açılışta
+# yeniden yükler); bu betik yalnız son hallerini erkenden yükler. Hatalar günlüğe yazılır, açılışı durdurmaz.
 set -u
 log() { logger -t pi5-gw-restore "$*" 2>/dev/null || true; }
-for f in /etc/nftables.d/pi5-wgnat.conf /etc/nftables.d/device-block.conf; do
+for f in /etc/nftables.d/pi5-wgnat.conf /etc/nftables.d/device-block.conf /etc/nftables.d/pi5-ap.conf; do
   [ -s "$f" ] || continue
   out=$(nft -f "$f" 2>&1) || log "yüklenemedi: $f: $out"
 done

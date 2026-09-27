@@ -9,17 +9,30 @@
 #   rollback                             yalnız deneme sürüyorsa eski profile döner (zamanlayıcı / açılış / panel)
 #   dhcp [--force]                       kalıcı sabit adresten bilerek otomatik adrese döner (Pi DHCP'si kapalıyken;
 #                                        Pi'nin dağıttığı kiralar bitene kadar reddedilir, --force: yine de)
-#   wifi off|on                          Pi'nin Wi-Fi'sini kapatır / açar (Pi DHCP'si açılmadan modem Wi-Fi'sinden ayrılır)
-#   ensure                               güncelleme / açılış: süresi geçen denemeyi geri alır, kalıcı profili denetler.
-#                                        Hiçbir şeyi kendiliğinden AÇMAZ.
+#   wifi off|on                          Pi'nin Wi-Fi'sini kapatır / açar (Pi DHCP'si açılmadan modem Wi-Fi'sinden ayrılır;
+#                                        kurulum Wi-Fi'ı açıkken reddedilir)
+#   ap on --trial SN [--ssid AD]         kurulum Wi-Fi'ı: Pi'nin dahili Wi-Fi'si erişim noktası olur (192.168.50.1, WPA2,
+#                                        2.4 GHz; yalnız panele erişim, internet yok). Parola STDIN'in ilk satırından
+#                                        okunur (argv'ye ve günlüğe girmez). SN saniye içinde "ap confirm" gelmezse geri alınır
+#   ap confirm                           kurulum Wi-Fi'ını kalıcı yapar (açılışta kendiliğinden yayına başlar)
+#   ap rollback                          yalnız deneme sürüyorsa kurulum Wi-Fi'ını kaldırır; Pi'nin Wi-Fi'si eski haline döner
+#   ap off                               kurulum Wi-Fi'ını bilerek kapatır; Pi'nin Wi-Fi'si kapalı kalır (ev ağına dönmez)
+#   ensure                               güncelleme / açılış: süresi geçen denemeleri geri alır, kalıcı profili ve kalıcı
+#                                        kurulum Wi-Fi'ını denetler. Hiçbir şeyi kendiliğinden AÇMAZ.
 #   guard                                pi5-net-guard.service (açılış + her NetworkManager (yeniden) başlatması): kalıcı
-#                                        profil etkin değilse yedekten onarır; olmazsa adresleri bu açılış için elle tutar
+#                                        profil etkin değilse yedekten onarır; olmazsa adresleri bu açılış için elle tutar.
+#                                        Kalıcı kurulum Wi-Fi'ı yayında değilse onu da onarır (onun acil modu yoktur)
 # Raspberry Pi'nin NetworkManager yaması (rpt4) her NM başlangıcında /etc/netplan/*.yaml'ı silip yalnız dosya adı
 # "netplan-" ile başlayan profillerden yeniden yazar: "pi5-eth0" adı bu yüzden seçildi (yerli keyfile olarak kalır).
 # `nmcli con reload` ASLA çalıştırılmaz (netplan silme / yeniden yazmayı tetikler); tek dosya `nmcli con load` ile
 # yüklenir. Eski profil (netplan-*) hiç değiştirilmez: değiştirmek /etc/netplan'ı yeniden yazdırırdı.
+# Kurulum Wi-Fi'ı (pi5-ap): profil dosyası doğrudan yazılır (parola hiçbir komutun argv'sinde görünmez) ve yalnız o
+# dosya yüklenir. Ev Wi-Fi'ı profili (netplan-wlan0-*) değiştirilmez: pi5-ap'nin kendiliğinden bağlanma önceliği (300)
+# yüksek olduğundan açılışta o seçilir. pi5_ap nft tablosu bu karttan / bu karta iletimi düşürür ve 80/tcp'yi giriş
+# sayfasına (192.168.50.1) yönlendirir; istemcilere adres dağıtan dnsmasq dosyasını (07-pi5-ap.conf) backend yazar.
 # Kurtarma (terminal):  sudo bash /opt/pi5-gateway/scripts/net-mode.sh rollback   (deneme sürerken)
 #                       sudo bash /opt/pi5-gateway/scripts/net-mode.sh dhcp       (kalıcı sabit adresten dönüş)
+#                       sudo bash /opt/pi5-gateway/scripts/net-mode.sh ap off     (kurulum Wi-Fi'ını kapatma)
 set -u
 export LC_ALL=C
 umask 077
@@ -36,8 +49,19 @@ TIMER_UNIT=pi5-net-rollback
 RETRY_PREFIX=$TIMER_UNIT-retry
 LOCK=/run/pi5-net-mode.lock
 LEASES=/etc/pihole/dhcp.leases
+# Kurulum Wi-Fi'ı (erişim noktası)
+AP_PROFILE=pi5-ap
+AP_KEYFILE=/etc/NetworkManager/system-connections/pi5-ap.nmconnection
+AP_BACKUP=$DIR/pi5-ap.nmconnection
+AP_GUARD_STATUS=$DIR/ap-guard.status
+AP_ADDR=192.168.50.1/24
+AP_NET=192.168.50.0/24
+AP_NFT=/etc/nftables.d/pi5-ap.conf
+AP_DEFAULT_SSID=Klyrix-Kurulum
+AP_TIMER_UNIT=pi5-ap-rollback
+AP_RETRY_PREFIX=$AP_TIMER_UNIT-retry
 SELF=$(readlink -f "$0")
-STATE_KEYS="stage trial_ends iface transit client gw dns old_uuid old_name old_ipv6 wifi_off"
+STATE_KEYS="stage trial_ends iface transit client gw dns old_uuid old_name old_ipv6 wifi_off ap_stage ap_trial_ends ap_iface ap_ssid ap_old_uuid ap_radio_was_off"
 
 die() { echo "error=$*"; exit 1; }
 log() { logger -t pi5-net-mode "$*" 2>/dev/null || true; }
@@ -58,6 +82,11 @@ read_state() {
   case "$S_stage" in trial|static) ;; *) S_stage=none ;; esac
   [[ $S_trial_ends =~ ^[0-9]+$ ]] || S_trial_ends=0
   [ "$S_wifi_off" = 1 ] || S_wifi_off=0
+  case "$S_ap_stage" in trial|on) ;; *) S_ap_stage=none ;; esac
+  [[ $S_ap_trial_ends =~ ^[0-9]+$ ]] || S_ap_trial_ends=0
+  # Kart adı nft kuralına girer: biçim dışıysa boş sayılır.
+  [[ $S_ap_iface =~ ^[A-Za-z0-9_.-]{1,15}$ ]] || S_ap_iface=""
+  [ "$S_ap_radio_was_off" = 1 ] || S_ap_radio_was_off=0
 }
 write_state() {
   local k v
@@ -65,10 +94,14 @@ write_state() {
   for k in $STATE_KEYS; do v="S_$k"; printf '%s=%s\n' "$k" "${!v}"; done > "$STATE_FILE.tmp" \
     && mv -f "$STATE_FILE.tmp" "$STATE_FILE"
 }
-# Kurulum alanlarını boşaltır (stage=none); wifi_off korunur.
+# Kurulum alanlarını boşaltır (stage=none); wifi_off ve kurulum Wi-Fi'ı alanları (ap_*) korunur.
 reset_setup() {
   S_stage=none; S_trial_ends=0; S_iface=""; S_transit=""; S_client=""; S_gw=""; S_dns=""
   S_old_uuid=""; S_old_name=""; S_old_ipv6=""
+}
+# Kurulum Wi-Fi'ı alanlarını boşaltır (ap_stage=none); sabit adres alanları ve wifi_off korunur.
+ap_reset() {
+  S_ap_stage=none; S_ap_trial_ends=0; S_ap_iface=""; S_ap_ssid=""; S_ap_old_uuid=""; S_ap_radio_was_off=0
 }
 
 # static/confirm/dhcp: zamanlayıcıyı ve (varsa) biten geri alma servisini temizler. Geri alma işi KENDİ servisinde
@@ -85,6 +118,17 @@ timer_active() { systemctl is-active --quiet "$TIMER_UNIT.timer" 2>/dev/null || 
 arm_retry() {
   systemd-run --quiet --collect --unit="$RETRY_PREFIX-$(date +%s)-$$" --on-active="$1" --timer-property=AccuracySec=1s \
     /bin/bash "$SELF" rollback >/dev/null 2>&1 9>&-
+}
+# Kurulum Wi-Fi'ı denemesinin zamanlayıcıları (ayrı birim adları: sabit adres zamanlayıcılarıyla birbirini durdurmaz).
+ap_stop_timer() {
+  systemctl stop "$AP_TIMER_UNIT.timer" "$AP_TIMER_UNIT.service" "$AP_RETRY_PREFIX-*.timer" "$AP_RETRY_PREFIX-*.service" >/dev/null 2>&1 || true
+  systemctl reset-failed "$AP_TIMER_UNIT.timer" "$AP_TIMER_UNIT.service" "$AP_RETRY_PREFIX-*.timer" "$AP_RETRY_PREFIX-*.service" >/dev/null 2>&1 || true
+}
+ap_retry_active() { systemctl list-units --type=timer --state=active --no-legend "$AP_RETRY_PREFIX-*" 2>/dev/null | grep -q .; }
+ap_timer_active() { systemctl is-active --quiet "$AP_TIMER_UNIT.timer" 2>/dev/null || ap_retry_active; }
+arm_ap_retry() {
+  systemd-run --quiet --collect --unit="$AP_RETRY_PREFIX-$(date +%s)-$$" --on-active="$1" --timer-property=AccuracySec=1s \
+    /bin/bash "$SELF" ap rollback >/dev/null 2>&1 9>&-
 }
 
 # --- IPv4 hesapları (bash tamsayısı; girdiler önceden doğrulanır) ---
@@ -364,14 +408,264 @@ trial_check() {
   if [ "$S_trial_ends" -le "$(date +%s)" ] || ! timer_active; then rollback_trial; fi
 }
 
+# --- Kurulum Wi-Fi'ı (erişim noktası pi5-ap) ---
+AP_SSID_RE='^[A-Za-z0-9 _.-]{1,32}$'
+AP_PSK_RE='^[ -~]{8,63}$'
+# Ağ adı: harf, rakam, boşluk, _ . - (1-32); başta / sonda boşluk olmaz (keyfile baştaki boşluğu siler).
+valid_ssid() { [[ $1 =~ $AP_SSID_RE ]] && [[ $1 != " "* ]] && [[ $1 != *" " ]]; }
+# WPA2 parolası: 8-63 yazdırılabilir ASCII (0x20-0x7E); ters bölü (keyfile kaçış karakteri) ve baştaki / sondaki boşluk
+# olmaz. Denetim bash içinde yapılır: parola hiçbir dış komuta verilmez.
+valid_psk() { [[ $1 =~ $AP_PSK_RE ]] && [[ $1 != *\\* ]] && [[ $1 != " "* ]] && [[ $1 != *" " ]]; }
+# İlk Wi-Fi kartı (TYPE wifi; wifi-p2p sanal aygıtı hariç).
+wifi_dev() { nmcli -t -f DEVICE,TYPE device 2>/dev/null | awk -F: '$2 == "wifi" { print $1; exit }'; }
+ap_capable() { [ -n "$1" ] && [ "$(nmcli -g WIFI-PROPERTIES.AP device show "$1" 2>/dev/null)" = yes ]; }
+# Yayında: pi5-ap bu kartta etkin ve 192.168.50.1/24 kartta.
+ap_up_ok() { [ -n "$1" ] && [ "$(active_conn "$1")" = "$AP_PROFILE" ] && addr_static "$1" "$AP_ADDR"; }
+# $1 kart, $2 sn: yayın başlayana kadar bekler
+wait_ap() {
+  local end=$((SECONDS + $2))
+  while ! ap_up_ok "$1"; do
+    [ "$SECONDS" -ge "$end" ] && return 1
+    sleep 1
+  done
+}
+# $1 kart, $2 sn: Wi-Fi açıldıktan sonra kart NM'de kullanılabilir olana kadar bekler (durum kodu ≥ 30: "bağlı değil").
+wait_dev_ready() {
+  local end=$((SECONDS + $2)) s
+  while :; do
+    s=$(dev_state "$1")
+    [[ $s =~ ^[0-9]+$ ]] && [ "$s" -ge 30 ] && return 0
+    [ "$SECONDS" -ge "$end" ] && return 1
+    sleep 1
+  done
+}
+# pi5-ap NM'ye beklenen dosyadan yüklenmiş.
+ap_loaded() { [ -s "$AP_KEYFILE" ] && [ "$(file_of_name "$AP_PROFILE")" = "$AP_KEYFILE" ]; }
+# NM'nin yeniden yazdığı dosyayı doğrular (ap confirm): erişim noktası kipi, adres ve parola dosyada.
+ap_verify_keyfile() {
+  ap_loaded && grep -q '^mode=ap$' "$AP_KEYFILE" && grep -Eq "^address1=$(rx "$AP_ADDR")(,|\$)" "$AP_KEYFILE" \
+    && grep -q '^psk=' "$AP_KEYFILE"
+}
+
+# Profil dosyasını doğrudan yazar ($1 kart, $2 ağ adı, $3 parola). nmcli add kullanılmaz: parola hiçbir komutun
+# argv'sinde görünmez (printf bash yerleşiği). Geçici dosya aynı dizinde ve adı "." ile başlar (NM onu profil saymaz);
+# root 0600 (NM başka izinli dosyayı yüklemez). pmf=1 (PMF kapalı): NM 1.52 wpa-psk + PMF "optional" ile AP'yi
+# WPA2/WPA3 geçiş kipinde (WPA-PSK WPA-PSK-SHA256 SAE) kurar; bazı telefonlar bu kipe bağlanamıyor — yalnız WPA2.
+ap_write_keyfile() {
+  local dir tmp uuid
+  dir=$(dirname "$AP_KEYFILE"); tmp="$dir/.pi5-ap.tmp"
+  uuid=$(cat /proc/sys/kernel/random/uuid 2>/dev/null)
+  [[ $uuid =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]] || return 1
+  mkdir -p "$dir" || return 1
+  if printf '%s\n' "[connection]
+id=$AP_PROFILE
+uuid=$uuid
+type=wifi
+interface-name=$1
+autoconnect=false
+autoconnect-priority=300
+
+[wifi]
+mode=ap
+ssid=$2
+band=bg
+channel=6
+
+[wifi-security]
+key-mgmt=wpa-psk
+proto=rsn;
+pairwise=ccmp;
+group=ccmp;
+pmf=1
+psk=$3
+
+[ipv4]
+method=manual
+address1=$AP_ADDR
+
+[ipv6]
+method=disabled" > "$tmp" && chown root:root "$tmp" && chmod 600 "$tmp" && mv -f "$tmp" "$AP_KEYFILE"; then
+    return 0
+  fi
+  rm -f "$tmp"
+  return 1
+}
+
+# pi5_ap nft tablosu ($1 kart): kurulum Wi-Fi'ı istemcilerinin 80/tcp trafiği (telefonun "ağa giriş" denetimi dahil)
+# Pi'nin giriş sayfasına yönlendirilir; bu karttan / bu karta iletim düşürülür (yalnız panel, internet yok). Boş-tanımla
+# → sil → yeniden-tanımla: her yüklemede idempotent; açılışta nftables.service (include) ve pi5-gw-restore da yükler.
+# Hata → 1, neden AP_NFT_OUT'ta (tek satır).
+ap_nft_load() {
+  local ip=${AP_ADDR%/*} out
+  AP_NFT_OUT=""
+  command -v nft >/dev/null 2>&1 || { AP_NFT_OUT="nft bulunamadı"; return 1; }
+  mkdir -p "$(dirname "$AP_NFT")" 2>/dev/null
+  if ! printf '%s\n' "table inet pi5_ap {}
+delete table inet pi5_ap
+table inet pi5_ap {
+    chain prerouting {
+        type nat hook prerouting priority dstnat; policy accept;
+        iifname \"$1\" ip daddr != $ip tcp dport 80 dnat ip to $ip:80
+    }
+    chain forward {
+        type filter hook forward priority -5; policy accept;
+        iifname \"$1\" drop
+        oifname \"$1\" drop
+    }
+}" > "$AP_NFT.tmp" || ! mv -f "$AP_NFT.tmp" "$AP_NFT"; then
+    rm -f "$AP_NFT.tmp"; AP_NFT_OUT="$AP_NFT yazılamadı"; return 1
+  fi
+  out=$(nft -f "$AP_NFT" 2>&1) || { AP_NFT_OUT=$(printf '%s' "$out" | oneline); return 1; }
+  return 0
+}
+# Tabloyu kaldırır: dosyaya önce yalnız silen biçim yazılıp yüklenir (süreç yarıda kalsa da açılışta tablo yeniden
+# kurulmaz), sonra dosya silinir.
+ap_nft_remove() {
+  local del out rc=0
+  del=$'table inet pi5_ap {}\ndelete table inet pi5_ap'
+  if command -v nft >/dev/null 2>&1; then
+    if [ -d "$(dirname "$AP_NFT")" ] && printf '%s\n' "$del" > "$AP_NFT.tmp" && mv -f "$AP_NFT.tmp" "$AP_NFT"; then
+      out=$(nft -f "$AP_NFT" 2>&1) || rc=1
+    else
+      out=$(printf '%s\n' "$del" | nft -f - 2>&1) || rc=1
+    fi
+    [ "$rc" = 0 ] || echo "warning=kurulum Wi-Fi'ı güvenlik duvarı tablosu (pi5_ap) kaldırılamadı: $(printf '%s' "$out" | oneline)"
+  fi
+  rm -f "$AP_NFT" "$AP_NFT.tmp"
+}
+
+# Kurulum Wi-Fi'ı profilini (tüm kopyaları), dosyasını ve nft tablosunu kaldırır; durum dosyasına dokunmaz.
+ap_teardown() {
+  nmcli connection down id "$AP_PROFILE" >/dev/null 2>&1 || true
+  delete_named "$AP_PROFILE"
+  rm -f "$AP_KEYFILE" "$(dirname "$AP_KEYFILE")/.pi5-ap.tmp"
+  ap_nft_remove
+}
+# Denemeyi geri sarar; Pi'nin Wi-Fi'si eski haline döner (en iyi çaba). Wi-Fi önceden kapalıysa, "Wi-Fi ayrık"
+# (wifi_off=1) kayıtlıysa ya da Pi evin DHCP sunucusuysa ("wifi on" ile aynı kural: Pi'nin Wi-Fi'si ev ağına dönmez)
+# Wi-Fi ÖNCE kapatılır, sonra yayın kaldırılır: profil silinince NM ev Wi-Fi'ına bir anlığına bile bağlanmasın (eski
+# bağlantıyı kurmak da boşunadır). Değilse yayın kaldırılır ve eski bağlantı (varsa, henüz kendiliğinden gelmediyse)
+# yeniden etkinleştirilir.
+ap_unwind() {
+  local out
+  if [ "$S_ap_radio_was_off" = 1 ] || [ "$S_wifi_off" = 1 ] || pi_dhcp_active; then
+    nmcli radio wifi off >/dev/null 2>&1 || echo "warning=Pi'nin Wi-Fi'si kapatılamadı — elle kapatın (nmcli radio wifi off)"
+    ap_teardown
+    return 0
+  fi
+  ap_teardown
+  uuid_exists "$S_ap_old_uuid" || return 0
+  if [ -n "$S_ap_iface" ] && [ "$(active_uuid "$S_ap_iface")" = "$S_ap_old_uuid" ]; then return 0; fi
+  out=$(nmcli -w 30 connection up uuid "$S_ap_old_uuid" 2>&1) \
+    || echo "warning=Pi'nin Wi-Fi'si eski bağlantısına dönemedi: $(printf '%s' "$out" | oneline)"
+  return 0
+}
+# Yedeği ve koruma sonucunu kaldırır, ap_stage=none yazar (sabit adres alanları ve wifi_off korunur).
+ap_finish_none() {
+  rm -f "$AP_BACKUP" "$AP_GUARD_STATUS"
+  ap_reset
+  write_state
+}
+# Deneme sürerken geri alma (zamanlayıcı / ensure / panel / terminal): yalnız .timer durdurulur (bkz. stop_timer).
+ap_rollback_trial() {
+  systemctl stop "$AP_TIMER_UNIT.timer" "$AP_RETRY_PREFIX-*.timer" >/dev/null 2>&1 || true
+  ap_unwind
+  ap_finish_none
+  log "kurulum Wi-Fi'ı denemesi geri alındı"
+  echo "rolled_back=1"
+}
+
+# Kurulum Wi-Fi'ı koruma sonucu (ayrı dosya: sabit adres korumasının sonucunu ezmez).
+write_ap_guard() {
+  mkdir -p "$DIR" && chmod 700 "$DIR"
+  printf 'result=%s\nat=%s\ndetail=%s\n' "$1" "$(date +%s)" "$2" > "$AP_GUARD_STATUS.tmp" \
+    && mv -f "$AP_GUARD_STATUS.tmp" "$AP_GUARD_STATUS"
+  logger -t pi5-net-guard "kurulum Wi-Fi'ı: sonuç=$1${2:+ — $2}" 2>/dev/null || true
+  echo "ap_guard_result=$1"
+  if [ -n "$2" ]; then echo "ap_guard_detail=$2"; fi
+}
+# Yedeği profil dosyasının yerine atomik koyar ve yalnız o dosyayı yükler (con reload yok). AP_RESTORE_DETAIL.
+ap_restore_backup() {
+  local tmp out
+  tmp="$(dirname "$AP_KEYFILE")/.pi5-ap.tmp"
+  if cp -f "$AP_BACKUP" "$tmp" && chown root:root "$tmp" && chmod 600 "$tmp" && mv -f "$tmp" "$AP_KEYFILE"; then
+    if out=$(nmcli connection load "$AP_KEYFILE" 2>&1); then AP_RESTORE_DETAIL="profil dosyası yedekten geri yüklendi"
+    else AP_RESTORE_DETAIL="yedekten geri konan profil yüklenemedi: $(printf '%s' "$out" | oneline)"; fi
+  else
+    rm -f "$tmp"; AP_RESTORE_DETAIL="profil dosyası yedekten geri konamadı"
+  fi
+}
+# Kalıcı kurulum Wi-Fi'ını denetler / onarır. $1 = NM'nin profili kendiliğinden etkinleştirmesi beklenecek son an,
+# $2 = işin bitmesi gereken son an (ikisi de betiğin başından saniye — SECONDS; 0 = sınır yok). nft tablosu her
+# denetimde yeniden yüklenir (nftables yeniden başlatıldıysa da yerinde olsun). Acil mod yoktur: kurulum Wi-Fi'ı ev ağı
+# için kritik değil.
+ap_guard_routine() {
+  local until=$1 limit=${2:-0} ifc=$S_ap_iface detail="" nftd="" w=30 out
+  if [ -z "$ifc" ]; then write_ap_guard failed "durum kaydı eksik (ap_iface, $STATE_FILE)"; return 0; fi
+  ap_nft_load "$ifc" || nftd="güvenlik duvarı tablosu (pi5_ap) yüklenemedi: $AP_NFT_OUT"
+  if ! nm_running; then write_ap_guard failed "NetworkManager çalışmıyor${nftd:+; $nftd}"; return 0; fi
+  # 1. Açılışta NM kalıcı profili kendisi etkinleştirir: beklenir.
+  while ! ap_up_ok "$ifc" && [ "$SECONDS" -lt "$until" ]; do sleep 1; done
+  if ap_up_ok "$ifc"; then
+    if [ -n "$nftd" ]; then write_ap_guard failed "$nftd"; else write_ap_guard ok ""; fi
+    return 0
+  fi
+  # 2. guard: pi5-net-guard.service TimeoutStartSec=150 — sabit adres onarımı uzun sürdüyse NM'yi bekleme süresi
+  #    kısalır; hiç yetmiyorsa onarım sonraki denetime (NetworkManager yeniden başlatması / panel açılışı) kalır.
+  if [ "$limit" -gt 0 ]; then
+    w=$((limit - SECONDS - 10)); [ "$w" -gt 30 ] && w=30
+    if [ "$w" -lt 5 ]; then
+      write_ap_guard failed "yayın kapalı; onarıma süre kalmadı (sabit adres denetimi uzun sürdü) — NetworkManager yeniden başlatılınca ya da panel açılınca yeniden denenir${nftd:+; $nftd}"
+      return 0
+    fi
+  fi
+  # 3. Profil dosyası yok / boş / yedekten farklı → yedekten geri konur; dosya yerinde ama yüklenmemişse yalnız o yüklenir.
+  if [ -s "$AP_BACKUP" ] && { [ ! -s "$AP_KEYFILE" ] || ! cmp -s "$AP_BACKUP" "$AP_KEYFILE"; }; then
+    ap_restore_backup; detail=$AP_RESTORE_DETAIL
+  elif [ ! -s "$AP_KEYFILE" ]; then
+    detail="profil dosyası ve yedeği yok"
+  elif [ "$(file_of_name "$AP_PROFILE")" != "$AP_KEYFILE" ]; then
+    if out=$(nmcli connection load "$AP_KEYFILE" 2>&1); then detail="profil dosyası yeniden yüklendi"
+    else detail="profil dosyası yüklenemedi: $(printf '%s' "$out" | oneline)"; fi
+  fi
+  # 4. Wi-Fi kapatılmışsa açılır, profil etkinleştirilir.
+  if [ "$(nmcli radio wifi 2>/dev/null)" = disabled ]; then
+    nmcli radio wifi on >/dev/null 2>&1 && wait_dev_ready "$ifc" 10
+  fi
+  if out=$(nmcli -w "$w" connection up id "$AP_PROFILE" 2>&1); then
+    if wait_ap "$ifc" 10; then
+      if [ -n "$nftd" ]; then write_ap_guard failed "${detail:+$detail; }yayın yeniden başlatıldı; $nftd"
+      else write_ap_guard repaired "${detail:-yayın yeniden başlatıldı}"; fi
+      return 0
+    fi
+    out="profil etkinleşti ama $AP_ADDR kartta görünmüyor"
+  fi
+  write_ap_guard failed "${detail:+$detail; }yayın başlatılamadı: $(printf '%s' "$out" | oneline)${nftd:+; $nftd}"
+  return 0
+}
+# Kurulum Wi-Fi'ı denetimi (guard / ensure; sabit adres aşamasından bağımsız). $1 = guard | ensure.
+# Süresi geçen ya da zamanlayıcısı olmayan (Pi yeniden başladı) deneme geri alınır; kalıcıysa yayın denetlenir.
+ap_check() {
+  case "$S_ap_stage" in
+    trial)
+      if [ "$S_ap_trial_ends" -le "$(date +%s)" ] || ! ap_timer_active; then ap_rollback_trial; fi ;;
+    on)
+      # guard: açılışta NM'ye betiğin başından 30 sn tanınır, iş 140. sn'de biter; ensure: 5 sn, sınır yok.
+      if [ "$1" = guard ]; then ap_guard_routine 30 140; else ap_guard_routine $((SECONDS + 5)) 0; fi ;;
+  esac
+}
+
 cmd_status() {
   local now dr pifc pgw ptr="" ifc nm=0 ac="" au="" method="" wifi="" gr="" ga="" gd="" k v pok=0
+  local wifc apc=0 apa=0 agr="" agd=""
   read_state
   now=$(date +%s)
   dr=$(default_route); pifc=${dr%% *}; pgw=${dr#"$pifc"}; pgw=${pgw# }
   if [ -n "$pifc" ] && valid_ip "$pgw"; then ptr=$(addr_for_gw "$pifc" "$pgw"); fi
   ifc=$S_iface
   [ -n "$ifc" ] || ifc=$pifc
+  # Kurulum Wi-Fi'ı kartı: kayıtlıysa o, değilse ilk Wi-Fi kartı (erişim noktası desteği gösterilsin).
+  wifc=$S_ap_iface
   if nm_running; then
     nm=1
     if [ -n "$ifc" ]; then
@@ -380,11 +674,19 @@ cmd_status() {
     fi
     wifi=$(nmcli radio wifi 2>/dev/null)
     keyfile_ok && pok=1
+    [ -n "$wifc" ] || wifc=$(wifi_dev)
+    ap_capable "$wifc" && apc=1
+    ap_up_ok "$wifc" && apa=1
   fi
   if [ -f "$GUARD_STATUS" ]; then
     while IFS='=' read -r k v; do
       case "$k" in result) gr=$v ;; at) ga=$v ;; detail) gd=$v ;; esac
     done < "$GUARD_STATUS"
+  fi
+  if [ -f "$AP_GUARD_STATUS" ]; then
+    while IFS='=' read -r k v; do
+      case "$k" in result) agr=$v ;; detail) agd=$v ;; esac
+    done < "$AP_GUARD_STATUS"
   fi
   echo "stage=$S_stage"
   echo "trial_ends=$S_trial_ends"
@@ -415,6 +717,15 @@ cmd_status() {
   if pi_dhcp_active; then echo "pi_dhcp=1"; else echo "pi_dhcp=0"; fi
   echo "mac=$( [ -n "$ifc" ] && cat "/sys/class/net/$ifc/address" 2>/dev/null )"
   echo "lease_until=$(pi_lease_until)"
+  echo "ap_stage=$S_ap_stage"
+  echo "ap_trial_ends=$S_ap_trial_ends"
+  echo "ap_ssid=$S_ap_ssid"
+  echo "ap_iface=$wifc"
+  echo "ap_capable=$apc"
+  echo "ap_active=$apa"
+  echo "ap_addr=$AP_ADDR"
+  echo "ap_guard_result=$agr"
+  echo "ap_guard_detail=$agd"
 }
 
 cmd_static() {
@@ -615,6 +926,7 @@ cmd_wifi() {
   nm_running || die "NetworkManager çalışmıyor"
   case "${1:-}" in
     off)
+      [ "$S_ap_stage" = none ] || die "Kurulum Wi-Fi'ı açık — önce onu kapatın"
       # Pi'nin interneti Wi-Fi'dan geliyorsa kapatmak Pi'yi ağdan koparır.
       dr=$(default_route); ifc=${dr%% *}
       if [ -n "$ifc" ] && [ "$(dev_type "$ifc")" = wifi ]; then
@@ -623,6 +935,7 @@ cmd_wifi() {
       nmcli radio wifi off >/dev/null 2>&1 || die "Wi-Fi kapatılamadı"
       S_wifi_off=1 ;;
     on)
+      [ "$S_ap_stage" = none ] || die "Kurulum Wi-Fi'ı açık — Pi'nin Wi-Fi'si ev ağına bağlanamaz"
       pi_dhcp_active && die "Pi DHCP sunucusu açıkken Pi'nin Wi-Fi'si modeme bağlanamaz — Wi-Fi yayını sonraki adımda"
       nmcli radio wifi on >/dev/null 2>&1 || die "Wi-Fi açılamadı"
       S_wifi_off=0 ;;
@@ -633,15 +946,183 @@ cmd_wifi() {
   echo "ok=1"
 }
 
+# Kurulum Wi-Fi'ı denemesi. Parola STDIN'in ilk satırından okunur; argv'ye, günlüğe, durum dosyasına ve çıktıya girmez.
+cmd_ap_on() {
+  local trial="" ssid=$AP_DEFAULT_SSID psk="" ifc dr dev a old_uuid radio_off=0 end out why="" lm
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --trial) trial=${2:-}; shift ;;
+      --ssid) ssid=${2:-}; shift ;;
+      *) die "bilinmeyen seçenek: $1" ;;
+    esac
+    shift
+  done
+  # Terminalde sorulur (ekrana yazılmaz); süre sınırı: kilit parola beklenirken süresiz tutulmasın.
+  if [ -t 0 ]; then
+    printf "Kurulum Wi-Fi'ı parolası (8-63 karakter): " >&2
+    IFS= read -r -s -t 120 psk || true
+    echo >&2
+  else
+    IFS= read -r -t 30 psk || true
+  fi
+  { [[ $trial =~ ^[0-9]{1,5}$ ]] && [ "$((10#$trial))" -ge 30 ] && [ "$((10#$trial))" -le 3600 ]; } \
+    || die "geçersiz deneme süresi (--trial 30-3600 sn)"
+  trial=$((10#$trial))
+  [ -n "$ssid" ] || ssid=$AP_DEFAULT_SSID
+  # 1. Ön koşullar
+  read_state
+  command -v nmcli >/dev/null 2>&1 || die "nmcli bulunamadı (NetworkManager kurulu değil)"
+  nm_running || die "NetworkManager çalışmıyor"
+  command -v nft >/dev/null 2>&1 || die "nft bulunamadı (nftables kurulu değil) — kurulum Wi-Fi'ı güvenlik duvarı tablosu kurulamaz"
+  # Kurulum Wi-Fi'ında adresleri ve DNS'i Pi-hole dağıtır: yalnız "yerel" (LOCAL) ya da "tüm arayüzler" (ALL) dinleme
+  # kipinde AP kartını da dinler. SINGLE/BIND yalnız eth0'ı dinler → telefon adres alamaz (gerçek FTL 6.5 ile görüldü).
+  command -v pihole-FTL >/dev/null 2>&1 || die "Pi-hole kurulu değil — kurulum Wi-Fi'ı adres dağıtamaz"
+  lm=$(pihole-FTL --config dns.listeningMode 2>/dev/null | tr -d '[:space:]'); lm=${lm^^}
+  case "$lm" in
+    LOCAL|ALL) ;;
+    *) die "Pi-hole DNS dinleme modu (${lm:-?}) kurulum Wi-Fi'ına uygun değil — Pi-hole → Ayarlar → DNS'te 'yerel' ya da 'tüm arayüzler' seçin" ;;
+  esac
+  ifc=$(wifi_dev)
+  [ -n "$ifc" ] || die "Pi'de Wi-Fi kartı bulunamadı"
+  [[ $ifc =~ ^[A-Za-z0-9_.-]{1,15}$ ]] || die "Wi-Fi kartının adı beklenmedik: $ifc"
+  ap_capable "$ifc" || die "Wi-Fi kartı ($ifc) erişim noktası (AP) kipini desteklemiyor"
+  [ "$S_ap_stage" = on ] && die "kurulum Wi-Fi'ı zaten açık"
+  [ "$S_ap_stage" = trial ] && die "kurulum Wi-Fi'ı denemesi sürüyor"
+  dr=$(default_route)
+  [ "${dr%% *}" = "$ifc" ] && die "Pi'nin interneti Wi-Fi'dan geliyor — önce kabloyla bağlayın"
+  # 192.168.50.0/24 başka bir kartta (ör. ev ağı bu aralıktaysa) kullanılıyorsa rota karışır.
+  while read -r dev a; do
+    { [ "$dev" = "$ifc" ] || [ "$dev" = lo ]; } && continue
+    nets_overlap "$AP_ADDR" "$a" && die "kurulum Wi-Fi'ı ağı ($AP_NET) $dev arayüzündeki $a ile çakışıyor"
+  done < <(ip -4 -o addr show 2>/dev/null | awk '{ print $2, $4 }')
+  valid_ssid "$ssid" || die "geçersiz ağ adı: 1-32 karakter; harf, rakam, boşluk, _ . - (Türkçe harf olmaz, başta / sonda boşluk olmaz)"
+  valid_psk "$psk" \
+    || die "geçersiz parola: 8-63 karakter; Türkçe harf ve ters bölü (\\) olmaz, başta / sonda boşluk olmaz"
+  # 2. Geri dönüş için eski durum: Wi-Fi kartındaki etkin bağlantı (yoksa boş) ve Wi-Fi'nin kapalı olup olmadığı.
+  [ "$(nmcli radio wifi 2>/dev/null)" = disabled ] && radio_off=1
+  old_uuid=$(active_uuid "$ifc")
+  if [ -n "$old_uuid" ] && [ "$(nmcli -g connection.id connection show uuid "$old_uuid" 2>/dev/null)" = "$AP_PROFILE" ]; then
+    old_uuid=""
+  fi
+  # 3. Profil: önceki denemeden kalmış kopyalar silinir, dosya yazılır ve yalnız o yüklenir (con reload yok).
+  #    Kendiliğinden bağlanma deneme boyunca KAPALI: yeniden başlatmada eski hal gelir.
+  delete_named "$AP_PROFILE"
+  rm -f "$AP_KEYFILE"
+  ap_write_keyfile "$ifc" "$ssid" "$psk" \
+    || die "kurulum Wi-Fi'ı profil dosyası yazılamadı ($AP_KEYFILE) — değişiklik yapılmadı"
+  out=$(nmcli connection load "$AP_KEYFILE" 2>&1)
+  if ! ap_loaded; then
+    delete_named "$AP_PROFILE"; rm -f "$AP_KEYFILE"
+    die "kurulum Wi-Fi'ı profili NetworkManager'a yüklenemedi${out:+: $(printf '%s' "$out" | oneline)} — değişiklik yapılmadı"
+  fi
+  # 4. Durum + geri alma zamanlayıcısı DEĞİŞİKLİKTEN ÖNCE (bkz. static). Kilit tanımlayıcısı (9) devredilmez.
+  end=$(( $(date +%s) + trial ))
+  S_ap_stage=trial; S_ap_trial_ends=$end; S_ap_iface=$ifc; S_ap_ssid=$ssid; S_ap_old_uuid=$old_uuid
+  S_ap_radio_was_off=$radio_off
+  if ! write_state; then
+    delete_named "$AP_PROFILE"; rm -f "$AP_KEYFILE"
+    die "durum dosyası yazılamadı ($STATE_FILE) — değişiklik yapılmadı"
+  fi
+  ap_stop_timer
+  if ! systemd-run --quiet --collect --unit="$AP_TIMER_UNIT" --on-active="$trial" --timer-property=AccuracySec=1s \
+       /bin/bash "$SELF" ap rollback >/dev/null 2>&1 9>&-; then
+    delete_named "$AP_PROFILE"; rm -f "$AP_KEYFILE"; ap_reset; write_state
+    die "geri alma zamanlayıcısı kurulamadı — kurulum Wi-Fi'ı açılmadı"
+  fi
+  log "kurulum Wi-Fi'ı denemesi: $ifc \"$ssid\" ($AP_ADDR, $trial sn)"
+  # 5. Etkinleştir + denetim (en çok 15 sn) + nft tablosu. Sorun varsa hemen geri alınır; geri alma yarıda kesilse bile
+  #    zamanlayıcı kurulu kalır (en sonda durdurulur) ve işi tamamlar.
+  if [ "$radio_off" = 1 ]; then
+    if out=$(nmcli radio wifi on 2>&1); then wait_dev_ready "$ifc" 15 || true
+    else why="Wi-Fi açılamadı: $(printf '%s' "$out" | oneline)"; fi
+  fi
+  if [ -z "$why" ] && ! out=$(nmcli -w 30 connection up id "$AP_PROFILE" 2>&1); then
+    why="kurulum Wi-Fi'ı etkinleştirilemedi: $(printf '%s' "$out" | oneline)"
+  fi
+  if [ -z "$why" ] && ! wait_ap "$ifc" 15; then
+    why="kurulum Wi-Fi'ı yayına başlamadı (etkin bağlantı: $(active_conn "$ifc"); adresler: $(iface_addrs "$ifc" | csv))"
+  fi
+  if [ -z "$why" ] && ! ap_nft_load "$ifc"; then
+    why="güvenlik duvarı tablosu (pi5_ap) yüklenemedi: $AP_NFT_OUT"
+  fi
+  if [ -n "$why" ]; then
+    echo "detail=$why"
+    ap_unwind; ap_finish_none; ap_stop_timer
+    echo "rolled_back=1"
+    log "kurulum Wi-Fi'ı denemesi başarısız, geri alındı: $why"
+    die "kurulum Wi-Fi'ı açılamadı — eski ayara dönüldü"
+  fi
+  echo "ap_trial_ends=$end"
+  echo "ok=1"
+}
+
+cmd_ap_confirm() {
+  local out
+  read_state
+  [ "$S_ap_stage" = trial ] || die "kurulum Wi-Fi'ı denemesi sürmüyor (süre dolduysa geri alınmıştır)"
+  nm_running || die "NetworkManager çalışmıyor"
+  ap_up_ok "$S_ap_iface" || die "kurulum Wi-Fi'ı yayında değil — 'Geri al' ile başa dönün"
+  # Yerli keyfile: NM yalnız bu dosyayı yeniden yazar (ev Wi-Fi'ı profili ve /etc/netplan değişmez).
+  out=$(nmcli connection modify id "$AP_PROFILE" connection.autoconnect yes 2>&1) \
+    || die "kurulum Wi-Fi'ı kalıcı yapılamadı: $(printf '%s' "$out" | oneline)"
+  ap_verify_keyfile || die "kurulum Wi-Fi'ı profil dosyası doğrulanamadı — deneme sürüyor, süre dolunca geri alınır"
+  grep -q '^autoconnect=false' "$AP_KEYFILE" && die "kurulum Wi-Fi'ı kendiliğinden açılmaya ayarlanamadı — deneme sürüyor"
+  sync
+  { cp -f "$AP_KEYFILE" "$AP_BACKUP" && chmod 600 "$AP_BACKUP"; } \
+    || die "kurulum Wi-Fi'ı profil yedeği yazılamadı ($AP_BACKUP) — deneme sürüyor"
+  ap_stop_timer
+  S_ap_stage=on; S_ap_trial_ends=0
+  write_state || die "durum dosyası yazılamadı ($STATE_FILE)"
+  rm -f "$AP_GUARD_STATUS"
+  log "kurulum Wi-Fi'ı kalıcı: $S_ap_iface \"$S_ap_ssid\""
+  echo "ok=1"
+}
+
+cmd_ap_rollback() {
+  read_state
+  [ "$S_ap_stage" = trial ] && ap_rollback_trial
+  echo "ok=1"
+}
+
+# Bilinçli kapatma (kalıcıdan ya da denemeden): kurulum Wi-Fi'ı kaldırılır ve Pi'nin Wi-Fi'si kapatılır — Pi ev Wi-Fi'ına
+# sessizce yeniden bağlanmasın (wifi_off=1; yeniden bağlamak için "wifi on").
+cmd_ap_off() {
+  read_state
+  [ "$S_ap_stage" = none ] && die "kurulum Wi-Fi'ı açık değil"
+  nm_running || die "NetworkManager çalışmıyor"
+  ap_stop_timer
+  # Wi-Fi önce kapatılır (bkz. ap_unwind): profil silinince NM ev Wi-Fi'ına bir anlığına bile bağlanmasın.
+  nmcli radio wifi off >/dev/null 2>&1 || echo "warning=Pi'nin Wi-Fi'si kapatılamadı — elle kapatın (nmcli radio wifi off)"
+  ap_teardown
+  S_wifi_off=1
+  ap_finish_none || die "durum dosyası yazılamadı ($STATE_FILE)"
+  log "kurulum Wi-Fi'ı kapatıldı; Pi'nin Wi-Fi'si kapalı"
+  echo "ok=1"
+}
+
+cmd_ap() {
+  local sub=${1:-}
+  shift || true
+  case "$sub" in
+    on) cmd_ap_on "$@" ;;
+    confirm) cmd_ap_confirm ;;
+    rollback) cmd_ap_rollback ;;
+    off) cmd_ap_off ;;
+    *) die "kullanım: ap on --trial SN [--ssid AD] | ap confirm | ap rollback | ap off" ;;
+  esac
+}
+
 cmd_ensure() {
   mkdir -p "$DIR" && chmod 700 "$DIR"
   read_state
   case "$S_stage" in
     trial) trial_check ;;
     static)
-      if [ "$S_wifi_off" = 1 ] && nm_running; then nmcli radio wifi off >/dev/null 2>&1; fi
+      # Kurulum Wi-Fi'ı açıkken Wi-Fi kapatılmaz (yayın Wi-Fi kartından yapılır).
+      if [ "$S_wifi_off" = 1 ] && [ "$S_ap_stage" = none ] && nm_running; then nmcli radio wifi off >/dev/null 2>&1; fi
       guard_routine 5 passive ;;
   esac
+  ap_check ensure
   echo "ok=1"
 }
 
@@ -650,9 +1131,10 @@ cmd_guard() {
   case "$S_stage" in
     trial) trial_check ;;
     static)
-      if [ "$S_wifi_off" = 1 ]; then nmcli radio wifi off >/dev/null 2>&1; fi
+      if [ "$S_wifi_off" = 1 ] && [ "$S_ap_stage" = none ]; then nmcli radio wifi off >/dev/null 2>&1; fi
       guard_routine 45 ;;
   esac
+  ap_check guard
   return 0
 }
 
@@ -661,20 +1143,21 @@ cmd=${1:-status}
 shift || true
 if [ "$cmd" = status ]; then cmd_status; exit 0; fi
 case "$cmd" in
-  ensure|guard|static|confirm|rollback|dhcp|wifi) ;;
-  *) die "bilinmeyen komut: $cmd (status|static|confirm|rollback|dhcp|wifi|ensure|guard)" ;;
+  ensure|guard|static|confirm|rollback|dhcp|wifi|ap) ;;
+  *) die "bilinmeyen komut: $cmd (status|static|confirm|rollback|dhcp|wifi|ap|ensure|guard)" ;;
 esac
 exec 9>"$LOCK"
 if ! flock -w 60 9; then
   [ "$cmd" = guard ] && { echo "error=başka bir ağ işlemi sürüyor"; exit 0; }
   # Zamanlayıcıyla gelen geri alma kilidi alamadıysa vazgeçmez: 30 sn sonra yeniden dener (deneme zamanlayıcısız kalmasın).
   if [ "$cmd" = rollback ]; then arm_retry 30 || true; fi
+  if [ "$cmd" = ap ] && [ "${1:-}" = rollback ]; then arm_ap_retry 30 || true; fi
   die "başka bir ağ işlemi sürüyor"
 fi
 # Kullanıcının başlattığı değişiklikler kilit alındıktan sonra SIGTERM/SIGHUP ile yarıda kesilmez (panelin istek zaman
 # aşımı ya da kapanan SSH oturumu Pi'yi adressiz bırakmasın). Kilit beklerken öldürülebilir: onay, kilidi bekleyen
 # geri alma servisini durdurabilsin. guard/ensure idempotenttir, systemd'nin durdurmasına engel olmaz.
-case "$cmd" in static|confirm|rollback|dhcp|wifi) trap '' TERM HUP ;; esac
+case "$cmd" in static|confirm|rollback|dhcp|wifi|ap) trap '' TERM HUP ;; esac
 case "$cmd" in
   ensure) cmd_ensure ;;
   guard) cmd_guard; exit 0 ;;
@@ -683,4 +1166,5 @@ case "$cmd" in
   rollback) cmd_rollback ;;
   dhcp) cmd_dhcp "$@" ;;
   wifi) cmd_wifi "$@" ;;
+  ap) cmd_ap "$@" ;;
 esac
