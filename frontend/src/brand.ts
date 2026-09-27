@@ -3,8 +3,8 @@
 // index.html, kiosk.html, public/favicon.svg ayrıca elle güncellenir).
 export const BRAND = {
   // Tam ad — başlıklar, banner, dokümantasyon
-  name: 'Klyrix Gate',
-  fullName: 'Klyrix Gate — Secure Gateway',
+  name: 'Klyrix/gate',
+  fullName: 'Klyrix/gate — Secure Gateway',
   // Kelime işareti (wordmark) — iki tonlu render için parçalı
   // Canonical: ana marka büyük "Klyrix", alt marka küçük "/gate" (bkz. Klyrix marka kılavuzu)
   wordmarkPrimary: 'Klyrix',

@@ -2,7 +2,7 @@
 set -e
 
 # ╔══════════════════════════════════════════════════════════════╗
-# ║         Klyrix Gate — Tek Komut Kurulum                     ║
+# ║         Klyrix/gate — Tek Komut Kurulum                      ║
 # ║                                                              ║
 # ║  Kullanım:                                                   ║
 # ║    curl -fsSL https://raw.githubusercontent.com/             ║
@@ -34,7 +34,7 @@ fi
 
 echo -e "${BLUE}"
 echo "  ╔══════════════════════════════════════════════╗"
-echo "  ║     Klyrix Gate Kurulum Başlıyor             ║"
+echo "  ║     Klyrix/gate Kurulum Başlıyor             ║"
 echo "  ╚══════════════════════════════════════════════╝"
 echo -e "${NC}"
 
