@@ -11,7 +11,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/Ea2601/Pi5/releases"><img src="https://img.shields.io/badge/version-2.21.0-38bdf8.svg?style=for-the-badge&logo=git&logoColor=white" alt="Version 2.21.0"></a>
+  <a href="https://github.com/Ea2601/klyrix-gate/releases"><img src="https://img.shields.io/badge/version-2.21.0-38bdf8.svg?style=for-the-badge&logo=git&logoColor=white" alt="Version 2.21.0"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-22c55e.svg?style=for-the-badge" alt="License MIT"></a>
   <img src="https://img.shields.io/badge/100%25-Free%20%26%20Open%20Source-ef4444.svg?style=for-the-badge&logo=opensourceinitiative&logoColor=white" alt="Free & Open Source">
   <img src="https://img.shields.io/badge/Telemetry-Zero-10b981.svg?style=for-the-badge" alt="Zero Telemetry">
@@ -147,7 +147,7 @@ flowchart TD
 Raspberry Pi OS (Bookworm / Debian 13) kurulu cihazınızda terminali açın ve çalıştırın:
 
 ```bash
-sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/Ea2601/Pi5/main/install.sh)"
+sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/Ea2601/klyrix-gate/main/install.sh)"
 ```
 
 *Script gerekli bağımlılıkları (Node.js, Pi-hole, nftables, WireGuard vb.) otomatik olarak kurar, servisleri yapılandırır ve paneli ayağa kaldırır.*
@@ -155,8 +155,8 @@ sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/Ea2601/Pi5/main/ins
 ### Alternatif: Git ile Kurulum
 
 ```bash
-git clone https://github.com/Ea2601/Pi5.git
-cd Pi5
+git clone https://github.com/Ea2601/klyrix-gate.git
+cd klyrix-gate
 sudo chmod +x install.sh
 sudo ./install.sh
 ```
@@ -169,8 +169,8 @@ Projeye katkı sağlamak veya arayüzü geliştirmek istiyorsanız:
 
 ```bash
 # Depoyu klonlayın
-git clone https://github.com/Ea2601/Pi5.git
-cd Pi5
+git clone https://github.com/Ea2601/klyrix-gate.git
+cd klyrix-gate
 
 # 1. Backend API Servisini Başlatın
 cd backend
@@ -203,7 +203,7 @@ Klyrix/gate, açık kaynak felsefesinin en saf halini benimser:
 Klyrix/gate toplulukla büyüyen özgür bir projedir. Her türlü katkıya açığız!
 
 - **⭐ Projeye Yıldız Verin:** Projeyi beğeniyorsanız GitHub üzerinden bir yıldız vererek daha fazla kişiye ulaşmasını sağlayabilirsiniz.
-- **🐛 Hata Bildirimi (Bug Report):** Karşılaştığınız sorunları veya sistem uyumsuzluklarını [GitHub Issues](https://github.com/Ea2601/Pi5/issues) üzerinden bize iletin.
+- **🐛 Hata Bildirimi (Bug Report):** Karşılaştığınız sorunları veya sistem uyumsuzluklarını [GitHub Issues](https://github.com/Ea2601/klyrix-gate/issues) üzerinden bize iletin.
 - **💡 Yeni Özellik Önerisi:** Görmek istediğiniz özellikleri tartışmalarda paylaşın.
 - **🔀 Pull Request:** Yeni bir özellik veya hata düzeltmesi geliştirdiyseniz çekinmeden PR gönderin!
 

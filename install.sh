@@ -6,11 +6,11 @@ set -e
 # ║                                                              ║
 # ║  Kullanım:                                                   ║
 # ║    curl -fsSL https://raw.githubusercontent.com/             ║
-# ║      Ea2601/Pi5/main/install.sh | bash                        ║
+# ║      Ea2601/klyrix-gate/main/install.sh | bash                ║
 # ║                                                              ║
 # ║  veya:                                                       ║
-# ║    git clone https://github.com/Ea2601/Pi5.git                ║
-# ║    cd Pi5 && chmod +x install.sh && ./install.sh             ║
+# ║    git clone https://github.com/Ea2601/klyrix-gate.git        ║
+# ║    cd klyrix-gate && chmod +x install.sh && ./install.sh     ║
 # ╚══════════════════════════════════════════════════════════════╝
 
 RED='\033[0;31m'
@@ -69,7 +69,7 @@ if [ -d "$INSTALL_DIR" ]; then
   cd "$INSTALL_DIR"
   git pull --rebase 2>/dev/null || true
 else
-  git clone https://github.com/Ea2601/Pi5.git "$INSTALL_DIR"
+  git clone https://github.com/Ea2601/klyrix-gate.git "$INSTALL_DIR"
   cd "$INSTALL_DIR"
 fi
 log "Proje dosyaları hazır: $INSTALL_DIR"

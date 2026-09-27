@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/Ea2601/Pi5/releases"><img src="https://img.shields.io/badge/version-2.21.0-38bdf8.svg?style=for-the-badge&logo=git&logoColor=white" alt="Version 2.21.0"></a>
+  <a href="https://github.com/Ea2601/klyrix-gate/releases"><img src="https://img.shields.io/badge/version-2.21.0-38bdf8.svg?style=for-the-badge&logo=git&logoColor=white" alt="Version 2.21.0"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-22c55e.svg?style=for-the-badge" alt="License MIT"></a>
   <img src="https://img.shields.io/badge/100%25-Free%20%26%20Open%20Source-ef4444.svg?style=for-the-badge&logo=opensourceinitiative&logoColor=white" alt="Free & Open Source">
   <img src="https://img.shields.io/badge/Telemetry-Zero-10b981.svg?style=for-the-badge" alt="Zero Telemetry">
@@ -146,7 +146,7 @@ flowchart TD
 Open a terminal on your Raspberry Pi OS (Bookworm / Debian 13) and execute:
 
 ```bash
-sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/Ea2601/Pi5/main/install.sh)"
+sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/Ea2601/klyrix-gate/main/install.sh)"
 ```
 
 *The installer will resolve dependencies (Node.js, Pi-hole, nftables, WireGuard, Zapret), configure network daemons, compile the UI, and start the systemd services automatically.*
@@ -154,8 +154,8 @@ sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/Ea2601/Pi5/main/ins
 ### Manual / Git Setup
 
 ```bash
-git clone https://github.com/Ea2601/Pi5.git
-cd Pi5
+git clone https://github.com/Ea2601/klyrix-gate.git
+cd klyrix-gate
 sudo chmod +x install.sh
 sudo ./install.sh
 ```
@@ -168,8 +168,8 @@ To contribute or customize the user interface and backend:
 
 ```bash
 # Clone the repository
-git clone https://github.com/Ea2601/Pi5.git
-cd Pi5
+git clone https://github.com/Ea2601/klyrix-gate.git
+cd klyrix-gate
 
 # 1. Start the Backend API
 cd backend
@@ -202,7 +202,7 @@ Klyrix/gate strictly adheres to core open-source principles:
 Klyrix/gate is built by and for the open-source community. Contributions of any kind are warmly welcomed!
 
 - **⭐ Star the Project:** If Klyrix/gate helps protect your network, please star the repository on GitHub to help others find it.
-- **🐛 Report Bugs:** Open an issue on [GitHub Issues](https://github.com/Ea2601/Pi5/issues) with log details.
+- **🐛 Report Bugs:** Open an issue on [GitHub Issues](https://github.com/Ea2601/klyrix-gate/issues) with log details.
 - **💡 Feature Requests:** Share your ideas and join discussions.
 - **🔀 Pull Requests:** Improvements to docs, UI components, or firewall logic are always appreciated.
 
