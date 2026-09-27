@@ -70,43 +70,34 @@ Klyrix/gate acts as an intelligent intermediary between your local network clien
 
 ```mermaid
 flowchart TD
-    subgraph LAN["🏠 Local Network (LAN)"]
-        CLIENTS["💻 Workstations / 📱 Mobile / 📺 Smart TV / 📟 IoT Devices"]
+    subgraph LAN["Local Network (LAN)"]
+        CLIENTS["Client Devices (PC, Mobile, IoT)"]
     end
 
-    subgraph GATEWAY["🛡️ Klyrix/gate (Raspberry Pi 5)"]
-        direction TB
-        NFT["nftables Core Firewall<br/>(L3/L4 Filtering, NAT & ICMP Shield)"]
-        
-        subgraph DNS_STACK["🔒 Private & Validating DNS Stack"]
-            PIHOLE["Pi-hole (Ad-blocking & Domain Sinkhole)"]
-            UNBOUND["Unbound (Recursive Root DNS Resolver)"]
-        end
-        
-        ZAPRET["⚡ Zapret DPI Bypass Engine"]
-        WG["🌐 WireGuard VPS Tunnel & Policy Router"]
-        
-        subgraph CONTROL["🖥️ Control Plane & Visualization"]
-            BACKEND["Node.js / Express 5 API + SQLite"]
-            UI["React 19 + Vite 8 Dashboard"]
-            TERMINAL["Web-Based Secure SSH Terminal"]
-        end
+    subgraph GATEWAY["Klyrix/gate (Raspberry Pi 5)"]
+        NFT["nftables Core Firewall & NAT"]
+        PIHOLE["Pi-hole (Ad & Tracker Blocking)"]
+        UNBOUND["Unbound (Recursive Root DNS)"]
+        ZAPRET["Zapret (ISP DPI Bypass Engine)"]
+        WG["WireGuard (VPN Tunnel & Policy Routing)"]
+        UI["React 19 Dashboard & Management"]
     end
 
-    subgraph WAN["🌍 Wide Area Network (WAN)"]
+    subgraph WAN["External Network (WAN)"]
         MODEM["ISP Modem / Fiber ONT"]
-        INTERNET(("🌐 Internet / Cloud VPS"))
+        INTERNET(("Internet / Cloud VPS"))
     end
 
     CLIENTS -->|Default Gateway| NFT
-    NFT --> DNS_STACK
-    DNS_STACK --> UNBOUND
-    NFT --> ZAPRET
-    NFT --> WG
-    WG --> MODEM
+    NFT -->|DNS Queries| PIHOLE
+    PIHOLE -->|Root Queries| UNBOUND
+    NFT -->|Direct & DPI Traffic| ZAPRET
+    NFT -->|Encrypted VPN Traffic| WG
     ZAPRET --> MODEM
+    WG --> MODEM
+    UNBOUND --> MODEM
     MODEM --> INTERNET
-    UI -.->|Telemetry & Orchestration| BACKEND
+    UI -.->|Monitor & Control| NFT
 ```
 
 ---

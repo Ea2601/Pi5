@@ -71,43 +71,34 @@ Klyrix/gate, yerel ağınızdaki istemciler ile internet arasında modern bir ko
 
 ```mermaid
 flowchart TD
-    subgraph LAN["🏠 Yerel Ağ (İstemciler)"]
-        CLIENTS["💻 Bilgisayarlar / 📱 Mobil / 📺 Smart TV / 📟 IoT"]
+    subgraph LAN["Yerel Ağ (LAN)"]
+        CLIENTS["İstemci Cihazlar (PC, Mobil, IoT)"]
     end
 
-    subgraph GATEWAY["🛡️ Klyrix/gate (Raspberry Pi 5)"]
-        direction TB
-        NFT["nftables Çekirdek Güvenlik Duvarı<br/>(L3/L4 Filtreleme & ICMP Shield)"]
-        
-        subgraph DNS_STACK["🔒 Gizli & Güvenli DNS Motoru"]
-            PIHOLE["Pi-hole (Reklam & Tehdit Bloklama)"]
-            UNBOUND["Unbound (Kök Sunuculardan Özyinelemeli DNS)"]
-        end
-        
-        ZAPRET["⚡ Zapret DPI Atlatma Motoru"]
-        WG["🌐 WireGuard VPS Tüneli & Policy Routing"]
-        
-        subgraph CONTROL["🖥️ Yönetim ve Görselleştirme"]
-            BACKEND["Node.js / Express 5 API + SQLite"]
-            UI["React 19 + Vite 8 Dashboard"]
-            TERMINAL["Web Tabanlı Güvenli SSH"]
-        end
+    subgraph GATEWAY["Klyrix/gate (Raspberry Pi 5)"]
+        NFT["nftables Güvenlik Duvarı & NAT"]
+        PIHOLE["Pi-hole (Reklam & Tehdit Engelleme)"]
+        UNBOUND["Unbound (Özyinelemeli Kök DNS)"]
+        ZAPRET["Zapret (ISS DPI Atlatma Motoru)"]
+        WG["WireGuard (VPN Tüneli & Yönlendirme)"]
+        UI["React 19 Kontrol Paneli & Yönetim"]
     end
 
-    subgraph WAN["🌍 Dış Dünya"]
-        MODEM["İnternet Servis Sağlayıcı (Modem / Fiber ONT)"]
-        INTERNET(("🌐 İnternet / VPS"))
+    subgraph WAN["Dış Ağ (WAN)"]
+        MODEM["İnternet Servis Sağlayıcı (Modem/ONT)"]
+        INTERNET(("İnternet / Cloud VPS"))
     end
 
     CLIENTS -->|Varsayılan Ağ Geçidi| NFT
-    NFT --> DNS_STACK
-    DNS_STACK --> UNBOUND
-    NFT --> ZAPRET
-    NFT --> WG
-    WG --> MODEM
+    NFT -->|DNS Sorguları| PIHOLE
+    PIHOLE -->|Kök Çözümleme| UNBOUND
+    NFT -->|Doğrudan & DPI Trafiği| ZAPRET
+    NFT -->|Şifreli VPN Trafiği| WG
     ZAPRET --> MODEM
+    WG --> MODEM
+    UNBOUND --> MODEM
     MODEM --> INTERNET
-    UI -.->|Yönetim & Canlı Telemetri| BACKEND
+    UI -.->|Yönetim & İzleme| NFT
 ```
 
 ---
