@@ -812,18 +812,65 @@ export async function systemctlAction(action: SystemctlAction, service: string, 
 }
 
 // ─── Interface / IP detection ───
-// Pi'nin LAN kimliği: en düşük metrikli varsayılan rotanın arayüzü ve adresi. Pi tek bacaklı ağ geçididir (modem aynı
-// LAN'da); aynı alt ağda ikinci bir bacak (ör. eth0 .153 + wlan0 .144) varsa `secondary`'de döner. Eskiden LAN,
-// /sys/class/net sırasındaki "diğer" arayüz sayılıyordu → çift bacakta wlan0'ın .144'ü redirect hedefi oluyordu.
-export interface LanIdentity {
-  iface: string; ip: string; prefix: number; gateway: string; network: string;
-  secondary: { iface: string; ip: string }[];
-}
 const ipv4ToNum = (ip: string) => ip.split('.').reduce((a, o) => a * 256 + Number(o), 0);
 const sameSubnet = (a: string, b: string, prefix: number) => {
   const div = 2 ** (32 - prefix);
   return Math.floor(ipv4ToNum(a) / div) === Math.floor(ipv4ToNum(b) / div);
 };
+// ip + önek → ağ adresi ("192.168.0.1", 24 → "192.168.0.0/24"; çekirdek rotalarındaki yazımla aynı).
+const networkOf = (ip: string, prefix: number) => {
+  const div = 2 ** (32 - prefix);
+  const netNum = Math.floor(ipv4ToNum(ip) / div) * div;
+  return [24, 16, 8, 0].map(s => Math.floor(netNum / 2 ** s) % 256).join('.') + `/${prefix}`;
+};
+const VALID_IPV4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/;
+const isIpv4 = (s: string) => { const m = s.match(VALID_IPV4); return !!m && m.slice(1).every(o => Number(o) <= 255); };
+// "192.168.0.1/24" → { ip, prefix, network }; biçim dışıysa null (değerler nft kurallarına yazılır).
+function parseCidr(s: string): { ip: string; prefix: number; network: string } | null {
+  const [ip, p, extra] = String(s || '').split('/');
+  if (extra !== undefined || !isIpv4(ip) || !/^\d{1,2}$/.test(p || '') || Number(p) > 32) return null;
+  return { ip, prefix: Number(p), network: networkOf(ip, Number(p)) };
+}
+
+// Sabit adres modu (scripts/net-mode.sh) durumu: eth0'da tek profil, iki adres — TRANSIT (modem tarafı, varsayılan rota)
+// ve CLIENT (Pi DHCP'sinin dağıttığı ağ, ör. 192.168.0.1/24). Dosyayı yalnız betik yazar (root, 0700 dizin); yine de
+// değerler nft kurallarına girdiği için biçim dışı olan alan boş sayılır. Dosya yoksa null.
+export interface NetModeState { stage: 'none' | 'trial' | 'static'; iface: string; transit: string; client: string; gw: string }
+const NET_MODE_STATE = '/etc/pi5-gateway/net/state';
+export function readNetModeState(): NetModeState | null {
+  let text: string;
+  try { text = fs.readFileSync(NET_MODE_STATE, 'utf8'); } catch { return null; }
+  const kv: Record<string, string> = {};
+  for (const line of text.split('\n')) {
+    const i = line.indexOf('=');
+    if (i > 0) kv[line.slice(0, i).trim()] = line.slice(i + 1).trim();
+  }
+  const stage = kv.stage === 'trial' || kv.stage === 'static' ? kv.stage : 'none';
+  // /8'den geniş bir ağ (bozuk dosya, ör. /0) iç içe ağ elemesinde diğer tüm LAN ağlarını silerdi.
+  const cidrOk = (s: string) => (parseCidr(s)?.prefix ?? 0) >= 8;
+  return {
+    stage,
+    iface: /^[A-Za-z0-9_.-]{1,15}$/.test(kv.iface || '') ? kv.iface : '',
+    transit: cidrOk(kv.transit || '') ? kv.transit : '',
+    client: cidrOk(kv.client || '') ? kv.client : '',
+    gw: isIpv4(kv.gw || '') ? kv.gw : '',
+  };
+}
+const netModeActive = (s: NetModeState | null): s is NetModeState => !!s && (s.stage === 'trial' || s.stage === 'static');
+
+// Pi'nin LAN kimliği: en düşük metrikli varsayılan rotanın arayüzü ve adresi. Pi tek bacaklı ağ geçididir (modem aynı
+// LAN'da); aynı alt ağda ikinci bir bacak (ör. eth0 .153 + wlan0 .144) varsa `secondary`'de döner. Eskiden LAN,
+// /sys/class/net sırasındaki "diğer" arayüz sayılıyordu → çift bacakta wlan0'ın .144'ü redirect hedefi oluyordu.
+// Sabit adres modunda aynı kartta iki ağ olur: `transit` modem tarafı (varsayılan rotanın adresi), `client` Pi DHCP'sinin
+// ağı. ip/prefix/network her zaman CLIENT tarafıdır (arayüzde gösterilen, DHCP router/DNS); tek ağda client = transit.
+// DNS redirect hedefi ve panel adresi örneği buradan değil getPi5LanIp'ten (transit) gelir.
+export interface LanIdentity {
+  iface: string; ip: string; prefix: number; gateway: string; network: string;
+  secondary: { iface: string; ip: string; net?: 'transit' | 'client' }[];
+  transit: { ip: string; prefix: number; network: string };
+  client: { ip: string; prefix: number; network: string; source: 'config' | 'transit' };
+  dualSubnet: boolean;
+}
 export async function getLanIdentity(): Promise<LanIdentity | null> {
   if (!isLinux) return null;
   let routes: any[] = [];
@@ -837,22 +884,40 @@ export async function getLanIdentity(): Promise<LanIdentity | null> {
   const v4 = (ifname: string) => (addrs.find(a => a.ifname === ifname)?.addr_info || [])
     .filter((x: any) => x.family === 'inet' && x.local) as { local: string; prefixlen: number }[];
   const own = v4(route.dev);
-  const main = own.find(x => x.local === route.prefsrc) || own[0];
+  // Statik profilin varsayılan rotasında `src` yoktur → modemi içeren alt ağın adresi transit sayılır.
+  const main = own.find(x => x.local === route.prefsrc)
+    || (route.gateway ? own.find(x => sameSubnet(x.local, route.gateway, x.prefixlen)) : undefined)
+    || own[0];
   if (!main) return null;
-  const secondary: { iface: string; ip: string }[] = [];
+  const transit = { ip: main.local, prefix: main.prefixlen, network: networkOf(main.local, main.prefixlen) };
+  // CLIENT: sabit adres modunda (deneme/kalıcı) durum dosyasındaki adres bu kartta gerçekten varsa; yoksa transit.
+  let client: LanIdentity['client'] = { ...transit, source: 'transit' };
+  const ns = readNetModeState();
+  const cfg = netModeActive(ns) ? parseCidr(ns.client) : null;
+  const live = cfg ? own.find(x => x.local === cfg.ip) : undefined;
+  if (live) client = { ip: live.local, prefix: live.prefixlen, network: networkOf(live.local, live.prefixlen), source: 'config' };
+  const dualSubnet = client.network !== transit.network;
+  const secondary: LanIdentity['secondary'] = [];
   for (const a of addrs) {
     if (!a.ifname || a.ifname === route.dev || /^(wg|lo|docker|veth)/.test(a.ifname)) continue;
-    for (const x of v4(a.ifname)) if (sameSubnet(x.local, main.local, main.prefixlen)) secondary.push({ iface: a.ifname, ip: x.local });
+    for (const x of v4(a.ifname)) {
+      const inTransit = sameSubnet(x.local, transit.ip, transit.prefix);
+      const inClient = sameSubnet(x.local, client.ip, client.prefix);
+      if (!inTransit && !inClient) continue;
+      // Tek ağda eski biçim korunur (net alanı yok).
+      secondary.push(dualSubnet ? { iface: a.ifname, ip: x.local, net: inTransit ? 'transit' : 'client' } : { iface: a.ifname, ip: x.local });
+    }
   }
-  const div = 2 ** (32 - main.prefixlen);
-  const netNum = Math.floor(ipv4ToNum(main.local) / div) * div;
-  const network = [24, 16, 8, 0].map(s => Math.floor(netNum / 2 ** s) % 256).join('.') + `/${main.prefixlen}`;
-  return { iface: route.dev, ip: main.local, prefix: main.prefixlen, gateway: route.gateway || '', network, secondary };
+  return {
+    iface: route.dev, ip: client.ip, prefix: client.prefix, gateway: route.gateway || '', network: client.network,
+    secondary, transit, client, dualSubnet,
+  };
 }
 
 // wan = varsayılan rotanın arayüzü. Tek bacaklı ağ geçidinde (LAN'a açılan başka bir alt ağ yok) lan = wan: istemciler
 // aynı arayüzden gelip aynı arayüzden modeme çıkar. Farklı alt ağlı ikinci bir kart (ör. Pi'nin Wi-Fi yayını) varsa
-// o kart lan olur (eski iki kartlı davranış).
+// o kart lan olur (eski iki kartlı davranış). Sabit adres modunda transit ve client ağları aynı karttadır: başka bir
+// kart ancak ikisinin de dışında bir adresi varsa ayrı LAN sayılır.
 export async function detectInterfaces(): Promise<{ wan: string; lan: string }> {
   const id = await getLanIdentity();
   const wan = id?.iface || (await run(`ip -o -4 route show to default | awk '{print $5}' | head -1`)).trim() || 'eth0';
@@ -862,7 +927,9 @@ export async function detectInterfaces(): Promise<{ wan: string; lan: string }> 
     for (const a of addrs) {
       if (!a.ifname || a.ifname === wan || /^(wg|lo|docker|veth|br-)/.test(a.ifname)) continue;
       const ips = (a.addr_info || []).filter((x: any) => x.family === 'inet' && x.local).map((x: any) => x.local);
-      if (ips.length && (!id || ips.some((ip: string) => !sameSubnet(ip, id.ip, id.prefix)))) { other = a.ifname; break; }
+      const outside = (ip: string) => !!id
+        && !sameSubnet(ip, id.transit.ip, id.transit.prefix) && !sameSubnet(ip, id.client.ip, id.client.prefix);
+      if (ips.length && (!id || ips.some(outside))) { other = a.ifname; break; }
     }
   } catch { /* ip -j yok */ }
   if (other) return { wan, lan: other };
@@ -874,10 +941,13 @@ export async function detectInterfaces(): Promise<{ wan: string; lan: string }> 
   return { wan, lan };
 }
 
-// Pi5'in LAN tarafındaki IP'si (redirect hedefi, DHCP router/DNS için). Bulunamazsa boş döner.
+// Pi5'in her istemcinin ulaşabildiği LAN IP'si (DNS redirect hedefi, panel adresi örneği). Bulunamazsa boş döner.
+// Sabit adres modunda TRANSIT (modem tarafı, ör. .153) döner: geçişte modemden hâlâ 192.168.1.x alan cihazlar client
+// adresine (192.168.0.1) ulaşamaz, 192.168.0.x cihazlar ise .153'e ağ geçitleri olan Pi üzerinden ulaşır. Tek ağda
+// transit = client (eski davranış). Pi DHCP'sinin router/DNS değeri buradan değil, net-mode durumundaki client'tan gelir.
 export async function getPi5LanIp(): Promise<string> {
   const id = await getLanIdentity();
-  if (id?.ip) return id.ip;
+  if (id?.transit.ip) return id.transit.ip;
   const first = (await run(`hostname -I 2>/dev/null | awk '{print $1}'`)).trim();
   return /^\d+\.\d+\.\d+\.\d+$/.test(first) ? first : '';
 }
@@ -1407,6 +1477,19 @@ function scheduleDnsRestart(): void {
   });
 }
 
+// FTL'i kendisi durdurup başlatan dış işler (ör. Pi DHCP betiği: pihole.toml yalnız FTL durmuşken yazılır) aynı zincire
+// girer: bekleyen/çalışan DNS yeniden başlatması bitince çalışır, sonraki işler onu bekler (iki taraf FTL'i aynı anda
+// durdurup başlatmasın). Önceki işin sonucu ne olursa olsun çalışır; zincir bu işin hatasıyla kırılmaz (hata çağırana
+// döner). Bitince "son restart" sayılır: sıradaki yeniden başlatma en az DNS_RESTART_MIN_GAP_MS bekler.
+export function runExclusiveDnsTask<T>(fn: () => Promise<T>): Promise<T> {
+  const job = async () => {
+    try { return await fn(); } finally { lastDnsRestartAt = Date.now(); }
+  };
+  const task = dnsJobChain.then(job, job);
+  dnsJobChain = task.then(() => undefined, () => undefined);
+  return task;
+}
+
 // Yerel DNS (127.0.0.1:53) bir yanıt dönüyor mu? NXDOMAIN/SERVFAIL de yanıttır; yalnız bağlantı reddi /
 // zaman aşımı "ayakta değil" sayılır. dig'e bağımlı değildir (kurulu olmayabilir). FTL açılışı için bekler.
 async function waitLocalDns(maxMs: number = 15000): Promise<boolean> {
@@ -1424,7 +1507,10 @@ async function waitLocalDns(maxMs: number = 15000): Promise<boolean> {
 
 // Pi'yi ağ geçidi yapan LAN istemcilerinin ağları/arayüzleri ve Pi'nin kendi adresleri (çekirdek rotalarından;
 // wg_* ve lo hariç). nft anonim setinde iç içe aralık hata verir → başka bir ağın içinde kalan ağ elenir.
+// Sabit adres modunda (deneme/kalıcı) durum dosyasındaki transit ve client ağları, kart ve iki adres de eklenir: kablo
+// o an çıkmışken ya da profil yeniden kalkarken uygulanan kurallar client ağını düşürmesin.
 const GW_NFT = '/opt/pi5-gateway/core/pi5-gw.nft';
+const IN_NFT = '/opt/pi5-gateway/core/pi5-in.nft';
 async function detectGatewayLan(): Promise<{ nets: string[]; ifaces: string[]; selfIps: string[] }> {
   const ipNum = (ip: string) => ip.split('.').reduce((a, o) => a * 256 + Number(o), 0);
   const within = (net: string, outer: string) => {
@@ -1443,6 +1529,15 @@ async function detectGatewayLan(): Promise<{ nets: string[]; ifaces: string[]; s
     ifaces.add(m[2]);
   }
   for (const m of (await run('ip -4 -o addr show 2>/dev/null')).matchAll(/\sinet\s(\d+\.\d+\.\d+\.\d+)\//g)) selfIps.add(m[1]);
+  const ns = readNetModeState();
+  if (netModeActive(ns)) {
+    if (ns.iface && !/^(wg|lo)/.test(ns.iface)) ifaces.add(ns.iface);
+    for (const c of [parseCidr(ns.transit), parseCidr(ns.client)]) {
+      if (!c) continue;
+      nets.add(c.network);
+      selfIps.add(c.ip);
+    }
+  }
   const all = [...nets];
   return { nets: all.filter(n => !all.some(o => o !== n && within(n, o))), ifaces: [...ifaces], selfIps: [...selfIps] };
 }
@@ -1609,11 +1704,15 @@ export async function applyDomainRouting(domains?: DomainRoute[]): Promise<void>
   //     Tek bacaklı ağ geçidi: Pi'yi ağ geçidi yapan LAN istemcilerinin modeme (aynı LAN'a) geri iletilen trafiği
   //     de Pi'ye SNAT'lanır — aksi halde cevaplar modemden istemciye doğrudan döner (asimetrik) ve modem, Pi'nin
   //     istemci adına gönderdiği paketleri düşürür (canlıda doğrulandı). Pi'nin kendi trafiği ve LAN içi hariç.
+  //     Kural ağ başınadır: istemci KENDİ ağının dışına giderken SNAT'lanır. Sabit adres modunda (aynı kartta iki ağ)
+  //     192.168.0.x → modem 192.168.1.1 Pi'nin transit adresine (.153) SNAT'lanır; 0.x → 0.x'e hiç dokunulmaz.
+  //     (Tek birleşik "daddr != tüm ağlar" kuralı 0.x → modem trafiğini hariç tutuyordu.) Tek ağda sonuç eskisiyle aynı.
   const gw = await detectGatewayLan();
   const nftSet = (xs: string[], quote = false) => `{ ${xs.map(x => (quote ? `"${x}"` : x)).join(', ')} }`;
-  const lanClient = gw.nets.length
-    ? `ip saddr ${nftSet(gw.nets)}${gw.selfIps.length ? ` ip saddr != ${nftSet(gw.selfIps)}` : ''}`
-    : '';
+  const notSelf = gw.selfIps.length ? ` ip saddr != ${nftSet(gw.selfIps)}` : '';
+  const lanClient = gw.nets.length ? `ip saddr ${nftSet(gw.nets)}${notSelf}` : '';
+  // N ağının istemcisi, N dışına giden (N içi hariç).
+  const leavesNet = (n: string) => `ip saddr ${nftSet([n])}${notSelf} ip daddr != ${nftSet([n])}`;
   const wgNat = [
     'table ip pi5_wgnat {}',
     'delete table ip pi5_wgnat',
@@ -1622,7 +1721,7 @@ export async function applyDomainRouting(domains?: DomainRoute[]): Promise<void>
     '    type nat hook postrouting priority 100; policy accept;',
     '    oifname "wg_vps*" masquerade',
     ...(lanClient && gw.ifaces.length
-      ? [`    oifname ${nftSet(gw.ifaces, true)} ${lanClient} ip daddr != ${nftSet(gw.nets)} masquerade`]
+      ? gw.nets.map(n => `    oifname ${nftSet(gw.ifaces, true)} ${leavesNet(n)} masquerade`)
       : []),
     '  }',
     '}',
@@ -1651,7 +1750,8 @@ export async function applyDomainRouting(domains?: DomainRoute[]): Promise<void>
       'add rule inet filter pi5_gw ct state established,related accept',
       `add rule inet filter pi5_gw iifname ${lanIfs} ${lanClient} oifname "wg_vps*" accept`,
       // LAN → modem (tek bacak): ct state'e bakılmaz — SNAT kurulamazsa akış asimetrik kalır, sonraki paketler 'invalid' olur.
-      `add rule inet filter pi5_gw iifname ${lanIfs} ${lanClient} ip daddr != ${nftSet(gw.nets)} oifname ${lanIfs} accept`,
+      // Ağ başına (NAT kuralıyla aynı): 192.168.0.x → modem tarafı da iletilir.
+      ...gw.nets.map(n => `add rule inet filter pi5_gw iifname ${lanIfs} ${leavesNet(n)} oifname ${lanIfs} accept`),
       ...(/jump pi5_gw/.test(fwdChain) ? [] : ['insert rule inet filter forward jump pi5_gw']),
     ];
     try {
@@ -1660,6 +1760,28 @@ export async function applyDomainRouting(domains?: DomainRoute[]): Promise<void>
       await execAsync(`nft -f ${GW_NFT}`, { timeout: 10000 });
     } catch (e: any) {
       console.error(`[routing] ağ geçidi izni (inet filter pi5_gw) kurulamadı: ${String(e?.stderr || e?.message || e).trim()}`);
+    }
+  }
+
+  // 3d. Aynı eski firewall'un `inet filter` input zinciri de `policy drop` olabilir: Pi DHCP sunucusuna (udp 67)
+  //     gelen istekler ve istemci testindeki ping düşer. Panele ait `pi5_in` zinciri pi5_gw gibi her uygulamada
+  //     boşaltılıp doldurulur, input'un başına bir kez `jump pi5_in` eklenir (açılışta pi5-gw-restore da yükler).
+  //     Input politikası accept ise (ya da tablo yoksa) dokunulmaz.
+  const inChain = await run('nft list chain inet filter input 2>/dev/null');
+  if (/policy drop/.test(inChain) && gw.ifaces.length) {
+    const inRules = [
+      'add chain inet filter pi5_in',
+      'flush chain inet filter pi5_in',
+      `add rule inet filter pi5_in iifname ${nftSet(gw.ifaces, true)} udp dport 67 accept`,
+      'add rule inet filter pi5_in icmp type echo-request accept',
+      ...(/jump pi5_in\b/.test(inChain) ? [] : ['insert rule inet filter input jump pi5_in']),
+    ];
+    try {
+      fs.mkdirSync('/opt/pi5-gateway/core', { recursive: true });
+      fs.writeFileSync(IN_NFT, inRules.join('\n') + '\n');
+      await execAsync(`nft -f ${IN_NFT}`, { timeout: 10000 });
+    } catch (e: any) {
+      console.error(`[routing] giriş izni (inet filter pi5_in) kurulamadı: ${String(e?.stderr || e?.message || e).trim()}`);
     }
   }
 

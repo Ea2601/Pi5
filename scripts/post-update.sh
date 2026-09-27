@@ -100,8 +100,9 @@ fi
 
 # 4b. Sistem paketleri: wireguard-tools (Pi5 ↔ VPS tüneli wg / wg-quick) + ipset/iptables (domain/uygulama
 #     yönlendirmesi: dnsmasq ipset'i doldurur, iptables mangle `-m set` ile işaretler). Yarıda kalmış dpkg'yi onarır,
-#     eksikleri tek işlemde kurar.
-if ! pkg_ensure wireguard-tools ipset iptables; then
+#     eksikleri tek işlemde kurar. iputils-arping: sabit adres (net-mode.sh) cihaz tarafı adresinin ağda boş olduğunu
+#     arping -D ile doğrular (ping, modemin rotası olmayan 192.168.0.x'te dolu adresi göremez).
+if ! pkg_ensure wireguard-tools ipset iptables iputils-arping; then
   echo "  [pkg] UYARI: sistem paketleri kurulamadı (ayrıntı yukarıda)" >> "$LOG"
 fi
 
@@ -229,8 +230,38 @@ systemctl daemon-reload 2>/dev/null || true
 systemctl enable pi5-gw-restore.service >/dev/null 2>&1 || true
 echo "  [ağ] ICMP redirect kapalı, açılış kuralları (pi5-gw-restore) etkin" >> "$LOG"
 
+# 7c. Sabit IP koruması (Faz 2 Adım 1) — pi5-net-guard.service: açılışta ve her NetworkManager (yeniden) başlatmasında
+#     kalıcı sabit profil (pi5-eth0) denetlenir; yüklenmemişse yedekten onarılır, olmazsa adresler o açılış için elle
+#     (acil mod) tutulur. Sabit adres yoksa hiçbir şey yapmaz. Hata güncellemeyi durdurmaz (set -e: her adım || / if).
+cat > /etc/systemd/system/pi5-net-guard.service << 'NGEOF' || echo "  [ağ] UYARI: pi5-net-guard.service yazılamadı" >> "$LOG"
+[Unit]
+Description=Klyrix Gate sabit IP koruması (eth0 profili)
+After=NetworkManager.service
+PartOf=NetworkManager.service
+Before=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+TimeoutStartSec=150
+ExecStart=/bin/bash /opt/pi5-gateway/scripts/net-mode.sh guard
+
+[Install]
+WantedBy=multi-user.target NetworkManager.service
+NGEOF
+systemctl daemon-reload 2>/dev/null || true
+if systemctl enable pi5-net-guard.service >/dev/null 2>&1; then
+  echo "  [ağ] sabit IP koruması (pi5-net-guard) etkin" >> "$LOG"
+else
+  echo "  [ağ] UYARI: pi5-net-guard.service etkinleştirilemedi" >> "$LOG"
+fi
+
 # 8. Panel erişim koruması: durum dosyasını kurar, açık korumayı onarır, süresi geçen denemeyi geri alır. Korumayı
 #    ASLA kendiliğinden açmaz (gece 03:30 güncellemesi kimse başında değilken kilitlemesin); şifre yazdırmaz.
 bash "$BASE/scripts/panel-auth.sh" ensure >> "$LOG" 2>&1 || echo "  [auth] UYARI: panel koruması denetlenemedi" >> "$LOG"
+
+# 8b. Sabit IP durumu: süresi geçen denemeyi geri alır, kalıcı sabit profili denetler (gerekirse onarır). Sabit adresi
+#     ASLA kendiliğinden açmaz.
+bash "$BASE/scripts/net-mode.sh" ensure >> "$LOG" 2>&1 || echo "  [ağ] UYARI: sabit IP durumu denetlenemedi" >> "$LOG"
 
 echo "$(date '+%Y-%m-%d %H:%M:%S') — Post-update tamamlandı" >> "$LOG"

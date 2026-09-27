@@ -14,7 +14,7 @@ import {
   getFail2banStatus, getDnsQueries, getCurrentExternalIp,
   runSpeedTest, executeCommand, applyDomainRouting, applyBlockedDevices,
   sampleMetrics, detectInterfaces, recoverInterruptedFtlRestart, VALID_DNSMASQ_DOMAIN, getRoutingApplyStatus,
-  getLanIdentity, protectedMacs,
+  getLanIdentity, protectedMacs, getPi5LanIp, readNetModeState, runExclusiveDnsTask,
 } from './system';
 import { getRoutingSuggestions, MAX_HOURS as SUGGEST_MAX_HOURS } from './domainSuggest';
 import {
@@ -71,6 +71,11 @@ const trustedPanelHost = (hostHeader: string) => {
   if (/^\d{1,3}(\.\d{1,3}){3}$/.test(h) || h.includes(':')) return true; // IPv4 / IPv6 sabit adres
   const me = require('os').hostname().toLowerCase();
   return ['localhost', 'pi.hole', me, `${me}.local`, `${me}.lan`, `${me}.home`].includes(h);
+};
+// trustedPanelHost reddinin mesajı: örnek adres getPi5LanIp (sabit adreste modem tarafı .153 — iki ağdan da ulaşılır), bulunamazsa genel metin.
+const ipPanelHint = async () => {
+  const ip = await getPi5LanIp().catch(() => '');
+  return ip ? `Bu işlem için paneli IP adresiyle açın (ör. http://${ip})` : 'Bu işlem için paneli Pi\'nin IP adresiyle açın';
 };
 
 // Rate limiting — genel API
@@ -202,6 +207,8 @@ app.post('/api/services/toggle', async (req, res) => {
       return res.status(400).json({ success: false, name, error });
     }
     if (typeof enabled !== 'boolean') return res.status(400).json({ success: false, name, error: 'enabled alanı true/false olmalı' });
+    // Pi-hole evin DHCP sunucusuyken kapatılırsa ev DNS'siz ve DHCP'siz kalır.
+    if (name === 'pihole' && !enabled && await piDhcpActive()) return res.status(409).json({ success: false, name, error: PI_DHCP_BUSY_MSG });
     let actionError = '';
     try { await systemServices.toggleService(name, enabled); } catch (e: any) { actionError = e.message; }
     const timeout = actionError ? 3000 : enabled ? (name === 'pihole' ? FTL_SETTLE_TIMEOUT : 15000) : 10000;
@@ -255,6 +262,8 @@ app.post('/api/services/setup', async (req, res) => {
       return st.status;
     };
     let status: string | undefined;
+    // Yeniden kurulum FTL'i durdurup ayarlarını yazar — Pi-hole evin DHCP sunucusuyken yapılmaz.
+    if (action === 'pihole' && await piDhcpActive()) return res.status(409).json({ success: false, error: PI_DHCP_BUSY_MSG });
     if (action === 'pihole') {
       result = await systemServices.installPihole();
       status = await recordState('pihole');
@@ -1733,6 +1742,7 @@ if (isLinux) {
       }
     }
   };
+  let dhcpProbeTick = 0; // Pi DHCP açıkken başka sunucu taraması her 3. turda
   const healthCheck = async () => {
     try {
       const exec = require('util').promisify(require('child_process').exec);
@@ -1785,6 +1795,40 @@ if (isLinux) {
       const { stdout: pingCheck } = await exec('ping -c 1 -W 3 1.1.1.1 2>/dev/null', { timeout: 5000 }).catch(() => ({ stdout: '' }));
       if (!pingCheck.includes('1 received')) await addAlert('health', 'critical', 'İnternet bağlantısı kesildi', 'network');
       else await addAlert('health', 'info', 'İnternet bağlantısı aktif', 'network');
+
+      // Pi DHCP sunucusu ve sabit adres — kendi try'ı. Modemin DHCP'si kendiliğinden geri açılırsa (sıfırlama, güncelleme)
+      // ev ikiye bölünür: 3 turda bir (15 dk) keşif paketiyle başka sunucu aranır.
+      try {
+        const fs = require('fs');
+        if (fs.existsSync(PI_DHCP_SCRIPT)) {
+          const d = await runKvScript(PI_DHCP_SCRIPT, ['status'], 30000);
+          if (d.code === 0 && d.kv.stage === 'on') {
+            if (d.kv.port67 !== '1') await addAlert('health', 'critical', 'DHCP sunucusu (Pi-hole) dinlemiyor — cihazlar adres alamayabilir', 'dhcp');
+            if (dhcpProbeTick++ % 3 === 0) {
+              // Betik kilidi 60 sn bekleyebilir (o an bir DHCP işlemi sürüyorsa): süre ona göre.
+              const p = await runKvScript(PI_DHCP_SCRIPT, ['probe'], 90000);
+              const others = splitList(p.kv.servers);
+              if (p.code === 0 && others.length) {
+                await addAlert('health', 'critical', `Başka bir DHCP sunucusu yanıt veriyor (${others.join(', ')}) — modemin DHCP'si yeniden açılmış olabilir`, 'dhcp-rogue');
+              } else if (p.code !== 0 && !/başka bir DHCP işlemi sürüyor/.test(p.kv.error || '')) {
+                // Çalışmayan tarama "başka sunucu yok" sayılmaz (kilit meşgulse yalnız bu tur atlanır).
+                const msg = kvError(p, 'bilinmeyen hata');
+                await addAlert('health', 'warning', /^DHCP taraması/.test(msg) ? msg : `DHCP taraması çalışmadı: ${msg}`, 'dhcp-probe');
+              }
+            }
+          } else {
+            dhcpProbeTick = 0;
+          }
+        }
+        if (fs.existsSync(NET_MODE_SCRIPT) && readNetModeState()?.stage === 'static') {
+          const n = await runKvScript(NET_MODE_SCRIPT, ['status'], 30000);
+          if (n.code === 0 && n.kv.guard_result === 'emergency') {
+            await addAlert('health', 'critical', 'Sabit IP profili yüklenemedi — Pi adresini acil modda tutuyor (Pi-hole → Ayarlar → DHCP kartı)', 'netmode');
+          }
+        }
+      } catch (e: any) {
+        console.error('[health] DHCP/sabit adres kontrolü başarısız:', e?.message || e);
+      }
 
       // Cleanup old alerts (30 days)
       await dbRun(`DELETE FROM alerts WHERE created_at < datetime('now', '-30 days')`);
@@ -1935,6 +1979,7 @@ app.get('/api/dhcp/leases', async (_req, res) => {
 
 // Gerçek DHCP / ağ geçidi durumu (panelin DHCP kartı): Pi-hole DHCP'si açık mı, Pi'nin LAN kimliği, kira sayısı.
 // Salt okunur. (Panelin eski DHCP ayar alanları yalnız veritabanına yazıyordu; bunlar arayüzden kaldırıldı.)
+// pi = pi-dhcp.sh durumu (sihirbaz: deneme/açık/kapalı, 67 portu, kira sayısı); betik yoksa null.
 app.get('/api/dhcp/status', async (_req, res) => {
   try {
     if (!isLinux) return res.json({ supported: false });
@@ -1942,15 +1987,20 @@ app.get('/api/dhcp/status', async (_req, res) => {
     const key = async (k: string) => {
       try { return (await execFileP('pihole-FTL', ['--config', k], { timeout: 5000 })).stdout.trim(); } catch { return ''; }
     };
-    const [active, start, end, router, leaseTime] = await Promise.all(
-      ['dhcp.active', 'dhcp.start', 'dhcp.end', 'dhcp.router', 'dhcp.leaseTime'].map(key));
+    const piStatus = async () => {
+      if (!fs.existsSync(PI_DHCP_SCRIPT)) return null;
+      const r = await runKvScript(PI_DHCP_SCRIPT, ['status'], 30000);
+      return r.code === 0 ? kvTyped(r.kv, PI_DHCP_NUMS, PI_DHCP_BOOLS) : { error: kvError(r, 'Pi DHCP durumu okunamadı') };
+    };
+    const [[active, start, end, router, leaseTime], pi] = await Promise.all([
+      Promise.all(['dhcp.active', 'dhcp.start', 'dhcp.end', 'dhcp.router', 'dhcp.leaseTime'].map(key)), piStatus()]);
     let leases = 0;
     try {
       leases = String(fs.readFileSync('/etc/pihole/dhcp.leases', 'utf8')).split('\n').filter((l: string) => /^\d+\s/.test(l)).length;
     } catch { /* dosya yok */ }
     res.json({
       supported: true, pi_dhcp_active: active === 'true', start, end, router, lease_time: leaseTime, leases,
-      lan: await getLanIdentity(),
+      lan: await getLanIdentity(), pi, netmode_stage: readNetModeState()?.stage || 'none',
     });
   } catch (e: any) {
     res.status(500).json({ error: e.message });
@@ -1981,6 +2031,272 @@ app.delete('/api/dhcp/static/:mac', async (req, res) => {
   } catch (e: any) {
     res.status(500).json({ error: e.message });
   }
+});
+
+// ─── Faz 2: Pi'nin sabit adresi (scripts/net-mode.sh) ve Pi-hole DHCP sunucusu (scripts/pi-dhcp.sh) ───
+// Riskli her adım denemedir: betik geri alma zamanlayıcısını değişiklikten ÖNCE kurar; "Kalıcı yap" gelmezse Pi kendi
+// başına eski duruma döner (panel kapalı olsa da). Betikler kendi kilitleriyle sıralanır; Pi-hole'a yazan DHCP işleri
+// ayrıca runExclusiveDnsTask ile panelin FTL yeniden başlatmalarının arasına girmez.
+const NET_MODE_SCRIPT = '/opt/pi5-gateway/scripts/net-mode.sh';
+const PI_DHCP_SCRIPT = '/opt/pi5-gateway/scripts/pi-dhcp.sh';
+const NET_TRIAL_S = 180;
+const NET_CLIENT_CIDR = '192.168.0.1/24';
+const DHCP_TRIAL_S = 300;
+const PI_DHCP_BUSY_MSG = 'Pi-hole şu an evin DHCP sunucusu — kapatılırsa cihazlar adres alamaz. Önce modemin DHCP\'sini açıp Pi DHCP\'sini kapatın';
+// exited: betiğin gerçekten bittiği an (zaman aşımında yanıt önce döner, betik arka planda sürebilir).
+type KvResult = { code: number | null; kv: Record<string, string>; exited?: Promise<void> };
+// runPanelAuth deseni (key=value satırları, üst sınırlı çıktı), betik ve süre parametreli. Anahtarlar yalnız stdout'tan
+// okunur; betik error= yazmadan düşerse stderr'in son satırı ayrıntı olur (araç uyarıları anahtarların üstüne yazmasın).
+// Zaman aşımında yalnız salt okunur komutlar (status/probe) öldürülür: değişiklik yapan komut yarıda kesilirse Pi yarım
+// ayarda (ör. FTL durmuş) kalabilir — o zaman beklemeyi bırakıp hata döneriz, betik işini kendi bitirir.
+function runKvScript(script: string, args: string[], timeoutMs: number, input = ''): Promise<KvResult> {
+  const name = script.split('/').pop() || script;
+  const readOnly = args[0] === 'status' || args[0] === 'probe';
+  let markExited: () => void = () => {};
+  const exited = new Promise<void>(r => { markExited = r; });
+  return new Promise(resolve => {
+    const child = _spawn('bash', [script, ...args], { stdio: ['pipe', 'pipe', 'pipe'] });
+    let out = '';
+    let err = '';
+    const timer = setTimeout(() => {
+      if (readOnly) child.kill('SIGKILL');
+      resolve({ code: null, exited, kv: {
+        error: `${name} ${args[0] || ''} ${Math.round(timeoutMs / 1000)} sn içinde bitmedi${readOnly ? '' : ' (iş arka planda sürüyor — birazdan durumu yenileyin)'}`,
+      } });
+    }, timeoutMs);
+    child.stdout.on('data', d => { if (out.length < 16384) out += d; });
+    child.stderr.on('data', d => { if (err.length < 16384) err += d; });
+    child.on('error', () => { clearTimeout(timer); markExited(); resolve({ code: -1, exited, kv: { error: `${name} çalıştırılamadı` } }); });
+    child.on('close', code => {
+      clearTimeout(timer);
+      markExited();
+      const kv: Record<string, string> = {};
+      for (const line of out.split('\n')) { const i = line.indexOf('='); if (i > 0) kv[line.slice(0, i).trim()] = line.slice(i + 1).trim(); }
+      if (code === null && !kv.error) kv.error = `${name} ${args[0] || ''} yarıda kesildi`;
+      if (code !== 0 && !kv.error && !kv.detail) {
+        const last = err.trim().split('\n').pop()?.trim();
+        if (last) kv.detail = last.slice(0, 300);
+      }
+      resolve({ code, exited, kv });
+    });
+    child.stdin.end(input);
+  });
+}
+// FTL'e dokunan pi-dhcp.sh işleri DNS zincirinde çalışır. HTTP yanıtı zaman aşımında dönse bile zincir betik gerçekten
+// bitene kadar bekler: panelin FTL yeniden başlatması betiğin "FTL durdurulmuş" penceresine girmesin.
+const runPiDhcpExclusive = (args: string[], timeoutMs: number) => new Promise<KvResult>((resolve, reject) => {
+  runExclusiveDnsTask(async () => {
+    const r = await runKvScript(PI_DHCP_SCRIPT, args, timeoutMs);
+    resolve(r);
+    await r.exited;
+  }).catch(reject);
+});
+const kvError = (r: KvResult, fallback: string) => [r.kv.error || fallback, r.kv.detail].filter(Boolean).join(' — ');
+// Betik çıktısı → JSON: sayı ve bayrak alanları dönüştürülür, diğerleri metin kalır.
+const kvTyped = (kv: Record<string, string>, nums: string[], bools: string[]) => {
+  const out: Record<string, string | number | boolean> = { ...kv };
+  for (const k of nums) out[k] = Number(kv[k]) || 0;
+  for (const k of bools) out[k] = kv[k] === '1' || kv[k] === 'true';
+  if ('now' in out && !out.now) out.now = Math.floor(Date.now() / 1000);
+  return out;
+};
+const NET_NUMS = ['trial_ends', 'now', 'guard_at', 'lease_until'];
+const NET_BOOLS = ['nm', 'carrier', 'profile_ok', 'pi_dhcp', 'wifi_off'];
+const PI_DHCP_NUMS = ['trial_ends', 'now', 'leases', 'modem_warn'];
+const PI_DHCP_BOOLS = ['active', 'ipv6', 'port67', 'input_ok'];
+const splitList = (s?: string) => String(s || '').split(',').map(x => x.trim()).filter(Boolean);
+// Pi-hole şu an evin DHCP sunucusu mu (pihole.toml'dan okunur; FTL durmuşken de çalışır). Okunamazsa false.
+async function piDhcpActive(): Promise<boolean> {
+  if (!isLinux) return false;
+  try { return (await execFileP('pihole-FTL', ['--config', 'dhcp.active'], { timeout: 5000 })).stdout.trim() === 'true'; } catch { return false; }
+}
+// Betik yoksa (eski kurulum / Pi dışı) isteği yanıtlayıp true döner.
+const scriptMissing = (script: string, res: express.Response) => {
+  if (isLinux && require('fs').existsSync(script)) return false;
+  res.status(400).json({ error: isLinux ? `${script.split('/').pop()} bulunamadı — paneli güncelleyin` : 'Yalnız Pi5 üzerinde çalışır' });
+  return true;
+};
+// Sabit adresin cihaz tarafı (ör. 192.168.0.1/24) → Pi DHCP planı: havuz <ağ>.20–<ağ>.139, ağ geçidi/DNS = Pi, maske.
+// Havuz .139'a kadar uzandığı için ağ en az /24 olmalı.
+const ipv4Num = (ip: string) => ip.split('.').reduce((a, o) => a * 256 + Number(o), 0);
+const numIpv4 = (n: number) => [24, 16, 8, 0].map(s => Math.floor(n / 2 ** s) % 256).join('.');
+function dhcpPlanFromClient(cidr: string) {
+  const m = /^(\d{1,3}(?:\.\d{1,3}){3})\/(\d{1,2})$/.exec(String(cidr || '').trim());
+  if (!m || m[1].split('.').some(o => Number(o) > 255)) return null;
+  const prefix = Number(m[2]);
+  if (prefix < 16 || prefix > 24) return null;
+  const size = 2 ** (32 - prefix);
+  const net = Math.floor(ipv4Num(m[1]) / size) * size;
+  return {
+    ip: m[1], size, network: `${numIpv4(net)}/${prefix}`,
+    start: numIpv4(net + 20), end: numIpv4(net + 139), netmask: numIpv4(2 ** 32 - size),
+    contains: (ip: string) => /^\d{1,3}(\.\d{1,3}){3}$/.test(ip) && Math.floor(ipv4Num(ip) / size) * size === net,
+  };
+}
+// Bu adres Pi-hole'dan kira almış mı (/etc/pihole/dhcp.leases: "bitiş mac ip ad [client-id]").
+const hasPiLease = (ip: string) => {
+  try {
+    return String(require('fs').readFileSync('/etc/pihole/dhcp.leases', 'utf8')).split('\n')
+      .some((l: string) => { const p = l.trim().split(/\s+/); return /^\d+$/.test(p[0]) && p[2] === ip; });
+  } catch { return false; }
+};
+// Ağ değişikliğinden sonra kurallar güncel adreslere göre yeniden yazılır; betik zaman aşımına uğrayıp arka planda
+// sürüyorsa bittiğinde yazılır.
+const routingAfterNetChange = async (r: KvResult) => {
+  const apply = () => applyAllRoutingRules().catch((e: any) => console.error('Routing yeniden uygulanamadı:', e.message));
+  if (r.code === null && r.exited) { void r.exited.then(apply); return; }
+  await apply();
+};
+
+// Yazma işlemleri yalnız IP adresi / Pi'nin adlarıyla açılmış panelden (DNS rebinding sayfası ağı değiştiremesin).
+const netAdminGuard = async (req: express.Request, res: express.Response, next: express.NextFunction) => {
+  res.set('Cache-Control', 'no-store');
+  if (req.method !== 'GET' && !trustedPanelHost(String(req.headers.host || ''))) {
+    res.status(403).json({ error: await ipPanelHint() });
+    return;
+  }
+  next();
+};
+app.use('/api/netmode', netAdminGuard);
+app.use('/api/dhcp/pi', netAdminGuard);
+
+app.get('/api/netmode/status', async (_req, res) => {
+  if (!isLinux || !require('fs').existsSync(NET_MODE_SCRIPT)) return res.json({ supported: false });
+  const r = await runKvScript(NET_MODE_SCRIPT, ['status'], 30000);
+  if (r.code !== 0) return res.json({ supported: true, error: kvError(r, 'sabit adres durumu okunamadı') });
+  res.json({ ...kvTyped(r.kv, NET_NUMS, NET_BOOLS), supported: true });
+});
+
+// 3 dk'lık deneme: eth0'a tek profilde iki adres (modem tarafı + cihaz tarafı). Başarısız denemede betik eski profili
+// geri getirmiştir; kurallar her iki durumda da güncel adreslere göre yeniden yazılır (idempotent, sıralı kuyruk).
+app.post('/api/netmode/static', async (_req, res) => {
+  if (scriptMissing(NET_MODE_SCRIPT, res)) return;
+  const r = await runKvScript(NET_MODE_SCRIPT, ['static', '--trial', String(NET_TRIAL_S), '--client', NET_CLIENT_CIDR], 120000);
+  await routingAfterNetChange(r);
+  if (r.code !== 0) return res.status(500).json({ error: kvError(r, 'sabit adres verilemedi') });
+  res.json({ success: true, trial_ends: Number(r.kv.trial_ends) || 0 });
+});
+
+app.post('/api/netmode/confirm', async (req, res) => {
+  if (scriptMissing(NET_MODE_SCRIPT, res)) return;
+  if (isLoopbackClient(req.ip)) {
+    return res.status(403).json({ error: 'Onayı başka bir cihazdan (PC/telefon) verin — Pi\'nin kendi ekranı ağ bağlantısını kanıtlamaz' });
+  }
+  const r = await runKvScript(NET_MODE_SCRIPT, ['confirm'], 90000);
+  if (r.code !== 0) return res.status(409).json({ error: kvError(r, 'onaylanamadı') });
+  await routingAfterNetChange(r);
+  res.json({ success: true });
+});
+
+app.post('/api/netmode/rollback', async (_req, res) => {
+  if (scriptMissing(NET_MODE_SCRIPT, res)) return;
+  const r = await runKvScript(NET_MODE_SCRIPT, ['rollback'], 150000);
+  await routingAfterNetChange(r);
+  if (r.code !== 0) return res.status(500).json({ error: kvError(r, 'geri alınamadı') });
+  res.json({ success: true, rolled_back: r.kv.rolled_back === '1' });
+});
+
+// Bilinçli olarak otomatik adrese (modemden DHCP) dönüş; Pi DHCP sunucusu açıkken betik reddeder.
+app.post('/api/netmode/dhcp', async (_req, res) => {
+  if (scriptMissing(NET_MODE_SCRIPT, res)) return;
+  const r = await runKvScript(NET_MODE_SCRIPT, ['dhcp'], 150000);
+  await routingAfterNetChange(r);
+  if (r.code !== 0) return res.status(409).json({ error: kvError(r, 'otomatik adrese dönülemedi') });
+  res.json({ success: true });
+});
+
+// Pi'nin Wi-Fi'sini modem ağından ayırır / geri bağlar (Pi DHCP açıkken geri bağlama reddedilir).
+app.post('/api/netmode/wifi', async (req, res) => {
+  if (scriptMissing(NET_MODE_SCRIPT, res)) return;
+  const enabled = req.body?.enabled;
+  if (typeof enabled !== 'boolean') return res.status(400).json({ error: 'enabled alanı true/false olmalı' });
+  const r = await runKvScript(NET_MODE_SCRIPT, ['wifi', enabled ? 'on' : 'off'], 90000);
+  if (r.code !== 0) return res.status(409).json({ error: kvError(r, enabled ? 'Wi-Fi açılamadı' : 'Wi-Fi kapatılamadı') });
+  res.json({ success: true });
+});
+
+// Ağda başka DHCP sunucusu var mı: keşif paketi gönderilir, kira alınmaz. own = Pi'nin kendi yanıtı.
+app.post('/api/dhcp/pi/probe', async (_req, res) => {
+  if (scriptMissing(PI_DHCP_SCRIPT, res)) return;
+  const r = await runKvScript(PI_DHCP_SCRIPT, ['probe'], 30000);
+  if (r.code !== 0) return res.status(500).json({ error: kvError(r, 'DHCP taraması yapılamadı') });
+  res.json({ servers: splitList(r.kv.servers), own: splitList(r.kv.own) });
+});
+
+// 5 dk'lık deneme (kira 5 dk): havuz ve ağ geçidi sabit adresin cihaz tarafından türetilir.
+app.post('/api/dhcp/pi/enable', async (_req, res) => {
+  if (scriptMissing(PI_DHCP_SCRIPT, res)) return;
+  try {
+    const st = readNetModeState();
+    if (!st || st.stage !== 'static') return res.status(409).json({ error: 'Önce Pi\'ye sabit adres verin ve "kalıcı yap" ile onaylayın' });
+    const plan = dhcpPlanFromClient(st.client);
+    if (!plan) return res.status(409).json({ error: `Cihaz tarafı adresi DHCP havuzu için uygun değil (${st.client || '?'}) — /16–/24 bir ağ gerekli` });
+    const r = await runPiDhcpExclusive([
+      'enable', '--trial', String(DHCP_TRIAL_S), '--start', plan.start, '--end', plan.end, '--router', plan.ip,
+      '--netmask', plan.netmask, '--lease', '5m',
+    ], 240000);
+    // warning=modem_dhcp: deneme başladıktan sonra düştü (ayarlar geri yüklendi) → modemin DHCP'si hemen açılmalı.
+    if (r.code !== 0) return res.status(500).json({ error: kvError(r, 'Pi DHCP açılamadı'), warning: r.kv.warning || undefined });
+    res.json({ success: true, trial_ends: Number(r.kv.trial_ends) || 0 });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// "Kalıcı yap" ancak Pi'den gerçekten kira almış bir cihazdan gelirse kabul edilir — DHCP'nin çalıştığının kanıtı.
+app.post('/api/dhcp/pi/confirm', async (req, res) => {
+  if (scriptMissing(PI_DHCP_SCRIPT, res)) return;
+  try {
+    const st = readNetModeState();
+    const plan = st && st.stage === 'static' ? dhcpPlanFromClient(st.client) : null;
+    if (!plan) return res.status(409).json({ error: 'Pi\'nin sabit adresi yok — önce 1. adımı tamamlayın' });
+    const ip = String(req.ip || '').replace(/^::ffff:/, '');
+    if (!plan.contains(ip) || !hasPiLease(ip)) {
+      return res.status(403).json({ error: `Onayı Pi'den adres almış bir cihazdan verin: telefonun Wi-Fi'ını kapatıp açın, sonra http://${plan.ip} adresini açıp Pi-hole → Ayarlar → DHCP kartından onaylayın` });
+    }
+    const r = await runPiDhcpExclusive(['confirm', '--lease', '12h'], 240000);
+    // Onay başarısız olup deneme hemen geri alındıysa (warning=modem_dhcp) arayüz "modemin DHCP'sini geri açın" der.
+    if (r.code !== 0) {
+      return res.status(409).json({ error: kvError(r, 'onaylanamadı'), warning: r.kv.warning || undefined, rolled_back: r.kv.rolled_back === '1' });
+    }
+    res.json({ success: true });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Geri al: dhcp.active önce kapatılır, diğer ayarlar ilk hâline döner. warning=modem_dhcp → arayüz "modemin DHCP'sini
+// hemen geri açın" der.
+app.post('/api/dhcp/pi/rollback', async (_req, res) => {
+  if (scriptMissing(PI_DHCP_SCRIPT, res)) return;
+  try {
+    const r = await runPiDhcpExclusive(['rollback'], 240000);
+    if (r.code !== 0) return res.status(500).json({ error: kvError(r, 'geri alınamadı') });
+    res.json({ success: true, rolled_back: r.kv.rolled_back === '1', warning: r.kv.warning || undefined });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Modeme geri dönüş: force olmadan betik önce modemin DHCP'sinin yanıt verdiğini doğrular.
+app.post('/api/dhcp/pi/disable', async (req, res) => {
+  if (scriptMissing(PI_DHCP_SCRIPT, res)) return;
+  try {
+    const force = req.body?.force === true;
+    const r = await runPiDhcpExclusive(force ? ['disable', '--force'] : ['disable'], 240000);
+    if (r.code !== 0) return res.status(409).json({ error: kvError(r, 'Pi DHCP kapatılamadı') });
+    res.json({ success: true, warning: r.kv.warning || undefined });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// "Modemin DHCP'sini geri açın" uyarısı (Pi'de kalıcı, modem_warn) — kullanıcı modemi açtığını onaylayınca kalkar.
+app.post('/api/dhcp/pi/ack', async (_req, res) => {
+  if (scriptMissing(PI_DHCP_SCRIPT, res)) return;
+  const r = await runKvScript(PI_DHCP_SCRIPT, ['ack'], 90000);
+  if (r.code !== 0) return res.status(500).json({ error: kvError(r, 'uyarı kaldırılamadı') });
+  res.json({ success: true });
 });
 
 // ─── Backup & Restore ───
@@ -2249,7 +2565,8 @@ app.delete('/api/devices/groups/:id', async (req, res) => {
 async function blockProtectedMacs(): Promise<Set<string>> {
   const set = await protectedMacs();
   const id = await getLanIdentity();
-  const ips = [id?.gateway, id?.ip, ...(id?.secondary || []).map(s => s.ip)].filter(Boolean) as string[];
+  // Sabit adres modunda Pi'nin iki adresi (modem tarafı + cihaz tarafı) de korunur.
+  const ips = [...new Set([id?.gateway, id?.ip, id?.transit?.ip, ...(id?.secondary || []).map(s => s.ip)].filter(Boolean))] as string[];
   if (ips.length) {
     const rows = await dbAll(`SELECT mac_address FROM devices WHERE ip_address IN (${ips.map(() => '?').join(',')})`, ips);
     for (const r of rows as any[]) set.add(String(r.mac_address).toLowerCase());
@@ -3297,10 +3614,11 @@ function runPanelAuth(args: string[], input = ''): Promise<{ code: number | null
 }
 const panelAuthError = (r: { code: number | null; kv: Record<string, string> }, fallback: string) =>
   [r.kv.error || fallback, r.kv.detail].filter(Boolean).join(' — ');
-app.use('/api/panel-auth', (req, res, next) => {
+app.use('/api/panel-auth', async (req, res, next) => {
   res.set('Cache-Control', 'no-store');
   if (req.method !== 'GET' && !trustedPanelHost(String(req.headers.host || ''))) {
-    return res.status(403).json({ error: 'Bu işlem için paneli IP adresiyle açın (ör. http://192.168.1.153)' });
+    res.status(403).json({ error: await ipPanelHint() });
+    return;
   }
   next();
 });
@@ -3378,8 +3696,21 @@ const server = app.listen(Number(port), bindHost, () => {
   // Kayıtlı kasa LED ayarını geri yükle — boot/restart sonrası kullanıcının seçimi
   // korunsun (aksi halde pironman5 RGB'yi kendi varsayılanıyla geri açıyor).
   void restoreLedConfig();
-  // VPS tünelleri + domain/app routing kuralları (kernel durumu reboot'ta sıfırlanır).
-  void restoreTunnelsAndRouting();
+  // Önce yarım kalmış denemeler: Pi deneme sırasında yeniden başladıysa (zamanlayıcı kalıcı değil) sabit adres ve Pi DHCP
+  // denemesi geri alınır — kurallar ondan sonra güncel adreslere göre yazılır. Sonra VPS tünelleri + domain/app routing
+  // kuralları (kernel durumu reboot'ta sıfırlanır).
+  void (async () => {
+    if (isLinux) {
+      const fs = require('fs');
+      for (const [script, tag] of [[NET_MODE_SCRIPT, 'net-mode'], [PI_DHCP_SCRIPT, 'pi-dhcp']]) {
+        if (!fs.existsSync(script)) continue;
+        const r = await runKvScript(script, ['ensure'], 300000);
+        if (r.code !== 0) console.error(`[${tag}]`, kvError(r, 'ensure başarısız'));
+        else if (r.kv.warning) console.error(`[${tag}] uyarı:`, r.kv.warning);
+      }
+    }
+    await restoreTunnelsAndRouting();
+  })();
   // Cihaz engelleri (nft tablosu açılışta yoktur; pi5-gw-restore da yükler — burada DB'deki güncel liste yazılır).
   void reapplyBlockedDevices();
   // Panel koruması: deneme sırasında Pi yeniden başladıysa (zamanlayıcı kalıcı değil) süresi geçen deneme geri alınır.

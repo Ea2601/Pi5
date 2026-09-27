@@ -3,6 +3,7 @@
 # (pi5-gw-restore.service). Pi tüm evin ağ geçidiyken backend ayağa kalkana kadar istemci trafiği düşmesin:
 #   - /etc/nftables.d/pi5-wgnat.conf  : tek bacaklı hairpin NAT + tünel masquerade
 #   - /opt/pi5-gateway/core/pi5-gw.nft: eski 'inet filter' forward (policy drop) içindeki pi5_gw izin zinciri
+#   - /opt/pi5-gateway/core/pi5-in.nft: eski 'inet filter' input (policy drop) içindeki pi5_in izin zinciri (DHCP, ping)
 #   - /etc/nftables.d/device-block.conf: cihaz engelleri
 # Dosyaları backend yazar ve her açılışta yeniden yazar; bu betik yalnız son hallerini erkenden yükler. Hatalar
 # günlüğe yazılır, açılışı durdurmaz.
@@ -32,6 +33,15 @@ if [ -s "$GW" ] && nft list chain inet filter forward >/dev/null 2>&1; then
   out=$(grep -v '^insert rule inet filter forward jump pi5_gw' "$GW" | nft -f - 2>&1) || log "pi5_gw yüklenemedi: $out"
   if nft list chain inet filter pi5_gw >/dev/null 2>&1 && ! nft list chain inet filter forward | grep -q 'jump pi5_gw'; then
     nft insert rule inet filter forward jump pi5_gw 2>/dev/null || log "forward → pi5_gw atlaması eklenemedi"
+  fi
+fi
+# Pi DHCP sunucusu (udp 67) ve ping izni: Pi evin DHCP sunucusuyken backend beklenmeden adres dağıtılabilsin.
+IN=/opt/pi5-gateway/core/pi5-in.nft
+if [ -s "$IN" ] && nft list chain inet filter input >/dev/null 2>&1; then
+  # pi5_gw ile aynı: "insert … jump" satırı ayıklanır, atlama ayrıca (yalnız eksikse) eklenir.
+  out=$(grep -v '^insert rule inet filter input jump pi5_in' "$IN" | nft -f - 2>&1) || log "pi5_in yüklenemedi: $out"
+  if nft list chain inet filter pi5_in >/dev/null 2>&1 && ! nft list chain inet filter input | grep -q 'jump pi5_in'; then
+    nft insert rule inet filter input jump pi5_in 2>/dev/null || log "input → pi5_in atlaması eklenemedi"
   fi
 fi
 exit 0

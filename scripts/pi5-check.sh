@@ -17,7 +17,7 @@ fail2ban-client version 2>/dev/null; node -v 2>/dev/null; head -4 /opt/pi5-gatew
 
 h "Topoloji: arayüzler, varsayılan rota, IPv6, yönlendirme"
 ip -br addr; ip -4 route show default; ip -6 route show default; ip -6 addr show scope global | grep inet6
-echo "Pi LAN IP: $LANIP"; GW=$(ip -4 route show default | awk '{print $3; exit}'); echo "Varsayılan ağ geçidi: $GW"
+echo "Pi LAN IP (internet çıkış kaynağı; sabit IP'de modem tarafı): $LANIP"; GW=$(ip -4 route show default | awk '{print $3; exit}'); echo "Varsayılan ağ geçidi: $GW"
 sysctl net.ipv4.ip_forward net.ipv4.conf.all.send_redirects net.ipv6.conf.all.forwarding
 grep '^Ip:' /proc/net/snmp   # ForwDatagrams > 0 ise Pi üzerinden yönlendirilen istemci var
 nmcli -t -f NAME,DEVICE,TYPE con show --active 2>/dev/null
@@ -84,6 +84,11 @@ h "Panel erişimi (nginx Basic Auth)"
 bash /opt/pi5-gateway/scripts/panel-auth.sh status 2>/dev/null | grep -E '^(state|password_set|trial_ends)='
 grep -rnE 'auth_basic|satisfy|include' /etc/nginx/sites-enabled/ /etc/nginx/snippets/ /etc/nginx/conf.d/ 2>/dev/null
 curl -s -o /dev/null -w "LAN IP'den /api/status: HTTP %{http_code} (200 = korumasız, 401 = korumalı)\n" --max-time 3 "http://$LANIP/api/status"
+
+h "Sabit IP (net-mode.sh) ve Pi DHCP (pi-dhcp.sh) — salt okunur durum"
+printf 'pi5-net-guard: %s / %s\n' "$(systemctl show -p ActiveState --value pi5-net-guard 2>/dev/null)" "$(systemctl show -p UnitFileState --value pi5-net-guard 2>/dev/null)"
+bash /opt/pi5-gateway/scripts/net-mode.sh status 2>/dev/null | grep -E '^(stage|trial_ends|iface|transit|client|gw|dns|nm|active_conn|method|addrs|carrier|profile_ok|planned_iface|planned_transit|planned_gw|wifi|wifi_off|wlan_addrs|guard_result|guard_at|guard_detail|pi_dhcp)=' | sed 's/^/net-mode: /'
+bash /opt/pi5-gateway/scripts/pi-dhcp.sh status 2>/dev/null | grep -E '^(stage|trial_ends|active|start|end|router|netmask|lease_time|ipv6|hosts|listening_mode|port67|leases|input_ok|ftl)=' | sed 's/^/pi-dhcp: /'
 
 h "Kasa / kiosk / donanım"
 for c in chromium chromium-browser; do printf '%-16s %s\n' "$c" "$(command -v "$c" || echo YOK)"; done

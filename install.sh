@@ -51,7 +51,7 @@ apt install -y -qq \
   sqlite3 libsqlite3-dev \
   nginx certbot python3-certbot-nginx apache2-utils \
   qrencode speedtest-cli vnstat \
-  ipset iptables wireguard-tools
+  ipset iptables wireguard-tools iputils-arping
 
 # Node.js 22 LTS
 if ! command -v node &>/dev/null || [ "$(node -v | cut -d. -f1 | tr -d v)" -lt 20 ]; then
@@ -546,6 +546,26 @@ WantedBy=multi-user.target
 GWEOF
 systemctl daemon-reload 2>/dev/null || true
 systemctl enable pi5-gw-restore.service >/dev/null 2>&1 || true
+# Sabit IP koruması: açılışta ve her NetworkManager (yeniden) başlatmasında kalıcı sabit profil (pi5-eth0) denetlenir /
+# onarılır (sabit adres panelden verilir; yoksa birim hiçbir şey yapmaz). Hata kurulumu durdurmaz.
+cat > /etc/systemd/system/pi5-net-guard.service << 'NGEOF' || warn "pi5-net-guard.service yazılamadı"
+[Unit]
+Description=Klyrix Gate sabit IP koruması (eth0 profili)
+After=NetworkManager.service
+PartOf=NetworkManager.service
+Before=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+TimeoutStartSec=150
+ExecStart=/bin/bash /opt/pi5-gateway/scripts/net-mode.sh guard
+
+[Install]
+WantedBy=multi-user.target NetworkManager.service
+NGEOF
+systemctl daemon-reload 2>/dev/null || true
+systemctl enable pi5-net-guard.service >/dev/null 2>&1 || warn "pi5-net-guard.service etkinleştirilemedi"
 log "IP forwarding aktif"
 
 # ─── 10. Günlük Bakım Cron ───

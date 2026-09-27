@@ -1,13 +1,12 @@
 {
-  "version": "2.21.0",
-  "build": 72,
+  "version": "2.22.0",
+  "build": 73,
   "date": "2026-09-27",
   "changelog": [
-    "Ağ: panel Pi'nin ev ağı adresini artık doğru buluyor (kablolu bağlantı; eskiden Wi-Fi adresini seçiyordu) — DNS yönlendirme (redirect) kuralları doğru adrese gidiyor",
-    "Ağ: Pi cihazlara 'modeme doğrudan git' (ICMP redirect) göndermiyor — cihaz engeli ve tünelin atlanması önlendi; ayar kalıcı",
-    "Ağ: Pi açılırken ve nftables yeniden başlatılınca/yüklenince (ör. gece paket güncellemesi) ağ geçidi kuralları (NAT, forward izni, cihaz engeli, VPS yönlendirme zinciri) panelden bağımsız hemen geri yükleniyor; panel ağ hazır olduktan sonra başlıyor",
-    "Cihaz engelleme: Pi yeniden başlayınca kaybolmuyor, panel istenen durumu uyguluyor, modem ve Pi'nin kendisi engellenemiyor (eski sürümden kalan modem engeli de uygulanmıyor), uygulanamayan engel 'engelli' görünmüyor ve hata bildiriliyor",
-    "DHCP: Pi-hole ayarlarındaki yalnız veritabanına yazan DHCP alanları kaldırıldı; yerine canlı durum kartı (IP'leri kim dağıtıyor, Pi'nin adresi, aynı ağdaki ikinci bağlantı uyarısı); kira listesi Pi-hole'un dosyasından doğru okunuyor",
-    "Ağ haritası Pi'nin gerçek adresini gösteriyor; güvenlik duvarı 'Deploy Et' Debian 13'te çalışmıyordu (dosya sonu hatası) — düzeltildi, DHCP ve saat (NTP) portları eklendi, tek bacakta tüm LAN kartlarını kapsıyor"
+    "DHCP sihirbazı (Pi-hole → Ayarlar → DHCP kartı): Pi'yi adım adım evin DHCP sunucusu yapma — sabit adres, istemci testi, Pi'nin Wi-Fi'sini modemden ayırma, modemin DHCP'sini kapatıp kontrol etme, Pi DHCP'sini açma; riskli her adım deneme olarak açılır ve 'Kalıcı yap'a basılmazsa Pi panelden bağımsız, kendiliğinden eski hâline döner",
+    "Sabit adres: Pi'nin kablolu kartına iki adres verilir — modem tarafı mevcut adres (panel aynı adreste kalır) ve cihazlar için 192.168.0.1; ayar NetworkManager güncellemelerinde ve yeniden başlatmada korunur, profil yüklenemezse Pi adresini acil modda tutar ve panel uyarır",
+    "Pi DHCP: Pi-hole 192.168.0.20–139 arası adres dağıtır (ağ geçidi ve DNS Pi); ayarlar Pi-hole durdurulmuşken yazılıp geri okunur, sorun olursa yedekten geri yüklenir; 'Kalıcı yap' yalnız Pi'den adres almış bir cihazdan kabul edilir, geri alınınca kart 'modemin DHCP'sini hemen geri açın' uyarısı gösterir",
+    "Koruma: Pi-hole evin DHCP sunucusuyken kapatılamaz ve yeniden kurulamaz; Pi DHCP'si dinlemiyorsa, modemin DHCP'si kendiliğinden yeniden açılırsa ya da sabit adres profili yüklenemezse uyarı düşer",
+    "Ağ geçidi kuralları (NAT, forward izni) cihaz ağı ile modem ağını ayrı ayrı kapsar; Pi'nin kendi güvenlik duvarı açıksa DHCP portu otomatik açılır; DHCP kartı hata olunca gizlenmiyor, iki adresi ayrı gösteriyor"
   ]
 }
