@@ -6,6 +6,7 @@ import {
 import { useApi, postApi } from '../hooks/useApi';
 import { Panel, Badge } from './ui';
 import type { Device } from '../types';
+import { toast } from '../toast';
 
 type DeviceTab = 'groups' | 'blocking' | 'history' | 'unknown';
 
@@ -251,7 +252,10 @@ function BlockingView() {
     try {
       await postApi(`/devices/${mac}/block`, { blocked: !currentlyBlocked });
       await refetch();
-    } catch { /* */ }
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Engel değiştirilemedi');
+      await refetch();
+    }
     setBlocking(null);
   };
 
@@ -264,6 +268,9 @@ function BlockingView() {
           <h3><Shield size={18} style={{ marginRight: 8 }} />Cihaz Engelleme</h3>
           <Badge variant="info">{data.devices.length} cihaz</Badge>
         </div>
+        <p className="subtitle">
+          Engel, internete Pi üzerinden çıkan cihazlarda çalışır (Pi ağ geçidi/DHCP olduğunda tüm cihazlar). Modem ve Pi'nin kendisi engellenemez.
+        </p>
 
         <div className="list-items">
           {data.devices.map(device => {

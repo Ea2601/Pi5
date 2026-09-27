@@ -3,7 +3,7 @@ import util from 'util';
 import fs from 'fs';
 import {
   isLinux, systemctlAction, detectInterfaces, MANAGED_SERVICE_UNITS, isManagedService, TOGGLEABLE_SERVICES,
-  listWireguardTunnels, runResult, FTL_SYSTEMCTL_TIMEOUT,
+  listWireguardTunnels, runResult, FTL_SYSTEMCTL_TIMEOUT, getLanIdentity,
 } from './system';
 import { shq, isValidDomain } from './util';
 
@@ -62,8 +62,20 @@ export const systemServices = {
         // (böylece hem eth0=WAN hem wlan0=WAN topolojileri doğru çalışır).
         const detected = await detectInterfaces();
         const exists = (n?: string) => !!n && fs.existsSync(`/sys/class/net/${n}`);
-        const wan = exists(ifaces?.wan) ? ifaces!.wan! : detected.wan;
-        const lan = exists(ifaces?.lan) ? ifaces!.lan! : detected.lan;
+        // Tek bacaklı ağ geçidi (lan = wan: istemciler ve modem aynı arayüzde) canlıdan tespit edildiyse DB'deki eski
+        // iki kartlı tohumlar (lan=eth0, wan=wlan0) yok sayılır — aksi halde NAT yanlış arayüze yazılır.
+        const oneArm = detected.lan === detected.wan;
+        const wan = !oneArm && exists(ifaces?.wan) ? ifaces!.wan! : detected.wan;
+        const lan = !oneArm && exists(ifaces?.lan) ? ifaces!.lan! : detected.lan;
+        // Tek bacakta kurallar yalnız o anki varsayılan rotanın kartına yazılmaz: aynı LAN'daki tüm kartlar (ikinci bacak,
+        // DB tohumları) dahil edilir — kablo o an takılı değilken Uygula'ya basılırsa kablo geri gelince istemciler
+        // düşmesin (/etc/nftables.conf her açılışta yüklenir).
+        const lanIfs = oneArm
+            ? [...new Set([detected.wan, ...((await getLanIdentity())?.secondary || []).map(s => s.iface),
+                ...[ifaces?.lan, ifaces?.wan].filter((n): n is string => exists(n))])]
+            : [lan];
+        const wanIfs = oneArm ? lanIfs : [wan];
+        const nftIfs = (xs: string[]) => (xs.length === 1 ? `"${xs[0]}"` : `{ ${xs.map(x => `"${x}"`).join(', ')} }`);
 
         // Özel kullanıcı kuralları (index.ts'te doğrulanmış nft satırları olarak gelir).
         const customLines = (customInputRules && customInputRules.length)
@@ -87,6 +99,8 @@ table inet pi5_filter {
         tcp dport 53 accept
         udp dport 53 accept
         tcp dport 80 accept
+        udp dport 67 accept
+        udp dport 123 accept
         udp dport 51820 accept${customLines}
     }
     chain forward {
@@ -98,8 +112,8 @@ table inet pi5_filter {
         oifname "wg0" accept
         iifname "wg_vps*" accept
         oifname "wg_vps*" accept
-        iifname "${lan}" accept
-        iifname "${wan}" oifname "${lan}" ct state related,established accept
+        iifname ${nftIfs(lanIfs)} accept
+        iifname ${nftIfs(wanIfs)} oifname ${nftIfs(lanIfs)} ct state related,established accept
     }
 }
 table ip pi5_nat {}
@@ -108,7 +122,7 @@ table ip pi5_nat {
     chain postrouting {
         type nat hook postrouting priority 100;
         # WAN çıkışı + VPS tünel çıkışı (Pi5-tarafı SNAT: LAN kaynaklı paketler tünelden doğru dönebilsin)
-        oifname "${wan}" masquerade
+        oifname ${nftIfs(wanIfs)} masquerade
         oifname "wg_vps*" masquerade
     }
 }
@@ -116,10 +130,11 @@ table ip pi5_nat {
 # Kalıcılık: domain-routing/device-block/zapret gibi ek tablolar boot'ta yüklensin
 include "/etc/nftables.d/*.conf"`;
         fs.mkdirSync('/etc/nftables.d', { recursive: true });
-        fs.writeFileSync('/etc/nftables.conf', nftablesConfig);
+        // Sondaki satır sonu şart: nft 1.1 (trixie) son satırdaki include'u "unexpected end of file" ile reddediyordu.
+        fs.writeFileSync('/etc/nftables.conf', nftablesConfig + '\n');
         await execAsync('nft -f /etc/nftables.conf');
         await execAsync('systemctl enable nftables 2>/dev/null || true');
-        return { stdout: `nftables yapılandırıldı (WAN=${wan}, LAN=${lan}).`, stderr: '' };
+        return { stdout: `nftables yapılandırıldı (WAN=${wanIfs.join('+')}, LAN=${lanIfs.join('+')}${oneArm ? ', tek bacak' : ''}).`, stderr: '' };
     },
 
     // Kalıcı aç/kapa (enable --now / disable --now): eskiden yalnız start/stop — kapatılan servis açılışta geri geliyordu.

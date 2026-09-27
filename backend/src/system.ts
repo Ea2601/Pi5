@@ -782,9 +782,11 @@ export async function applyBlockedDevices(macs: string[]): Promise<void> {
     '  }',
     '}',
   ];
-  try { fs.mkdirSync('/etc/nftables.d', { recursive: true }); } catch { /* */ }
-  try { fs.writeFileSync('/etc/nftables.d/device-block.conf', lines.join('\n') + '\n'); } catch { /* */ }
-  await run('nft -f /etc/nftables.d/device-block.conf 2>/dev/null || true');
+  fs.mkdirSync('/etc/nftables.d', { recursive: true });
+  fs.writeFileSync('/etc/nftables.d/device-block.conf', lines.join('\n') + '\n');
+  // Hata artık yutulmaz: engel uygulanamadıysa panel "engellendi" demesin. Dosya açılışta pi5-gw-restore ile de yüklenir.
+  const r = await runResult('nft -f /etc/nftables.d/device-block.conf', 10000);
+  if (r.code !== 0) throw new Error(`cihaz engeli uygulanamadı: ${r.stderr.trim() || `nft çıkış kodu ${r.code}`}`);
 }
 
 // ─── Service Control ───
@@ -809,9 +811,62 @@ export async function systemctlAction(action: SystemctlAction, service: string, 
   return r.stdout.trim() || `${argv} ${service} tamamlandi`;
 }
 
-// ─── Interface / IP detection (supports both eth0=WAN and wlan0=WAN topologies) ───
+// ─── Interface / IP detection ───
+// Pi'nin LAN kimliği: en düşük metrikli varsayılan rotanın arayüzü ve adresi. Pi tek bacaklı ağ geçididir (modem aynı
+// LAN'da); aynı alt ağda ikinci bir bacak (ör. eth0 .153 + wlan0 .144) varsa `secondary`'de döner. Eskiden LAN,
+// /sys/class/net sırasındaki "diğer" arayüz sayılıyordu → çift bacakta wlan0'ın .144'ü redirect hedefi oluyordu.
+export interface LanIdentity {
+  iface: string; ip: string; prefix: number; gateway: string; network: string;
+  secondary: { iface: string; ip: string }[];
+}
+const ipv4ToNum = (ip: string) => ip.split('.').reduce((a, o) => a * 256 + Number(o), 0);
+const sameSubnet = (a: string, b: string, prefix: number) => {
+  const div = 2 ** (32 - prefix);
+  return Math.floor(ipv4ToNum(a) / div) === Math.floor(ipv4ToNum(b) / div);
+};
+export async function getLanIdentity(): Promise<LanIdentity | null> {
+  if (!isLinux) return null;
+  let routes: any[] = [];
+  let addrs: any[] = [];
+  try { routes = JSON.parse((await run('ip -j -4 route show default 2>/dev/null')) || '[]'); } catch { routes = []; }
+  try { addrs = JSON.parse((await run('ip -j -4 addr show 2>/dev/null')) || '[]'); } catch { addrs = []; }
+  const route = routes
+    .filter(r => r && r.dev && !/^(wg|lo|docker|veth)/.test(r.dev))
+    .sort((a, b) => (a.metric || 0) - (b.metric || 0))[0];
+  if (!route) return null;
+  const v4 = (ifname: string) => (addrs.find(a => a.ifname === ifname)?.addr_info || [])
+    .filter((x: any) => x.family === 'inet' && x.local) as { local: string; prefixlen: number }[];
+  const own = v4(route.dev);
+  const main = own.find(x => x.local === route.prefsrc) || own[0];
+  if (!main) return null;
+  const secondary: { iface: string; ip: string }[] = [];
+  for (const a of addrs) {
+    if (!a.ifname || a.ifname === route.dev || /^(wg|lo|docker|veth)/.test(a.ifname)) continue;
+    for (const x of v4(a.ifname)) if (sameSubnet(x.local, main.local, main.prefixlen)) secondary.push({ iface: a.ifname, ip: x.local });
+  }
+  const div = 2 ** (32 - main.prefixlen);
+  const netNum = Math.floor(ipv4ToNum(main.local) / div) * div;
+  const network = [24, 16, 8, 0].map(s => Math.floor(netNum / 2 ** s) % 256).join('.') + `/${main.prefixlen}`;
+  return { iface: route.dev, ip: main.local, prefix: main.prefixlen, gateway: route.gateway || '', network, secondary };
+}
+
+// wan = varsayılan rotanın arayüzü. Tek bacaklı ağ geçidinde (LAN'a açılan başka bir alt ağ yok) lan = wan: istemciler
+// aynı arayüzden gelip aynı arayüzden modeme çıkar. Farklı alt ağlı ikinci bir kart (ör. Pi'nin Wi-Fi yayını) varsa
+// o kart lan olur (eski iki kartlı davranış).
 export async function detectInterfaces(): Promise<{ wan: string; lan: string }> {
-  const wan = (await run(`ip -o -4 route show to default | awk '{print $5}' | head -1`)).trim() || 'eth0';
+  const id = await getLanIdentity();
+  const wan = id?.iface || (await run(`ip -o -4 route show to default | awk '{print $5}' | head -1`)).trim() || 'eth0';
+  let other = '';
+  try {
+    const addrs: any[] = JSON.parse((await run('ip -j -4 addr show 2>/dev/null')) || '[]');
+    for (const a of addrs) {
+      if (!a.ifname || a.ifname === wan || /^(wg|lo|docker|veth|br-)/.test(a.ifname)) continue;
+      const ips = (a.addr_info || []).filter((x: any) => x.family === 'inet' && x.local).map((x: any) => x.local);
+      if (ips.length && (!id || ips.some((ip: string) => !sameSubnet(ip, id.ip, id.prefix)))) { other = a.ifname; break; }
+    }
+  } catch { /* ip -j yok */ }
+  if (other) return { wan, lan: other };
+  if (id) return { wan, lan: wan };
   const links = (await run('ls /sys/class/net 2>/dev/null')).split(/\s+/).filter(Boolean);
   const lan = links.find(l =>
     l !== 'lo' && l !== wan && !l.startsWith('wg') && !l.startsWith('docker') && !l.startsWith('veth') && !l.startsWith('br-')
@@ -819,13 +874,34 @@ export async function detectInterfaces(): Promise<{ wan: string; lan: string }> 
   return { wan, lan };
 }
 
-// Pi5'in LAN tarafındaki IP'si (redirect hedefi için). Bulunamazsa boş döner.
+// Pi5'in LAN tarafındaki IP'si (redirect hedefi, DHCP router/DNS için). Bulunamazsa boş döner.
 export async function getPi5LanIp(): Promise<string> {
-  const { lan } = await detectInterfaces();
-  const ip = (await run(`ip -o -4 addr show ${lan} 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | head -1`)).trim();
-  if (/^\d+\.\d+\.\d+\.\d+$/.test(ip)) return ip;
+  const id = await getLanIdentity();
+  if (id?.ip) return id.ip;
   const first = (await run(`hostname -I 2>/dev/null | awk '{print $1}'`)).trim();
   return /^\d+\.\d+\.\d+\.\d+$/.test(first) ? first : '';
+}
+
+// Engellenmemesi gereken MAC'ler: Pi'nin kendi kartları ve varsayılan ağ geçidi (modem) — modem engellenirse tek bacaklı
+// ağ geçidinde dönüş trafiği düşer, Pi'nin kendisi engellenirse kendi trafiği.
+export async function protectedMacs(): Promise<Set<string>> {
+  const out = new Set<string>();
+  try {
+    for (const n of fs.readdirSync('/sys/class/net')) {
+      try { const m = fs.readFileSync(`/sys/class/net/${n}/address`, 'utf8').trim().toLowerCase(); if (m && m !== '00:00:00:00:00:00') out.add(m); } catch { /* */ }
+    }
+  } catch { /* */ }
+  const gw = (await getLanIdentity())?.gateway;
+  if (gw && /^\d+\.\d+\.\d+\.\d+$/.test(gw)) {
+    let m = (await run(`ip neigh show ${gw} 2>/dev/null`)).match(/lladdr ([0-9a-f:]{17})/i);
+    if (!m) {
+      // Komşu önbelleğinde yok / FAILED (bağlantı yeni kalktı): bir ping ile çözdür, sonra yeniden bak.
+      await run(`ping -c1 -W1 ${gw} >/dev/null 2>&1`, 3000);
+      m = (await run(`ip neigh show ${gw} 2>/dev/null`)).match(/lladdr ([0-9a-f:]{17})/i);
+    }
+    if (m) out.add(m[1].toLowerCase());
+  }
+  return out;
 }
 
 // ─── Domain-Based Routing ───

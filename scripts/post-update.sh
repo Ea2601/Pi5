@@ -187,6 +187,48 @@ except: print('0')
   fi
 fi
 
+# 7b. Ağ geçidi kalıcılığı (Faz 2 Adım 0) — idempotent, her güncellemede yeniden yazılır:
+#   - ICMP redirect kapalı: tek bacaklı ağ geçidinde Pi istemcilere "modeme doğrudan git" demesin (engel/tünel atlanırdı).
+#     Kernel her arayüzde all VEYA <iface> 1 ise gönderir → all/default/eth0/wlan0 hepsi 0.
+#   - Backend ağ hazır olunca başlasın (After/Wants network-online: routing ve LAN kimliği doğru adresle kurulsun).
+#   - pi5-gw-restore.service: açılışta NAT / forward izni / cihaz engeli panelden bağımsız yüklenir.
+mkdir -p /etc/sysctl.d
+cat > /etc/sysctl.d/98-pi5-onearm.conf << 'SYSEOF'
+# Klyrix Gate — tek bacaklı ağ geçidi: ICMP redirect gönderme (post-update.sh yazar)
+net.ipv4.conf.all.send_redirects = 0
+net.ipv4.conf.default.send_redirects = 0
+net.ipv4.conf.eth0.send_redirects = 0
+net.ipv4.conf.wlan0.send_redirects = 0
+SYSEOF
+sysctl -q -p /etc/sysctl.d/98-pi5-onearm.conf >/dev/null 2>&1 || true
+mkdir -p /etc/systemd/system/pi5-backend.service.d
+cat > /etc/systemd/system/pi5-backend.service.d/10-online.conf << 'DROPEOF'
+[Unit]
+After=network-online.target
+Wants=network-online.target
+DROPEOF
+cat > /etc/systemd/system/pi5-gw-restore.service << 'GWEOF'
+[Unit]
+Description=Klyrix Gate - ağ geçidi kurallarını açılışta yükle (NAT, forward izni, cihaz engeli)
+After=nftables.service network-online.target
+Wants=network-online.target
+# nftables yeniden başlatılır/yüklenirse (ör. apt yükseltmesi) kurallar silinir → bu birim de yeniden çalışır
+PartOf=nftables.service
+ReloadPropagatedFrom=nftables.service
+
+[Service]
+Type=oneshot
+ExecStart=/bin/bash /opt/pi5-gateway/scripts/pi5-gw-restore.sh
+ExecReload=/bin/bash /opt/pi5-gateway/scripts/pi5-gw-restore.sh
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+GWEOF
+systemctl daemon-reload 2>/dev/null || true
+systemctl enable pi5-gw-restore.service >/dev/null 2>&1 || true
+echo "  [ağ] ICMP redirect kapalı, açılış kuralları (pi5-gw-restore) etkin" >> "$LOG"
+
 # 8. Panel erişim koruması: durum dosyasını kurar, açık korumayı onarır, süresi geçen denemeyi geri alır. Korumayı
 #    ASLA kendiliğinden açmaz (gece 03:30 güncellemesi kimse başında değilken kilitlemesin); şifre yazdırmaz.
 bash "$BASE/scripts/panel-auth.sh" ensure >> "$LOG" 2>&1 || echo "  [auth] UYARI: panel koruması denetlenemedi" >> "$LOG"

@@ -14,6 +14,7 @@ import {
   getFail2banStatus, getDnsQueries, getCurrentExternalIp,
   runSpeedTest, executeCommand, applyDomainRouting, applyBlockedDevices,
   sampleMetrics, detectInterfaces, recoverInterruptedFtlRestart, VALID_DNSMASQ_DOMAIN, getRoutingApplyStatus,
+  getLanIdentity, protectedMacs,
 } from './system';
 import { getRoutingSuggestions, MAX_HOURS as SUGGEST_MAX_HOURS } from './domainSuggest';
 import {
@@ -498,6 +499,8 @@ app.post('/api/services/:name/restart', async (req, res) => {
     if (name === 'nftables' || name === 'wireguard') {
       await applyAllRoutingRules().catch((e: any) => console.error('Routing yeniden uygulanamadı:', e.message));
     }
+    // nftables restart `flush ruleset` ile cihaz engeli tablosunu da siler → yeniden uygula.
+    if (name === 'nftables') await reapplyBlockedDevices();
     const st = await waitServiceSettled(name, 'running', actionError ? 3000 : name === 'pihole' ? FTL_SETTLE_TIMEOUT : 15000);
     await dbRun('UPDATE service_status SET enabled = ?, status = ?, last_check = CURRENT_TIMESTAMP WHERE name = ?',
       [st.status === 'running' ? 1 : 0, st.status, name]);
@@ -1894,26 +1897,25 @@ app.post('/api/network/portscan', async (req, res) => {
 });
 
 // ─── DHCP Leases ───
+// Canlı kiralar Pi-hole FTL'in dosyasından (/etc/pihole/dhcp.leases); satır: "bitiş mac ip ad [client-id]". "duid"
+// satırı (DHCPv6) atlanır. DB'den yalnız statik rezervasyonlar gelir (is_static=0 hayalet satırlar dönmez).
 app.get('/api/dhcp/leases', async (_req, res) => {
   try {
-    const staticLeases = await dbAll('SELECT * FROM dhcp_leases ORDER BY ip_address');
+    const staticLeases = await dbAll('SELECT * FROM dhcp_leases WHERE is_static = 1 ORDER BY ip_address');
     const dynamic: any[] = [];
-    // Linux'ta dnsmasq kira dosyasından canlı (dinamik) kiraları oku ve birleştir.
     if (isLinux) {
       try {
         const fs = require('fs');
-        const paths = ['/var/lib/misc/dnsmasq.leases', '/var/lib/dnsmasq/dnsmasq.leases', '/etc/pihole/dhcp.leases'];
-        const p = paths.find((x: string) => fs.existsSync(x));
-        if (p) {
-          const staticMacs = new Set(
-            (staticLeases as any[]).filter(l => l.is_static).map(l => String(l.mac_address).toLowerCase())
-          );
+        const p = '/etc/pihole/dhcp.leases';
+        if (fs.existsSync(p)) {
+          const staticMacs = new Set((staticLeases as any[]).map(l => String(l.mac_address).toLowerCase()));
           const txt: string = fs.readFileSync(p, 'utf8');
           for (const line of txt.split('\n')) {
             const parts = line.trim().split(/\s+/);
-            if (parts.length < 3) continue;
+            if (parts[0] === 'duid') continue;
+            if (parts.length < 4 || !/^\d+$/.test(parts[0])) continue;
             const [exp, mac, ip, host] = parts;
-            if (!mac || staticMacs.has(mac.toLowerCase())) continue; // statik olanları tekrar ekleme
+            if (!/^[0-9a-f]{2}(:[0-9a-f]{2}){5}$/i.test(mac) || staticMacs.has(mac.toLowerCase())) continue; // statikler tekrar eklenmez
             dynamic.push({
               mac_address: mac,
               ip_address: ip,
@@ -1926,6 +1928,30 @@ app.get('/api/dhcp/leases', async (_req, res) => {
       } catch { /* lease dosyası okunamadı — yalnız statikleri döndür */ }
     }
     res.json({ leases: [...staticLeases, ...dynamic] });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Gerçek DHCP / ağ geçidi durumu (panelin DHCP kartı): Pi-hole DHCP'si açık mı, Pi'nin LAN kimliği, kira sayısı.
+// Salt okunur. (Panelin eski DHCP ayar alanları yalnız veritabanına yazıyordu; bunlar arayüzden kaldırıldı.)
+app.get('/api/dhcp/status', async (_req, res) => {
+  try {
+    if (!isLinux) return res.json({ supported: false });
+    const fs = require('fs');
+    const key = async (k: string) => {
+      try { return (await execFileP('pihole-FTL', ['--config', k], { timeout: 5000 })).stdout.trim(); } catch { return ''; }
+    };
+    const [active, start, end, router, leaseTime] = await Promise.all(
+      ['dhcp.active', 'dhcp.start', 'dhcp.end', 'dhcp.router', 'dhcp.leaseTime'].map(key));
+    let leases = 0;
+    try {
+      leases = String(fs.readFileSync('/etc/pihole/dhcp.leases', 'utf8')).split('\n').filter((l: string) => /^\d+\s/.test(l)).length;
+    } catch { /* dosya yok */ }
+    res.json({
+      supported: true, pi_dhcp_active: active === 'true', start, end, router, lease_time: leaseTime, leases,
+      lan: await getLanIdentity(),
+    });
   } catch (e: any) {
     res.status(500).json({ error: e.message });
   }
@@ -2218,17 +2244,55 @@ app.delete('/api/devices/groups/:id', async (req, res) => {
 });
 
 // ─── Device Blocking ───
+// Engellenemeyecek MAC'ler: Pi'nin kartları + modem. Modemin MAC'i komşu önbelleğinden gelmezse (bağlantı yeni kalktı)
+// cihaz tablosunda IP'si ağ geçidi ya da Pi olan satırlar da korunur — koruma "bilinmiyor" durumunda açık kalmasın.
+async function blockProtectedMacs(): Promise<Set<string>> {
+  const set = await protectedMacs();
+  const id = await getLanIdentity();
+  const ips = [id?.gateway, id?.ip, ...(id?.secondary || []).map(s => s.ip)].filter(Boolean) as string[];
+  if (ips.length) {
+    const rows = await dbAll(`SELECT mac_address FROM devices WHERE ip_address IN (${ips.map(() => '?').join(',')})`, ips);
+    for (const r of rows as any[]) set.add(String(r.mac_address).toLowerCase());
+  }
+  return set;
+}
+// Uygulanacak engel listesi: DB'deki engelliler, korunan MAC'ler çıkarılarak (eski sürümde modem engellenmiş olsa bile
+// açılışta tüm evin internetini kesmesin). override: bu isteğin yeni durumu (DB'ye ancak uygulama başarılıysa yazılır).
+async function blockList(override?: { mac: string; blocked: boolean }): Promise<string[]> {
+  const rows = await dbAll('SELECT mac_address FROM devices WHERE blocked = 1');
+  const macs = new Set((rows as any[]).map(d => String(d.mac_address).toLowerCase()));
+  if (override) { if (override.blocked) macs.add(override.mac.toLowerCase()); else macs.delete(override.mac.toLowerCase()); }
+  const prot = await blockProtectedMacs();
+  const skipped = [...macs].filter(m => prot.has(m));
+  if (skipped.length) console.warn(`[devices] korunan MAC engellenmedi (modem/Pi): ${skipped.join(', ')}`);
+  return [...macs].filter(m => !prot.has(m));
+}
+// DB'deki engelli cihazları nft'ye yeniden yükler (açılış, nftables restart). Hata loglanır, açılışı durdurmaz.
+async function reapplyBlockedDevices(): Promise<void> {
+  if (!isLinux) return;
+  try {
+    await applyBlockedDevices(await blockList());
+  } catch (e: any) {
+    console.error('[devices] engeller yeniden uygulanamadı:', e?.message || e);
+  }
+}
+
+// İstemci istenen durumu ({ blocked: true|false }) gönderir; gönderilmezse eski davranış (tersine çevir). Engel yalnız
+// internete Pi üzerinden çıkan cihazlarda etkilidir (nft forward). Modem ve Pi'nin kendi kartları engellenemez.
 app.post('/api/devices/:mac/block', async (req, res) => {
   try {
     const device = await dbGet('SELECT * FROM devices WHERE mac_address = ?', [req.params.mac]);
     if (!device) {
       return res.status(404).json({ error: 'Cihaz bulunamadı' });
     }
-    const newStatus = device.blocked ? 0 : 1;
+    const want = typeof req.body?.blocked === 'boolean' ? req.body.blocked : !device.blocked;
+    if (want && (await blockProtectedMacs()).has(String(device.mac_address).toLowerCase())) {
+      return res.status(400).json({ error: 'Modem ya da Pi\'nin kendisi engellenemez (tüm ağın interneti kesilir)' });
+    }
+    const newStatus = want ? 1 : 0;
+    // Önce nft'ye uygula, başarılıysa DB'ye yaz: uygulanamayan engel panelde "engelli" görünmesin.
+    await applyBlockedDevices(await blockList({ mac: String(device.mac_address), blocked: want }));
     await dbRun('UPDATE devices SET blocked = ? WHERE mac_address = ?', [newStatus, req.params.mac]);
-    // Apply real nftables enforcement for all currently-blocked devices
-    const blocked = await dbAll('SELECT mac_address FROM devices WHERE blocked = 1');
-    await applyBlockedDevices((blocked as any[]).map(d => d.mac_address));
     res.json({ success: true, mac: req.params.mac, blocked: newStatus });
   } catch (e: any) {
     res.status(500).json({ error: e.message });
@@ -3316,6 +3380,8 @@ const server = app.listen(Number(port), bindHost, () => {
   void restoreLedConfig();
   // VPS tünelleri + domain/app routing kuralları (kernel durumu reboot'ta sıfırlanır).
   void restoreTunnelsAndRouting();
+  // Cihaz engelleri (nft tablosu açılışta yoktur; pi5-gw-restore da yükler — burada DB'deki güncel liste yazılır).
+  void reapplyBlockedDevices();
   // Panel koruması: deneme sırasında Pi yeniden başladıysa (zamanlayıcı kalıcı değil) süresi geçen deneme geri alınır.
   if (isLinux && require('fs').existsSync(PANEL_AUTH_SCRIPT)) {
     void runPanelAuth(['ensure']).then(r => { if (r.code !== 0 || r.kv.warning) console.error('[panel-auth]', r.kv.error || r.kv.warning); });

@@ -58,6 +58,8 @@ function getRadialPositions(count: number, cx: number, cy: number, rx: number, r
 export function NetworkTopology() {
   const { data, loading, refetch } = useApi<{ devices: Device[] }>('/devices', { devices: [] }, 15000);
   const { data: vpsData } = useApi<{ servers: VpsServer[] }>('/vps/list', { servers: [] });
+  // Pi'nin gerçek ev ağı adresi (eskiden sabit 192.168.1.1 yazıyordu — o modemin adresi)
+  const { data: dhcpData } = useApi<{ lan?: { ip: string } | null }>('/dhcp/status', {});
   const [meshSize, setMeshSize] = useState({ w: 800, h: 500 });
   const meshRef = useRef<HTMLDivElement>(null);
   const devices = data.devices;
@@ -175,7 +177,7 @@ export function NetworkTopology() {
             <div className="mesh-gateway-glow" />
             <Router size={26} />
             <span className="mesh-node-name">Pi 5 Gateway</span>
-            <span className="mesh-node-sub">192.168.1.1</span>
+            <span className="mesh-node-sub">{dhcpData.lan?.ip || '—'}</span>
           </div>
 
           {/* Cihaz kartları — radial pozisyonda */}

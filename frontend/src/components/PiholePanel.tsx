@@ -3,6 +3,7 @@ import { useApi, postApi, putApi, deleteApi } from '../hooks/useApi';
 import { useState } from 'react';
 import { Panel, StatCard, Badge } from './ui';
 import { ServiceSettings } from './ui/ServiceSettings';
+import { DhcpModeCard } from './DhcpModeCard';
 import type { PiholeStats, ServiceStatus, PiholeListItem } from '../types';
 import { toast } from '../toast';
 
@@ -131,8 +132,9 @@ export function PiholePanel() {
       )}
 
       {activeTab === 'settings' && (
-        <div style={{ marginTop: 14 }}>
-          <ServiceSettings service="pihole" categoryLabels={categoryLabels} categoryIcons={categoryIcons} />
+        <div style={{ marginTop: 14, display: 'flex', flexDirection: 'column', gap: 14 }}>
+          <DhcpModeCard />
+          <ServiceSettings service="pihole" categoryLabels={categoryLabels} categoryIcons={categoryIcons} excludeCategories={['dhcp']} />
         </div>
       )}
 

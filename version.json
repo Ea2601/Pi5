@@ -1,12 +1,13 @@
 {
-  "version": "2.20.0",
-  "build": 71,
+  "version": "2.21.0",
+  "build": 72,
   "date": "2026-09-27",
   "changelog": [
-    "Güvenlik: panel şifre koruması — üstteki banttan kendi şifreni belirleyip korumayı 5 dakikalık deneme olarak açarsın; şifreyle girip 'Kalıcı yap' demezsen koruma kendiliğinden kapanır (kilitlenme olmaz). Pi'nin kendisi (kiosk, OLED) muaf; güncellemeler korumayı asla kendiliğinden açmaz; şifre düz metin saklanmaz",
-    "Güvenlik: başka bir sitenin tarayıcın üzerinden panele komut göndermesi (yeniden başlat, güncelle vb.) engellendi",
-    "DDNS: token ve parolalar panel yanıtlarında, sistem günlüğünde ve hata mesajlarında artık görünmüyor; düzenlerken boş bırakılan kayıtlı sır korunuyor, token alanı gizli",
-    "Sistem: hız sınırlayıcı cihazları ayrı sayıyor (günlükteki X-Forwarded-For uyarıları bitti); bozuk ya da çok büyük istekler 400/413 dönüyor ve içerikleri günlüğe yazılmıyor",
-    "Kurtarma: panel şifresi unutulursa Pi'de  sudo bash /opt/pi5-gateway/scripts/panel-auth.sh off  (korumayı kapatır) ya da  ... reset  (yeni şifre)"
+    "Ağ: panel Pi'nin ev ağı adresini artık doğru buluyor (kablolu bağlantı; eskiden Wi-Fi adresini seçiyordu) — DNS yönlendirme (redirect) kuralları doğru adrese gidiyor",
+    "Ağ: Pi cihazlara 'modeme doğrudan git' (ICMP redirect) göndermiyor — cihaz engeli ve tünelin atlanması önlendi; ayar kalıcı",
+    "Ağ: Pi açılırken ve nftables yeniden başlatılınca/yüklenince (ör. gece paket güncellemesi) ağ geçidi kuralları (NAT, forward izni, cihaz engeli, VPS yönlendirme zinciri) panelden bağımsız hemen geri yükleniyor; panel ağ hazır olduktan sonra başlıyor",
+    "Cihaz engelleme: Pi yeniden başlayınca kaybolmuyor, panel istenen durumu uyguluyor, modem ve Pi'nin kendisi engellenemiyor (eski sürümden kalan modem engeli de uygulanmıyor), uygulanamayan engel 'engelli' görünmüyor ve hata bildiriliyor",
+    "DHCP: Pi-hole ayarlarındaki yalnız veritabanına yazan DHCP alanları kaldırıldı; yerine canlı durum kartı (IP'leri kim dağıtıyor, Pi'nin adresi, aynı ağdaki ikinci bağlantı uyarısı); kira listesi Pi-hole'un dosyasından doğru okunuyor",
+    "Ağ haritası Pi'nin gerçek adresini gösteriyor; güvenlik duvarı 'Deploy Et' Debian 13'te çalışmıyordu (dosya sonu hatası) — düzeltildi, DHCP ve saat (NTP) portları eklendi, tek bacakta tüm LAN kartlarını kapsıyor"
   ]
 }

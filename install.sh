@@ -406,7 +406,8 @@ step "8/10 — Sistem Servisleri Kuruluyor"
 cat > /etc/systemd/system/pi5-backend.service << 'SVCEOF'
 [Unit]
 Description=Pi5 Gateway Backend API
-After=network.target
+After=network.target network-online.target
+Wants=network-online.target
 
 [Service]
 Type=simple
@@ -516,6 +517,35 @@ net.ipv4.ip_forward=1
 net.ipv6.conf.all.forwarding=1
 SYSEOF
 sysctl -p /etc/sysctl.d/99-pi5-gateway.conf 2>/dev/null
+# Tek bacaklı ağ geçidi: ICMP redirect gönderme (Pi istemcilere "modeme doğrudan git" demesin)
+cat > /etc/sysctl.d/98-pi5-onearm.conf << 'SYSEOF'
+net.ipv4.conf.all.send_redirects = 0
+net.ipv4.conf.default.send_redirects = 0
+net.ipv4.conf.eth0.send_redirects = 0
+net.ipv4.conf.wlan0.send_redirects = 0
+SYSEOF
+sysctl -q -p /etc/sysctl.d/98-pi5-onearm.conf >/dev/null 2>&1 || true
+# Açılışta ağ geçidi kuralları (NAT, forward izni, cihaz engeli) panelden bağımsız yüklensin
+cat > /etc/systemd/system/pi5-gw-restore.service << 'GWEOF'
+[Unit]
+Description=Klyrix Gate - ağ geçidi kurallarını açılışta yükle (NAT, forward izni, cihaz engeli)
+After=nftables.service network-online.target
+Wants=network-online.target
+# nftables yeniden başlatılır/yüklenirse (ör. apt yükseltmesi) kurallar silinir → bu birim de yeniden çalışır
+PartOf=nftables.service
+ReloadPropagatedFrom=nftables.service
+
+[Service]
+Type=oneshot
+ExecStart=/bin/bash /opt/pi5-gateway/scripts/pi5-gw-restore.sh
+ExecReload=/bin/bash /opt/pi5-gateway/scripts/pi5-gw-restore.sh
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+GWEOF
+systemctl daemon-reload 2>/dev/null || true
+systemctl enable pi5-gw-restore.service >/dev/null 2>&1 || true
 log "IP forwarding aktif"
 
 # ─── 10. Günlük Bakım Cron ───

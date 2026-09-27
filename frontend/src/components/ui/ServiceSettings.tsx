@@ -8,9 +8,11 @@ interface ServiceSettingsProps {
   service: string;
   categoryLabels?: Record<string, string>;
   categoryIcons?: Record<string, React.ReactNode>;
+  // Gösterilmeyecek kategoriler (ör. Pi-hole 'dhcp': alanları sisteme uygulanmıyor, yerini gerçek durum kartı aldı)
+  excludeCategories?: string[];
 }
 
-export function ServiceSettings({ service, categoryLabels = {}, categoryIcons = {} }: ServiceSettingsProps) {
+export function ServiceSettings({ service, categoryLabels = {}, categoryIcons = {}, excludeCategories = [] }: ServiceSettingsProps) {
   const { data, refetch } = useApi<{ service: string; config: Record<string, ConfigItem[]> }>(
     `/services/${service}/config`, { service, config: {} }
   );
@@ -115,7 +117,7 @@ export function ServiceSettings({ service, categoryLabels = {}, categoryIcons = 
         </div>
       </div>
 
-      {Object.entries(data.config).map(([category, items]) => (
+      {Object.entries(data.config).filter(([category]) => !excludeCategories.includes(category)).map(([category, items]) => (
         <div key={category} className="config-category">
           <button className="config-category-header" onClick={() => toggleCollapse(category)}>
             <span className="config-category-icon">
