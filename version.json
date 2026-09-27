@@ -1,12 +1,10 @@
 {
-  "version": "2.23.0",
-  "build": 74,
+  "version": "2.23.1",
+  "build": 75,
   "date": "2026-09-28",
   "changelog": [
-    "Kurulum Wi-Fi'ı (Pi-hole → Ayarlar → DHCP kartı, 3. adım): Pi'nin dahili Wi-Fi'si ev ağından ayrılıp kendi ağını yayınlar (varsayılan ad 'Klyrix-Kurulum', şifreyi siz belirlersiniz, 2,4 GHz); telefon bu ağa bağlanınca 'ağa giriş yap' sayfası kendiliğinden açılır ve 'Paneli aç' ile panele götürür — modemin DHCP'si kapalıyken de çalışır",
-    "Bu ağ yalnız yönetim içindir: internet yok, ev ağına geçiş yok; Pi 192.168.50.1, telefonlar 192.168.50.x adresini Pi'den alır. Giriş sayfası şifresiz açılır, panelin kendisi yine şifre ister",
-    "Açma 5 dakikalık denemedir: 'Kalıcı yap' yalnız bu ağa bağlı telefondan kabul edilir; onaylanmazsa Pi, Wi-Fi'sini kendiliğinden eski hâline döndürür. Kalıcı yayın yeniden başlatmada ve NetworkManager yeniden başlayınca geri kurulur; yayın düşerse panel uyarır",
-    "Pi DHCP'si artık Pi'nin Wi-Fi'si kapalıyken ya da kurulum Wi-Fi'ı kalıcıyken açılabilir; DHCP kartı kurulum Wi-Fi'ının durumunu (açık / deneme / kapalı) gösterir",
-    "Güvenlik: kurulum Wi-Fi'ı yalnız WPA2 yayınlar (bazı telefonların bağlanamadığı WPA2/WPA3 geçiş kipi kapalı); Pi-hole'un DNS dinleme modu bu ağa uygun değilse yayın açılmaz ve nedeni yazılır; Pi-hole'un kira dosyası önceden hazırlanır (Pi DHCP'si kapalıyken DNS'in düşmesi önlendi); panel arka ucu, stdin'i okumadan biten bir betik yüzünden artık çökmez"
+    "Panel internetsiz de tam görünür: yazı tipleri (Inter, JetBrains Mono) artık panelle birlikte Pi'den sunuluyor. Eskiden Google Fonts'tan çekildiği için internet yokken (ör. kurulum Wi-Fi'ında) tarayıcı o isteği bekleyip stilleri uygulamıyor, sayfa yalnız yazı olarak görünüyordu",
+    "Uygulama logoları (Routing): önce uygulamanın baş harfi görünür, logo yalnız internetten gerçekten yüklenirse onun yerine geçer — internetsiz ağda kırık resim yok; istekle panelin adresi gönderilmez",
+    "Kurulum Wi-Fi'ı (v2.23.0): Pi'nin dahili Wi-Fi'si 'Klyrix-Kurulum' ağını yayınlar; telefon bağlanınca giriş sayfası kendiliğinden açılır — modemin DHCP'si kapalıyken de panele ulaşma yolu"
   ]
 }

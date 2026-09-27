@@ -1,5 +1,4 @@
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
-
+/* Yazı tipleri (Inter, JetBrains Mono) main.tsx'te @fontsource paketlerinden yüklenir — dış kaynak yok. */
 :root {
   --bg-color: #0a0e14;
   --bg-surface: #111820;

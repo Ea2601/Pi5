@@ -1,5 +1,14 @@
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
+// Yazı tipleri panelle birlikte paketlenir (Pi'den sunulur): Google Fonts'a bağımlıyken internetsiz ağda (ör. kurulum
+// Wi-Fi'ı) tarayıcı o isteği bekleyip panelin stillerini uygulamıyordu — sayfa yalnız yazı olarak görünüyordu.
+// Ağırlık dosyaları tüm alt kümeleri unicode-range ile tanımlar; tarayıcı yalnız gerekeni (latin, latin-ext: Türkçe) indirir.
+import '@fontsource/inter/400.css'
+import '@fontsource/inter/500.css'
+import '@fontsource/inter/600.css'
+import '@fontsource/inter/700.css'
+import '@fontsource/jetbrains-mono/400.css'
+import '@fontsource/jetbrains-mono/500.css'
 import './index.css'
 import App from './App.tsx'
 import { getStoredTheme, applyThemeClass } from './theme'
