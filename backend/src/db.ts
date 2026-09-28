@@ -391,6 +391,11 @@ export const initDb = () => {
     defaultSettings.forEach(([k, v]) => {
       db.run(`INSERT OR IGNORE INTO app_settings (key, value) VALUES (?, ?)`, [k, v]);
     });
+    // Marka rengi gri (v2.24.11): o güne kadar kayıtlı 'blue' yalnız varsayılandı (Ayarlar kaydedilince yazılıyordu) →
+    // BİR KEZ 'gray'e çevrilir. İşaret satırı sayesinde tekrar çalışmaz: sonradan bilerek mavi seçen etkilenmez.
+    db.run(`UPDATE app_settings SET value = 'gray' WHERE key = 'accent_color' AND value = 'blue'
+      AND NOT EXISTS (SELECT 1 FROM app_settings WHERE key = 'accent_gray_migrated')`);
+    db.run(`INSERT OR IGNORE INTO app_settings (key, value) VALUES ('accent_gray_migrated', '1')`);
 
     db.run(`CREATE TABLE IF NOT EXISTS device_services (
       id INTEGER PRIMARY KEY AUTOINCREMENT,

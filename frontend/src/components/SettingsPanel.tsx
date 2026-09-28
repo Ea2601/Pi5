@@ -20,7 +20,8 @@ interface AppSettings {
 }
 
 const defaultSettings: AppSettings = {
-  accentColor: 'blue',
+  accentColor: 'gray', // marka rengi
+
   language: 'tr',
   notificationSound: true,
   desktopNotifications: false,
@@ -32,7 +33,7 @@ const defaultSettings: AppSettings = {
 // API key-value nesnesini AppSettings'e dönüştür
 function parseApiSettings(raw: Record<string, string>): Partial<AppSettings> {
   return {
-    accentColor: raw.accent_color || raw.accentColor || 'blue',
+    accentColor: raw.accent_color || raw.accentColor || 'gray',
     language: raw.language || 'tr',
     notificationSound: raw.notification_sound === 'true',
     autoRefresh: raw.auto_refresh === 'true',
@@ -90,10 +91,10 @@ export function SettingsPanel() {
     setCollapsed(prev => ({ ...prev, [cat]: !prev[cat] }));
   };
 
-  // Accent rengini DOM'a uygula (tema Topbar'dan yönetilir)
+  // Accent rengini DOM'a uygula (tema Topbar'dan yönetilir). Gri = marka rengi = sınıfsız varsayılan.
   const applyAccentColor = (color: string) => {
-    document.documentElement.classList.remove('accent-green', 'accent-purple', 'accent-orange');
-    if (color !== 'blue') {
+    document.documentElement.classList.remove('accent-blue', 'accent-green', 'accent-purple', 'accent-orange');
+    if (color !== 'gray') {
       document.documentElement.classList.add(`accent-${color}`);
     }
   };
@@ -113,6 +114,7 @@ export function SettingsPanel() {
   };
 
   const accentColors = [
+    { value: 'gray', label: 'Gri (marka rengi)', color: '#64748b' },
     { value: 'blue', label: 'Mavi', color: '#3b82f6' },
     { value: 'green', label: 'Yeşil', color: '#10b981' },
     { value: 'purple', label: 'Mor', color: '#8b5cf6' },
@@ -136,7 +138,7 @@ export function SettingsPanel() {
                 <button key={c.value}
                   style={{
                     width: 32, height: 32, borderRadius: 8, background: c.color,
-                    border: settings.accentColor === c.value ? '2px solid #fff' : '2px solid transparent',
+                    border: settings.accentColor === c.value ? '2px solid var(--text-primary)' : '2px solid transparent',
                     cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center'
                   }}
                   onClick={() => { setSettings(prev => ({ ...prev, accentColor: c.value })); applyAccentColor(c.value); }}

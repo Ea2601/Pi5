@@ -29,7 +29,7 @@ export class ErrorBoundary extends Component<Props, State> {
             onClick={() => this.setState({ hasError: false, error: '' })}
             style={{
               marginTop: 16, padding: '8px 20px', borderRadius: 8,
-              background: '#3b82f6', color: '#fff', border: 'none', cursor: 'pointer',
+              background: 'var(--accent-color)', color: 'var(--accent-contrast)', border: 'none', cursor: 'pointer',
               fontSize: 13, fontWeight: 500
             }}
           >

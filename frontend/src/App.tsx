@@ -121,8 +121,9 @@ function App() {
         // Tema: localStorage birincil; localStorage boşsa backend değerini uygula + tohumla
         seedThemeFromBackend(s.theme);
         // Accent color
-        const accent = s.accent_color || 'blue';
-        if (accent !== 'blue') {
+        // Gri = marka rengi = sınıfsız varsayılan (eski kayıtlı 'blue' backend'de bir kez 'gray'e çevrildi)
+        const accent = s.accent_color || 'gray';
+        if (accent !== 'gray') {
           document.documentElement.classList.add(`accent-${accent}`);
         }
       })

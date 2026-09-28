@@ -106,7 +106,7 @@ export function BackupPanel() {
             border: '1px solid rgba(255,255,255,0.06)'
           }}>
             <h4 style={{ marginBottom: 12, display: 'flex', alignItems: 'center', gap: 8 }}>
-              <Download size={18} style={{ color: '#3b82f6' }} /> Yedek Al
+              <Download size={18} style={{ color: 'var(--accent-color)' }} /> Yedek Al
             </h4>
             <p className="text-muted" style={{ fontSize: 13, marginBottom: 14 }}>
               Tüm yapılandırmaları JSON dosyası olarak indir
@@ -154,7 +154,7 @@ export function BackupPanel() {
             <div key={section.label} className="list-item" style={{ gap: 12 }}>
               <div style={{
                 width: 34, height: 34, borderRadius: 8, background: 'rgba(59,130,246,0.1)',
-                display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#3b82f6', flexShrink: 0
+                display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--accent-color)', flexShrink: 0
               }}>
                 {section.icon}
               </div>
@@ -182,7 +182,7 @@ export function BackupPanel() {
           {history.map(item => (
             <div key={item.id} className="list-item">
               <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                <Archive size={14} style={{ color: '#3b82f6' }} />
+                <Archive size={14} style={{ color: 'var(--accent-color)' }} />
                 <span style={{ fontSize: 13 }}>{item.date}</span>
               </div>
               <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>

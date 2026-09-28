@@ -371,7 +371,7 @@ export function CaseControlPanel() {
                       title="Tespit edilen arayüzü kullan"
                       style={{
                         background: 'none', border: 'none', padding: 0, marginLeft: 4, cursor: 'pointer',
-                        fontSize: 10, color: 'var(--accent, #3b82f6)', textDecoration: 'underline',
+                        fontSize: 10, color: 'var(--accent-color)', textDecoration: 'underline',
                       }}>
                       tespit: {hints.wan}
                     </button>
