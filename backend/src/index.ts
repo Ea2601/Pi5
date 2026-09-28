@@ -1852,7 +1852,7 @@ if (isLinux) {
         if (fs.existsSync(NET_MODE_SCRIPT) && (ns?.stage === 'static' || ns?.apStage === 'on')) {
           const n = await runKvScript(NET_MODE_SCRIPT, ['status'], 30000);
           if (n.code === 0 && ns?.stage === 'static' && n.kv.guard_result === 'emergency') {
-            await addAlert('health', 'critical', 'Sabit IP profili yüklenemedi — Pi adresini acil modda tutuyor (menü → Pi-hole DNS → DHCP Ayarları)', 'netmode');
+            await addAlert('health', 'critical', 'Sabit IP profili yüklenemedi — Pi adresini acil modda tutuyor (menü → DHCP Ayarları)', 'netmode');
           }
           if (n.code === 0 && n.kv.ap_stage === 'on' && n.kv.ap_active !== '1') {
             await addAlert('health', 'warning', 'Kurulum Wi-Fi yayını kapalı — Pi bir sonraki açılışta ya da NetworkManager yeniden başlayınca yeniden açmayı dener', 'netmode-ap');
@@ -2372,9 +2372,9 @@ app.post('/api/dhcp/pi/confirm', async (req, res) => {
     if (!plan.contains(ip) || !hasPiLease(ip)) {
       // Kurulum Wi-Fi'ındaki telefon da Pi'den adres alır ama ev ağında değildir: evdeki DHCP'nin çalıştığını kanıtlamaz.
       if (!plan.contains(ip) && inIpv4Net(ip, AP_NET)) {
-        return res.status(403).json({ error: `Bu onay ev ağından verilmeli: telefonu kurulum Wi-Fi'ından çıkarıp ev Wi-Fi'ına bağlayın, sonra http://${plan.ip}/#dhcp adresini (menü → Pi-hole DNS → DHCP Ayarları) açıp onaylayın` });
+        return res.status(403).json({ error: `Bu onay ev ağından verilmeli: telefonu kurulum Wi-Fi'ından çıkarıp ev Wi-Fi'ına bağlayın, sonra http://${plan.ip}/#dhcp adresini (menü → DHCP Ayarları) açıp onaylayın` });
       }
-      return res.status(403).json({ error: `Onayı Pi'den adres almış bir cihazdan verin: telefonun Wi-Fi'ını kapatıp açın, sonra http://${plan.ip}/#dhcp adresini (menü → Pi-hole DNS → DHCP Ayarları) açıp onaylayın` });
+      return res.status(403).json({ error: `Onayı Pi'den adres almış bir cihazdan verin: telefonun Wi-Fi'ını kapatıp açın, sonra http://${plan.ip}/#dhcp adresini (menü → DHCP Ayarları) açıp onaylayın` });
     }
     const r = await runPiDhcpExclusive(['confirm', '--lease', '12h'], 240000);
     // Onay başarısız olup deneme hemen geri alındıysa (warning=modem_dhcp) arayüz "modemin DHCP'sini geri açın" der.

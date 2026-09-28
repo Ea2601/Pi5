@@ -172,7 +172,7 @@ body.nav-open { overflow: hidden; }
   font-weight: 600;
 }
 
-/* Alt sayfa (ör. Pi-hole DNS → DHCP Ayarları): girintili, üst öğenin ikonuna bağlanan ince çizgiyle */
+/* Alt sayfa (nav.ts'te sub: true): girintili, üst öğenin ikonuna bağlanan ince çizgiyle — şu an alt sayfa yok */
 .nav-item-sub {
   padding-left: calc(var(--nav-pad-x) + 24px);
   font-size: 13px;
@@ -669,40 +669,6 @@ body.nav-open { overflow: hidden; }
   .dash-hero-title p { font-size: 13px; }
   .dash-meta-row { max-width: 640px; }
 }
-
-/* Taşınan ayar bilgisi (ör. Pi-hole → Ayarlar: "DHCP ayrı sayfada") ve üst sayfaya dönüş bağlantısı */
-.moved-note {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 12px 14px;
-  border-radius: var(--radius);
-  border: 1px dashed var(--accent-color);
-  background: var(--accent-glow);
-  color: var(--text-primary);
-  font-size: 13px;
-  line-height: 1.5;
-  text-decoration: none;
-}
-.moved-note > svg { flex-shrink: 0; color: var(--accent-color); }
-.moved-note > span { flex: 1; min-width: 0; }
-.moved-note:hover { border-style: solid; }
-
-.crumb-link {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  min-height: 34px;
-  padding: 6px 10px;
-  border-radius: var(--radius-sm);
-  border: 1px solid var(--panel-border);
-  color: var(--text-secondary);
-  font-size: 12px;
-  font-weight: 500;
-  text-decoration: none;
-  transition: all 0.15s ease;
-}
-.crumb-link:hover { color: var(--text-primary); border-color: var(--panel-border-hover); }
 
 .status-connected { color: var(--success-color) !important; }
 
@@ -1665,7 +1631,7 @@ button.user-profile { cursor: pointer; font-family: var(--font-family); transiti
 }
 .routing-apply button:hover { color: var(--text-primary); }
 
-/* DHCP sihirbazı (menü → Pi-hole DNS → DHCP Ayarları) */
+/* DHCP sihirbazı (menü → DHCP Ayarları) */
 .dhcp-wizard { display: flex; flex-direction: column; gap: 8px; margin-top: 10px; }
 .dhcp-wizard-title { font-size: 12px; font-weight: 600; color: var(--text-secondary); margin: 2px 2px 0; }
 .dhcp-note { margin: 0 2px; }

@@ -1,8 +1,9 @@
 {
-  "version": "2.24.11",
-  "build": 88,
+  "version": "2.24.12",
+  "build": 89,
   "date": "2026-09-28",
   "changelog": [
+    "DHCP Ayarları menüde ayrı bir öğe: artık Pi-hole DNS'in alt öğesi gibi girintili ve ona bağlı gösterilmez; DHCP sayfasındaki 'Pi-hole DNS' dönüş bağlantısı ve Pi-hole → Ayarlar'daki 'DHCP ayarları taşındı' notu kaldırıldı. Yol tarifleri (sihirbaz, uyarılar, dokümantasyon) 'menü → DHCP Ayarları' olarak güncellendi",
     "Tema marka rengi griyle: panelin vurgu rengi (seçili menü, düğmeler, bağlantılar, seçili sekmeler, odak halkası, arka plan ışığı) artık mavi değil marka grisi. Koyu temada açık gri, açık temada koyu gri — okunurluk ölçüldü: yazı ve düğmeler en az 7:1. Durum renkleri (yeşil 'korumalı', kırmızı uyarı, sarı) ve grafik renkleri anlam taşıdığı için değişmedi. Ayarlar → Görünüm → Vurgu Rengi'nde gri ilk sırada ve varsayılan; mavi, yeşil, mor, turuncu seçenek olarak duruyor (kayıtlı 'mavi' yalnız eski varsayılan olduğu için bir kez griye çevrildi)",
     "Bant Genişliği sayfası cihaz başına gerçek ölçüm gösterir: eskiden Pi'nin toplam trafiği cihaz sayısına eşit bölünüyordu, bu yüzden bütün cihazlar aynı değeri gösteriyordu (üstelik toplam iki kez sayılıyordu). Artık Pi'den geçen trafik her cihaz için ayrı sayılır (indirme / yükleme hızı ve Pi açılışından beri toplam veri); en çok kullanan cihaz üstte. Sayım trafiği etkilemez; aynı ağdaki iki cihaz arasındaki trafik Pi'den geçmediği için sayılmaz",
     "Telefonda menü açılınca klavye/ekran okuyucu odağı artık menünün içindeki kapat düğmesine gelir (önceki sürümlerde odak arkadaki sayfada kalıyordu); Esc ile kapatınca odak menü düğmesine döner",

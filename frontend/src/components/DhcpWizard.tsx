@@ -179,7 +179,7 @@ export function DhcpWizard({ dhcp, net, netErr, reload }: Props) {
   // Pi'nin dağıttığı kiralar sürüyorsa cihaz tarafı adresi kaldırılamaz (cihazlar onu ağ geçidi/DNS bilir).
   const leaseUntil = net.lease_until && net.lease_until > (net.now || 0) ? net.lease_until : 0;
   const leaseUntilText = leaseUntil ? new Date(leaseUntil * 1000).toLocaleString('tr-TR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }) : '';
-  const settingsPath = 'menü → Pi-hole DNS → DHCP Ayarları';
+  const settingsPath = 'menü → DHCP Ayarları';
 
   // Ortak eylem sarmalayıcısı: meşgul durumu, hata tostu, sonunda durumu yenile.
   const act = async (key: string, fn: () => Promise<void>) => {

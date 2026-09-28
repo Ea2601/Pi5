@@ -26,7 +26,7 @@ export const NAV_TABS: NavTab[] = [
   { id: 'speedtest', label: 'Hız Testi', icon: Gauge },
   { id: 'ddns', label: 'DDNS', icon: Globe },
   { id: 'pihole', label: 'Pi-hole DNS', icon: ShieldBan, group: 'Güvenlik' },
-  { id: 'dhcp', label: 'DHCP Ayarları', icon: Radio, sub: true },
+  { id: 'dhcp', label: 'DHCP Ayarları', icon: Radio },
   { id: 'zapret', label: 'Zapret DPI', icon: Zap },
   { id: 'firewall', label: 'Firewall', icon: Flame },
   { id: 'unbound', label: 'Unbound DNS', icon: Globe },
