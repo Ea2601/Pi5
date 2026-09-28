@@ -117,7 +117,8 @@ fi
 #     yönlendirmesi: dnsmasq ipset'i doldurur, iptables mangle `-m set` ile işaretler). Yarıda kalmış dpkg'yi onarır,
 #     eksikleri tek işlemde kurar. iputils-arping: sabit adres (net-mode.sh) cihaz tarafı adresinin ağda boş olduğunu
 #     arping -D ile doğrular (ping, modemin rotası olmayan 192.168.0.x'te dolu adresi göremez).
-if ! pkg_ensure wireguard-tools ipset iptables iputils-arping; then
+#     iw: Cihaz Rolleri sayfası Wi-Fi radyolarının yeteneklerini (AP / mesh / eşzamanlı çalışma) bununla okur.
+if ! pkg_ensure wireguard-tools ipset iptables iputils-arping iw; then
   echo "  [pkg] UYARI: sistem paketleri kurulamadı (ayrıntı yukarıda)" >> "$LOG"
 fi
 

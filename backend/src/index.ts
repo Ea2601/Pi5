@@ -25,6 +25,7 @@ import { sampleBandwidth, neighborMacs, buildLive } from './bandwidth';
 import { buildTopology, readNeighbors, readHandshakes, readDefaultRoute, readIfaces, readLocalIps, noteActivity, inCidr } from './topology';
 import { startLinkProbe, probeSamples, probeBaseline, noteTopologyView, type ProbeTarget } from './linkProbe';
 import { startTrafficRecorder, usageSummary, appActivity, appDefsFrom } from './trafficHistory';
+import { readHardware, evaluateRoles } from './hardware';
 import { authGate, registerAuthRoutes } from './auth';
 import { validateSchedule, validateCommand, syncCronJobs, readJobStatuses, readSystemCron, syncCronOnStartup } from './cronSync';
 import { validateListValue, normalizeListValue, syncPiholeLists, lastListSync, externalPiholeEntries } from './piholeLists';
@@ -1771,6 +1772,20 @@ app.get('/api/traffic/analytics', async (req, res) => {
       deviceInfo: (devices as any[]).map(d => ({ mac: String(d.mac_address).toLowerCase(), ip: d.ip_address, hostname: d.hostname, type: d.device_type })),
       vps,
     });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Cihaz Rolleri (R0, salt okunur): takılı Ethernet / Wi-Fi donanımı ve her ağ rolünün uygunluğu (hardware.ts).
+app.get('/api/system/hardware', async (_req, res) => {
+  try {
+    if (!isLinux) return res.json({ supported: false });
+    let piDhcp = false;
+    try { piDhcp = (await execFileP('pihole-FTL', ['--config', 'dhcp.active'], { timeout: 5000 })).stdout.trim() === 'true'; } catch { /* FTL yok */ }
+    const ns = readNetModeState();
+    const hw = await readHardware({ netStage: ns?.stage || 'none', apStage: ns?.apStage || 'none', apIface: ns?.apIface || null, piDhcp });
+    res.json({ supported: true, ...hw, roles: evaluateRoles(hw) });
   } catch (e: any) {
     res.status(500).json({ error: e.message });
   }

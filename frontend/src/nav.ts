@@ -2,7 +2,7 @@ import {
   LayoutDashboard, Network, Route, Terminal, Server,
   ShieldBan, Zap, Flame, Globe, ShieldAlert, BookOpen,
   Activity, Search, Gauge, Bell, Wrench, Users, Sliders,
-  Database, Settings, MonitorSmartphone, TerminalSquare, Lightbulb, Monitor, Radio,
+  Database, Settings, MonitorSmartphone, TerminalSquare, Lightbulb, Monitor, Radio, Layers,
   type LucideIcon,
 } from 'lucide-react';
 import type { TabId } from './types';
@@ -37,6 +37,7 @@ export const NAV_TABS: NavTab[] = [
   { id: 'nettools', label: 'Ağ Araçları', icon: Wrench },
   { id: 'alerts', label: 'Bildirimler', icon: Bell },
   { id: 'vps', label: 'VPS WireGuard', icon: Server, group: 'Altyapı' },
+  { id: 'roles', label: 'Cihaz Rolleri', icon: Layers },
   { id: 'maintenance', label: 'Sistem & Log', icon: Terminal },
   { id: 'terminal', label: 'SSH Terminal', icon: TerminalSquare },
   { id: 'casecontrol', label: 'Kasa LED', icon: Lightbulb },

@@ -31,6 +31,7 @@ import { KioskSettingsPanel } from './components/KioskSettingsPanel';
 import { PanelAuthBanner } from './components/PanelAuthBanner';
 import { LoginScreen } from './components/LoginScreen';
 import { NetworkBackdrop } from './components/NetworkBackdrop';
+import { RolesPanel } from './components/RolesPanel';
 import { LiveVersionNotice } from './components/LiveVersionNotice';
 import { AUTH_REQUIRED_EVENT, fetchAuthStatus, logout, type AuthStatus } from './auth';
 import type { TabId } from './types';
@@ -143,6 +144,7 @@ function App() {
       case 'unbound': return <UnboundPanel />;
       case 'fail2ban': return <Fail2banPanel />;
       case 'vps': return <VpsSetup />;
+      case 'roles': return <RolesPanel />;
       case 'maintenance': return <SystemLogs />;
       case 'docs': return <DocsPanel />;
       case 'bandwidth': return <BandwidthPanel />;
