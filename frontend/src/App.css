@@ -2436,6 +2436,8 @@ button.user-profile { cursor: pointer; font-family: var(--font-family); transiti
 
 /* Sistem görevleri (panelin değiştiremediği: gece güncellemesi, Pi-hole) — salt okunur */
 .cron-system { margin-top: 18px; padding-top: 12px; border-top: 1px solid var(--panel-border); }
+/* Pi-hole listeleri: Pi-hole'a panel dışından eklenmiş kayıtlar (salt okunur) */
+.pihole-external { margin-top: 14px; padding-top: 10px; border-top: 1px solid var(--panel-border); display: flex; flex-direction: column; gap: 6px; }
 .cron-row-system { opacity: 0.8; }
 
 .cron-add-form {

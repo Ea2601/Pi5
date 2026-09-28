@@ -24,6 +24,7 @@ import { startUpdate, getUpdateStatus } from './update';
 import { sampleBandwidth, neighborMacs, buildLive } from './bandwidth';
 import { authGate, registerAuthRoutes } from './auth';
 import { validateSchedule, validateCommand, syncCronJobs, readJobStatuses, readSystemCron, syncCronOnStartup } from './cronSync';
+import { validateListValue, normalizeListValue, syncPiholeLists, lastListSync, externalPiholeEntries } from './piholeLists';
 import {
   shq, sedEscape, isValidMac, isValidDomain, isValidTimezone,
   isValidHexColor, normalizeAnimation, sanitizeName,
@@ -441,10 +442,14 @@ app.put('/api/services/:name/config', async (req, res) => {
 });
 
 // ─── Pi-hole Lists ───
-app.get('/api/pihole/lists', async (_req, res) => {
+// Kayıtlar Pi-hole'a gerçekten uygulanır (piholeLists.ts): her değişiklikten sonra eşitlenir; yanıttaki `sync` sonucu
+// (ok / errors / gravity) arayüzde gösterilir. Kayıt veritabanında kalır — Pi-hole'a ulaşılamazsa sonraki eşitlemede uygulanır.
+const PIHOLE_LIST_TYPES = new Set(['adlist', 'whitelist', 'blacklist', 'localdns']);
+app.get('/api/pihole/lists', async (req, res) => {
   try {
     const lists = await dbAll('SELECT * FROM pihole_lists ORDER BY list_type, id');
-    res.json({ lists });
+    const external = req.query.external === '1' ? await externalPiholeEntries() : undefined;
+    res.json({ lists, sync: lastListSync(), external });
   } catch (e: any) {
     res.status(500).json({ error: e.message });
   }
@@ -453,9 +458,12 @@ app.get('/api/pihole/lists', async (_req, res) => {
 app.post('/api/pihole/lists', async (req, res) => {
   try {
     const { list_type, value, comment } = req.body;
+    if (!PIHOLE_LIST_TYPES.has(list_type)) return res.status(400).json({ error: 'Geçersiz liste türü' });
+    const bad = validateListValue(list_type, value);
+    if (bad) return res.status(400).json({ error: bad });
     await dbRun('INSERT OR IGNORE INTO pihole_lists (list_type, value, comment) VALUES (?, ?, ?)',
-      [list_type, value, comment || '']);
-    res.json({ success: true });
+      [list_type, normalizeListValue(list_type, value), String(comment || '').slice(0, 200)]);
+    res.json({ success: true, sync: await syncPiholeLists() });
   } catch (e: any) {
     res.status(500).json({ error: e.message });
   }
@@ -464,15 +472,21 @@ app.post('/api/pihole/lists', async (req, res) => {
 app.put('/api/pihole/lists/:id', async (req, res) => {
   try {
     const { enabled, value, comment } = req.body;
+    const row: any = await dbGet('SELECT list_type FROM pihole_lists WHERE id = ?', [req.params.id]);
+    if (!row) return res.status(404).json({ error: 'Kayıt bulunamadı' });
+    if (value !== undefined) {
+      const bad = validateListValue(row.list_type, value);
+      if (bad) return res.status(400).json({ error: bad });
+    }
     const updates: string[] = [];
     const params: any[] = [];
     if (enabled !== undefined) { updates.push('enabled = ?'); params.push(enabled ? 1 : 0); }
-    if (value !== undefined) { updates.push('value = ?'); params.push(value); }
-    if (comment !== undefined) { updates.push('comment = ?'); params.push(comment); }
+    if (value !== undefined) { updates.push('value = ?'); params.push(normalizeListValue(row.list_type, value)); }
+    if (comment !== undefined) { updates.push('comment = ?'); params.push(String(comment).slice(0, 200)); }
     if (updates.length === 0) return res.json({ success: true });
     params.push(req.params.id);
     await dbRun(`UPDATE pihole_lists SET ${updates.join(', ')} WHERE id = ?`, params);
-    res.json({ success: true });
+    res.json({ success: true, sync: await syncPiholeLists() });
   } catch (e: any) {
     res.status(500).json({ error: e.message });
   }
@@ -481,7 +495,16 @@ app.put('/api/pihole/lists/:id', async (req, res) => {
 app.delete('/api/pihole/lists/:id', async (req, res) => {
   try {
     await dbRun('DELETE FROM pihole_lists WHERE id = ?', [req.params.id]);
-    res.json({ success: true });
+    res.json({ success: true, sync: await syncPiholeLists() });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Elle yeniden eşitleme (panelde "Pi-hole'a uygula")
+app.post('/api/pihole/lists/sync', async (_req, res) => {
+  try {
+    res.json({ success: true, sync: await syncPiholeLists() });
   } catch (e: any) {
     res.status(500).json({ error: e.message });
   }
@@ -3934,6 +3957,10 @@ const server = app.listen(Number(port), bindHost, () => {
       catch (e: any) { console.error('[cron] zamanlayıcı eşitlenemedi:', e?.message || e); }
     })();
   }, 5000);
+  // Pi-hole listeleri: panel kayıtları Pi-hole'a uygulanır (FTL açılışta geç hazır olabilir → 30 sn sonra).
+  setTimeout(() => {
+    void syncPiholeLists().then(r => { if (!r.ok) console.error('[pihole-lists] eşitleme:', r.errors.join('; ')); });
+  }, 30000);
   // Panel koruması: deneme sırasında Pi yeniden başladıysa (zamanlayıcı kalıcı değil) süresi geçen deneme geri alınır.
   if (isLinux && require('fs').existsSync(PANEL_AUTH_SCRIPT)) {
     void runPanelAuth(['ensure']).then(r => { if (r.code !== 0 || r.kv.warning) console.error('[panel-auth]', r.kv.error || r.kv.warning); });

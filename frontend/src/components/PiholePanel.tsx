@@ -1,4 +1,4 @@
-import { ShieldBan, Search, BarChart3, Globe, Users, ArrowRight, Settings, List, Plus, Trash2, Check, X, Server, Lock, Gauge, Radio } from 'lucide-react';
+import { ShieldBan, Search, BarChart3, Globe, Users, ArrowRight, Settings, List, Plus, Trash2, Check, X, Server, Lock, Gauge, Radio, RefreshCw, AlertTriangle } from 'lucide-react';
 import { useApi, postApi, putApi, deleteApi } from '../hooks/useApi';
 import { useState } from 'react';
 import { Panel, StatCard, Badge } from './ui';
@@ -146,46 +146,90 @@ export function PiholePanel() {
   );
 }
 
+// Paneldeki kayıtlar Pi-hole'a gerçekten uygulanır (backend piholeLists.ts): her değişiklikten sonra eşitlenir.
+// Panelin eklediği kayıtlar Pi-hole'da "klyrix" açıklamasıyla işaretlidir; Pi-hole'a kendi arayüzünden eklenmiş
+// kayıtlar aşağıda salt okunur gösterilir ve eşitleme onlara dokunmaz.
+interface ListSync { ok: boolean; added: number; removed: number; gravity: boolean; errors: string[]; at: number }
+interface ExternalEntries { whitelist: string[]; blacklist: string[]; adlist: string[]; localdns: string[] }
+
 function PiholeListManager({ listType }: { listType: string }) {
-  const { data, refetch } = useApi<{ lists: PiholeListItem[] }>('/pihole/lists', { lists: [] });
+  const { data, refetch } = useApi<{ lists: PiholeListItem[]; sync?: ListSync | null; external?: ExternalEntries | null }>(
+    '/pihole/lists?external=1', { lists: [] });
   const items = data.lists.filter(l => l.list_type === listType);
+  // undefined = henüz yanıt yok, null = Pi-hole okunamadı
+  const external = data.external === undefined ? undefined : data.external === null ? null
+    : data.external[listType as keyof ExternalEntries] || [];
   const [newValue, setNewValue] = useState('');
   const [newComment, setNewComment] = useState('');
   const [adding, setAdding] = useState(false);
+  const [syncing, setSyncing] = useState(false);
 
-  const labels: Record<string, { title: string; placeholder: string; commentPh: string }> = {
-    adlist: { title: 'Bloklisteleri', placeholder: 'https://example.com/hosts.txt', commentPh: 'Liste açıklaması' },
-    whitelist: { title: 'Beyaz Liste (İzin Verilen)', placeholder: 'example.com', commentPh: 'Neden izin verildi?' },
-    blacklist: { title: 'Kara Liste (Engellenen)', placeholder: 'tracking.example.com', commentPh: 'Neden engellendi?' },
-    localdns: { title: 'Yerel DNS Kayıtları', placeholder: '192.168.1.100 myserver.lan', commentPh: 'Açıklama' },
+  const labels: Record<string, { title: string; placeholder: string; commentPh: string; hint: string }> = {
+    adlist: { title: 'Bloklisteleri', placeholder: 'https://example.com/hosts.txt', commentPh: 'Liste açıklaması',
+      hint: 'Eklenen liste Pi-hole\'a yazılır ve liste indirme (gravity) arka planda başlar; birkaç dakika sürebilir.' },
+    whitelist: { title: 'Beyaz Liste (İzin Verilen)', placeholder: 'example.com ya da *.example.com', commentPh: 'Neden izin verildi?',
+      hint: '"*.site.com" alt alan adlarını da kapsar. Pi-hole\'a hemen uygulanır.' },
+    blacklist: { title: 'Kara Liste (Engellenen)', placeholder: 'tracking.example.com ya da *.example.com', commentPh: 'Neden engellendi?',
+      hint: '"*.site.com" alt alan adlarını da kapsar. Pi-hole\'a hemen uygulanır.' },
+    localdns: { title: 'Yerel DNS Kayıtları', placeholder: '192.168.0.50 nas.lan', commentPh: 'Açıklama',
+      hint: 'Biçim: "IP ad". Ağdaki cihazlar bu adı Pi-hole üzerinden bu IP\'ye çözer.' },
   };
-
   const l = labels[listType] || labels.adlist;
+
+  // Sunucu yanıtındaki eşitleme sonucunu bildir: kayıt her durumda saklanır, Pi-hole'a uygulanamadıysa neden yazılır.
+  const report = (sync: ListSync | undefined, okMsg: string) => {
+    if (!sync) { toast.success(okMsg); return; }
+    if (!sync.ok) toast.error(`Kaydedildi ama Pi-hole'a uygulanamadı: ${sync.errors.join('; ') || 'bilinmeyen hata'}`);
+    else toast.success(sync.gravity ? `${okMsg} — liste indiriliyor (birkaç dakika)` : `${okMsg} ve Pi-hole'a uygulandı`);
+  };
+  const run = async (fn: () => Promise<{ sync?: ListSync }>, okMsg: string) => {
+    try {
+      report((await fn()).sync, okMsg);
+      return true;
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'İşlem başarısız');
+      return false;
+    } finally {
+      await refetch();
+    }
+  };
 
   const handleAdd = async () => {
     if (!newValue.trim()) return;
     setAdding(true);
-    try {
-      await postApi('/pihole/lists', { list_type: listType, value: newValue.trim(), comment: newComment.trim() });
+    if (await run(() => postApi('/pihole/lists', { list_type: listType, value: newValue.trim(), comment: newComment.trim() }), 'Eklendi')) {
       setNewValue('');
       setNewComment('');
-      await refetch();
-    } catch { /* */ }
+    }
     setAdding(false);
   };
 
-  const handleToggle = async (id: number, currentEnabled: number) => {
-    await putApi(`/pihole/lists/${id}`, { enabled: currentEnabled ? 0 : 1 });
-    await refetch();
+  const handleToggle = (id: number, currentEnabled: number) =>
+    run(() => putApi(`/pihole/lists/${id}`, { enabled: currentEnabled ? 0 : 1 }), currentEnabled ? 'Devre dışı bırakıldı' : 'Etkinleştirildi');
+
+  const handleDelete = (id: number) => run(() => deleteApi(`/pihole/lists/${id}`), 'Silindi');
+
+  const handleSync = async () => {
+    setSyncing(true);
+    await run(() => postApi('/pihole/lists/sync', {}), 'Eşitlendi');
+    setSyncing(false);
   };
 
-  const handleDelete = async (id: number) => {
-    await deleteApi(`/pihole/lists/${id}`);
-    await refetch();
-  };
-
+  const sync = data.sync;
   return (
-    <Panel title={l.title} icon={<List size={18} style={{ marginRight: 8 }} />}>
+    <Panel title={l.title} icon={<List size={18} style={{ marginRight: 8 }} />}
+      actions={
+        <button className="btn-outline btn-sm" onClick={handleSync} disabled={syncing} title="Paneldeki kayıtları Pi-hole'a yeniden uygula">
+          <RefreshCw size={13} className={syncing ? 'spin' : ''} /> Pi-hole'a uygula
+        </button>
+      }>
+      <p className="subtitle" style={{ marginBottom: 10 }}>{l.hint}</p>
+      {sync && !sync.ok && (
+        <div className="routing-apply routing-apply-err" style={{ marginTop: 0, marginBottom: 10 }}>
+          <AlertTriangle size={14} />
+          <span>Son eşitleme başarısız: {sync.errors.join('; ')}</span>
+        </div>
+      )}
       <div className="list-add-form">
         <div className="list-add-row">
           <input className="config-input list-input-main" type="text" placeholder={l.placeholder}
@@ -201,12 +245,13 @@ function PiholeListManager({ listType }: { listType: string }) {
       </div>
 
       <div className="list-items">
-        {items.length === 0 && <div className="empty-state" style={{ padding: '20px' }}>Bu listede henüz kayıt yok.</div>}
+        {items.length === 0 && <div className="empty-state" style={{ padding: '20px' }}>Bu listede panelden eklenmiş kayıt yok.</div>}
         {items.map(item => (
           <div key={item.id} className={`list-item ${!item.enabled ? 'list-item-disabled' : ''}`}>
             <button
               className={`toggle-btn toggle-sm ${item.enabled ? 'toggle-on' : 'toggle-off'}`}
               onClick={() => handleToggle(item.id, item.enabled)}
+              title={item.enabled ? 'Devre dışı bırak (Pi-hole\'dan kaldırılır)' : 'Etkinleştir'}
             >
               <div className="toggle-knob" />
             </button>
@@ -214,12 +259,29 @@ function PiholeListManager({ listType }: { listType: string }) {
               <span className="list-item-value">{item.value}</span>
               {item.comment && <span className="list-item-comment">{item.comment}</span>}
             </div>
-            <button className="icon-btn icon-btn-sm list-delete" onClick={() => handleDelete(item.id)}>
+            <button className="icon-btn icon-btn-sm list-delete" onClick={() => handleDelete(item.id)} title="Sil">
               <Trash2 size={13} />
             </button>
           </div>
         ))}
       </div>
+
+      {external && external.length > 0 && (
+        <div className="pihole-external">
+          <span className="list-item-comment">Pi-hole'da ayrıca ekli (Pi-hole'un kendi arayüzünden; panel dokunmaz):</span>
+          <div className="list-items">
+            {external.map(v => (
+              <div key={v} className="list-item list-item-disabled"><span className="list-item-value">{v}</span></div>
+            ))}
+          </div>
+        </div>
+      )}
+      {external === null && (
+        <span className="list-item-comment" style={{ display: 'block', marginTop: 10 }}>
+          Pi-hole'daki mevcut kayıtlar okunamadı (Pi-hole çalışmıyor olabilir).
+        </span>
+      )}
     </Panel>
   );
 }
+
