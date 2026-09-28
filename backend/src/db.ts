@@ -93,7 +93,10 @@ export const initDb = () => {
       // merkezlerine ve arama aktarma sunucularına DNS'siz, doğrudan IP ile bağlanır. Aralıklar yalnız Telegram'a ait
       // olduğundan tüm trafik (443 dahil) kuralın çıkışına gider.
       [2, 'Telegram', 'voip', 'direct', `*.telegram.org,*.t.me,*.telesco.pe,${TELEGRAM_ASN_TOKENS}`],
-      [3, 'Discord', 'voip', 'direct', '*.discord.com,*.discord.gg,*.discordapp.com'],
+      // Discord sesi *.discord.media sunucularındadır (ses bağlantısının adresi; Discord belgesi: "sweetwater-12345.discord.media").
+      // Ses sunucuları Cloudflare/Google'da (canlı ölçüm 2026-09-29: latency.discord.media/rtc) — başka sitelerle paylaşılan
+      // ağ olduğundan IP aralığı girdisi eklenmez.
+      [3, 'Discord', 'voip', 'direct', '*.discord.com,*.discord.gg,*.discordapp.com,*.discord.media,*.discordapp.net'],
       [4, 'Signal', 'voip', 'direct', '*.signal.org,*.whispersystems.org'],
       [5, 'YouTube', 'streaming', 'direct', '*.youtube.com,*.googlevideo.com,*.ytimg.com,*.yt.be'],
       [6, 'Netflix', 'streaming', 'direct', '*.netflix.com,*.nflxvideo.net,*.nflxso.net,*.nflxext.com'],
@@ -101,14 +104,19 @@ export const initDb = () => {
       [8, 'Instagram', 'social', 'direct', '*.instagram.com,*.cdninstagram.com'],
       [9, 'Twitter/X', 'social', 'direct', '*.twitter.com,*.x.com,*.twimg.com,*.t.co'],
       [10, 'TikTok', 'social', 'direct', '*.tiktok.com,*.tiktokv.com,*.tiktokcdn.com,*.musical.ly'],
-      [11, 'Steam', 'gaming', 'direct', '*.steampowered.com,*.steamcommunity.com,*.steamcontent.com'],
+      // @asn:32590 = Valve'in IP aralıkları: oyunlar Valve'in aktarma sunucularına (Steam Datagram Relay) DNS'siz, doğrudan
+      // IP ile bağlanır (canlı ölçüm 2026-09-29: CS2 aktarıcılarının Çin dışındakilerin hepsi AS32590). Aralıklar yalnız
+      // Valve'e ait olduğundan tüm trafik kuralın çıkışına gider.
+      [11, 'Steam', 'gaming', 'direct', '*.steampowered.com,*.steamcommunity.com,*.steamcontent.com,@asn:32590'],
       [12, 'Epic Games', 'gaming', 'direct', '*.epicgames.com,*.unrealengine.com,*.fortnite.com'],
       [13, 'Spotify', 'streaming', 'direct', '*.spotify.com,*.scdn.co,*.spotifycdn.com'],
       [14, 'Google', 'web', 'direct', '*.google.com,*.googleapis.com,*.gstatic.com'],
       [15, 'GitHub', 'web', 'direct', '*.github.com,*.githubusercontent.com,*.githubassets.com'],
       [16, 'Siri/iCloud', 'apple', 'direct', '*.apple.com,*.icloud.com,*.mzstatic.com,*.apple-dns.net'],
       [17, 'FaceTime', 'apple', 'direct', '*.facetime.apple.com,*.push.apple.com'],
-      [18, 'Zoom', 'voip', 'direct', '*.zoom.us,*.zoom.com,*.zoomgov.com'],
+      // @asn:30103 = Zoom'un kendi veri merkezleri: toplantı ses/görüntüsü sunucularına DNS'siz, IP ile gider. Yalnız Zoom'a
+      // ait olduğundan tüm trafik. Zoom'un resmî listesindeki bulut (AWS vb.) aralıkları paylaşımlı olduğundan eklenmez.
+      [18, 'Zoom', 'voip', 'direct', '*.zoom.us,*.zoom.com,*.zoomgov.com,@asn:30103'],
       [19, 'Facebook', 'social', 'direct', '*.facebook.com,*.fbcdn.net,*.fb.com,*.fb.me'],
       [20, 'Snapchat', 'social', 'direct', '*.snapchat.com,*.snap.com,*.sc-cdn.net'],
     ];
@@ -127,6 +135,13 @@ export const initDb = () => {
     db.run(`UPDATE traffic_routing SET domains = domains || ?
       WHERE id = 2 AND app_name = 'Telegram' AND COALESCE(domains, '') != '' AND instr(domains, '@asn:62041') = 0`,
       [`,${TELEGRAM_ASN_TOKENS}`]);
+    // v2.24.22: aynı yöntem — Discord ses alan adları, Steam (Valve) ve Zoom aralıkları yoksa sona eklenir.
+    db.run(`UPDATE traffic_routing SET domains = domains || ',*.discord.media,*.discordapp.net'
+      WHERE id = 3 AND app_name = 'Discord' AND COALESCE(domains, '') != '' AND instr(domains, 'discord.media') = 0`);
+    db.run(`UPDATE traffic_routing SET domains = domains || ',@asn:32590'
+      WHERE id = 11 AND app_name = 'Steam' AND COALESCE(domains, '') != '' AND instr(domains, '@asn:32590') = 0`);
+    db.run(`UPDATE traffic_routing SET domains = domains || ',@asn:30103'
+      WHERE id = 18 AND app_name = 'Zoom' AND COALESCE(domains, '') != '' AND instr(domains, '@asn:30103') = 0`);
 
     // Domain-based routing: route specific domains through specific profiles
     db.run(`CREATE TABLE IF NOT EXISTS domain_routing (
