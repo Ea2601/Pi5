@@ -4,7 +4,7 @@ import {
   Volume2, VolumeX, Clock, RefreshCw, Download, Loader2, Gauge
 } from 'lucide-react';
 import { useApi, putApi } from '../hooks/useApi';
-import { Panel, Badge } from './ui';
+import { Panel, Badge, Select } from './ui';
 import { BRAND } from '../brand';
 import { toast } from '../toast';
 import { startSystemUpdate, trackSystemUpdate, runningSystemUpdate } from '../systemUpdate';
@@ -162,11 +162,11 @@ export function SettingsPanel() {
               <span className="config-item-desc">Panel arayüz dilini değiştir</span>
             </div>
             <div className="config-item-control">
-              <select className="config-select" value={settings.language}
+              <Select className="config-select" value={settings.language}
                 onChange={e => setSettings(prev => ({ ...prev, language: e.target.value }))}>
                 <option value="tr">Türkçe</option>
                 <option value="en">English</option>
-              </select>
+              </Select>
             </div>
           </div>
         </div>
@@ -259,7 +259,7 @@ export function SettingsPanel() {
             </div>
             <div className="config-item-control" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
               <Gauge size={14} />
-              <select className="config-select" value={settings.speedtestInterval}
+              <Select className="config-select" value={settings.speedtestInterval}
                 onChange={e => setSettings(prev => ({ ...prev, speedtestInterval: Number(e.target.value) }))}
                 style={{ width: 140 }}>
                 <option value={0}>Kapalı</option>
@@ -269,7 +269,7 @@ export function SettingsPanel() {
                 <option value={360}>6 saatte bir</option>
                 <option value={720}>12 saatte bir</option>
                 <option value={1440}>Günde bir</option>
-              </select>
+              </Select>
             </div>
           </div>
         </div>
@@ -508,12 +508,12 @@ function TimezoneSection() {
           <span className="config-item-desc">Sistem saatini değiştir</span>
         </div>
         <div className="config-item-control" style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
-          <select className="config-select" value={selected} onChange={e => setSelected(e.target.value)}
+          <Select className="config-select" value={selected} onChange={e => setSelected(e.target.value)}
             style={{ minWidth: 200 }}>
             {TIMEZONES.map(tz => (
               <option key={tz.zone} value={tz.zone}>{tz.gmt} — {tz.label}</option>
             ))}
-          </select>
+          </Select>
           <button className="btn-primary btn-sm" onClick={handleSave} disabled={saving || selected === data.timezone}>
             <Save size={12} /> Uygula
           </button>

@@ -4,7 +4,7 @@ import {
   Wifi, WifiOff, Check, X, Monitor, Smartphone, HardDrive, Palette, Trash2, Pencil
 } from 'lucide-react';
 import { useApi, getApi, postApi, putApi, deleteApi } from '../hooks/useApi';
-import { Panel, Badge } from './ui';
+import { Panel, Badge, Select } from './ui';
 import type { Device } from '../types';
 import { toast } from '../toast';
 
@@ -180,12 +180,12 @@ function GroupsView() {
               </div>
               <div className="form-group">
                 <label>Simge</label>
-                <select className="config-select" value={newGroup.icon}
+                <Select className="config-select" value={newGroup.icon}
                   onChange={e => setNewGroup({ ...newGroup, icon: e.target.value })}>
                   {iconOptions.map(o => (
                     <option key={o.value} value={o.value}>{o.label}</option>
                   ))}
-                </select>
+                </Select>
               </div>
             </div>
             <div className="cron-add-actions">
@@ -245,7 +245,7 @@ function GroupsView() {
                   )}
                   {addingMember === group.id ? (
                     <div style={{ display: 'flex', gap: 6, marginTop: 8 }}>
-                      <select className="config-select" value={selectedMac}
+                      <Select className="config-select" value={selectedMac}
                         onChange={e => setSelectedMac(e.target.value)}>
                         <option value="">Cihaz seçin...</option>
                         {devicesData.devices.map(d => (
@@ -253,7 +253,7 @@ function GroupsView() {
                             {deviceLabel(d)} ({d.ip_address})
                           </option>
                         ))}
-                      </select>
+                      </Select>
                       <button className="btn-primary btn-sm" onClick={() => handleAddMember(group.id)}>
                         <Check size={13} />
                       </button>
@@ -418,7 +418,7 @@ function HistoryView() {
         </p>
 
         <div style={{ padding: '0 0 12px' }}>
-          <select className="config-select" value={selectedMac}
+          <Select className="config-select" value={selectedMac}
             onChange={e => setSelectedMac(e.target.value)}
             style={{ maxWidth: 400 }}>
             <option value="">Cihaz seçin...</option>
@@ -427,7 +427,7 @@ function HistoryView() {
                 {deviceLabel(d)} ({d.ip_address})
               </option>
             ))}
-          </select>
+          </Select>
         </div>
 
         {!selectedMac ? (

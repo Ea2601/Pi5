@@ -1300,6 +1300,91 @@ body.nav-open { overflow: hidden; }
 .form-group input:disabled { opacity: 0.5; }
 
 /* Dark themed select/dropdown - global */
+
+/* ═══════════════════ AÇILIR LİSTE (ui/Select) ═══════════════════
+   Native <select> yerine: tarayıcının kendi açılır penceresi temayı ve koyu modu izlemiyordu. Tetikleyici <button>,
+   eski boyut sınıflarını (config-select, config-select-sm, config-input) aynen alır — bu yüzden bu temel kurallar
+   onlardan ÖNCE durur. Liste body'ye taşınır (position: fixed; modal 1000 / çekmece 3000 üstünde, toast 4000 altında). */
+.ui-select-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  padding: 9px 12px;
+  border-radius: var(--radius-sm);
+  background-color: var(--input-bg);
+  border: 1px solid var(--panel-border);
+  color: var(--text-primary);
+  font-family: var(--font-family);
+  font-size: 13px;
+  line-height: 1.4;
+  text-align: left;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+/* Native oka ait arka plan resmi (select/.config-select kuralından gelir) ve ona ayrılan geniş sağ boşluk gerekmez */
+button.ui-select-trigger { background-image: none; padding-right: 10px; }
+.ui-select-trigger:hover:not(:disabled) { border-color: var(--panel-border-hover); background-color: var(--input-bg-hover); }
+.ui-select-trigger:focus-visible,
+.ui-select-trigger[aria-expanded="true"] { outline: none; border-color: var(--accent-color); box-shadow: 0 0 0 3px var(--accent-ring); }
+.ui-select-trigger:disabled { opacity: 0.5; cursor: not-allowed; }
+.ui-select-value { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ui-select-chevron { flex-shrink: 0; color: var(--text-secondary); transition: transform 0.15s ease; }
+.ui-select-chevron.is-open { transform: rotate(180deg); }
+
+.ui-select-pop {
+  position: fixed;
+  z-index: 3500;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 4px;
+  border-radius: var(--radius);
+  background: var(--bg-surface);
+  border: 1px solid var(--panel-border-hover);
+  box-shadow: 0 14px 36px rgba(0, 0, 0, 0.38);
+  font-size: 13px;
+  animation: ui-select-in 0.12s ease-out;
+}
+:root.light-theme .ui-select-pop { box-shadow: 0 14px 36px rgba(15, 23, 42, 0.14); }
+.ui-select-pop.is-up { animation-name: ui-select-in-up; }
+@keyframes ui-select-in { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: none; } }
+@keyframes ui-select-in-up { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+.ui-select-group {
+  padding: 8px 10px 4px;
+  font-family: var(--font-family);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+.ui-select-opt {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 34px;
+  padding: 7px 10px;
+  border-radius: 6px;
+  color: var(--text-primary);
+  cursor: pointer;
+  user-select: none;
+}
+.ui-select-opt.in-group { padding-left: 16px; }
+.ui-select-opt.is-active { background: var(--accent-glow); }
+.ui-select-opt[aria-selected="true"] { font-weight: 600; }
+.ui-select-opt[aria-disabled="true"] { color: var(--text-muted); cursor: default; }
+.ui-select-opt[aria-disabled="true"].is-active { background: none; }
+.ui-select-opt-label { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.ui-select-check { flex-shrink: 0; color: var(--accent-color); }
+/* Dokunmatik ekranda parmakla seçilebilir satır yüksekliği */
+@media (pointer: coarse) { .ui-select-opt { min-height: 44px; } }
+@media (prefers-reduced-motion: reduce) {
+  .ui-select-pop { animation: none; }
+  .ui-select-chevron { transition: none; }
+}
+
 select,
 .config-select,
 .profile-select,

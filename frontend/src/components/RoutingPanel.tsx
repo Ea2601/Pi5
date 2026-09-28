@@ -5,7 +5,7 @@ import {
 } from 'lucide-react';
 import { useApi, getApi, putApi, postApi, deleteApi } from '../hooks/useApi';
 import { useState, useRef, useCallback, useEffect } from 'react';
-import { Panel, Badge } from './ui';
+import { Panel, Badge, Select } from './ui';
 import { AppLogo } from './AppLogos';
 import { toast } from '../toast';
 import type { TrafficRule } from '../types';
@@ -255,7 +255,7 @@ function AppRoutingView({ onApplied }: { onApplied: () => void }) {
                       </span>
 
                       <span className="routing-col-vps">
-                        <select
+                        <Select
                           className="config-select config-select-sm"
                           value={exitNode}
                           onChange={e => handleChange(rule.id, 'exit_node', e.target.value)}
@@ -264,7 +264,7 @@ function AppRoutingView({ onApplied }: { onApplied: () => void }) {
                           {vpsList.map(v => (
                             <option key={v.id} value={String(v.id)}>VPS {v.location} ({v.ip})</option>
                           ))}
-                        </select>
+                        </Select>
                       </span>
 
                       <span className="routing-col-dpi">
@@ -530,12 +530,12 @@ function DomainRoutingView({ onApplied }: { onApplied: () => void }) {
               </div>
               <div className="form-group">
                 <label><Route size={14} /> Çıkış Noktası</label>
-                <select className="config-select" value={newExitNode} onChange={e => setNewExitNode(e.target.value)}>
+                <Select className="config-select" value={newExitNode} onChange={e => setNewExitNode(e.target.value)}>
                   <option value="isp">ISP (Direkt)</option>
                   {vpsList.map(v => (
                     <option key={v.id} value={String(v.id)}>VPS {v.location} ({v.ip})</option>
                   ))}
-                </select>
+                </Select>
               </div>
               <div className="form-group">
                 <label><Shield size={14} /> DPI Bypass</label>
@@ -638,7 +638,7 @@ function DomainRoutingView({ onApplied }: { onApplied: () => void }) {
                 </span>
 
                 <span className="routing-col-vps">
-                  <select
+                  <Select
                     className="config-select config-select-sm"
                     value={exitNode}
                     onChange={e => handleChange(d.id, 'exit_node', e.target.value)}
@@ -647,7 +647,7 @@ function DomainRoutingView({ onApplied }: { onApplied: () => void }) {
                     {vpsList.map(v => (
                       <option key={v.id} value={String(v.id)}>VPS {v.location} ({v.ip})</option>
                     ))}
-                  </select>
+                  </Select>
                 </span>
 
                 <span className="routing-col-dpi">

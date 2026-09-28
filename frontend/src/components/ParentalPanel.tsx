@@ -1,7 +1,7 @@
 import { Shield, Clock, Globe, Ban, Plus, Trash2, Settings } from 'lucide-react';
 import { useApi, postApi, putApi, deleteApi } from '../hooks/useApi';
 import { useState } from 'react';
-import { Panel, Badge } from './ui';
+import { Panel, Badge, Select } from './ui';
 import { toast } from '../toast';
 import type { Device, ParentalRule } from '../types';
 
@@ -130,7 +130,7 @@ export function ParentalPanel() {
           <Panel title="Yeni Kural Olustur" icon={<Settings size={18} style={{ marginRight: 8 }} />}>
             <div className="list-add-form">
               <div className="list-add-row">
-                <select className="config-input" value={formTarget}
+                <Select className="config-input" value={formTarget}
                   onChange={e => setFormTarget(e.target.value)}
                   style={{ flex: 2 }}>
                   <option value="">Hedef secin...</option>
@@ -145,14 +145,14 @@ export function ParentalPanel() {
                     <option value="cocuklar">Cocuklar</option>
                     <option value="aile">Aile</option>
                   </optgroup>
-                </select>
-                <select className="config-input" value={formType}
+                </Select>
+                <Select className="config-input" value={formType}
                   onChange={e => setFormType(e.target.value)}
                   style={{ flex: 1 }}>
                   <option value="time_restrict">Zaman Kisitlamasi</option>
                   <option value="category_block">Kategori Engelleme</option>
                   <option value="site_block">Site Engelleme</option>
-                </select>
+                </Select>
               </div>
 
               {formType === 'time_restrict' && (
@@ -191,13 +191,13 @@ export function ParentalPanel() {
                   <label className="text-muted" style={{ fontSize: '0.8rem', display: 'block', marginBottom: 6 }}>
                     <Ban size={12} /> Engellenecek Kategori
                   </label>
-                  <select className="config-input" value={formValue}
+                  <Select className="config-input" value={formValue}
                     onChange={e => setFormValue(e.target.value)}>
                     <option value="">Kategori secin...</option>
                     {CATEGORIES.map(cat => (
                       <option key={cat.value} value={cat.value}>{cat.label}</option>
                     ))}
-                  </select>
+                  </Select>
                 </div>
               )}
 

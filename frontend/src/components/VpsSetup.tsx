@@ -6,6 +6,7 @@ import {
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { useApi, postApi, deleteApi } from '../hooks/useApi';
 import { ServiceSettings } from './ui/ServiceSettings';
+import { Select } from './ui';
 import { toast } from '../toast';
 import type { VpsServer } from '../types';
 
@@ -754,12 +755,12 @@ export function VpsSetup() {
 
           <div className="form-group" style={{ maxWidth: 400, marginTop: 16 }}>
             <label>VPS Sunucu Secin</label>
-            <select value={selectedVpsId} onChange={e => setSelectedVpsId(e.target.value ? Number(e.target.value) : '')}>
+            <Select value={selectedVpsId} onChange={e => setSelectedVpsId(e.target.value ? Number(e.target.value) : '')}>
               <option value="">Sunucu secin...</option>
               {data.servers.map(s => (
                 <option key={s.id} value={s.id}>{s.ip} ({s.location || s.username})</option>
               ))}
-            </select>
+            </Select>
           </div>
 
           {selectedVpsId && (

@@ -1,3 +1,4 @@
+import { Select } from './Select';
 import { useState } from 'react';
 import { Save, RotateCcw, ChevronDown, ChevronRight, Info } from 'lucide-react';
 import { useApi, putApi, postApi } from '../../hooks/useApi';
@@ -78,7 +79,7 @@ export function ServiceSettings({ service, categoryLabels = {}, categoryIcons = 
     if (item.type === 'select') {
       const opts = item.options ? item.options.split(',') : [];
       return (
-        <select
+        <Select
           className={`config-select ${isChanged ? 'config-changed' : ''}`}
           value={val}
           onChange={e => handleChange(item.key, e.target.value)}
@@ -87,7 +88,7 @@ export function ServiceSettings({ service, categoryLabels = {}, categoryIcons = 
           {opts.filter(o => o !== val).map(o => (
             <option key={o} value={o.trim()}>{o.trim()}</option>
           ))}
-        </select>
+        </Select>
       );
     }
 

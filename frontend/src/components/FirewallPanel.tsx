@@ -1,7 +1,7 @@
 import { Flame, Trash2, Shield, ArrowRight, Settings, Activity, Waypoints, Plus } from 'lucide-react';
 import { useApi, postApi, deleteApi } from '../hooks/useApi';
 import { useState } from 'react';
-import { Panel } from './ui';
+import { Panel, Select } from './ui';
 import { ServiceSettings } from './ui/ServiceSettings';
 import type { FirewallRule } from '../types';
 import { toast } from '../toast';
@@ -106,11 +106,11 @@ export function FirewallPanel() {
             <div className="glass-panel widget-large" style={{ marginTop: 14, display: 'flex', gap: 10, alignItems: 'flex-end', flexWrap: 'wrap' }}>
               <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
                 <label style={{ fontSize: 11, color: 'var(--text-muted)' }}>Tür</label>
-                <select className="config-select" value={fwType} onChange={e => setFwType(e.target.value)} style={{ width: 130 }}>
+                <Select className="config-select" value={fwType} onChange={e => setFwType(e.target.value)} style={{ width: 130 }}>
                   <option value="tcp">TCP Port</option>
                   <option value="udp">UDP Port</option>
                   <option value="ip">Kaynak IP</option>
-                </select>
+                </Select>
               </div>
               <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
                 <label style={{ fontSize: 11, color: 'var(--text-muted)' }}>Hedef</label>
@@ -119,11 +119,11 @@ export function FirewallPanel() {
               </div>
               <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
                 <label style={{ fontSize: 11, color: 'var(--text-muted)' }}>Eylem</label>
-                <select className="config-select" value={fwAction} onChange={e => setFwAction(e.target.value)} style={{ width: 130 }}>
+                <Select className="config-select" value={fwAction} onChange={e => setFwAction(e.target.value)} style={{ width: 130 }}>
                   <option value="accept">İzin Ver</option>
                   <option value="drop">Düşür</option>
                   <option value="reject">Reddet</option>
-                </select>
+                </Select>
               </div>
               <button className="btn-primary btn-sm" onClick={handleAdd} disabled={adding}>{adding ? 'Ekleniyor...' : 'Ekle'}</button>
             </div>

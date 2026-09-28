@@ -4,7 +4,7 @@ import {
   ArrowDown, ArrowUp, Activity, Shield
 } from 'lucide-react';
 import { useApi, postApi, putApi, deleteApi } from '../hooks/useApi';
-import { Panel, Badge } from './ui';
+import { Panel, Badge, Select } from './ui';
 import type { TrafficRule, TrafficSchedule, ThrottleRule } from '../types';
 
 interface VpsServer { id: number; ip: string; location: string }
@@ -135,24 +135,24 @@ function SchedulerView() {
             <div className="cron-add-grid">
               <div className="form-group">
                 <label>Trafik Kurali</label>
-                <select className="config-select" value={newSchedule.traffic_routing_id}
+                <Select className="config-select" value={newSchedule.traffic_routing_id}
                   onChange={e => setNewSchedule({ ...newSchedule, traffic_routing_id: Number(e.target.value) })}>
                   <option value={0}>Kural secin...</option>
                   {rulesData.rules.map(r => (
                     <option key={r.id} value={r.id}>{r.app_name} ({r.category})</option>
                   ))}
-                </select>
+                </Select>
               </div>
               <div className="form-group">
                 <label>Çıkış Noktası</label>
-                <select className="config-select" value={newSchedule.schedule_exit_node}
+                <Select className="config-select" value={newSchedule.schedule_exit_node}
                   onChange={e => setNewSchedule({ ...newSchedule, schedule_exit_node: e.target.value })}>
                   <option value="isp">ISP (Direkt)</option>
                   {vpsList.map(v => (
                     <option key={v.id} value={String(v.id)}>VPS {v.location} ({v.ip})</option>
                   ))}
                   <option value="blocked">Engelle</option>
-                </select>
+                </Select>
               </div>
               <div className="form-group">
                 <label><Shield size={12} /> DPI Bypass</label>
@@ -320,12 +320,12 @@ function ThrottleView() {
             <div className="cron-add-grid">
               <div className="form-group">
                 <label>Hedef Tipi</label>
-                <select className="config-select" value={newRule.target_type}
+                <Select className="config-select" value={newRule.target_type}
                   onChange={e => setNewRule({ ...newRule, target_type: e.target.value as 'device' | 'app' | 'group' })}>
                   <option value="device">Cihaz</option>
                   <option value="app">Uygulama</option>
                   <option value="group">Grup</option>
-                </select>
+                </Select>
               </div>
               <div className="form-group">
                 <label>Hedef</label>

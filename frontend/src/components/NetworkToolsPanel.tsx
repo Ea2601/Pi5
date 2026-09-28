@@ -1,7 +1,7 @@
 import { Wrench, Power, Search, Server, Plus, Loader } from 'lucide-react';
 import { useApi, postApi } from '../hooks/useApi';
 import { useState } from 'react';
-import { Panel, Badge } from './ui';
+import { Panel, Badge, Select } from './ui';
 import { toast } from '../toast';
 import type { Device } from '../types';
 
@@ -113,7 +113,7 @@ export function NetworkToolsPanel() {
           <Panel title="Wake-on-LAN" icon={<Power size={18} style={{ marginRight: 8 }} />}>
             <div className="list-add-form">
               <div className="list-add-row">
-                <select className="config-input" value={wolTarget}
+                <Select className="config-input" value={wolTarget}
                   onChange={e => setWolTarget(e.target.value)}
                   style={{ flex: 2 }}>
                   <option value="">Cihaz secin...</option>
@@ -122,7 +122,7 @@ export function NetworkToolsPanel() {
                       {d.hostname || d.ip_address} ({d.mac_address})
                     </option>
                   ))}
-                </select>
+                </Select>
                 <button className="btn-primary btn-sm" onClick={handleWol}
                   disabled={wolSending || !wolTarget}>
                   {wolSending ? <><Loader size={14} className="spin-icon" /> Gonderiliyor...</> : <><Power size={14} /> Uyandir</>}

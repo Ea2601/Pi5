@@ -1,8 +1,9 @@
 {
-  "version": "2.24.13",
-  "build": 90,
+  "version": "2.24.14",
+  "build": 91,
   "date": "2026-09-28",
   "changelog": [
+    "Açılır listeler temaya uygun: paneldeki bütün açılır listeler (26 adet — ayarlar, yönlendirme, firewall, cihaz, ebeveyn kontrol, kasa vb.) artık tarayıcının kendi penceresi yerine panelle aynı tasarımda açılır: koyu/açık temaya uyar, seçili öğe işaretli, grup başlıkları gösterilir, telefonda parmakla seçilebilir satır yüksekliği ve ekrana sığan konum. Klavyeyle kullanılabilir (↑↓, Home/End, Enter, Esc, harfle arama) ve ekran okuyucuya uygundur",
     "Firewall ve Cihaz Yönetimi düzeltmeleri: güvenlik duvarı listeleri başlıklı sütunlara hizalandı (Port / Protokol / Eylem / Açıklama), 'düşür/reddet' kuralları artık kırmızı. Cihaz grupları ve grup üyeleri silinebilir. Cihaz adları Pi'nin DHCP kayıtlarından gelir (eskiden hepsi 'Bilinmeyen' görünüyordu); adı gelmeyen cihaza kalem düğmesiyle ad verilebilir, gizli (rastgele) MAC kullanan telefonlar ayrıca belirtilir. Bağlantı Geçmişi'nde cihaz seçince sayfanın çökmesi giderildi. Bilinmeyen Cihazlar listesinin ne olduğu sayfada açıklanır ('Tanıyorum' yalnız listeden çıkarır, erişimi değiştirmez)",
     "DHCP Ayarları menüde ayrı bir öğe: artık Pi-hole DNS'in alt öğesi gibi girintili ve ona bağlı gösterilmez; DHCP sayfasındaki 'Pi-hole DNS' dönüş bağlantısı ve Pi-hole → Ayarlar'daki 'DHCP ayarları taşındı' notu kaldırıldı. Yol tarifleri (sihirbaz, uyarılar, dokümantasyon) 'menü → DHCP Ayarları' olarak güncellendi",
     "Tema marka rengi griyle: panelin vurgu rengi (seçili menü, düğmeler, bağlantılar, seçili sekmeler, odak halkası, arka plan ışığı) artık mavi değil marka grisi. Koyu temada açık gri, açık temada koyu gri — okunurluk ölçüldü: yazı ve düğmeler en az 7:1. Durum renkleri (yeşil 'korumalı', kırmızı uyarı, sarı) ve grafik renkleri anlam taşıdığı için değişmedi. Ayarlar → Görünüm → Vurgu Rengi'nde gri ilk sırada ve varsayılan; mavi, yeşil, mor, turuncu seçenek olarak duruyor (kayıtlı 'mavi' yalnız eski varsayılan olduğu için bir kez griye çevrildi)",

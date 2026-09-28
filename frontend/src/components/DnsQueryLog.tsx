@@ -1,7 +1,7 @@
 import { Search, Shield, ShieldOff, Monitor, Filter } from 'lucide-react';
 import { useApi } from '../hooks/useApi';
 import { useState, useMemo } from 'react';
-import { Panel, Badge } from './ui';
+import { Panel, Badge, Select } from './ui';
 
 type FilterType = 'all' | 'blocked' | 'allowed';
 
@@ -81,14 +81,14 @@ export function DnsQueryLog() {
                   value={searchTerm}
                   onChange={e => setSearchTerm(e.target.value)} />
               </div>
-              <select className="config-input" value={deviceFilter}
+              <Select className="config-input" value={deviceFilter}
                 onChange={e => setDeviceFilter(e.target.value)}
                 style={{ flex: 1 }}>
                 <option value="">Tum Cihazlar</option>
                 {uniqueClients.map(ip => (
                   <option key={ip} value={ip}>{ip}</option>
                 ))}
-              </select>
+              </Select>
             </div>
           </div>
 

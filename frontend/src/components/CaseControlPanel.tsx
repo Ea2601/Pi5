@@ -4,7 +4,7 @@ import {
 } from 'lucide-react';
 import { useState, useEffect } from 'react';
 import { useApi, putApi } from '../hooks/useApi';
-import { Panel, Badge } from './ui';
+import { Panel, Badge, Select } from './ui';
 import { BRAND } from '../brand';
 import { toast } from '../toast';
 
@@ -321,14 +321,14 @@ export function CaseControlPanel() {
             // Rozet + düğmeler tek grupta: dar ekranda alt satıra kayar (taşmaz)
             <div className="lcd-actions">
               <Badge variant="info">{pages.filter(p => p.enabled).length} sayfa aktif</Badge>
-              <select className="config-select-sm" defaultValue=""
+              <Select className="config-select-sm" defaultValue=""
                 onChange={e => { addSystemPage(e.target.value); e.target.value = ''; }}
                 style={{ width: 'auto', minWidth: 130 }} title="Sistem sayfası ekle">
                 <option value="" disabled>+ Sayfa Ekle</option>
                 {SYSTEM_PAGE_TYPES.map(t => (
                   <option key={t.content} value={t.content}>{t.label}</option>
                 ))}
-              </select>
+              </Select>
               <button className="btn-outline btn-sm" onClick={addCustomPage}>
                 <Plus size={13} /> Metin Ekle
               </button>
@@ -343,12 +343,12 @@ export function CaseControlPanel() {
 
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 8, marginBottom: 6, flexWrap: 'wrap' }}>
             <span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>Ekran denetleyici</span>
-            <select className="config-select-sm" value={controller}
+            <Select className="config-select-sm" value={controller}
               onChange={e => setController(e.target.value)} style={{ width: 'auto', minWidth: 150 }}>
               <option value="auto">Otomatik (ssd1306→sh1106)</option>
               <option value="ssd1306">SSD1306 (0.96")</option>
               <option value="sh1106">SH1106 (1.3" — Pironman 5)</option>
-            </select>
+            </Select>
             <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>Yazı kayıyor/kırpılıyorsa SH1106 deneyin</span>
           </div>
 
@@ -378,13 +378,13 @@ export function CaseControlPanel() {
                   )}
                 </span>
                 {hints.interfaces.length > 0 ? (
-                  <select className="config-select-sm" value={settings.wan_if}
+                  <Select className="config-select-sm" value={settings.wan_if}
                     onChange={e => updateSetting('wan_if', e.target.value)}>
                     {(hints.interfaces.includes(settings.wan_if)
                       ? hints.interfaces : [settings.wan_if, ...hints.interfaces]).map(i => (
                       <option key={i} value={i}>{i}</option>
                     ))}
-                  </select>
+                  </Select>
                 ) : (
                   <input className="config-input" type="text" value={settings.wan_if}
                     onChange={e => updateSetting('wan_if', e.target.value)}
@@ -451,7 +451,7 @@ export function CaseControlPanel() {
                   <Plus size={11} /> Birim
                 </button>
                 {hints.mounts.length > 0 && (
-                  <select className="config-select-sm" defaultValue=""
+                  <Select className="config-select-sm" defaultValue=""
                     onChange={e => {
                       const m = hints.mounts.find(x => x.path === e.target.value);
                       if (m && !settings.mounts.some(x => x.path === m.path)) {
@@ -462,7 +462,7 @@ export function CaseControlPanel() {
                     style={{ width: 'auto', minWidth: 150, fontSize: 11 }} title="Sistemde bulunan bağlama noktaları">
                     <option value="" disabled>+ Bulunanlardan ekle</option>
                     {hints.mounts.map(m => <option key={m.path} value={m.path}>{m.name} — {m.path}</option>)}
-                  </select>
+                  </Select>
                 )}
               </div>
               <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>

@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { Globe, RefreshCw, Shield, Clock, Plus, Trash2, Check, Edit3, X } from 'lucide-react';
 import { useApi, postApi, putApi, deleteApi } from '../hooks/useApi';
-import { Panel, Badge, StatCard } from './ui';
+import { Panel, Badge, StatCard, Select } from './ui';
 import { toast } from '../toast';
 
 interface DdnsConfig {
@@ -209,10 +209,10 @@ export function DdnsPanel() {
                 <div className="cron-add-grid">
                   <div className="form-group">
                     <label>Saglayici</label>
-                    <select className="config-select" value={form.provider}
+                    <Select className="config-select" value={form.provider}
                       onChange={e => setForm({ ...form, provider: e.target.value })}>
                       {PROVIDERS.map(p => <option key={p} value={p}>{PROVIDER_LABELS[p]}</option>)}
-                    </select>
+                    </Select>
                   </div>
                   <div className="form-group">
                     <label>Hostname</label>
