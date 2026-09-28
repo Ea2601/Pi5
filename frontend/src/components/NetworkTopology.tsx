@@ -1,18 +1,24 @@
-import { Router, Smartphone, Laptop, Tv, CircleDot, Tablet, RefreshCw, Wifi, Globe, Plus, Minus, Maximize, Eye, EyeOff, X } from 'lucide-react';
+import { Router, Smartphone, Laptop, Tv, CircleDot, Tablet, RefreshCw, Wifi, Globe, Plus, Minus, Maximize, Eye, EyeOff, X, Cable, RadioTower, CircleHelp } from 'lucide-react';
 import type { ReactNode, PointerEvent as RPointerEvent, KeyboardEvent as RKeyboardEvent, MouseEvent as RMouseEvent } from 'react';
 import { useState, useMemo, useRef, useEffect, useLayoutEffect, useCallback } from 'react';
 import { useApi } from '../hooks/useApi';
 import { Panel, Badge } from './ui';
-import { computeLayout, joinPaths, pointAt, level, type ExitId, type Layout, type LayoutMode, type PathGeom, type Box } from './topologyLayout';
+import { computeLayout, joinPaths, pointAt, level, type ExitId, type AccessId, type AccessGroup, type Layout, type LayoutMode, type PathGeom, type Box } from './topologyLayout';
 
-// Canlı ağ haritası: cihaz → Pi → çıkış (yerel / DPI / VPS tüneli) → internet. Veri /api/topology/live (3 sn):
+// Canlı ağ haritası: cihaz → erişim (kablolu / Wi-Fi) → Pi → çıkış (yerel / DPI / VPS tüneli) → internet. Veri /api/topology/live (3 sn):
 // cihaz başı, bağlantı türü başı gerçek sayaçlar. Hareketli parçacıklar gerçek trafiktir (hızla yoğunlaşır); boştaki
 // yollar kesikli çizilir. "Önizleme" tüm yolları temsili akışla gösterir ve bunu açıkça belirtir.
 
 type Flow = { exit: ExitId; dpiRequested: boolean; downBps: number; upBps: number; bytesDown: number; bytesUp: number };
+// Bağlantı türü (arka uç linkProbe.ts): ARP yanıt süresi + gizli MAC / cihaz türü ipuçları; Kurulum Wi-Fi'ı kesin.
+type LinkInfo = {
+  kind: 'wired' | 'wifi' | 'setup' | 'unknown'; basis: 'latency' | 'random-mac' | 'device-type' | 'setup-wifi' | 'none';
+  certain: boolean; medMs: number | null; p90Ms: number | null; baseMs: number | null; samples: number;
+};
 type TopoDevice = {
   mac: string; ip: string; hostname: string | null; type: string; blocked: boolean; online: boolean; routed: boolean;
   downBps: number; upBps: number; bytesDown: number; bytesUp: number; flows: Flow[];
+  link?: LinkInfo;
 };
 type TopoExit = {
   id: ExitId; kind: 'local' | 'dpi' | 'vps'; label: string; detail: string;
@@ -24,8 +30,9 @@ type Topology = {
   exits: TopoExit[]; devices: TopoDevice[]; accounting: boolean; sampledAt: string;
 };
 type View = { x: number; y: number; k: number };
-type Sel = { kind: 'device'; id: string } | { kind: 'exit'; id: ExitId } | null;
+type Sel = { kind: 'device'; id: string } | { kind: 'exit'; id: ExitId } | { kind: 'access'; id: AccessId } | null;
 type Cls = 'local' | 'dpi' | 'vps' | 'none';
+type AccStats = { count: number; online: number; down: number; up: number; measuring: boolean };
 
 const K_MIN = 0.2, K_MAX = 4;
 const PAD_TOP = 48, PAD_BOTTOM = 44;
@@ -89,6 +96,32 @@ function exitStatus(x: TopoExit): string {
 }
 const exitShort = (x: TopoExit | undefined, id: ExitId) => (x ? (x.kind === 'local' ? 'Yerel' : x.kind === 'dpi' ? 'DPI' : `VPS ${x.label}`) : id);
 
+// ─── Erişim katmanı (kablolu / Wi-Fi) ───
+const ACCESS_ORDER: AccessId[] = ['acc:wired', 'acc:wifi', 'acc:setup', 'acc:unknown'];
+const accessOf = (d: TopoDevice): AccessId => {
+  const k = d.link?.kind;
+  return k === 'wired' ? 'acc:wired' : k === 'wifi' ? 'acc:wifi' : k === 'setup' ? 'acc:setup' : 'acc:unknown';
+};
+const ACCESS_LABEL: Record<AccessId, string> = { 'acc:wired': 'Kablolu', 'acc:wifi': 'Wi-Fi', 'acc:setup': "Kurulum Wi-Fi'ı", 'acc:unknown': 'Belirsiz' };
+const accessDetail = (id: AccessId, st: AccStats) =>
+  id === 'acc:wired' ? 'modem / anahtar portu' : id === 'acc:wifi' ? 'erişim noktası üzerinden' : id === 'acc:setup' ? "Pi'nin kendi yayını"
+    : st.measuring ? 'yanıt süresi ölçülüyor' : 'kablo ile Wi-Fi arasında';
+const accessIcon = (id: AccessId) => {
+  const p = { size: 24, strokeWidth: 1.8 };
+  return id === 'acc:wired' ? <Cable {...p} /> : id === 'acc:wifi' ? <Wifi {...p} /> : id === 'acc:setup' ? <RadioTower {...p} /> : <CircleHelp {...p} />;
+};
+const fmtMs = (v: number | null) => (v == null ? '—' : v < 10 ? `${v.toFixed(1)} ms` : `${Math.round(v)} ms`);
+function linkText(l?: LinkInfo): string {
+  if (!l) return 'Bağlantı türü bilinmiyor';
+  if (l.kind === 'setup') return "Kurulum Wi-Fi'ı (Pi'nin kendi yayını)";
+  if (l.kind === 'unknown') return l.samples >= 3 ? `Belirsiz — yanıt ${fmtMs(l.medMs)}, kablo ile Wi-Fi arasında` : 'Belirsiz — yanıt süresi ölçülüyor';
+  const why = l.basis === 'latency' ? `yanıt ${fmtMs(l.medMs)}${l.baseMs != null ? `, modem ${fmtMs(l.baseMs)}` : ''}`
+    : l.basis === 'random-mac' ? 'gizli MAC adresi' : 'cihaz türü';
+  return `${l.kind === 'wired' ? 'Kablolu' : 'Wi-Fi'} — ${l.certain ? '' : 'tahmini, '}${why}`;
+}
+const linkShort = (l?: LinkInfo) =>
+  !l || l.kind === 'unknown' ? '' : l.kind === 'setup' ? "Kurulum Wi-Fi'ı" : `${l.kind === 'wired' ? 'Kablolu' : 'Wi-Fi'}${l.certain ? '' : ' (tahmini)'}`;
+
 // Cihaz bağlantısının rengi: şu an en çok trafik taşıyan sınıf; boştaysa toplamda en çok kullanılan.
 function dominantCls(d: TopoDevice): Cls {
   let best: Flow | null = null;
@@ -130,7 +163,7 @@ function DeviceNode({ d, b, lod, mode, exitsById, onPick, hl }: DeviceNodeProps)
       </g>);
       fx += tw;
     }
-    const meta = [`Toplam ↓ ${fmtBytes(d.bytesDown)} ↑ ${fmtBytes(d.bytesUp)}`, TYPE_LABEL[d.type], d.blocked ? 'Engelli' : '', !d.online ? 'çevrimdışı' : ''].filter(Boolean).join(' · ');
+    const meta = [`Toplam ↓ ${fmtBytes(d.bytesDown)} ↑ ${fmtBytes(d.bytesUp)}`, linkShort(d.link), TYPE_LABEL[d.type], d.blocked ? 'Engelli' : '', !d.online ? 'çevrimdışı' : ''].filter(Boolean).join(' · ');
     body = <>
       <text x={x0} y={b.y + 12.5} className="topo-t-name" fontSize={fn}>{fitText(name, w - 8, fn)}</text>
       <text x={x0} y={b.y + 22} className="topo-t-mono" fontSize={fs}>{fitText(`${d.ip || '—'} · ${d.mac}`, w, fs)}</text>
@@ -150,6 +183,55 @@ function DeviceNode({ d, b, lod, mode, exitsById, onPick, hl }: DeviceNodeProps)
         {deviceIcon(d.type, 24)}
       </svg>
       <circle cx={b.x + b.w - 9} cy={b.y + 9} r={3} className={`topo-status ${d.blocked ? 'is-blocked' : active ? 'is-active' : d.online ? 'is-on' : 'is-off'}`} />
+      {body}
+    </g>
+  );
+}
+
+type AccessNodeProps = { id: AccessId; b: Box; lod: 0 | 1 | 2; mode: LayoutMode; st: AccStats; onPick: (id: AccessId) => void; hl: boolean };
+function AccessNode({ id, b, lod, mode, st, onPick, hl }: AccessNodeProps) {
+  const label = ACCESS_LABEL[id], detail = accessDetail(id, st);
+  const count = `${st.count} cihaz`;
+  const aria = `${label}: ${count}, ${rates(st.down, st.up)}`;
+  const cy = b.y + b.h / 2;
+  let body: ReactNode, icon: { x: number; y: number; s: number };
+  if (mode === 'narrow') {
+    // Dar düzen: grubun başlık kartı — ad + cihaz sayısı solda, toplam hız sağda.
+    icon = { x: b.x + 10, y: cy - 8, s: 16 };
+    body = lod === 2 ? <>
+      <text x={b.x + 32} y={b.y + 14} className="topo-t-name" fontSize={10}>{label} · {count}</text>
+      <text x={b.x + 32} y={b.y + 26} className="topo-t-sub" fontSize={7}>{fitText(detail, b.w - 150, 7)}</text>
+      <text x={b.x + b.w - 10} y={cy + 3} textAnchor="end" className="topo-t-rate" fontSize={7}>{rates(st.down, st.up)}</text>
+    </> : <>
+      <text x={b.x + 32} y={cy + 4} className="topo-t-name" fontSize={11}>{label}<tspan className="topo-t-sub" fontSize={9} dx={6}>{count}</tspan></text>
+      {st.down + st.up > 0 && <text x={b.x + b.w - 10} y={cy + 3.5} textAnchor="end" className="topo-t-rate" fontSize={8.5}>{rates(st.down, st.up)}</text>}
+    </>;
+  } else if (lod === 0) {
+    icon = { x: b.x + 10, y: cy - 8, s: 16 };
+    body = <text x={b.x + 34} y={cy + 4.5} className="topo-t-name" fontSize={13}>{fitText(label, b.w - 40, 13)}</text>;
+  } else if (lod === 1) {
+    icon = { x: b.x + 10, y: b.y + 8, s: 14 };
+    body = <>
+      <text x={b.x + 32} y={b.y + 18} className="topo-t-name" fontSize={11.5}>{fitText(label, b.w - 40, 11.5)}</text>
+      <text x={b.x + 12} y={b.y + 32} className="topo-t-sub" fontSize={8}>{fitText(detail, b.w - 20, 8)}</text>
+      <text x={b.x + 12} y={b.y + 45} className="topo-t-rate" fontSize={8.5}>{fitText(`${count} · ${rates(st.down, st.up)}`, b.w - 20, 8.5)}</text>
+    </>;
+  } else {
+    icon = { x: b.x + 10, y: b.y + 6, s: 11 };
+    body = <>
+      <text x={b.x + 26} y={b.y + 14} className="topo-t-name" fontSize={8.5}>{fitText(label, b.w - 34, 8.5)}</text>
+      <text x={b.x + 12} y={b.y + 24} className="topo-t-sub" fontSize={6}>{fitText(detail, b.w - 20, 6)}</text>
+      <text x={b.x + 12} y={b.y + 32.5} className="topo-t-sub" fontSize={6}>{fitText(`${count} · ${st.online} çevrimiçi`, b.w - 20, 6)}</text>
+      <text x={b.x + 12} y={b.y + 41} className="topo-t-rate" fontSize={6}>{fitText(rates(st.down, st.up), b.w - 20, 6)}</text>
+      <text x={b.x + 12} y={b.y + 49} className="topo-t-sub" fontSize={5.5}>{fitText(id === 'acc:setup' ? 'kesin: Pi yayınına bağlı' : 'yanıt süresine göre ayrılır', b.w - 20, 5.5)}</text>
+    </>;
+  }
+  return (
+    <g className={`topo-node topo-access${hl ? ' is-hl' : ''}`} data-node="1" role="button" tabIndex={0} aria-label={aria}
+      onClick={() => onPick(id)} onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onPick(id); } }}>
+      <title>{aria}</title>
+      <rect x={b.x} y={b.y} width={b.w} height={b.h} rx={mode === 'narrow' ? 9 : 10} className="topo-card" />
+      <svg x={icon.x} y={icon.y} width={icon.s} height={icon.s} viewBox="0 0 24 24" className="topo-icon">{accessIcon(id)}</svg>
       {body}
     </g>
   );
@@ -220,7 +302,7 @@ function ExitNode({ x, b, lod, mode, onPick, hl }: ExitNodeProps) {
 
 // Parçacık: gerçek (ya da önizleme) akışın bir "paketi". Rota = cihaz → Pi → çıkış → internet; indirme ters yönde.
 type Emitter = { mac: string; exit: ExitId; cls: Cls; down: number; up: number; speed: number; size: number; accD: number; accU: number };
-type Particle = { el: SVGCircleElement; route: PathGeom; s: number; dir: 1 | -1; speed: number; size: number; mac: string; exit: ExitId; dim: boolean };
+type Particle = { el: SVGCircleElement; route: PathGeom; s: number; dir: 1 | -1; speed: number; size: number; mac: string; exit: ExitId; acc: AccessId | undefined; dim: boolean };
 const emitRate = (bps: number) => (bps < 64 ? 0 : 0.5 + 6.5 * level(bps));
 
 export function NetworkTopology() {
@@ -240,15 +322,32 @@ export function NetworkTopology() {
   const exits = useMemo(() => data?.exits || [], [data]);
   const shown = useMemo(() => devices.filter(d => d.online || showOffline), [devices, showOffline]);
   const offlineCount = devices.length - devices.filter(d => d.online).length;
-  const devKeys = shown.map(d => d.mac).join(',');
+  // Erişim grupları (kablolu / Wi-Fi / Kurulum Wi-Fi'ı / belirsiz); anahtar metni yerleşimi yalnız gruplar değişince yeniler.
+  const groupKey = ACCESS_ORDER.map(id => `${id}=${shown.filter(d => accessOf(d) === id).map(d => d.mac).join(',')}`).join('|');
   const exitKeys = exits.map(x => x.id).join(',');
   // Geniş ekranda sütun sayısı sahne boyutuna göre seçilir (sığdırmayla aynı kullanılabilir alan).
   const vpW = mode === 'wide' ? size.w - 24 : 0, vpH = mode === 'wide' ? size.h - PAD_TOP - PAD_BOTTOM : 0;
   const layout = useMemo(
-    () => computeLayout(mode, devKeys ? devKeys.split(',') : [], (exitKeys ? exitKeys.split(',') : []) as ExitId[], { w: vpW, h: vpH }),
-    [mode, devKeys, exitKeys, vpW, vpH],
+    () => computeLayout(
+      mode,
+      groupKey.split('|').map(g => { const [id, keys] = g.split('='); return { id: id as AccessId, keys: keys ? keys.split(',') : [] } as AccessGroup; }),
+      (exitKeys ? exitKeys.split(',') : []) as ExitId[], { w: vpW, h: vpH },
+    ),
+    [mode, groupKey, exitKeys, vpW, vpH],
   );
   const exitsById = useMemo(() => new Map(exits.map(x => [x.id, x])), [exits]);
+  const accStats = useMemo(() => {
+    const m = new Map<AccessId, AccStats>();
+    for (const d of shown) {
+      const id = accessOf(d);
+      const st = m.get(id) || { count: 0, online: 0, down: 0, up: 0, measuring: false };
+      st.count++; if (d.online) st.online++;
+      st.down += d.downBps; st.up += d.upBps;
+      if (id === 'acc:unknown' && (d.link?.samples ?? 0) < 6) st.measuring = true;
+      m.set(id, st);
+    }
+    return m;
+  }, [shown]);
 
   const fitView = useCallback((lay: Layout, w: number, h: number): View => {
     const b = lay.bounds;
@@ -264,10 +363,10 @@ export function NetworkTopology() {
 
   // Görünümü sığdırma: ilk çizimde, ekran düzeni (geniş/dar) değişince ve kullanıcı haritayı oynatmadıysa cihaz listesi
   // ya da boyut değişince. Render sırasında önceki değerle karşılaştırılır (effect içinde setState yerine).
-  const fitKey = size.w ? (userMoved ? `${mode}` : `${mode}|${devKeys}|${exitKeys}|${size.w}x${size.h}`) : '';
+  const fitKey = size.w ? (userMoved ? `${mode}` : `${mode}#${groupKey}#${exitKeys}#${size.w}x${size.h}`) : '';
   if (fitKey && data && fitKey !== fitFor) {
-    const modeChanged = fitFor.split('|')[0] !== mode;
-    setFitFor(modeChanged ? `${mode}|${devKeys}|${exitKeys}|${size.w}x${size.h}` : fitKey);
+    const modeChanged = fitFor.split('#')[0] !== mode;
+    setFitFor(modeChanged ? `${mode}#${groupKey}#${exitKeys}#${size.w}x${size.h}` : fitKey);
     if (modeChanged || !userMoved || !view) {
       setView(fitView(layout, size.w, size.h));
       if (modeChanged && userMoved) setUserMoved(false);
@@ -277,9 +376,11 @@ export function NetworkTopology() {
   const viewRef = useRef<View | null>(null);
   const layoutRef = useRef<Layout>(layout);
   const selRef = useRef<Sel>(null);
+  const accOfRef = useRef(new Map<string, AccessId>());
   useLayoutEffect(() => { viewRef.current = view; }, [view]);
   useLayoutEffect(() => { layoutRef.current = layout; }, [layout]);
   useLayoutEffect(() => { selRef.current = sel; }, [sel]);
+  useLayoutEffect(() => { accOfRef.current = new Map(shown.map(d => [d.mac, accessOf(d)])); }, [shown]);
 
   // Boyut: ResizeObserver ilk gözlemde de çağırır.
   useEffect(() => {
@@ -328,7 +429,7 @@ export function NetworkTopology() {
   const zoomCenter = (factor: number) => zoomAt(size.w / 2, size.h / 2, factor, true);
   const fitNow = () => {
     setUserMoved(false);
-    setFitFor(`${mode}|${devKeys}|${exitKeys}|${size.w}x${size.h}`); // render sırasındaki sığdırma animasyonu ezmesin
+    setFitFor(`${mode}#${groupKey}#${exitKeys}#${size.w}x${size.h}`); // render sırasındaki sığdırma animasyonu ezmesin
     animateTo(fitView(layout, size.w, size.h));
   };
 
@@ -455,19 +556,30 @@ export function NetworkTopology() {
     if (b) focusBox(b);
   };
 
+  const pickAccess = (id: AccessId) => {
+    if (dragged.current) return;
+    setSel({ kind: 'access', id });
+    const b = layout.access.get(id);
+    if (b) focusBox(b);
+  };
+
   // Vurgulanan yollar
   const hl = useMemo(() => {
-    const devs = new Set<string>(), exs = new Set<ExitId>();
+    const devs = new Set<string>(), exs = new Set<ExitId>(), accs = new Set<AccessId>();
+    const used = (d: TopoDevice) => d.flows.forEach(f => { if (f.bytesDown + f.bytesUp > 0) exs.add(f.exit); });
     if (sel?.kind === 'device') {
       devs.add(sel.id);
       const d = devices.find(x => x.mac === sel.id);
-      d?.flows.forEach(f => { if (f.bytesDown + f.bytesUp > 0) exs.add(f.exit); });
+      if (d) { used(d); accs.add(accessOf(d)); }
     } else if (sel?.kind === 'exit') {
       exs.add(sel.id);
-      devices.forEach(d => { if (d.flows.some(f => f.exit === sel.id && f.bytesDown + f.bytesUp > 0)) devs.add(d.mac); });
+      devices.forEach(d => { if (d.flows.some(f => f.exit === sel.id && f.bytesDown + f.bytesUp > 0)) { devs.add(d.mac); accs.add(accessOf(d)); } });
+    } else if (sel?.kind === 'access') {
+      accs.add(sel.id);
+      shown.forEach(d => { if (accessOf(d) === sel.id) { devs.add(d.mac); used(d); } });
     }
-    return { devs, exs };
-  }, [sel, devices]);
+    return { devs, exs, accs };
+  }, [sel, devices, shown]);
 
   // ─── Parçacık motoru (DOM'a doğrudan; React yeniden çizimi yok) ───
   const emitters = useRef(new Map<string, Emitter>());
@@ -523,9 +635,10 @@ export function NetworkTopology() {
       let r = routes.current.get(key);
       if (!r) {
         const lay = layoutRef.current;
-        const a = lay.devLink.get(mac), b = lay.exitLink.get(exit), c = lay.netLink.get(exit);
-        if (!a || !b || !c) return null;
-        r = joinPaths([a, b, c]);
+        const acc = accOfRef.current.get(mac);
+        const a = lay.devLink.get(mac), m = acc ? lay.accessLink.get(acc) : undefined, b = lay.exitLink.get(exit), c = lay.netLink.get(exit);
+        if (!a || !m || !b || !c) return null;
+        r = joinPaths([a, m, b, c]);
         routes.current.set(key, r);
       }
       return r;
@@ -539,7 +652,7 @@ export function NetworkTopology() {
       el.setAttribute('class', `topo-p topo-c-${em.cls}`);
       el.style.display = '';
       el.style.opacity = '';
-      particles.current.push({ el, route, s: dir === 1 ? 0 : route.len, dir, speed: em.speed * (0.9 + Math.random() * 0.2), size: em.size, mac: em.mac, exit: em.exit, dim: false });
+      particles.current.push({ el, route, s: dir === 1 ? 0 : route.len, dir, speed: em.speed * (0.9 + Math.random() * 0.2), size: em.size, mac: em.mac, exit: em.exit, acc: accOfRef.current.get(em.mac), dim: false });
       lastK = -1; // yeni parçacığa boyut/soluklaştırma uygulansın
     };
     const frame = (now: number) => {
@@ -564,7 +677,7 @@ export function NetworkTopology() {
         p.el.setAttribute('cy', pt.y.toFixed(1));
         if (restyle) {
           p.el.setAttribute('r', ((1.9 + 1.7 * p.size) / Math.sqrt(k)).toFixed(2));
-          const dim = !!s && (s.kind === 'device' ? p.mac !== s.id : p.exit !== s.id);
+          const dim = !!s && (s.kind === 'device' ? p.mac !== s.id : s.kind === 'exit' ? p.exit !== s.id : p.acc !== s.id);
           if (dim !== p.dim) { p.dim = dim; p.el.style.opacity = dim ? '0.12' : ''; }
         }
         alive.push(p);
@@ -589,14 +702,15 @@ export function NetworkTopology() {
   const total = devices.reduce((a, d) => ({ down: a.down + d.downBps, up: a.up + d.upBps }), { down: 0, up: 0 });
   const selDevice = sel?.kind === 'device' ? devices.find(d => d.mac === sel.id) : undefined;
   const selExit = sel?.kind === 'exit' ? exitsById.get(sel.id) : undefined;
-  const hasSel = !!(selDevice || selExit);
+  const selAccess = sel?.kind === 'access' && accStats.has(sel.id) ? sel.id : undefined;
+  const hasSel = !!(selDevice || selExit || selAccess);
   const linkW = (bps: number) => (bps > 0 ? 1.3 + 2.4 * level(bps) : 1);
   const pi = layout.pi, net = layout.internet;
 
   return (
     <div className="fade-in">
       <Panel title="Canlı Ağ Topolojisi"
-        subtitle="Her cihazın internete hangi yoldan çıktığı: yerel, DPI ya da VPS tüneli. Tekerlek ya da iki parmakla yakınlaştırın — ayrıntılar yakınlaştıkça açılır; bir cihaza dokunmak onu büyütür."
+        subtitle="Her cihazın ağa nasıl bağlandığı (kablolu / Wi-Fi) ve internete hangi yoldan çıktığı: yerel, DPI ya da VPS tüneli. Tekerlek ya da iki parmakla yakınlaştırın — ayrıntılar yakınlaştıkça açılır; bir cihaza dokunmak onu büyütür."
         badge={<Badge variant="info">{onlineCount} çevrimiçi</Badge>}
         actions={<button className="icon-btn" onClick={refetch} title="Yenile" aria-label="Yenile"><RefreshCw size={14} className={loading ? 'spin' : ''} /></button>}>
 
@@ -633,6 +747,13 @@ export function NetworkTopology() {
                       {b && <path d={b.d} className={cls} strokeWidth={linkW(bps)} />}
                     </g>;
                   })}
+                  {ACCESS_ORDER.map(id => {
+                    const p = layout.accessLink.get(id), st = accStats.get(id);
+                    if (!p || !st) return null;
+                    const bps = st.down + st.up;
+                    return <path key={id} d={p.d} strokeWidth={linkW(bps)}
+                      className={`topo-link topo-c-mix ${bps > 0 ? 'is-active' : 'is-idle'}${hl.accs.has(id) ? ' is-hl' : ''}`} />;
+                  })}
                   {shown.map(d => {
                     const p = layout.devLink.get(d.mac);
                     if (!p) return null;
@@ -652,6 +773,10 @@ export function NetworkTopology() {
                     {lod === 2 && <text x={net.x + 34} y={net.y + net.h / 2 + 8} className="topo-t-rate" fontSize={6}>{rates(total.down, total.up)}</text>}
                   </g>
                   {exits.map(x => { const b = layout.exits.get(x.id); return b ? <ExitNode key={x.id} x={x} b={b} lod={lod} mode={layout.mode} onPick={pickExit} hl={hl.exs.has(x.id)} /> : null; })}
+                  {ACCESS_ORDER.map(id => {
+                    const b = layout.access.get(id), st = accStats.get(id);
+                    return b && st ? <AccessNode key={id} id={id} b={b} lod={lod} mode={layout.mode} st={st} onPick={pickAccess} hl={hl.accs.has(id)} /> : null;
+                  })}
                   <g className="topo-node topo-pi is-hl" aria-label={`Klyrix Gate ${data.gateway.lanIp}`}>
                     <rect x={pi.x} y={pi.y} width={pi.w} height={pi.h} rx={12} className="topo-card" />
                     <svg x={pi.x + 12} y={pi.y + pi.h / 2 - 10} width={20} height={20} viewBox="0 0 24 24" className="topo-icon"><Router size={24} strokeWidth={1.8} /></svg>
@@ -713,6 +838,7 @@ export function NetworkTopology() {
                         {TYPE_LABEL[selDevice.type] ? ` · ${TYPE_LABEL[selDevice.type]}` : ''}
                         {' · '}{selDevice.online ? 'çevrimiçi' : 'çevrimdışı'}{selDevice.blocked ? ' · engelli' : ''}
                       </div>
+                      <div className="topo-drawer-sub">Bağlantı: {linkText(selDevice.link)}</div>
                       {selDevice.flows.length === 0
                         ? <div className="topo-drawer-empty">Bu cihazın Pi üzerinden geçen trafiği görülmedi{selDevice.online ? ' (modemin ağında olabilir ya da henüz bağlantı kurmadı)' : ''}.</div>
                         : (
@@ -733,6 +859,29 @@ export function NetworkTopology() {
                             </tbody>
                           </table>
                         )}
+                    </>
+                  )}
+                  {selAccess && (
+                    <>
+                      <div className="topo-drawer-title">{ACCESS_LABEL[selAccess]} · {accStats.get(selAccess)!.count} cihaz</div>
+                      <div className="topo-drawer-sub">
+                        {selAccess === 'acc:setup'
+                          ? "Pi'nin kendi Kurulum Wi-Fi'ına bağlı cihazlar (kesin)."
+                          : 'Pi her cihaza ara sıra ARP ile sorar: kablolu cihaz modeme göre 1 ms içinde ve sabit yanıt verir, Wi-Fi\'daki cihaz radyo yüzünden dalgalı ve yavaş. Gizli MAC ve telefon/tablet de Wi-Fi ipucudur.'}
+                      </div>
+                      <table className="topo-flows">
+                        <thead><tr><th>Cihaz</th><th>Neye göre</th><th>↓ İndirme</th><th>↑ Yükleme</th></tr></thead>
+                        <tbody>
+                          {shown.filter(d => accessOf(d) === selAccess).slice(0, 12).map(d => (
+                            <tr key={d.mac}>
+                              <td>{deviceName(d)}</td>
+                              <td className="topo-note">{linkText(d.link).replace(/^[^—]*— /, '')}</td>
+                              <td>{fmtRate(d.downBps)}</td>
+                              <td>{fmtRate(d.upBps)}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
                     </>
                   )}
                   {selExit && (

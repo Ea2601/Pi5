@@ -2,6 +2,7 @@ import fs from 'fs';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
 import type { IpCounters } from './bandwidth';
+import { classifyLink, isRandomMac, wirelessHint, type LinkInfo } from './linkProbe';
 
 // Canlı ağ topolojisi: cihaz → Pi → çıkış (yerel / DPI / VPS tüneli) → internet. Trafik bandwidth.ts'in ct mark'a göre
 // ayrılmış sayaçlarından gelir; sınıflar system.ts getFwmark şemasıyla aynı:
@@ -22,7 +23,7 @@ export function classifyMark(mark: number): MarkClass {
   return { exit: 'local', dpiRequested: false };
 }
 
-export type Neighbor = { mac: string; state: string; confirmed: number | null };
+export type Neighbor = { mac: string; state: string; confirmed: number | null; dev: string };
 
 // `ip -j -s -4 neigh show` → IP başına MAC, durum ve son doğrulamadan bu yana geçen saniye.
 export function parseNeighbors(json: string): Map<string, Neighbor> {
@@ -33,7 +34,7 @@ export function parseNeighbors(json: string): Map<string, Neighbor> {
   for (const n of rows) {
     if (typeof n?.dst !== 'string' || typeof n?.lladdr !== 'string') continue;
     const state = Array.isArray(n.state) ? String(n.state[0] || '') : String(n.state || '');
-    out.set(n.dst, { mac: n.lladdr.toLowerCase(), state, confirmed: Number.isFinite(n.confirmed) ? Number(n.confirmed) : null });
+    out.set(n.dst, { mac: n.lladdr.toLowerCase(), state, confirmed: Number.isFinite(n.confirmed) ? Number(n.confirmed) : null, dev: String(n.dev || '') });
   }
   return out;
 }
@@ -65,6 +66,7 @@ export type TopoDevice = {
   // routed: sayaçlarda izi var (trafiği Pi'den geçiyor); yoksa cihaz modemin ağında ve Pi'yi ağ geçidi olarak kullanmıyor.
   mac: string; ip: string; hostname: string | null; type: string; blocked: boolean; online: boolean; routed: boolean;
   downBps: number; upBps: number; bytesDown: number; bytesUp: number; flows: Flow[];
+  link: LinkInfo; // kablolu / Wi-Fi / Kurulum Wi-Fi'ı / belirsiz (linkProbe.ts)
 };
 export type TopoExit = {
   id: ExitId; kind: 'local' | 'dpi' | 'vps'; label: string; detail: string;
@@ -95,6 +97,10 @@ export type TopoInput = {
   localIps: Set<string>;
   accounting: boolean;
   nowS: number;
+  // Bağlantı türü ölçümü (linkProbe): MAC başına ARP yanıt süreleri, taban çizgisi, Pi'nin Kurulum Wi-Fi ağı.
+  probe?: (mac: string) => number[];
+  probeBaseMs?: number | null;
+  onSetupWifi?: (ip: string) => boolean;
 };
 
 const byExitOrder = (a: ExitId) => (a === 'local' ? 0 : a === 'dpi' ? 1 : 2 + Number(a.slice(4)));
@@ -106,7 +112,8 @@ export function buildTopology(inp: TopoInput): Topology {
   const ensure = (mac: string, ip: string) => {
     let d = devByMac.get(mac);
     if (!d) {
-      d = { mac, ip, hostname: null, type: 'unknown', blocked: false, online: false, routed: false, downBps: 0, upBps: 0, bytesDown: 0, bytesUp: 0, flows: [] };
+      d = { mac, ip, hostname: null, type: 'unknown', blocked: false, online: false, routed: false, downBps: 0, upBps: 0, bytesDown: 0, bytesUp: 0, flows: [],
+        link: { kind: 'unknown', basis: 'none', certain: false, medMs: null, p90Ms: null, baseMs: null, samples: 0 } };
       devByMac.set(mac, d);
     }
     return d;
@@ -185,6 +192,12 @@ export function buildTopology(inp: TopoInput): Topology {
       }
     }
     d.routed = d.bytesDown + d.bytesUp > 0;
+    const hasMac = /^[0-9a-f]{2}(:[0-9a-f]{2}){5}$/.test(d.mac);
+    d.link = classifyLink({
+      samples: hasMac && inp.probe ? inp.probe(d.mac) : [], baseMs: inp.probeBaseMs ?? null,
+      randomMac: hasMac && isRandomMac(d.mac), wirelessHint: wirelessHint(d.hostname, d.type),
+      onSetupWifi: !!d.ip && !!inp.onSetupWifi?.(d.ip),
+    });
     d.online = isOnline(inp.neighbors.get(d.ip), d.downBps + d.upBps > 0 || inp.recentIps.has(d.ip));
     devices.push(d);
   }
@@ -199,6 +212,16 @@ export function buildTopology(inp: TopoInput): Topology {
     accounting: inp.accounting,
     sampledAt: new Date(inp.nowS * 1000).toISOString(),
   };
+}
+
+// ip "a.b.c.d/nn" alt ağında mı (IPv4)
+export function inCidr(ip: string, cidr: string): boolean {
+  const [net, bits] = cidr.split('/');
+  const n = (x: string) => x.split('.').reduce((a, o) => ((a << 8) | (Number(o) & 255)) >>> 0, 0);
+  if (!/^\d+\.\d+\.\d+\.\d+$/.test(ip || '')) return false;
+  const b = Number(bits);
+  const mask = b <= 0 ? 0 : (0xffffffff << (32 - b)) >>> 0;
+  return ((n(ip) & mask) >>> 0) === ((n(net) & mask) >>> 0);
 }
 
 // ─── Canlı okumalar (Linux) ───

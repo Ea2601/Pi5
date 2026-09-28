@@ -786,6 +786,7 @@ body.nav-open { overflow: hidden; }
 .topo-c-dpi { --c: var(--topo-dpi); }
 .topo-c-vps { --c: var(--topo-vps); }
 .topo-c-none { --c: var(--text-muted); }
+.topo-c-mix { --c: var(--accent-color); } /* erişim → Pi: her türden trafik taşır */
 
 .topo-tier { fill: var(--text-muted); font-weight: 600; letter-spacing: 0.12em; }
 
@@ -836,7 +837,9 @@ body.nav-open { overflow: hidden; }
 .has-sel .topo-link:not(.is-hl) { opacity: 0.1; }
 .has-sel .topo-link.is-hl.is-idle { opacity: 0.8; }
 .has-sel .topo-node:not(.is-hl) { opacity: 0.35; }
-.has-sel .topo-dev.is-hl .topo-card, .has-sel .topo-exit.is-hl .topo-card { stroke: var(--accent-color); }
+.has-sel .topo-dev.is-hl .topo-card, .has-sel .topo-exit.is-hl .topo-card, .has-sel .topo-access.is-hl .topo-card { stroke: var(--accent-color); }
+.topo-access .topo-card { fill: color-mix(in srgb, var(--topo-card) 88%, var(--accent-color)); }
+.topo-access .topo-icon { color: var(--accent-color); }
 
 /* Harita üstü araçlar */
 .topo-ui { position: absolute; z-index: 2; cursor: default; }

@@ -22,7 +22,8 @@ import { ASN_TOKEN, getAsnPrefixes, normalizeCidr, refreshAsnIfStale } from './i
 import { getRoutingSuggestions, MAX_HOURS as SUGGEST_MAX_HOURS } from './domainSuggest';
 import { startUpdate, getUpdateStatus } from './update';
 import { sampleBandwidth, neighborMacs, buildLive } from './bandwidth';
-import { buildTopology, readNeighbors, readHandshakes, readDefaultRoute, readIfaces, readLocalIps, noteActivity } from './topology';
+import { buildTopology, readNeighbors, readHandshakes, readDefaultRoute, readIfaces, readLocalIps, noteActivity, inCidr } from './topology';
+import { startLinkProbe, probeSamples, probeBaseline, noteTopologyView, type ProbeTarget } from './linkProbe';
 import { authGate, registerAuthRoutes } from './auth';
 import { validateSchedule, validateCommand, syncCronJobs, readJobStatuses, readSystemCron, syncCronOnStartup } from './cronSync';
 import { validateListValue, normalizeListValue, syncPiholeLists, lastListSync, externalPiholeEntries } from './piholeLists';
@@ -1682,10 +1683,12 @@ app.get('/api/topology/live', async (_req, res) => {
       : [new Map(), new Map(), null, new Set<string>(), null];
     const lanIp = lan?.client.ip || lan?.transit.ip || '';
     const now = Date.now();
+    noteTopologyView(); // harita açıkken bağlantı türü ölçümü sıklaşır
     res.json(buildTopology({
       devices: devices as any[], vps: vps as any[], neighbors, markCounters, markRates,
       recentIps: noteActivity(markRates, now), handshakes, ifacesUp: isLinux ? readIfaces() : new Set(),
       lanIp, hostname: require('os').hostname(), modem, localIps, accounting, nowS: Math.floor(now / 1000),
+      probe: probeSamples, probeBaseMs: probeBaseline(), onSetupWifi: ip => inCidr(ip, AP_NET),
     }));
   } catch (e: any) {
     res.status(500).json({ error: e.message });
@@ -4031,6 +4034,24 @@ const server = app.listen(Number(port), bindHost, () => {
   setInterval(() => { void refreshAsnRanges(); }, 6 * 3600 * 1000);
   // Cihaz engelleri (nft tablosu açılışta yoktur; pi5-gw-restore da yükler — burada DB'deki güncel liste yazılır).
   void reapplyBlockedDevices();
+  // Ağ haritası: cihazların kablolu / Wi-Fi ayrımı için arka planda ARP yanıt süresi ölçümü (linkProbe.ts). Taban çizgisi
+  // Pi'nin kabloyla bağlı olduğu ağ geçidi; Pi'nin çıkışı kablosuzsa taban çizgisi alınmaz. Kurulum Wi-Fi'ı istemcileri
+  // ölçülmez (kesin bilinir), modem ve Pi'nin kendisi de.
+  if (isLinux) {
+    startLinkProbe(async () => {
+      const fs = require('fs');
+      const [neighbors, modem, own] = await Promise.all([readNeighbors(), readDefaultRoute(), readLocalIps()]);
+      const targets: ProbeTarget[] = [];
+      for (const [ip, n] of neighbors) {
+        if (['FAILED', 'INCOMPLETE'].includes(n.state) || !n.dev || /^(wg|lo|docker|veth)/.test(n.dev)) continue;
+        if (own.has(ip) || ip === modem?.ip || inCidr(ip, AP_NET)) continue;
+        targets.push({ ip, mac: n.mac, dev: n.dev });
+      }
+      const gwN = modem ? neighbors.get(modem.ip) : undefined;
+      const wiredUplink = !!modem?.dev && !fs.existsSync(`/sys/class/net/${modem.dev}/wireless`);
+      return { targets, gateway: modem && gwN && wiredUplink ? { ip: modem.ip, mac: gwN.mac, dev: modem.dev } : null };
+    });
+  }
   // Cron: panel görevleri zamanlayıcıya yazılır, ancak bu başarılıysa eski pi5-maintenance satırları çıkarılır (önce yeni
   // dosya). Veritabanı ilk kurulum işleri bitsin diye kısa gecikmeyle.
   setTimeout(() => {
