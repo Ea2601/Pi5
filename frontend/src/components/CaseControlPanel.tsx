@@ -317,9 +317,10 @@ export function CaseControlPanel() {
       <div style={{ marginTop: 14 }}>
         <Panel title="LCD Ekran Döngüsü" icon={<Type size={20} style={{ marginRight: 8 }} />}
           subtitle="Kasa LCD ekranında sırayla gösterilecek bilgiler"
-          badge={<Badge variant="info">{pages.filter(p => p.enabled).length} sayfa aktif</Badge>}
           actions={
-            <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+            // Rozet + düğmeler tek grupta: dar ekranda alt satıra kayar (taşmaz)
+            <div className="lcd-actions">
+              <Badge variant="info">{pages.filter(p => p.enabled).length} sayfa aktif</Badge>
               <select className="config-select-sm" defaultValue=""
                 onChange={e => { addSystemPage(e.target.value); e.target.value = ''; }}
                 style={{ width: 'auto', minWidth: 130 }} title="Sistem sayfası ekle">
@@ -353,7 +354,7 @@ export function CaseControlPanel() {
 
           {/* Ekran (motor) ayarları — PI5_LCD_* uçlarına yazılır */}
           <div className="glass-panel" style={{ padding: '10px 14px', marginBottom: 8 }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 10 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 10, flexWrap: 'wrap' }}>
               <SlidersHorizontal size={14} />
               <span style={{ fontSize: 13, fontWeight: 500 }}>Ekran Ayarları</span>
               <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>
@@ -419,10 +420,10 @@ export function CaseControlPanel() {
                 <div style={{ display: 'flex', gap: 6 }}>
                   <input className="config-input" type="text" value={settings.i2c_addr}
                     onChange={e => updateSetting('i2c_addr', e.target.value)} placeholder="0x3C"
-                    style={{ fontSize: 12, padding: '4px 8px', width: 70 }} />
+                    style={{ fontSize: 12, padding: '4px 8px', width: 70, minWidth: 0 }} />
                   <input className="config-input" type="number" min={0} max={9} value={settings.i2c_port}
                     onChange={e => updateSetting('i2c_port', Number(e.target.value))}
-                    style={{ fontSize: 12, padding: '4px 8px', width: 55 }} />
+                    style={{ fontSize: 12, padding: '4px 8px', width: 55, minWidth: 0 }} />
                 </div>
                 <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>Ekran hiç açılmıyorsa: i2cdetect -y 1</span>
               </label>
@@ -443,7 +444,7 @@ export function CaseControlPanel() {
 
             {/* Disk birimleri — disk sayfasındaki göstergeler */}
             <div style={{ marginTop: 12 }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6, flexWrap: 'wrap' }}>
                 <span style={{ fontSize: 11, color: 'var(--text-secondary)' }}>Disk birimleri (disk sayfası)</span>
                 <button className="btn-outline btn-sm" onClick={addMount} disabled={settings.mounts.length >= 8}
                   style={{ fontSize: 11, padding: '2px 8px' }}>
@@ -475,11 +476,11 @@ export function CaseControlPanel() {
                     <input className="config-input" type="text" value={m.name} maxLength={6}
                       onChange={e => updateMount(i, 'name', e.target.value.toUpperCase())}
                       placeholder="AD"
-                      style={{ fontSize: 12, padding: '4px 8px', width: 80, fontFamily: 'var(--font-mono)' }} />
+                      style={{ fontSize: 12, padding: '4px 8px', width: 80, minWidth: 0, fontFamily: 'var(--font-mono)' }} />
                     <input className="config-input" type="text" value={m.path}
                       onChange={e => updateMount(i, 'path', e.target.value)}
                       placeholder="/mnt/nas"
-                      style={{ fontSize: 12, padding: '4px 8px', flex: 1, fontFamily: 'var(--font-mono)' }} />
+                      style={{ fontSize: 12, padding: '4px 8px', flex: 1, minWidth: 0, fontFamily: 'var(--font-mono)' }} />
                     <button className="icon-btn icon-btn-sm" onClick={() => removeMount(i)} title="Kaldır">
                       <Trash2 size={12} />
                     </button>
@@ -494,10 +495,9 @@ export function CaseControlPanel() {
 
           <div style={{ marginTop: 4, display: 'flex', flexDirection: 'column', gap: 4 }}>
             {pages.map((page, idx) => (
-              <div key={page.id} className={`glass-panel ${!page.enabled ? 'routing-row-disabled' : ''}`}
-                style={{ padding: '10px 14px', display: 'flex', alignItems: 'center', gap: 10 }}>
+              <div key={page.id} className={`glass-panel lcd-page-row ${!page.enabled ? 'routing-row-disabled' : ''}`}>
                 {/* Sıra — dizideki sıra ekrandaki dönüş sırasıdır */}
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 1, flexShrink: 0 }}>
+                <div className="lcd-page-order">
                   <button className="icon-btn icon-btn-sm" onClick={() => movePage(page.id, -1)}
                     disabled={idx === 0} title="Yukarı taşı"
                     style={{ width: 20, height: 16, opacity: idx === 0 ? 0.3 : 1 }}>
@@ -511,16 +511,16 @@ export function CaseControlPanel() {
                 </div>
 
                 {/* Toggle */}
-                <button className={`toggle-btn toggle-sm ${page.enabled ? 'toggle-on' : 'toggle-off'}`}
-                  onClick={() => togglePage(page.id)} style={{ flexShrink: 0 }}>
+                <button className={`toggle-btn toggle-sm lcd-page-toggle ${page.enabled ? 'toggle-on' : 'toggle-off'}`}
+                  onClick={() => togglePage(page.id)}>
                   <div className="toggle-knob" />
                 </button>
 
                 {/* Sayfa adı */}
-                <span style={{ width: 140, fontSize: 13, fontWeight: 500, flexShrink: 0 }}>{page.label}</span>
+                <span className="lcd-page-label">{page.label}</span>
 
                 {/* İçerik */}
-                <div style={{ flex: 1, minWidth: 0 }}>
+                <div className="lcd-page-content">
                   {page.type === 'custom' ? (
                     <input className="config-input" type="text" value={page.content}
                       onChange={e => updatePage(page.id, 'content', e.target.value)}
@@ -528,7 +528,7 @@ export function CaseControlPanel() {
                       style={{ fontSize: 12, padding: '4px 8px', width: '100%' }} />
                   ) : isUnknownPage(page) ? (
                     <span title="Bu içerik anahtarını ekran motoru tanımıyor; sayfa serbest metin olarak çizilir"
-                      style={{ fontSize: 11, color: 'var(--warning, #f59e0b)', display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                      style={{ fontSize: 11, color: 'var(--warning, #f59e0b)', display: 'inline-flex', alignItems: 'center', gap: 4, flexWrap: 'wrap' }}>
                       <AlertTriangle size={11} />
                       <span style={{ fontFamily: 'var(--font-mono)' }}>{page.content}</span>
                       <span>— tanınmıyor, metin olarak gösterilir</span>
@@ -541,15 +541,15 @@ export function CaseControlPanel() {
                 </div>
 
                 {/* Süre */}
-                <div style={{ display: 'flex', alignItems: 'center', gap: 4, flexShrink: 0 }}>
+                <div className="lcd-page-dur">
                   <input className="config-input" type="number" min={2} max={30} value={page.duration}
                     onChange={e => updatePage(page.id, 'duration', Number(e.target.value))}
-                    style={{ width: 50, fontSize: 12, padding: '4px 6px', textAlign: 'center' }} />
+                    style={{ width: 50, minWidth: 0, fontSize: 12, padding: '4px 6px', textAlign: 'center' }} />
                   <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>sn</span>
                 </div>
 
                 {/* Sil */}
-                <button className="icon-btn icon-btn-sm" onClick={() => removePage(page.id)} title="Kaldır" style={{ flexShrink: 0 }}>
+                <button className="icon-btn icon-btn-sm lcd-page-del" onClick={() => removePage(page.id)} title="Kaldır">
                   <Trash2 size={12} />
                 </button>
               </div>

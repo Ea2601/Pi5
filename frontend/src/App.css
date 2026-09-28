@@ -1534,6 +1534,45 @@ select:disabled,
   .dhcp-step-body { margin-left: 0; }
 }
 
+/* Kasa LED → LCD Ekran Döngüsü: başlık düğmeleri ve sayfa satırları (mobile-first; dar ekranda alt satıra kayar) */
+.lcd-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-width: 0;
+}
+.lcd-actions .badge { white-space: nowrap; }
+
+/* Telefon: [sıra | anahtar | ad | süre | sil] üstte, içerik (anahtar/metin) altta tam genişlik */
+.lcd-page-row {
+  display: grid;
+  grid-template-columns: auto auto minmax(0, 1fr) auto auto;
+  grid-template-areas:
+    "order toggle label dur del"
+    "order content content content content";
+  align-items: center;
+  gap: 6px 10px;
+  padding: 10px 12px;
+}
+.lcd-page-order { grid-area: order; display: flex; flex-direction: column; gap: 1px; }
+.lcd-page-toggle { grid-area: toggle; }
+.lcd-page-label { grid-area: label; min-width: 0; font-size: 13px; font-weight: 500; overflow-wrap: anywhere; }
+.lcd-page-content { grid-area: content; min-width: 0; overflow-wrap: anywhere; }
+.lcd-page-dur { grid-area: dur; display: flex; align-items: center; gap: 4px; }
+.lcd-page-del { grid-area: del; }
+
+/* Geniş ekran: önceki tek satırlık düzen (ad sütunu 140px) */
+@media (min-width: 768px) {
+  .lcd-actions { justify-content: flex-end; }
+  .lcd-page-row {
+    grid-template-columns: auto auto 140px minmax(0, 1fr) auto auto;
+    grid-template-areas: "order toggle label content dur del";
+    padding: 10px 14px;
+  }
+}
+
 /* Toggle switch */
 .toggle-btn {
   width: 36px;

@@ -1,8 +1,9 @@
 {
-  "version": "2.24.1",
-  "build": 78,
+  "version": "2.24.2",
+  "build": 79,
   "date": "2026-09-28",
   "changelog": [
+    "Kasa LED → LCD Ekran Döngüsü taşmaları giderildi: başlıktaki düğmeler (Sayfa Ekle, Metin Ekle, Varsayılan, Kaydet & Uygula) dar ekranda alt satıra kayar; telefonda sayfa satırlarının içerik bilgisi alt satıra iner. I2C adres/port, süre ve birim adı kutuları olması gereken genişliğe döndü; masaüstünde I2C port kutusu artık Animasyon sütununa binmiyor",
     "Güncelleme düzeltildi: v2.23.1'den beri panelden yapılan güncellemelerde 'Frontend Build' adımı 'tsc: not found' ile düşüyor, arayüz yenilenmiyordu (sürüm numarası yeni görünse de ekran eski kalıyordu). Neden: güncelleme panel servisinin ortamında (NODE_ENV=production) çalışırken npm derleme araçlarını (tsc, vite) sildi; eksik paket denetimi de bu ortamda onları görmüyordu. Artık derleme araçları her durumda kurulur, eksikse tamamlanır",
     "Panel güncellemesi arka planda sürer: 'Güncelle'ye basınca Pi işi kendi başına yürütür, panel o anki adımı gösterir (kod indiriliyor → kurulum → derleme → yeniden başlatma). Telefon ekranı kapansa, sayfa yenilense ya da bağlantı kopsa da güncelleme yarıda kalmaz. Eskiden istek 5 dk'ya kadar açık kalıyordu ve bağlantı kopunca 'Failed to fetch' görünüyordu",
     "Panel telefona göre yeniden tasarlandı (önce telefon, sonra geniş ekran): telefonda menü soldan açılan çekmecedir (üst çubuktaki ☰ düğmesi), üst çubukta o anki sayfanın adı ve kısa sistem durumu görünür; kartlar dar ekranda iki sütun olur, sayfa yana taşmaz. Masaüstü düzeni aynı kalır",
