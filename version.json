@@ -1,10 +1,11 @@
 {
-  "version": "2.23.2",
-  "build": 76,
+  "version": "2.24.0",
+  "build": 77,
   "date": "2026-09-28",
   "changelog": [
-    "Güncelleme: yeni eklenen panel paketleri artık her durumda kurulur. Eskiden yalnız 'son güncellemede package.json değişti mi' diye bakılıyordu; kurulum bir kez atlanınca ya da güncelleme yeniden denenince paketler hiç kurulmuyor ve 'Frontend Build' adımı düşüyordu (v2.23.1'de yaşandı). Artık eksik ya da sürümü tutmayan paket görülünce kurulur; kurulum hata verirse nedeni güncelleme günlüğüne ayrıntılı yazılır",
-    "Panel internetsiz de tam görünür (v2.23.1): yazı tipleri panelle birlikte Pi'den sunulur; uygulama logoları internet yokken baş harf olarak görünür",
-    "Kurulum Wi-Fi'ı (v2.23.0): Pi'nin dahili Wi-Fi'si 'Klyrix-Kurulum' ağını yayınlar; telefon bağlanınca giriş sayfası kendiliğinden açılır — modemin DHCP'si kapalıyken de panele ulaşma yolu"
+    "Panel telefona göre yeniden tasarlandı (önce telefon, sonra geniş ekran): telefonda menü soldan açılan çekmecedir (üst çubuktaki ☰ düğmesi), üst çubukta o anki sayfanın adı ve kısa sistem durumu görünür; kartlar dar ekranda iki sütun olur, sayfa yana taşmaz. Masaüstü düzeni aynı kalır",
+    "Dashboard yenilendi: üstte koruma durumu ile çalışma süresi / yük / sağlık özeti ve dört ana gösterge, ardından donanım ve servis durumu, sonra grafikler; grafik ipuçları açık temada da okunur",
+    "DHCP ayarları ayrı sayfada: menü → Pi-hole DNS → DHCP Ayarları (eskiden Pi-hole → Ayarlar sekmesindeydi). Doğrudan adres http://<pi>/#dhcp; sihirbazın 'Kalıcı yap' yönlendirmeleri bu adresi verir. Sayfa yenilenince aynı sayfada kalınır",
+    "WhatsApp aramaları VPS tünelinden: WhatsApp kuralına Meta IP aralıkları (AS32934, RIPE'den günlük) eklendi — yalnız arama trafiği (443 dışı) tünelden çıkar; Facebook/Instagram web trafiği yerel kalır. Routing sayfasında 'Meta IP aralıkları' etiketi görünür"
   ]
 }

@@ -1,4 +1,4 @@
-import { Bell, User, ShieldCheck, ShieldAlert, Download, Loader2, Clock, Sun, Moon } from 'lucide-react';
+import { Bell, User, ShieldCheck, ShieldAlert, Download, Loader2, Clock, Sun, Moon, Menu } from 'lucide-react';
 import { useState, useEffect } from 'react';
 import type { HealthStatus } from '../types';
 import { useApi, postApi } from '../hooks/useApi';
@@ -13,7 +13,15 @@ interface UpdateInfo {
   commitCount: number;
 }
 
-export function Topbar({ onShowAlerts }: { onShowAlerts?: () => void }) {
+interface TopbarProps {
+  onShowAlerts?: () => void;
+  // Telefon/tablet: menü çekmecesini açan düğme + o anki sayfanın adı (≥1024px'te gizlenir)
+  onMenu?: () => void;
+  menuOpen?: boolean;
+  title?: string;
+}
+
+export function Topbar({ onShowAlerts, onMenu, menuOpen = false, title = '' }: TopbarProps) {
   const { data } = useApi<HealthStatus>('/system/health', {
     isFailOpen: false, lastCheckTime: '', lastCheckResult: 'pending',
     checksTotal: 0, checksFailed: 0, uptimePercent: 100,
@@ -86,19 +94,36 @@ export function Topbar({ onShowAlerts }: { onShowAlerts?: () => void }) {
   return (
     <>
       <header className="glass-panel topbar">
-        <div className="status-indicator">
-          <span className={`dot ${connected ? 'pulse' : 'dot-error'}`} />
-          {data.isFailOpen ? (
-            <span className="fail-open-warn">
-              <ShieldAlert size={14} />
-              FAIL-OPEN Aktif — Trafik dogrudan ISP'ye yonlendirildi
-            </span>
-          ) : (
-            <span>
-              <ShieldCheck size={14} style={{ marginRight: 4 }} />
-              Sistem Aktif — Uptime: {data.uptimePercent}%
-            </span>
-          )}
+        <div className="topbar-start">
+          <button
+            className="icon-btn topbar-menu"
+            onClick={onMenu}
+            aria-label="Menüyü aç"
+            title="Menü"
+            aria-expanded={menuOpen}
+            aria-controls="app-nav"
+          >
+            <Menu size={20} />
+          </button>
+          <div className="topbar-heading">
+            {title && <span className="topbar-page">{title}</span>}
+            <div className="status-indicator">
+              <span className={`dot ${connected ? 'pulse' : 'dot-error'}`} />
+              {data.isFailOpen ? (
+                <span className="fail-open-warn">
+                  <ShieldAlert size={14} />
+                  <span className="status-long">FAIL-OPEN Aktif — Trafik dogrudan ISP'ye yonlendirildi</span>
+                  <span className="status-short">FAIL-OPEN — trafik doğrudan ISP'de</span>
+                </span>
+              ) : (
+                <span className="status-ok">
+                  <ShieldCheck size={14} />
+                  <span className="status-long">Sistem Aktif — Uptime: {data.uptimePercent}%</span>
+                  <span className="status-short">Sistem aktif · %{data.uptimePercent}</span>
+                </span>
+              )}
+            </div>
+          </div>
         </div>
         <div className="topbar-actions">
           {clock && (

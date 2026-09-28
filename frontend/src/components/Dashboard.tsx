@@ -1,5 +1,5 @@
 import {
-  ShieldCheck, Wifi, Activity, BarChart3,
+  ShieldCheck, ShieldAlert, Wifi, Activity, BarChart3, HeartPulse,
   Thermometer, Cpu, MemoryStick, HardDrive, Clock, ArrowUpDown, Fan, Server, Globe
 } from 'lucide-react';
 import {
@@ -21,11 +21,13 @@ function shortTime(time: string) {
   return parts.length >= 2 ? `${parts[0]}:${parts[1]}` : time;
 }
 
+// Tema değişkenleriyle: açık temada da okunur
 const tooltipStyle = {
-  background: '#111820',
-  border: '1px solid rgba(255,255,255,0.1)',
+  background: 'var(--bg-surface)',
+  border: '1px solid var(--panel-border)',
   borderRadius: 8,
   fontSize: 12,
+  color: 'var(--text-primary)',
 };
 
 const axisTickStyle = { fill: '#64748b', fontSize: 10 };
@@ -55,123 +57,49 @@ export function Dashboard() {
   const diskPercent = stats.diskTotal > 0 ? Math.round((stats.diskUsed / stats.diskTotal) * 100) : 0;
   const activeServices = svcData.services.filter(s => s.enabled).length;
   const latest = history[history.length - 1];
+  const failOpen = health.isFailOpen;
+  const connectedVpn = vpsData.servers.filter(s => s.status === 'connected').length;
 
+  // Mobile-first sıra: özet (durum + ana göstergeler) → donanım ve servisler → grafikler → VPN tünelleri.
+  // Telefonda tek sütun; ≥768px iki sütunlu ızgara (VPN kartı tam genişlik).
   return (
-    <div className="fade-in">
-      <Panel title="Sistem Genel Bakış" subtitle={`${BRAND.fullName} — Tüm ağ arayüzleri korumalı`}
-        badge={<Badge variant={health.isFailOpen ? 'error' : 'success'}>{health.isFailOpen ? 'FAIL-OPEN' : 'Korumalı'}</Badge>}>
+    <div className="fade-in dash">
+      <section className="glass-panel dash-hero">
+        <div className="dash-hero-head">
+          <span className={`dash-shield ${failOpen ? 'is-danger' : ''}`}>
+            {failOpen ? <ShieldAlert size={22} /> : <ShieldCheck size={22} />}
+          </span>
+          <div className="dash-hero-title">
+            <h2>Sistem Genel Bakış</h2>
+            <p>{failOpen ? 'FAIL-OPEN — trafik doğrudan ISP\'ye yönlendiriliyor' : `${BRAND.fullName} — Tüm ağ arayüzleri korumalı`}</p>
+          </div>
+          <Badge variant={failOpen ? 'error' : 'success'}>{failOpen ? 'FAIL-OPEN' : 'Korumalı'}</Badge>
+        </div>
+        <div className="dash-meta-row">
+          <div className="dash-meta">
+            <span className="dash-meta-label"><Clock size={11} /> Uptime</span>
+            <span className="dash-meta-value">{formatUptime(stats.uptime)}</span>
+          </div>
+          <div className="dash-meta">
+            <span className="dash-meta-label"><ArrowUpDown size={11} /> Load Avg</span>
+            <span className="dash-meta-value">{stats.loadAvg.map(l => l.toFixed(2)).join(' ')}</span>
+          </div>
+          <div className="dash-meta">
+            <span className="dash-meta-label"><HeartPulse size={11} /> Sağlık</span>
+            <span className="dash-meta-value">%{health.uptimePercent}</span>
+          </div>
+        </div>
         <div className="stats-grid stats-grid-4">
           <StatCard icon={<ShieldCheck size={20} />} label="Engellenen Reklam" value={piholeData.adsBlockedToday.toLocaleString('tr-TR')} color="blue" />
           <StatCard icon={<Wifi size={20} />} label="Aktif Cihaz" value={piholeData.uniqueClients} color="green" />
           <StatCard icon={<Activity size={20} />} label="DNS Sorguları" value={piholeData.dnsQueriesToday.toLocaleString('tr-TR')} color="emerald" />
           <StatCard icon={<BarChart3 size={20} />} label="Aktif Servis" value={`${activeServices}/${svcData.services.length}`} color="purple" />
         </div>
-      </Panel>
+      </section>
 
-      {/* Gerçek zamanlı grafikler — 6 dakikalık pencere, 3sn güncelleme, yumuşatılmış */}
-      <div className="panel-row" style={{ marginTop: 14 }}>
-        <div className="glass-panel widget-medium">
-          <h4 className="widget-title"><Thermometer size={14} /> CPU Sıcaklık & Fan <span className="chart-time">Son 6 dk — 3sn aralık</span></h4>
-          <ResponsiveContainer width="100%" height={160}>
-            <AreaChart data={history}>
-              <defs>
-                <linearGradient id="gradTemp" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="0%" stopColor="#f97316" stopOpacity={0.3} />
-                  <stop offset="100%" stopColor="#f97316" stopOpacity={0} />
-                </linearGradient>
-              </defs>
-              <XAxis dataKey="time" tick={axisTickStyle} axisLine={false} tickLine={false}
-                interval={LABEL_INTERVAL} tickFormatter={shortTime} />
-              <YAxis domain={[30, 80]} tick={axisTickStyle} axisLine={false} tickLine={false} width={30}
-                tickFormatter={(v: number) => `${v}°`} />
-              <Tooltip contentStyle={tooltipStyle} labelStyle={{ color: '#94a3b8' }}
-                formatter={(v: any) => [`${v.toFixed(2)}°C`, 'Sıcaklık']} />
-              <Area type="monotone" dataKey="cpuTemp" stroke="#f97316" fill="url(#gradTemp)"
-                name="Sıcaklık °C" strokeWidth={2} dot={false} animationDuration={300} isAnimationActive={false} />
-            </AreaChart>
-          </ResponsiveContainer>
-          <div className="chart-legend">
-            <span><Fan size={12} /> Fan: {latest ? Math.round(latest.fanSpeed) : 0} RPM</span>
-            <span><Thermometer size={12} /> {latest ? latest.cpuTemp.toFixed(2) : '0.00'}°C</span>
-          </div>
-        </div>
-
-        <div className="glass-panel widget-medium">
-          <h4 className="widget-title"><Activity size={14} /> Ağ Trafiği (Mbps) <span className="chart-time">Son 6 dk</span></h4>
-          <ResponsiveContainer width="100%" height={160}>
-            <AreaChart data={history}>
-              <defs>
-                <linearGradient id="gradIn" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="0%" stopColor="#22c55e" stopOpacity={0.3} />
-                  <stop offset="100%" stopColor="#22c55e" stopOpacity={0} />
-                </linearGradient>
-                <linearGradient id="gradOut" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="0%" stopColor="#3b82f6" stopOpacity={0.3} />
-                  <stop offset="100%" stopColor="#3b82f6" stopOpacity={0} />
-                </linearGradient>
-              </defs>
-              <XAxis dataKey="time" tick={axisTickStyle} axisLine={false} tickLine={false}
-                interval={LABEL_INTERVAL} tickFormatter={shortTime} />
-              <YAxis tick={axisTickStyle} axisLine={false} tickLine={false} width={30} />
-              <Tooltip contentStyle={tooltipStyle} labelStyle={{ color: '#94a3b8' }}
-                formatter={(v: any, name: any) => [`${Number(v).toFixed(2)} Mbps`, name]} />
-              <Area type="monotone" dataKey="networkIn" stroke="#22c55e" fill="url(#gradIn)"
-                name="↓ Download" strokeWidth={2} dot={false} isAnimationActive={false} />
-              <Area type="monotone" dataKey="networkOut" stroke="#3b82f6" fill="url(#gradOut)"
-                name="↑ Upload" strokeWidth={2} dot={false} isAnimationActive={false} />
-            </AreaChart>
-          </ResponsiveContainer>
-        </div>
-      </div>
-
-      <div className="panel-row" style={{ marginTop: 14 }}>
-        <div className="glass-panel widget-medium">
-          <h4 className="widget-title"><Cpu size={14} /> CPU & Bellek Kullanımı <span className="chart-time">Son 6 dk</span></h4>
-          <ResponsiveContainer width="100%" height={160}>
-            <LineChart data={history}>
-              <XAxis dataKey="time" tick={axisTickStyle} axisLine={false} tickLine={false}
-                interval={LABEL_INTERVAL} tickFormatter={shortTime} />
-              <YAxis domain={[0, 100]} tick={axisTickStyle} axisLine={false} tickLine={false} width={30}
-                tickFormatter={(v: number) => `${v}%`} />
-              <Tooltip contentStyle={tooltipStyle} labelStyle={{ color: '#94a3b8' }}
-                formatter={(v: any, name: any) => [`${Number(v).toFixed(2)}%`, name]} />
-              <Line type="monotone" dataKey="cpuUsage" stroke="#3b82f6" name="CPU" strokeWidth={2} dot={false} isAnimationActive={false} />
-              <Line type="monotone" dataKey="memoryUsage" stroke="#a855f7" name="Bellek" strokeWidth={2} dot={false} isAnimationActive={false} />
-            </LineChart>
-          </ResponsiveContainer>
-        </div>
-
-        <div className="glass-panel widget-medium">
-          <h4 className="widget-title"><HardDrive size={14} /> Disk I/O (MB/s) <span className="chart-time">Son 6 dk</span></h4>
-          <ResponsiveContainer width="100%" height={160}>
-            <AreaChart data={history}>
-              <defs>
-                <linearGradient id="gradRead" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="0%" stopColor="#06b6d4" stopOpacity={0.3} />
-                  <stop offset="100%" stopColor="#06b6d4" stopOpacity={0} />
-                </linearGradient>
-                <linearGradient id="gradWrite" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="0%" stopColor="#f59e0b" stopOpacity={0.3} />
-                  <stop offset="100%" stopColor="#f59e0b" stopOpacity={0} />
-                </linearGradient>
-              </defs>
-              <XAxis dataKey="time" tick={axisTickStyle} axisLine={false} tickLine={false}
-                interval={LABEL_INTERVAL} tickFormatter={shortTime} />
-              <YAxis tick={axisTickStyle} axisLine={false} tickLine={false} width={30} />
-              <Tooltip contentStyle={tooltipStyle} labelStyle={{ color: '#94a3b8' }}
-                formatter={(v: any, name: any) => [`${Number(v).toFixed(2)} MB/s`, name]} />
-              <Area type="monotone" dataKey="diskRead" stroke="#06b6d4" fill="url(#gradRead)"
-                name="Read" strokeWidth={2} dot={false} isAnimationActive={false} />
-              <Area type="monotone" dataKey="diskWrite" stroke="#f59e0b" fill="url(#gradWrite)"
-                name="Write" strokeWidth={2} dot={false} isAnimationActive={false} />
-            </AreaChart>
-          </ResponsiveContainer>
-        </div>
-      </div>
-
-      {/* Donanım & Servisler */}
-      <div className="panel-row" style={{ marginTop: 14 }}>
-        <Panel title="Donanım" size="medium">
+      <div className="dash-grid">
+        {/* Donanım & Servisler */}
+        <Panel title="Donanım" icon={<Cpu size={16} style={{ marginRight: 6 }} />} size="medium">
           <div className="hw-stats">
             <ProgressMetric icon={<Thermometer size={14} />} label="CPU Sıcaklık" value={`${stats.cpuTemp}°C`}
               percent={stats.cpuTemp / 85 * 100} variant="temp"
@@ -182,30 +110,131 @@ export function Dashboard() {
           </div>
         </Panel>
 
-        <Panel title="Servis Durumu" size="medium">
-          <div className="service-list">
+        <Panel title="Servis Durumu" icon={<Server size={16} style={{ marginRight: 6 }} />} size="medium">
+          <div className="svc-grid">
             {svcData.services.map(svc => (
-              <div key={svc.name} className="service-row">
+              <div key={svc.name} className={`svc-chip ${svc.enabled ? '' : 'svc-chip-off'}`}>
                 <span className={`svc-dot ${svc.enabled ? 'svc-on' : 'svc-off'}`} />
-                <span className="svc-name">{svc.name}</span>
-                <span className={`svc-status ${svc.enabled ? 'text-success' : ''}`}>
-                  {svc.enabled ? 'Çalışıyor' : 'Durduruldu'}
+                <span className="svc-chip-text">
+                  <span className="svc-name">{svc.name}</span>
+                  <span className={`svc-status ${svc.enabled ? 'text-success' : ''}`}>
+                    {svc.enabled ? 'Çalışıyor' : 'Durduruldu'}
+                  </span>
                 </span>
               </div>
             ))}
           </div>
-          <div className="hw-stat" style={{ marginTop: 16 }}>
-            <div className="hw-stat-header"><Clock size={14} /><span>Uptime</span><span className="hw-val">{formatUptime(stats.uptime)}</span></div>
-            <div className="hw-stat-header" style={{ marginTop: 6 }}><ArrowUpDown size={14} /><span>Load Avg</span><span className="hw-val">{stats.loadAvg.map(l => l.toFixed(2)).join(' / ')}</span></div>
-          </div>
         </Panel>
-      </div>
 
-      {/* Aktif VPN Tünelleri */}
-      {vpsData.servers.length > 0 && (
-        <div style={{ marginTop: 14 }}>
-          <Panel title="VPN Tünelleri" size="large"
-            badge={<Badge variant="info">{vpsData.servers.filter(s => s.status === 'connected').length} aktif</Badge>}>
+        {/* Gerçek zamanlı grafikler — 6 dakikalık pencere, 3sn güncelleme, yumuşatılmış */}
+        <div className="glass-panel widget-medium">
+          <h4 className="widget-title"><Thermometer size={14} /> CPU Sıcaklık & Fan <span className="chart-time">Son 6 dk — 3sn aralık</span></h4>
+          <div className="chart-box">
+            <ResponsiveContainer width="100%" height="100%">
+              <AreaChart data={history}>
+                <defs>
+                  <linearGradient id="gradTemp" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="0%" stopColor="#f97316" stopOpacity={0.3} />
+                    <stop offset="100%" stopColor="#f97316" stopOpacity={0} />
+                  </linearGradient>
+                </defs>
+                <XAxis dataKey="time" tick={axisTickStyle} axisLine={false} tickLine={false}
+                  interval={LABEL_INTERVAL} tickFormatter={shortTime} />
+                <YAxis domain={[30, 80]} tick={axisTickStyle} axisLine={false} tickLine={false} width={30}
+                  tickFormatter={(v: number) => `${v}°`} />
+                <Tooltip contentStyle={tooltipStyle} labelStyle={{ color: '#94a3b8' }}
+                  formatter={(v) => [`${Number(v).toFixed(2)}°C`, 'Sıcaklık']} />
+                <Area type="monotone" dataKey="cpuTemp" stroke="#f97316" fill="url(#gradTemp)"
+                  name="Sıcaklık °C" strokeWidth={2} dot={false} animationDuration={300} isAnimationActive={false} />
+              </AreaChart>
+            </ResponsiveContainer>
+          </div>
+          <div className="chart-legend">
+            <span><Fan size={12} /> Fan: {latest ? Math.round(latest.fanSpeed) : 0} RPM</span>
+            <span><Thermometer size={12} /> {latest ? latest.cpuTemp.toFixed(2) : '0.00'}°C</span>
+          </div>
+        </div>
+
+        <div className="glass-panel widget-medium">
+          <h4 className="widget-title"><Activity size={14} /> Ağ Trafiği (Mbps) <span className="chart-time">Son 6 dk</span></h4>
+          <div className="chart-box">
+            <ResponsiveContainer width="100%" height="100%">
+              <AreaChart data={history}>
+                <defs>
+                  <linearGradient id="gradIn" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="0%" stopColor="#22c55e" stopOpacity={0.3} />
+                    <stop offset="100%" stopColor="#22c55e" stopOpacity={0} />
+                  </linearGradient>
+                  <linearGradient id="gradOut" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="0%" stopColor="#3b82f6" stopOpacity={0.3} />
+                    <stop offset="100%" stopColor="#3b82f6" stopOpacity={0} />
+                  </linearGradient>
+                </defs>
+                <XAxis dataKey="time" tick={axisTickStyle} axisLine={false} tickLine={false}
+                  interval={LABEL_INTERVAL} tickFormatter={shortTime} />
+                <YAxis tick={axisTickStyle} axisLine={false} tickLine={false} width={30} />
+                <Tooltip contentStyle={tooltipStyle} labelStyle={{ color: '#94a3b8' }}
+                  formatter={(v, name) => [`${Number(v).toFixed(2)} Mbps`, name]} />
+                <Area type="monotone" dataKey="networkIn" stroke="#22c55e" fill="url(#gradIn)"
+                  name="↓ Download" strokeWidth={2} dot={false} isAnimationActive={false} />
+                <Area type="monotone" dataKey="networkOut" stroke="#3b82f6" fill="url(#gradOut)"
+                  name="↑ Upload" strokeWidth={2} dot={false} isAnimationActive={false} />
+              </AreaChart>
+            </ResponsiveContainer>
+          </div>
+        </div>
+
+        <div className="glass-panel widget-medium">
+          <h4 className="widget-title"><Cpu size={14} /> CPU & Bellek Kullanımı <span className="chart-time">Son 6 dk</span></h4>
+          <div className="chart-box">
+            <ResponsiveContainer width="100%" height="100%">
+              <LineChart data={history}>
+                <XAxis dataKey="time" tick={axisTickStyle} axisLine={false} tickLine={false}
+                  interval={LABEL_INTERVAL} tickFormatter={shortTime} />
+                <YAxis domain={[0, 100]} tick={axisTickStyle} axisLine={false} tickLine={false} width={30}
+                  tickFormatter={(v: number) => `${v}%`} />
+                <Tooltip contentStyle={tooltipStyle} labelStyle={{ color: '#94a3b8' }}
+                  formatter={(v, name) => [`${Number(v).toFixed(2)}%`, name]} />
+                <Line type="monotone" dataKey="cpuUsage" stroke="#3b82f6" name="CPU" strokeWidth={2} dot={false} isAnimationActive={false} />
+                <Line type="monotone" dataKey="memoryUsage" stroke="#a855f7" name="Bellek" strokeWidth={2} dot={false} isAnimationActive={false} />
+              </LineChart>
+            </ResponsiveContainer>
+          </div>
+        </div>
+
+        <div className="glass-panel widget-medium">
+          <h4 className="widget-title"><HardDrive size={14} /> Disk I/O (MB/s) <span className="chart-time">Son 6 dk</span></h4>
+          <div className="chart-box">
+            <ResponsiveContainer width="100%" height="100%">
+              <AreaChart data={history}>
+                <defs>
+                  <linearGradient id="gradRead" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="0%" stopColor="#06b6d4" stopOpacity={0.3} />
+                    <stop offset="100%" stopColor="#06b6d4" stopOpacity={0} />
+                  </linearGradient>
+                  <linearGradient id="gradWrite" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="0%" stopColor="#f59e0b" stopOpacity={0.3} />
+                    <stop offset="100%" stopColor="#f59e0b" stopOpacity={0} />
+                  </linearGradient>
+                </defs>
+                <XAxis dataKey="time" tick={axisTickStyle} axisLine={false} tickLine={false}
+                  interval={LABEL_INTERVAL} tickFormatter={shortTime} />
+                <YAxis tick={axisTickStyle} axisLine={false} tickLine={false} width={30} />
+                <Tooltip contentStyle={tooltipStyle} labelStyle={{ color: '#94a3b8' }}
+                  formatter={(v, name) => [`${Number(v).toFixed(2)} MB/s`, name]} />
+                <Area type="monotone" dataKey="diskRead" stroke="#06b6d4" fill="url(#gradRead)"
+                  name="Read" strokeWidth={2} dot={false} isAnimationActive={false} />
+                <Area type="monotone" dataKey="diskWrite" stroke="#f59e0b" fill="url(#gradWrite)"
+                  name="Write" strokeWidth={2} dot={false} isAnimationActive={false} />
+              </AreaChart>
+            </ResponsiveContainer>
+          </div>
+        </div>
+
+        {/* Aktif VPN Tünelleri */}
+        {vpsData.servers.length > 0 && (
+          <Panel title="VPN Tünelleri" icon={<Globe size={16} style={{ marginRight: 6 }} />} size="large" className="dash-span"
+            badge={<Badge variant="info">{connectedVpn} aktif</Badge>}>
             <div className="vpn-grid">
               {vpsData.servers.map(vps => {
                 const isConnected = vps.status === 'connected';
@@ -228,8 +257,8 @@ export function Dashboard() {
               })}
             </div>
           </Panel>
-        </div>
-      )}
+        )}
+      </div>
     </div>
   );
 }

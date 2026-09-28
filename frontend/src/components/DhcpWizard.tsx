@@ -179,7 +179,7 @@ export function DhcpWizard({ dhcp, net, netErr, reload }: Props) {
   // Pi'nin dağıttığı kiralar sürüyorsa cihaz tarafı adresi kaldırılamaz (cihazlar onu ağ geçidi/DNS bilir).
   const leaseUntil = net.lease_until && net.lease_until > (net.now || 0) ? net.lease_until : 0;
   const leaseUntilText = leaseUntil ? new Date(leaseUntil * 1000).toLocaleString('tr-TR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }) : '';
-  const settingsPath = 'Pi-hole → Ayarlar → DHCP kartı';
+  const settingsPath = 'menü → Pi-hole DNS → DHCP Ayarları';
 
   // Ortak eylem sarmalayıcısı: meşgul durumu, hata tostu, sonunda durumu yenile.
   const act = async (key: string, fn: () => Promise<void>) => {
@@ -308,7 +308,7 @@ export function DhcpWizard({ dhcp, net, netErr, reload }: Props) {
       'Pi DHCP sunucusu 5 dakikalık deneme olarak açılacak:\n\n' +
       `• Havuz: ${poolStart}–${poolEnd}, ağ geçidi ve DNS: ${clientIp}\n` +
       '• Modemin DHCP\'si kapalı olmalı (4. adım)\n\n' +
-      `Sonra telefonun Wi-Fi'ını kapatıp açın; ${hostOf(clientCidr, 0).replace(/\.0$/, '.x')} almalı${apStage !== 'none' ? ' (telefon ev Wi-Fi\'ına bağlı olmalı, kurulum Wi-Fi\'ına değil)' : ''}. Telefondan http://${clientIp} adresini açıp ${settingsPath} içinde "Kalıcı yap"a basın.\n` +
+      `Sonra telefonun Wi-Fi'ını kapatıp açın; ${hostOf(clientCidr, 0).replace(/\.0$/, '.x')} almalı${apStage !== 'none' ? ' (telefon ev Wi-Fi\'ına bağlı olmalı, kurulum Wi-Fi\'ına değil)' : ''}. Telefondan http://${clientIp}/#dhcp adresini (${settingsPath}) açıp "Kalıcı yap"a basın.\n` +
       '5 dakika içinde onaylanmazsa Pi DHCP\'si kendiliğinden kapanır — o zaman modemin DHCP\'sini hemen geri açın.\n\n' +
       'Devam edilsin mi?',
     )) return;
@@ -660,7 +660,7 @@ export function DhcpWizard({ dhcp, net, netErr, reload }: Props) {
             <span>
               <strong>Deneme sürüyor</strong> — kalan {fmtLeft(piLeft)}; şu ana kadar {pi.leases ?? 0} kira verildi.
               Telefonun Wi-Fi'ını kapatıp açın; <code>{hostOf(clientCidr, 0).replace(/\.0$/, '.x')}</code> almalı. Sonra telefondan{' '}
-              <code>http://{clientIp}</code> adresini açıp {settingsPath} içinde "Kalıcı yap"a basın.
+              <code>http://{clientIp}/#dhcp</code> adresini ({settingsPath}) açıp "Kalıcı yap"a basın.
             </span>
             {apStage !== 'none' && (
               <span className="dhcp-muted">

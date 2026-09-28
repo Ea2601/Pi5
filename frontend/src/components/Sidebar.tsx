@@ -1,69 +1,75 @@
-import {
-  LayoutDashboard, Network, Route, Terminal, Server,
-  ShieldBan, Zap, Flame, Globe, ShieldAlert, BookOpen,
-  Activity, Search, Gauge, Bell, Wrench, Users, Sliders,
-  Database, Settings, MonitorSmartphone, TerminalSquare, Lightbulb, Monitor
-} from 'lucide-react';
+import { useEffect, useRef } from 'react';
+import { X } from 'lucide-react';
 import type { TabId } from '../types';
 import { BRAND } from '../brand';
-
-const tabs: { id: TabId; label: string; icon: React.ReactNode; group?: string }[] = [
-  { id: 'dashboard', label: 'Dashboard', icon: <LayoutDashboard size={17} /> },
-  { id: 'topology', label: 'Ağ Haritası', icon: <Network size={17} />, group: 'Ağ Yönetimi' },
-  { id: 'routing', label: 'Routing', icon: <Route size={17} /> },
-  { id: 'bandwidth', label: 'Bant Genisligi', icon: <Activity size={17} /> },
-  { id: 'dnslog', label: 'DNS Sorgu Logu', icon: <Search size={17} /> },
-  { id: 'speedtest', label: 'Hız Testi', icon: <Gauge size={17} /> },
-  { id: 'ddns', label: 'DDNS', icon: <Globe size={17} /> },
-  { id: 'pihole', label: 'Pi-hole DNS', icon: <ShieldBan size={17} />, group: 'Güvenlik' },
-  { id: 'zapret', label: 'Zapret DPI', icon: <Zap size={17} /> },
-  { id: 'firewall', label: 'Firewall', icon: <Flame size={17} /> },
-  { id: 'unbound', label: 'Unbound DNS', icon: <Globe size={17} /> },
-  { id: 'fail2ban', label: 'Fail2Ban', icon: <ShieldAlert size={17} /> },
-  { id: 'parental', label: 'Ebeveyn Kontrol', icon: <Users size={17} /> },
-  { id: 'devicecontrol', label: 'Cihaz Yönetimi', icon: <MonitorSmartphone size={17} />, group: 'Cihaz & Trafik' },
-  { id: 'trafficcontrol', label: 'Trafik Kontrol', icon: <Sliders size={17} /> },
-  { id: 'nettools', label: 'Ağ Araçları', icon: <Wrench size={17} /> },
-  { id: 'alerts', label: 'Bildirimler', icon: <Bell size={17} /> },
-  { id: 'vps', label: 'VPS WireGuard', icon: <Server size={17} />, group: 'Altyapı' },
-  { id: 'maintenance', label: 'Sistem & Log', icon: <Terminal size={17} /> },
-  { id: 'terminal', label: 'SSH Terminal', icon: <TerminalSquare size={17} /> },
-  { id: 'casecontrol', label: 'Kasa LED', icon: <Lightbulb size={17} /> },
-  { id: 'kiosk', label: 'HDMI Ekran', icon: <Monitor size={17} /> },
-  { id: 'backup', label: 'Yedekleme', icon: <Database size={17} /> },
-  { id: 'settings', label: 'Ayarlar', icon: <Settings size={17} /> },
-  { id: 'docs', label: 'Dokümantasyon', icon: <BookOpen size={17} />, group: 'Yardım' },
-];
+import { NAV_TABS } from '../nav';
 
 interface SidebarProps {
   activeTab: TabId;
   onTabChange: (tab: TabId) => void;
+  // Telefon/tablet: menü soldan açılan çekmecedir (≥1024px'te her zaman görünür, bu değerler etkisizdir)
+  open: boolean;
+  onClose: () => void;
 }
 
-export function Sidebar({ activeTab, onTabChange }: SidebarProps) {
-  let lastGroup = '';
+// Grup başlığı yalnız grubun ilk öğesinin üstünde gösterilir (liste sabit: modül yüklenirken bir kez hesaplanır)
+const GROUP_START = (() => {
+  let last = '';
+  return NAV_TABS.map(t => {
+    const start = !!t.group && t.group !== last;
+    if (t.group) last = t.group;
+    return start;
+  });
+})();
+
+export function Sidebar({ activeTab, onTabChange, open, onClose }: SidebarProps) {
+  const closeRef = useRef<HTMLButtonElement>(null);
+  const returnFocus = useRef<HTMLElement | null>(null);
+
+  // Çekmece açılınca odak kapat düğmesine gelir (klavye/ekran okuyucu menünün içinden başlar); kapanınca açan düğmeye döner.
+  useEffect(() => {
+    if (open) {
+      returnFocus.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+      closeRef.current?.focus();
+    } else if (returnFocus.current) {
+      returnFocus.current.focus();
+      returnFocus.current = null;
+    }
+  }, [open]);
+
   return (
-    <nav className="glass-panel sidebar">
-      <div className="logo">
-        {/* Orijinal vektör lockup (font path'e gömülü — bozulmaz). Temaya göre dark/light. */}
-        <img className="logo-lockup logo-lockup-dark" src="/klyrix-gate-horizontal-dark.svg" alt={BRAND.name} />
-        <img className="logo-lockup logo-lockup-light" src="/klyrix-gate-horizontal-light.svg" alt={BRAND.name} />
-      </div>
-      <ul className="nav-links">
-        {tabs.map(tab => {
-          const showGroup = tab.group && tab.group !== lastGroup;
-          if (tab.group) lastGroup = tab.group;
-          return (
-            <li key={tab.id}>
-              {showGroup && <span className="nav-group">{tab.group}</span>}
-              <button className={`nav-item ${activeTab === tab.id ? 'active' : ''}`} onClick={() => onTabChange(tab.id)}>
-                {tab.icon}<span>{tab.label}</span>
-              </button>
-            </li>
-          );
-        })}
-      </ul>
-      <div className="sidebar-footer"><div className="version-badge">{BRAND.name} {BRAND.version}</div></div>
-    </nav>
+    <>
+      <div className={`sidebar-backdrop ${open ? 'is-open' : ''}`} onClick={onClose} aria-hidden="true" />
+      <nav id="app-nav" className={`glass-panel sidebar ${open ? 'is-open' : ''}`} aria-label="Ana menü">
+        <div className="logo">
+          {/* Orijinal vektör lockup (font path'e gömülü — bozulmaz). Temaya göre dark/light. */}
+          <img className="logo-lockup logo-lockup-dark" src="/klyrix-gate-horizontal-dark.svg" alt={BRAND.name} />
+          <img className="logo-lockup logo-lockup-light" src="/klyrix-gate-horizontal-light.svg" alt={BRAND.name} />
+          <button ref={closeRef} className="icon-btn sidebar-close" onClick={onClose} aria-label="Menüyü kapat" title="Menüyü kapat">
+            <X size={18} />
+          </button>
+        </div>
+        <ul className="nav-links">
+          {NAV_TABS.map((tab, i) => {
+            const showGroup = GROUP_START[i];
+            const active = activeTab === tab.id;
+            const Icon = tab.icon;
+            return (
+              <li key={tab.id}>
+                {showGroup && <span className="nav-group">{tab.group}</span>}
+                <button
+                  className={`nav-item ${tab.sub ? 'nav-item-sub' : ''} ${active ? 'active' : ''}`}
+                  aria-current={active ? 'page' : undefined}
+                  onClick={() => onTabChange(tab.id)}
+                >
+                  <Icon size={tab.sub ? 15 : 17} /><span>{tab.label}</span>
+                </button>
+              </li>
+            );
+          })}
+        </ul>
+        <div className="sidebar-footer"><div className="version-badge">{BRAND.name} {BRAND.version}</div></div>
+      </nav>
+    </>
   );
 }

@@ -1,10 +1,11 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { Sidebar } from './components/Sidebar';
 import { Topbar } from './components/Topbar';
 import { Dashboard } from './components/Dashboard';
 import { NetworkTopology } from './components/NetworkTopology';
 import { PiholePanel } from './components/PiholePanel';
+import { DhcpPanel } from './components/DhcpPanel';
 import { ZapretPanel } from './components/ZapretPanel';
 import { FirewallPanel } from './components/FirewallPanel';
 import { RoutingPanel } from './components/RoutingPanel';
@@ -29,13 +30,45 @@ import { CaseControlPanel } from './components/CaseControlPanel';
 import { KioskSettingsPanel } from './components/KioskSettingsPanel';
 import { PanelAuthBanner } from './components/PanelAuthBanner';
 import type { TabId } from './types';
+import { tabFromHash, tabLabel } from './nav';
 import { seedThemeFromBackend } from './theme';
 import { Toaster } from './toast';
 import './index.css';
 import './App.css';
 
 function App() {
-  const [activeTab, setActiveTab] = useState<TabId>('dashboard');
+  // Açılış sekmesi adres çubuğundan: http://<pi>/#dhcp doğrudan DHCP sayfasını açar, yenileyince aynı sayfada kalınır.
+  const [activeTab, setActiveTab] = useState<TabId>(() => tabFromHash(window.location.hash));
+  const [navOpen, setNavOpen] = useState(false);
+
+  // Sekme değişince: menü çekmecesi kapanır, adres #sekme olur (geçmişe kayıt eklemeden), sayfa başa döner.
+  const goTab = useCallback((tab: TabId) => {
+    setActiveTab(tab);
+    setNavOpen(false);
+    const hash = tab === 'dashboard' ? '' : `#${tab}`;
+    if (window.location.hash !== hash) {
+      history.replaceState(null, '', hash || window.location.pathname + window.location.search);
+    }
+  }, []);
+
+  // Sayfa içi bağlantılar (ör. Pi-hole → "DHCP Ayarları") ve elle yazılan #sekme
+  useEffect(() => {
+    const onHash = () => { setActiveTab(tabFromHash(window.location.hash)); setNavOpen(false); };
+    window.addEventListener('hashchange', onHash);
+    return () => window.removeEventListener('hashchange', onHash);
+  }, []);
+
+  // Telefonda içerik sayfanın kendisiyle kayar: yeni sekme en baştan açılsın.
+  useEffect(() => { window.scrollTo(0, 0); }, [activeTab]);
+
+  // Çekmece açıkken arka sayfa kaymaz; Esc kapatır.
+  useEffect(() => {
+    if (!navOpen) return;
+    document.body.classList.add('nav-open');
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setNavOpen(false); };
+    window.addEventListener('keydown', onKey);
+    return () => { document.body.classList.remove('nav-open'); window.removeEventListener('keydown', onKey); };
+  }, [navOpen]);
 
   // Load saved accent on start; theme localStorage'dan (main.tsx) gelir, yoksa backend'den tohumla
   useEffect(() => {
@@ -60,6 +93,7 @@ function App() {
       case 'topology': return <NetworkTopology />;
       case 'routing': return <RoutingPanel />;
       case 'pihole': return <PiholePanel />;
+      case 'dhcp': return <DhcpPanel />;
       case 'zapret': return <ZapretPanel />;
       case 'firewall': return <FirewallPanel />;
       case 'unbound': return <UnboundPanel />;
@@ -87,9 +121,14 @@ function App() {
   return (
     <ErrorBoundary>
       <div className="app-container">
-        <Sidebar activeTab={activeTab} onTabChange={setActiveTab} />
+        <Sidebar activeTab={activeTab} onTabChange={goTab} open={navOpen} onClose={() => setNavOpen(false)} />
         <main className="main-content">
-          <Topbar onShowAlerts={() => setActiveTab('alerts')} />
+          <Topbar
+            onShowAlerts={() => goTab('alerts')}
+            onMenu={() => setNavOpen(true)}
+            menuOpen={navOpen}
+            title={tabLabel(activeTab)}
+          />
           <PanelAuthBanner />
           <div className="dashboard-content" key={activeTab}>
             <ErrorBoundary>

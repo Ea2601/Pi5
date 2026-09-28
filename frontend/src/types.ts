@@ -1,5 +1,5 @@
 export type TabId =
-  | 'dashboard' | 'topology' | 'pihole' | 'zapret' | 'firewall' | 'routing' | 'vps'
+  | 'dashboard' | 'topology' | 'pihole' | 'dhcp' | 'zapret' | 'firewall' | 'routing' | 'vps'
   | 'unbound' | 'fail2ban' | 'maintenance' | 'docs'
   | 'bandwidth' | 'dnslog' | 'speedtest' | 'ddns' | 'alerts' | 'nettools'
   | 'parental' | 'devicecontrol' | 'trafficcontrol' | 'backup' | 'settings' | 'terminal'

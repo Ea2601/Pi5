@@ -264,7 +264,7 @@ function PiholeDoc() {
           <tbody>
             <tr><td><strong>DNS Ayarları</strong></td><td>Upstream DNS sunucuları, DNSSEC, koşullu yönlendirme, önbellek boyutu</td></tr>
             <tr><td><strong>Engelleme</strong></td><td>Engelleme modu (NULL/NXDOMAIN/IP), engelleme durumu</td></tr>
-            <tr><td><strong>DHCP</strong></td><td>Dahili DHCP sunucu: IP aralığı, gateway, kira süresi, IPv6</td></tr>
+            <tr><td><strong>DHCP</strong></td><td>Ayrı sayfada (menü → Pi-hole DNS → DHCP Ayarları): Pi'nin DHCP sunucusu, IP havuzu, ağ geçidi, kira süresi ve modemden geçiş sihirbazı</td></tr>
             <tr><td><strong>Gizlilik</strong></td><td>Sorgu kayıtları, gizlilik seviyesi (0-3), log saklama süresi</td></tr>
             <tr><td><strong>Hız Limitleme</strong></td><td>Dakikadaki maksimum sorgu sayısı, rate limit periyodu</td></tr>
           </tbody>

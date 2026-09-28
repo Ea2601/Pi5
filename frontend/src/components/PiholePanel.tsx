@@ -1,9 +1,8 @@
-import { ShieldBan, Search, BarChart3, Globe, Users, ArrowRight, Settings, List, Plus, Trash2, Check, X, Server, Lock, Gauge, Radio } from 'lucide-react';
+import { ShieldBan, Search, BarChart3, Globe, Users, ArrowRight, Settings, List, Plus, Trash2, Check, X, Server, Lock, Gauge, Radio, ChevronRight } from 'lucide-react';
 import { useApi, postApi, putApi, deleteApi } from '../hooks/useApi';
 import { useState } from 'react';
 import { Panel, StatCard, Badge } from './ui';
 import { ServiceSettings } from './ui/ServiceSettings';
-import { DhcpModeCard } from './DhcpModeCard';
 import type { PiholeStats, ServiceStatus, PiholeListItem } from '../types';
 import { toast } from '../toast';
 
@@ -133,7 +132,12 @@ export function PiholePanel() {
 
       {activeTab === 'settings' && (
         <div style={{ marginTop: 14, display: 'flex', flexDirection: 'column', gap: 14 }}>
-          <DhcpModeCard />
+          {/* DHCP kartı ayrı sayfaya taşındı (menü → Pi-hole DNS → DHCP Ayarları, adres #dhcp) */}
+          <a className="moved-note" href="#dhcp">
+            <Radio size={16} />
+            <span><strong>DHCP ve ağ geçidi ayarları taşındı:</strong> menüde Pi-hole DNS'in altında, ayrı sayfa olarak <strong>DHCP Ayarları</strong>.</span>
+            <ChevronRight size={16} />
+          </a>
           <ServiceSettings service="pihole" categoryLabels={categoryLabels} categoryIcons={categoryIcons} excludeCategories={['dhcp']} />
         </div>
       )}
