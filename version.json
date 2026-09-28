@@ -1,10 +1,10 @@
 {
-  "version": "2.23.1",
-  "build": 75,
+  "version": "2.23.2",
+  "build": 76,
   "date": "2026-09-28",
   "changelog": [
-    "Panel internetsiz de tam görünür: yazı tipleri (Inter, JetBrains Mono) artık panelle birlikte Pi'den sunuluyor. Eskiden Google Fonts'tan çekildiği için internet yokken (ör. kurulum Wi-Fi'ında) tarayıcı o isteği bekleyip stilleri uygulamıyor, sayfa yalnız yazı olarak görünüyordu",
-    "Uygulama logoları (Routing): önce uygulamanın baş harfi görünür, logo yalnız internetten gerçekten yüklenirse onun yerine geçer — internetsiz ağda kırık resim yok; istekle panelin adresi gönderilmez",
+    "Güncelleme: yeni eklenen panel paketleri artık her durumda kurulur. Eskiden yalnız 'son güncellemede package.json değişti mi' diye bakılıyordu; kurulum bir kez atlanınca ya da güncelleme yeniden denenince paketler hiç kurulmuyor ve 'Frontend Build' adımı düşüyordu (v2.23.1'de yaşandı). Artık eksik ya da sürümü tutmayan paket görülünce kurulur; kurulum hata verirse nedeni güncelleme günlüğüne ayrıntılı yazılır",
+    "Panel internetsiz de tam görünür (v2.23.1): yazı tipleri panelle birlikte Pi'den sunulur; uygulama logoları internet yokken baş harf olarak görünür",
     "Kurulum Wi-Fi'ı (v2.23.0): Pi'nin dahili Wi-Fi'si 'Klyrix-Kurulum' ağını yayınlar; telefon bağlanınca giriş sayfası kendiliğinden açılır — modemin DHCP'si kapalıyken de panele ulaşma yolu"
   ]
 }
