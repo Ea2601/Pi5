@@ -25,6 +25,8 @@ import { sampleBandwidth, neighborMacs, buildLive } from './bandwidth';
 import { authGate, registerAuthRoutes } from './auth';
 import { validateSchedule, validateCommand, syncCronJobs, readJobStatuses, readSystemCron, syncCronOnStartup } from './cronSync';
 import { validateListValue, normalizeListValue, syncPiholeLists, lastListSync, externalPiholeEntries } from './piholeLists';
+import { applyZapret, zapretStatus, startBlockcheck, blockcheckRunning, zapretInstalled, cleanDpiDomain } from './zapret';
+import type { ZapretApplyResult } from './zapret';
 import {
   shq, sedEscape, isValidMac, isValidDomain, isValidTimezone,
   isValidHexColor, normalizeAnimation, sanitizeName,
@@ -222,6 +224,8 @@ app.post('/api/services/toggle', async (req, res) => {
     if (typeof enabled !== 'boolean') return res.status(400).json({ success: false, name, error: 'enabled alanı true/false olmalı' });
     // Pi-hole evin DHCP sunucusuyken kapatılırsa ev DNS'siz ve DHCP'siz kalır.
     if (name === 'pihole' && !enabled && await piDhcpActive()) return res.status(409).json({ success: false, name, error: PI_DHCP_BUSY_MSG });
+    // Zapret açılmadan önce listesi ve ayarları yazılır (zapret.ts); sonuç (ör. "liste boş" uyarısı) yanıtla döner.
+    const zapret: ZapretApplyResult | undefined = name === 'zapret' && enabled ? await applyZapret() : undefined;
     let actionError = '';
     try { await systemServices.toggleService(name, enabled); } catch (e: any) { actionError = e.message; }
     const timeout = actionError ? 3000 : enabled ? (name === 'pihole' ? FTL_SETTLE_TIMEOUT : 15000) : 10000;
@@ -234,7 +238,7 @@ app.post('/api/services/toggle', async (req, res) => {
       return res.status(500).json({ success: false, name, enabled: st.status === 'running', status: st.status,
         error: `${name} ${enabled ? 'başlatılamadı' : 'durdurulamadı'}: ${why}` });
     }
-    res.json({ success: true, name, enabled: st.status === 'running', status: st.status });
+    res.json({ success: true, name, enabled: st.status === 'running', status: st.status, ...(zapret ? { zapret } : {}) });
   } catch (e: any) {
     res.status(500).json({ success: false, error: e.message });
   }
@@ -510,7 +514,9 @@ app.post('/api/pihole/lists/sync', async (_req, res) => {
   }
 });
 
-// ─── Zapret Domains ───
+// ─── Zapret (DPI atlatma) ───
+// Listeler Zapret'e gerçekten yazılır (zapret.ts): her değişiklikten sonra uygulanır; yanıttaki `zapret` sonucu
+// (ok / warnings / error) arayüzde gösterilir. Routing'de çıkışı ISP olan DPI kurallarının alan adları da listeye girer.
 app.get('/api/zapret/domains', async (_req, res) => {
   try {
     const domains = await dbAll('SELECT * FROM zapret_domains ORDER BY list_type, domain');
@@ -522,10 +528,13 @@ app.get('/api/zapret/domains', async (_req, res) => {
 
 app.post('/api/zapret/domains', async (req, res) => {
   try {
-    const { list_type, domain } = req.body;
-    await dbRun('INSERT OR IGNORE INTO zapret_domains (list_type, domain) VALUES (?, ?)',
-      [list_type || 'hostlist', domain]);
-    res.json({ success: true });
+    const { list_type, domain } = req.body ?? {};
+    const type = list_type || 'hostlist';
+    if (type !== 'hostlist' && type !== 'exclude') return res.status(400).json({ error: 'Geçersiz liste türü' });
+    const clean = cleanDpiDomain(domain);
+    if (!clean) return res.status(400).json({ error: 'Geçersiz alan adı (ör. discord.com ya da *.discord.com)' });
+    await dbRun('INSERT OR IGNORE INTO zapret_domains (list_type, domain) VALUES (?, ?)', [type, clean]);
+    res.json({ success: true, zapret: await applyZapret() });
   } catch (e: any) {
     res.status(500).json({ error: e.message });
   }
@@ -535,7 +544,7 @@ app.put('/api/zapret/domains/:id', async (req, res) => {
   try {
     const { enabled } = req.body;
     await dbRun('UPDATE zapret_domains SET enabled = ? WHERE id = ?', [enabled ? 1 : 0, req.params.id]);
-    res.json({ success: true });
+    res.json({ success: true, zapret: await applyZapret() });
   } catch (e: any) {
     res.status(500).json({ error: e.message });
   }
@@ -544,9 +553,41 @@ app.put('/api/zapret/domains/:id', async (req, res) => {
 app.delete('/api/zapret/domains/:id', async (req, res) => {
   try {
     await dbRun('DELETE FROM zapret_domains WHERE id = ?', [req.params.id]);
-    res.json({ success: true });
+    res.json({ success: true, zapret: await applyZapret() });
   } catch (e: any) {
     res.status(500).json({ error: e.message });
+  }
+});
+
+// Canlı durum: servis, nfqws süreci, Zapret config değerleri, strateji, liste sayıları, blockcheck günlüğü.
+app.get('/api/zapret/status', async (_req, res) => {
+  try {
+    res.json(await zapretStatus());
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Elle yeniden uygulama (panelde "Zapret'e uygula")
+app.post('/api/zapret/apply', async (_req, res) => {
+  try {
+    res.json({ success: true, zapret: await applyZapret() });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Blockcheck arka planda (systemd-run → scripts/zapret-blockcheck.sh): birkaç dakika sürer, günlük /api/zapret/status'ta.
+app.post('/api/zapret/blockcheck', async (req, res) => {
+  try {
+    if (!zapretInstalled()) return res.status(400).json({ error: 'Zapret bu cihazda kurulu değil' });
+    const domain = cleanDpiDomain(req.body?.domain || 'discord.com');
+    if (!domain) return res.status(400).json({ error: 'Geçersiz alan adı' });
+    if (await blockcheckRunning()) return res.status(409).json({ error: 'Blockcheck zaten çalışıyor' });
+    await startBlockcheck(domain);
+    res.json({ success: true, domain });
+  } catch (e: any) {
+    res.status(500).json({ error: String(e?.stderr || e?.message || e).trim() });
   }
 });
 
@@ -1251,7 +1292,12 @@ async function applyAllRoutingRulesNow() {
     allDomains.push({ domain: rule.domain, exit_node: rule.exit_node, dpi_bypass: rule.dpi_bypass, enabled: 1, redirect_url: rule.redirect_url || undefined });
   }
 
-  await applyDomainRouting(allDomains, ranges);
+  try {
+    await applyDomainRouting(allDomains, ranges);
+  } finally {
+    // Routing'deki "DPI" kurallarının alan adları Zapret listesine de yazılır (zapret.ts); routing'i bekletmez.
+    void applyZapret().then(r => { if (!r.ok) console.error('[zapret] uygulanamadı:', r.error); });
+  }
 }
 
 // Etkin kurallardaki AS aralıkları (ör. WhatsApp → Meta AS32934) 6 saatte bir denetlenir; önbellek 24 saatten eskiyse

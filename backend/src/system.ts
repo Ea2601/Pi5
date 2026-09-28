@@ -1911,7 +1911,8 @@ export async function applyDomainRouting(domains?: DomainRoute[], ranges: RangeR
   }
 
   // 4. VPS-çıkış markları (≥100) için ip rule + routing tablosu.
-  //    mark 200 (yalnız DPI bypass) ISP ana tablosunu kullanır — zapret trafiği kendi hook'uyla işler.
+  //    mark 200 (yalnız DPI bypass) ISP ana tablosunu kullanır — zapret trafiği kendi hook'uyla işler; ona kural/tablo
+  //    kurulmaz (eskiden olmayan wg_vps100 için boş "fwmark 200 lookup 200" ekleniyordu → artık temizlenir).
   //    `ip rule add` varlık kontrolü yapmaz, her uygulamada yeni kopya ekler → mevcut "fwmark N lookup N"
   //    (100–999) kurallarını say: istenen marklarda fazlayı sil (biri hep kalır, trafik ISP'ye kaçmaz),
   //    artık kullanılmayan markların kurallarını tamamen kaldır, eksikse bir kez ekle.
@@ -1926,11 +1927,11 @@ export async function applyDomainRouting(domains?: DomainRoute[], ranges: RangeR
   // Alan adı setlerinin ve IP aralığı setlerinin çıkışları birlikte (yalnız aralık kuralı olan bir çıkış da tabloya gider).
   const allMarks = new Set<number>([...markSets.keys(), ...[...netSets.values()].map(e => e.mark)]);
   for (const [mark, count] of ruleCounts) {
-    const extra = allMarks.has(mark) ? count - 1 : count;
+    const extra = allMarks.has(mark) && mark !== 200 ? count - 1 : count;
     for (let i = 0; i < extra; i++) await run(`ip rule del fwmark ${mark} table ${mark} 2>/dev/null || true`);
   }
   for (const mark of allMarks) {
-    if (mark < 100) continue;
+    if (mark < 100 || mark === 200) continue;
     const vpsId = mark >= 300 ? mark - 300 : mark - 100;
     const iface = `wg_vps${vpsId}`;
     if (!ruleCounts.has(mark)) await run(`ip rule add fwmark ${mark} table ${mark} 2>/dev/null || true`);

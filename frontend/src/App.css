@@ -1072,6 +1072,18 @@ body.nav-open { overflow: hidden; }
 
 .zapret-mode p { font-size: 11px; color: var(--text-muted); }
 
+/* Zapret canlı durum kartı + blockcheck/strateji metni (mobile-first) */
+.zapret-facts { display: grid; grid-template-columns: 1fr; gap: 8px; }
+.zapret-fact {
+  display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 9px 12px;
+  border: 1px solid var(--panel-border); border-radius: var(--radius-sm); font-size: 12px;
+}
+.zapret-fact span { color: var(--text-muted); }
+.zapret-fact strong { font-weight: 600; text-align: right; overflow-wrap: anywhere; }
+.doc-code.zapret-log { margin-top: 12px; max-height: 320px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.6; }
+@media (min-width: 640px) { .zapret-facts { grid-template-columns: repeat(2, 1fr); } }
+@media (min-width: 1024px) { .zapret-facts { grid-template-columns: repeat(3, 1fr); } }
+
 .domain-list { display: flex; flex-direction: column; gap: 6px; }
 
 .domain-row {
