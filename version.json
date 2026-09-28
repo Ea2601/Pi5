@@ -1,8 +1,9 @@
 {
-  "version": "2.24.8",
-  "build": 85,
+  "version": "2.24.9",
+  "build": 86,
   "date": "2026-09-28",
   "changelog": [
+    "Telefonda menü açılınca klavye/ekran okuyucu odağı artık menünün içindeki kapat düğmesine gelir (önceki sürümlerde odak arkadaki sayfada kalıyordu); Esc ile kapatınca odak menü düğmesine döner",
     "Kenar çubuğu, üst çubuk ve logo tek parça: masaüstünde logo sol üst köşede sabit durur, üst çubuk onunla aynı yükseklikte devam eder, menü altından başlar — ekranın sol ve üst kenarına oturan tek bir çerçeve. Yalnız menü listesi kayar; eskiden logonun bulanık arka planı belli oluyor ve menü kaydırılınca öğeler logonun arkasından geçip üst üste biniyordu. Telefondaki açılır menüde de logo başlığı sabit, üst çubukla aynı hizada; liste altında kayar, 'Çıkış yap' her zaman görünür",
     "Düzeltmeler: güncelleme denetimi hata yanıtı alınca (ör. çok fazla istek) panelin tamamı 'Bir hata oluştu' ekranına düşebiliyordu — artık yalnız geçerli yanıt kullanılır. Açık temada Dashboard ve diğer sayfalardaki istatistik değerleri (sayılar) soluk beyazdı, okunmuyordu — artık koyu",
     "Panel, giriş ekranının tasarım dilini kullanır: arka planda aynı mavi/yeşil ışık halkaları ve Pi'yi cihazlara bağlayan ağ çizgileri (açık ve koyu temada). Panelde arka plan hareketsizdir: önündeki cam kartların bulanıklığı her karede yeniden hesaplanmasın, telefon ısınmasın; giriş ekranındaki akan ışık animasyonu aynen sürer. Arka plan dokunmaları engellemez, menü/pencere/bildirim katmanları değişmedi",

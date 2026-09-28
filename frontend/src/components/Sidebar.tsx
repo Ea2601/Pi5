@@ -32,7 +32,18 @@ export function Sidebar({ activeTab, onTabChange, open, onClose, onLogout }: Sid
   useEffect(() => {
     if (open) {
       returnFocus.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-      closeRef.current?.focus();
+      // Çekmece açıldığı anda düğme tarayıcıda henüz "gizli" sayılır (visibility bir sonraki karede uygulanır) ve focus()
+      // etkisiz kalır: odak, düğme odaklanabilir olana kadar sonraki karelerde denenir (en çok 0,5 sn).
+      const started = performance.now();
+      let raf = 0;
+      const tryFocus = () => {
+        const btn = closeRef.current;
+        if (!btn) return;
+        btn.focus();
+        if (document.activeElement !== btn && performance.now() - started < 500) raf = requestAnimationFrame(tryFocus);
+      };
+      raf = requestAnimationFrame(tryFocus);
+      return () => cancelAnimationFrame(raf);
     } else if (returnFocus.current) {
       returnFocus.current.focus();
       returnFocus.current = null;
