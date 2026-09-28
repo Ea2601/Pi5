@@ -3,6 +3,8 @@ import { useState, useRef, useEffect } from 'react';
 import { useApi, postApi, putApi, deleteApi } from '../hooks/useApi';
 import { Panel, Badge } from './ui';
 import type { CronJob } from '../types';
+import { toast } from '../toast';
+import { startSystemUpdate } from '../systemUpdate';
 
 interface LogResponse {
   logs: string[];
@@ -60,6 +62,17 @@ function LogsView() {
     setActionLoading(null);
   };
 
+  // Güncelleme arka planda sürer; bitene kadar izlenir, sonuç bildirim olarak gösterilir.
+  const handleUpdate = async () => {
+    setActionLoading('update');
+    try {
+      await startSystemUpdate();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Güncelleme başarısız');
+    }
+    setActionLoading(null);
+  };
+
   const getLogLevel = (log: string): string => {
     if (log.includes('ERROR')) return 'error';
     if (log.includes('WARN') || log.includes('CRITICAL')) return 'warn';
@@ -80,7 +93,7 @@ function LogsView() {
       <div className="maintenance-row">
         <div className="maintenance-actions">
           <button className="btn-primary btn-sm" disabled={actionLoading !== null}
-            onClick={() => handleAction('update', '/system/update', {})}>
+            onClick={handleUpdate}>
             <RefreshCw size={14} className={actionLoading === 'update' ? 'spin' : ''} />
             <span>OS Update</span>
           </button>

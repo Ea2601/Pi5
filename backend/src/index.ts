@@ -19,6 +19,7 @@ import {
 import type { RangeRoute } from './system';
 import { ASN_TOKEN, getAsnPrefixes, normalizeCidr, refreshAsnIfStale } from './ipRanges';
 import { getRoutingSuggestions, MAX_HOURS as SUGGEST_MAX_HOURS } from './domainSuggest';
+import { startUpdate, getUpdateStatus } from './update';
 import {
   shq, sedEscape, isValidMac, isValidDomain, isValidTimezone,
   isValidHexColor, normalizeAnimation, sanitizeName,
@@ -3664,55 +3665,26 @@ app.get('/api/system/update-check', async (_req, res) => {
 });
 
 // ─── Quick System Update ───
+// İş systemd-run ile backend'in DIŞINDA koşar (update.ts → scripts/update-job.sh): istek hemen döner, panel ilerlemeyi
+// /api/system/update/status'tan izler; başarılı işin sonunda backend'i iş yeniden başlatır. Eskiden update.sh bu isteğin
+// içinde 5 dk'ya kadar bekletiliyordu — bağlantı kopunca panel "Failed to fetch" gösteriyordu.
 app.post('/api/system/update', async (_req, res) => {
   try {
     if (!isLinux) {
       return res.json({ success: false, error: 'Guncelleme sadece Pi5 uzerinde calisir.' });
     }
-    const steps: { step: string; output: string; success: boolean; warning?: boolean }[] = [];
-    const exec = require('util').promisify(require('child_process').exec);
-    // update.sh düşülen adımı '@@STEP_FAILED=<adım> rc=N', post-update çıkış kodunu '@@POSTUPDATE_RC=N' ile bildirir
-    // (eskiden çıktıdaki kelimelerden tahmin ediliyordu; 'Git OK: unknown' gibi durumlar görünmüyordu).
-    const STEP_LABEL: Record<string, string> = { hazirlik: 'Hazırlık', git: 'Git Pull', backend: 'Backend Build', frontend: 'Frontend Build' };
-    const STEP_ORDER = ['hazirlik', 'git', 'backend', 'frontend'];
+    const r = await startUpdate();
+    // steps: bu sürümden önce açılmış sayfa (eski arayüz) yalnız success/steps okur — sayfayı yenilemesi söylenir.
+    res.json({ ...r, steps: [{ step: 'Güncelleme arka planda sürüyor — sayfayı yenileyin (Ctrl+Shift+R)', output: '', success: false }] });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
 
-    // Run entire update via single script (handles permissions, chown, git, builds)
-    try {
-      const { stdout } = await exec(
-        'bash /opt/pi5-gateway/scripts/update.sh 2>&1',
-        { timeout: 300000 } // 5 min total
-      );
-      const head = /Git OK: (\S+)/.exec(stdout)?.[1];
-      const viaSudo = /Normal fetch başarısız/.test(stdout) ? ' — sudo ile' : '';
-      steps.push({ step: 'Git Pull', output: head ? `OK (${head})${viaSudo}` : 'OK', success: true });
-      const pu = /@@POSTUPDATE_RC=(\d+)/.exec(stdout);
-      if (pu) steps.push({ step: 'Post-Update', output: `çıkış kodu ${pu[1]} — ayrıntı: core/update.log`, success: true, warning: true });
-      steps.push({ step: 'Backend Build', output: 'OK', success: true });
-      steps.push({ step: 'Frontend Build', output: stdout.trim().slice(-500), success: true });
-    } catch (e: any) {
-      const full = String(e?.stdout || '');
-      const tail = (full || String(e?.message || '')).trim().slice(-500);
-      const failed = /@@STEP_FAILED=(\w+) rc=(\d+)/.exec(full);
-      if (failed && STEP_ORDER.includes(failed[1])) {
-        for (const s of STEP_ORDER.slice(1, STEP_ORDER.indexOf(failed[1]))) steps.push({ step: STEP_LABEL[s], output: 'OK', success: true });
-        steps.push({ step: STEP_LABEL[failed[1]], output: tail, success: false });
-      } else if (e?.killed) {
-        steps.push({ step: 'Zaman aşımı', output: 'Güncelleme 5 dk içinde bitmedi; işlem arka planda sürebilir — ayrıntı: core/update.log', success: false });
-      } else {
-        steps.push({ step: 'Güncelleme', output: tail, success: false });
-      }
-    }
-
-    const allSuccess = steps.every(s => s.success);
-    if (allSuccess) steps.push({ step: 'Servis Restart', output: '3 saniye sonra yeniden baslatilacak...', success: true });
-    res.json({ success: allSuccess, steps });
-
-    // 4. Delayed restart — response already sent
-    if (allSuccess) {
-      setTimeout(() => {
-        require('child_process').exec('systemctl restart pi5-backend', () => {});
-      }, 3000);
-    }
+app.get('/api/system/update/status', async (_req, res) => {
+  try {
+    if (!isLinux) return res.json({ state: 'idle' });
+    res.json(await getUpdateStatus());
   } catch (e: any) {
     res.status(500).json({ error: e.message });
   }

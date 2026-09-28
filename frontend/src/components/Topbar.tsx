@@ -1,10 +1,11 @@
 import { Bell, User, ShieldCheck, ShieldAlert, Download, Loader2, Clock, Sun, Moon, Menu } from 'lucide-react';
 import { useState, useEffect } from 'react';
 import type { HealthStatus } from '../types';
-import { useApi, postApi } from '../hooks/useApi';
+import { useApi } from '../hooks/useApi';
 import { Modal, Badge } from './ui';
 import { setTheme, getCurrentTheme, type Theme } from '../theme';
 import { toast } from '../toast';
+import { startSystemUpdate } from '../systemUpdate';
 
 interface UpdateInfo {
   available: boolean;
@@ -30,6 +31,7 @@ export function Topbar({ onShowAlerts, onMenu, menuOpen = false, title = '' }: T
   const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(null);
   const [showUpdateModal, setShowUpdateModal] = useState(false);
   const [updating, setUpdating] = useState(false);
+  const [updatePhase, setUpdatePhase] = useState('');
   const [clock, setClock] = useState('');
   const [theme, setThemeState] = useState<Theme>(getCurrentTheme());
 
@@ -70,18 +72,12 @@ export function Topbar({ onShowAlerts, onMenu, menuOpen = false, title = '' }: T
   const handleUpdate = async () => {
     setUpdating(true);
     try {
-      const result = await postApi('/system/update', {});
-      if (result.success) {
-        toast.success('Güncelleme tamamlandı! 8sn sonra sayfa yenilenecek...');
-        setTimeout(() => window.location.reload(), 8000);
-      } else {
-        const failed = result.steps?.filter((s: any) => !s.success).map((s: any) => s.step).join(', ');
-        toast.error(`Başarısız: ${failed}`);
-      }
-    } catch (e: any) {
-      toast.error(e.message || 'Güncelleme başarısız');
+      await startSystemUpdate(setUpdatePhase);
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Güncelleme başarısız');
     }
     setUpdating(false);
+    setUpdatePhase('');
   };
 
   // Unread alerts count
@@ -166,7 +162,7 @@ export function Topbar({ onShowAlerts, onMenu, menuOpen = false, title = '' }: T
               İptal
             </button>
             <button className="btn-primary btn-sm" onClick={handleUpdate} disabled={updating}>
-              {updating ? <><Loader2 size={13} className="spin" /> Güncelleniyor...</> : <><Download size={13} /> Güncelle</>}
+              {updating ? <><Loader2 size={13} className="spin" /> {updatePhase || 'Güncelleniyor...'}</> : <><Download size={13} /> Güncelle</>}
             </button>
           </>
         }

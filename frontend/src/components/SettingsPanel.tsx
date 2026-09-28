@@ -3,10 +3,11 @@ import {
   Settings, Palette, Globe, Bell, Zap, Info, Save, ChevronDown, ChevronRight,
   Volume2, VolumeX, Clock, RefreshCw, Download, Loader2, Gauge
 } from 'lucide-react';
-import { useApi, putApi, postApi } from '../hooks/useApi';
+import { useApi, putApi } from '../hooks/useApi';
 import { Panel, Badge } from './ui';
 import { BRAND } from '../brand';
 import { toast } from '../toast';
+import { startSystemUpdate, trackSystemUpdate, runningSystemUpdate } from '../systemUpdate';
 
 interface AppSettings {
   accentColor: string;
@@ -319,22 +320,29 @@ export function SettingsPanel() {
 function UpdateSection() {
   const { data: versionData } = useApi<{ version: string; build: number }>('/system/version', { version: '2.1.0', build: 0 });
   const [updating, setUpdating] = useState(false);
+  const [phase, setPhase] = useState('');
+
+  // Sayfa güncelleme sürerken açıldıysa (ör. yenilendi) süren işi izlemeye devam et.
+  useEffect(() => {
+    let alive = true;
+    runningSystemUpdate().then(id => {
+      if (!id || !alive) return;
+      setUpdating(true);
+      trackSystemUpdate(id, p => { if (alive) setPhase(p); })
+        .finally(() => { if (alive) { setUpdating(false); setPhase(''); } });
+    });
+    return () => { alive = false; };
+  }, []);
 
   const handleUpdate = async () => {
     setUpdating(true);
     try {
-      const result = await postApi('/system/update', {});
-      if (result.success) {
-        toast.success('Güncelleme tamamlandı! Servis yeniden başlatılıyor, 8sn sonra sayfa yenilenecek...');
-        setTimeout(() => window.location.reload(), 8000);
-      } else {
-        const failed = result.steps?.filter((s: any) => !s.success).map((s: any) => s.step).join(', ');
-        toast.error(`Başarısız adımlar: ${failed}`);
-      }
-    } catch (e: any) {
-      toast.error(e.message || 'Güncelleme başarısız');
+      await startSystemUpdate(setPhase);
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Güncelleme başarısız');
     }
     setUpdating(false);
+    setPhase('');
   };
 
   return (
@@ -351,7 +359,9 @@ function UpdateSection() {
       <div className="config-item">
         <div className="config-item-info">
           <span className="config-item-label">Sistemi Güncelle</span>
-          <span className="config-item-desc">Git pull + build + servis yeniden başlat</span>
+          <span className="config-item-desc">
+            {updating ? `Sürüyor: ${phase || 'başlatılıyor'} — sayfa kapansa da Pi'de devam eder` : 'Git pull + build + servis yeniden başlat'}
+          </span>
         </div>
         <div className="config-item-control">
           <button

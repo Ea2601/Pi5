@@ -1,8 +1,10 @@
 {
-  "version": "2.24.0",
-  "build": 77,
+  "version": "2.24.1",
+  "build": 78,
   "date": "2026-09-28",
   "changelog": [
+    "Güncelleme düzeltildi: v2.23.1'den beri panelden yapılan güncellemelerde 'Frontend Build' adımı 'tsc: not found' ile düşüyor, arayüz yenilenmiyordu (sürüm numarası yeni görünse de ekran eski kalıyordu). Neden: güncelleme panel servisinin ortamında (NODE_ENV=production) çalışırken npm derleme araçlarını (tsc, vite) sildi; eksik paket denetimi de bu ortamda onları görmüyordu. Artık derleme araçları her durumda kurulur, eksikse tamamlanır",
+    "Panel güncellemesi arka planda sürer: 'Güncelle'ye basınca Pi işi kendi başına yürütür, panel o anki adımı gösterir (kod indiriliyor → kurulum → derleme → yeniden başlatma). Telefon ekranı kapansa, sayfa yenilense ya da bağlantı kopsa da güncelleme yarıda kalmaz. Eskiden istek 5 dk'ya kadar açık kalıyordu ve bağlantı kopunca 'Failed to fetch' görünüyordu",
     "Panel telefona göre yeniden tasarlandı (önce telefon, sonra geniş ekran): telefonda menü soldan açılan çekmecedir (üst çubuktaki ☰ düğmesi), üst çubukta o anki sayfanın adı ve kısa sistem durumu görünür; kartlar dar ekranda iki sütun olur, sayfa yana taşmaz. Masaüstü düzeni aynı kalır",
     "Dashboard yenilendi: üstte koruma durumu ile çalışma süresi / yük / sağlık özeti ve dört ana gösterge, ardından donanım ve servis durumu, sonra grafikler; grafik ipuçları açık temada da okunur",
     "DHCP ayarları ayrı sayfada: menü → Pi-hole DNS → DHCP Ayarları (eskiden Pi-hole → Ayarlar sekmesindeydi). Doğrudan adres http://<pi>/#dhcp; sihirbazın 'Kalıcı yap' yönlendirmeleri bu adresi verir. Sayfa yenilenince aynı sayfada kalınır",
