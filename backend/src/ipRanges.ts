@@ -7,7 +7,7 @@ import fs from 'fs';
 //                         arama/diğer trafik — aynı sunuculardaki web trafiği, ör. Facebook/Instagram, yerel kalır)
 //   a.b.c.d[/nn]          sabit IPv4 adresi ya da aralığı (tüm portlar)
 // AS aralıkları RIPEstat'tan (açık veri) günde bir çekilir ve önbelleğe yazılır; Pi internetsizse son kopya, o da yoksa
-// (yalnız AS32934 için) koddaki anlık görüntü kullanılır.
+// (Meta AS32934 ve Telegram'ın beş AS'si için) koddaki anlık görüntü kullanılır.
 
 export const ASN_TOKEN = /^@asn:(\d{1,10})(!443)?$/i;
 const IPV4 = /^(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}$/;
@@ -36,6 +36,13 @@ const SEED: Record<number, string[]> = {
     '163.70.128.0/17', '163.77.132.0/23', '163.77.136.0/23', '163.77.160.0/20', '173.252.64.0/18', '179.60.192.0/22',
     '185.60.216.0/22', '185.89.216.0/22', '204.15.20.0/22',
   ],
+  // Telegram Messenger Inc — RIPEstat announced-prefixes, 2026-09-29 anlık görüntüsü (alt bloklar kapsayan bloğa
+  // indirildi). Beşi birlikte resmî core.telegram.org/resources/cidr.txt IPv4 listesinin tamamını kapsar.
+  62041: ['91.108.4.0/22', '91.108.8.0/22', '91.108.56.0/22', '95.161.64.0/20', '149.154.160.0/22', '149.154.164.0/22'],
+  59930: ['91.108.12.0/22', '149.154.172.0/22'],
+  62014: ['91.108.16.0/22', '149.154.168.0/22'],
+  211157: ['91.105.192.0/23', '185.76.151.0/24'],
+  44907: ['91.108.20.0/22'],
 };
 
 const CACHE_DIR = '/opt/pi5-gateway/core/asn';

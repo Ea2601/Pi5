@@ -27,7 +27,11 @@ interface VpsServer { id: number; ip: string; location: string }
 // "@asn:<n>[!443]" bir ağın (AS) IP aralıkları, "a.b.c.d[/nn]" sabit aralık. Aralıklar etiket olarak gösterilir.
 const ASN_ENTRY = /^@asn:(\d{1,10})(!443)?$/i;
 const CIDR_ENTRY = /^\d{1,3}(\.\d{1,3}){3}(\/\d{1,2})?$/;
-const ASN_NAMES: Record<string, string> = { '32934': 'Meta' };
+// Telegram beş AS kullanır (hepsi Telegram Messenger Inc; resmî core.telegram.org/resources/cidr.txt listesinin tümünü kapsar).
+const ASN_NAMES: Record<string, string> = {
+  '32934': 'Meta',
+  '62041': 'Telegram', '59930': 'Telegram', '62014': 'Telegram', '211157': 'Telegram', '44907': 'Telegram',
+};
 function splitRuleEntries(list: string): { domains: string[]; ranges: string[] } {
   const entries = list.split(',').map(s => s.trim()).filter(Boolean);
   return {
@@ -40,6 +44,15 @@ function describeRangeEntry(e: string): string {
   if (!m) return `IP aralığı ${e}`;
   const who = ASN_NAMES[m[1]] ? `${ASN_NAMES[m[1]]} IP aralıkları` : `AS${m[1]} IP aralıkları`;
   return m[2] ? `${who} — yalnız arama trafiği (443 hariç)` : `${who} — tüm trafik`;
+}
+// Aynı etiketi veren girdiler tek etikette toplanır (ör. Telegram'ın beş AS'si → "… · 5 ağ").
+function groupRangeEntries(ranges: string[]): { label: string; entries: string[] }[] {
+  const groups = new Map<string, string[]>();
+  for (const r of ranges) {
+    const label = describeRangeEntry(r);
+    groups.set(label, [...(groups.get(label) || []), r]);
+  }
+  return [...groups].map(([label, entries]) => ({ label: entries.length > 1 ? `${label} · ${entries.length} ağ` : label, entries }));
 }
 
 // ─── Kural uygulama durumu: değişiklikten sonra "uygulanıyor… / hazır" ───
@@ -296,9 +309,9 @@ function AppRoutingView({ onApplied }: { onApplied: () => void }) {
                           <span style={{ fontFamily: 'var(--font-mono, monospace)', fontSize: 11 }}>
                             {names.join(',')}
                           </span>
-                          {ranges.map(r => (
-                            <span key={r} style={{ fontSize: 11 }} title={r}>
-                              <Badge variant="info">{describeRangeEntry(r)}</Badge>
+                          {groupRangeEntries(ranges).map(g => (
+                            <span key={g.label} style={{ fontSize: 11 }} title={g.entries.join(', ')}>
+                              <Badge variant="info">{g.label}</Badge>
                             </span>
                           ))}
                         </div>

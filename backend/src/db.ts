@@ -3,6 +3,11 @@ import path from 'path';
 
 const dbPath = path.resolve(__dirname, '../../core/pi5router.sqlite');
 
+// Telegram Messenger Inc'in AS'leri (RIPEstat 2026-09-29: 62041, 59930, 62014, 211157, 44907). Birlikte Telegram'ın resmî
+// IP listesinin (core.telegram.org/resources/cidr.txt) dokuz IPv4 bloğunun tamamını kapsar. Aralıklar ipRanges.ts ile
+// günlük güncellenir.
+const TELEGRAM_ASN_TOKENS = '@asn:62041,@asn:59930,@asn:62014,@asn:211157,@asn:44907';
+
 export const db = new sqlite3.Database(dbPath, (err) => {
   if (err) {
     console.error('Error opening database', err.message);
@@ -84,7 +89,10 @@ export const initDb = () => {
       // gider (canlı ölçüm: UDP 3478) — alan adı kuralı onları yakalamaz. 443 hariç: aynı sunuculardaki Facebook/Instagram
       // web trafiği yerel kalır (bkz. ipRanges.ts).
       [1, 'WhatsApp', 'voip', 'direct', '*.whatsapp.net,*.whatsapp.com,*.wa.me,@asn:32934!443'],
-      [2, 'Telegram', 'voip', 'direct', '*.telegram.org,*.t.me,*.telesco.pe'],
+      // Telegram'ın beş AS'si (Telegram Messenger Inc; resmî cidr.txt listesinin tamamını kapsar): uygulama veri
+      // merkezlerine ve arama aktarma sunucularına DNS'siz, doğrudan IP ile bağlanır. Aralıklar yalnız Telegram'a ait
+      // olduğundan tüm trafik (443 dahil) kuralın çıkışına gider.
+      [2, 'Telegram', 'voip', 'direct', `*.telegram.org,*.t.me,*.telesco.pe,${TELEGRAM_ASN_TOKENS}`],
       [3, 'Discord', 'voip', 'direct', '*.discord.com,*.discord.gg,*.discordapp.com'],
       [4, 'Signal', 'voip', 'direct', '*.signal.org,*.whispersystems.org'],
       [5, 'YouTube', 'streaming', 'direct', '*.youtube.com,*.googlevideo.com,*.ytimg.com,*.yt.be'],
@@ -115,6 +123,10 @@ export const initDb = () => {
     // silinmez; arayüzde uygulama kuralı listesini düzenleme alanı olmadığı için elle eklemenin yolu yok). Varsa dokunulmaz.
     db.run(`UPDATE traffic_routing SET domains = domains || ',@asn:32934!443'
       WHERE id = 1 AND app_name = 'WhatsApp' AND COALESCE(domains, '') != '' AND instr(domains, '@asn:32934') = 0`);
+    // Telegram (v2.24.16+): aynı yöntem — Telegram satırında AS girdisi yoksa beşi birden sona eklenir.
+    db.run(`UPDATE traffic_routing SET domains = domains || ?
+      WHERE id = 2 AND app_name = 'Telegram' AND COALESCE(domains, '') != '' AND instr(domains, '@asn:62041') = 0`,
+      [`,${TELEGRAM_ASN_TOKENS}`]);
 
     // Domain-based routing: route specific domains through specific profiles
     db.run(`CREATE TABLE IF NOT EXISTS domain_routing (
