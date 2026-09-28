@@ -1,8 +1,9 @@
 {
-  "version": "2.24.5",
-  "build": 82,
+  "version": "2.24.6",
+  "build": 83,
   "date": "2026-09-28",
   "changelog": [
+    "Panel, giriş ekranının tasarım dilini kullanır: arka planda aynı mavi/yeşil ışık halkaları ve Pi'yi cihazlara bağlayan ağ çizgileri (açık ve koyu temada). Panelde arka plan hareketsizdir: önündeki cam kartların bulanıklığı her karede yeniden hesaplanmasın, telefon ısınmasın; giriş ekranındaki akan ışık animasyonu aynen sürer. Arka plan dokunmaları engellemez, menü/pencere/bildirim katmanları değişmedi",
     "Panelin kendi giriş ekranı: tarayıcının şifre penceresi yerine panelle aynı tasarımda giriş sayfası (kullanıcı adı ve şifre aynı). 'Bu cihazda 30 gün hatırla', üst çubukta/menüde 'Çıkış yap', 5 yanlış denemede o cihaz 15 dakika bekletilir. Geçiş panelin üstündeki banttan yapılır ve 5 dakikalık denemedir: yeni ekrandan girip 'Kalıcı yap'a basılmazsa şifre penceresine kendiliğinden dönülür. Geri dönmek (SSH): sudo bash /opt/pi5-gateway/scripts/panel-auth.sh mode basic",
     "Hız testi en yakın sunucuda: artık Ookla'nın resmi Speedtest programıyla ölçülür (telefondaki Speedtest uygulamasıyla aynı altyapı); en yakın sunucuyu gecikmeye göre kendisi seçer, çoklu bağlantı kullanır, jitter ve paket kaybını gerçekten ölçer. Eski araç sunucu listesini Speedtest'in eski servisinden alıyordu ve bu servis BAE bağlantısına yalnız Almanya/Polonya sunucuları döndürüyordu (Essen gibi uzak sunucu, düşük sonuç); jitter aslında sunucu gecikmesiydi, paket kaybı hep 0 yazılıyordu. Hız Testi sayfasında sunucu şehir ve ülkesiyle görünür",
     "Pi'nin ekranı son ölçülen hızı gösterir: eskiden 'test sürüyor' denetimi kendi kendini buluyordu ve ekran her seferinde 'SPEEDTEST RUNNING' yazıp sonucu hiç göstermiyordu. Test sürerken başlık 'TESTING' olur, son değer yine görünür",

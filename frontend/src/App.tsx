@@ -30,6 +30,7 @@ import { CaseControlPanel } from './components/CaseControlPanel';
 import { KioskSettingsPanel } from './components/KioskSettingsPanel';
 import { PanelAuthBanner } from './components/PanelAuthBanner';
 import { LoginScreen } from './components/LoginScreen';
+import { NetworkBackdrop } from './components/NetworkBackdrop';
 import { AUTH_REQUIRED_EVENT, fetchAuthStatus, logout, type AuthStatus } from './auth';
 import type { TabId } from './types';
 import { tabFromHash, tabLabel, initialTab, rememberTab } from './nav';
@@ -172,6 +173,7 @@ function App() {
 
   return (
     <ErrorBoundary key={`app-${session}`}>
+      <NetworkBackdrop variant="panel" />
       <div className="app-container">
         <Sidebar activeTab={activeTab} onTabChange={goTab} open={navOpen} onClose={() => setNavOpen(false)}
           onLogout={canLogout ? handleLogout : undefined} />

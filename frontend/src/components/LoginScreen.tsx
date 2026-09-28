@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { User, Lock, Eye, EyeOff, LogIn, AlertCircle, Loader2 } from 'lucide-react';
 import { BrandMark } from './BrandMark';
+import { NetworkBackdrop } from './NetworkBackdrop';
 import { BRAND } from '../brand';
 import { login } from '../auth';
 
@@ -33,24 +34,7 @@ export function LoginScreen({ onSuccess }: { onSuccess: () => void }) {
 
   return (
     <div className="login-screen">
-      <div className="login-bg" aria-hidden="true">
-        <svg viewBox="0 0 1200 800" preserveAspectRatio="xMidYMid slice">
-          <line x1="120" y1="140" x2="360" y2="260" /><line x1="360" y1="260" x2="600" y2="400" />
-          <line x1="600" y1="400" x2="880" y2="250" /><line x1="880" y1="250" x2="1080" y2="360" />
-          <line x1="600" y1="400" x2="820" y2="620" /><line x1="600" y1="400" x2="330" y2="600" />
-          <line x1="330" y1="600" x2="140" y2="520" /><line x1="820" y1="620" x2="1060" y2="660" />
-          <line x1="880" y1="250" x2="960" y2="90" /><line x1="360" y1="260" x2="300" y2="80" />
-          <line className="login-flow" x1="120" y1="140" x2="600" y2="400" />
-          <line className="login-flow login-flow-b" x1="600" y1="400" x2="1080" y2="360" />
-          <line className="login-flow login-flow-b" x1="140" y1="520" x2="600" y2="400" />
-          <line className="login-flow" x1="600" y1="400" x2="1060" y2="660" />
-          <circle cx="120" cy="140" r="3" /><circle cx="360" cy="260" r="3.5" /><circle cx="880" cy="250" r="3.5" />
-          <circle cx="1080" cy="360" r="3" /><circle cx="820" cy="620" r="3" /><circle cx="330" cy="600" r="3" />
-          <circle cx="140" cy="520" r="2.5" /><circle cx="1060" cy="660" r="2.5" /><circle cx="960" cy="90" r="2.5" />
-          <circle cx="300" cy="80" r="2.5" />
-          <circle className="login-hub" cx="600" cy="400" r="6" />
-        </svg>
-      </div>
+      <NetworkBackdrop variant="login" />
 
       <main className="glass-panel login-card">
         <div className="login-brand">

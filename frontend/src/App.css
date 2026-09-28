@@ -1504,8 +1504,6 @@ button.user-profile { cursor: pointer; font-family: var(--font-family); transiti
 .auth-splash { min-height: 100vh; min-height: 100dvh; }
 
 .login-screen {
-  --login-line: rgba(148, 163, 184, 0.22);
-  --login-node: rgba(148, 163, 184, 0.55);
   position: relative;
   min-height: 100vh;
   min-height: 100dvh;
@@ -1516,35 +1514,48 @@ button.user-profile { cursor: pointer; font-family: var(--font-family); transiti
   padding: max(24px, env(safe-area-inset-top)) 16px max(24px, env(safe-area-inset-bottom));
   overflow: hidden;
 }
-:root.light-theme .login-screen { --login-line: rgba(71, 85, 105, 0.18); --login-node: rgba(71, 85, 105, 0.45); }
-
-.login-bg { position: fixed; inset: 0; z-index: 0; pointer-events: none; overflow: hidden; }
-.login-bg::before, .login-bg::after { content: ''; position: absolute; border-radius: 50%; filter: blur(60px); }
-.login-bg::before {
+/* ═══ Ortak arka plan (NetworkBackdrop): renk halkaları + ağ çizgileri ═══
+   'login' giriş ekranı (hareketli), 'panel' panel kabuğu (hareketsiz, daha sade — önündeki cam kartların
+   backdrop-filter'ı her karede yeniden hesaplanmasın). Salt süs: dokunma almaz. */
+.net-bg {
+  --net-line: rgba(148, 163, 184, 0.22);
+  --net-node: rgba(148, 163, 184, 0.55);
+  position: fixed; inset: 0; z-index: 0; pointer-events: none; overflow: hidden;
+}
+:root.light-theme .net-bg { --net-line: rgba(71, 85, 105, 0.18); --net-node: rgba(71, 85, 105, 0.45); }
+.net-bg::before, .net-bg::after { content: ''; position: absolute; border-radius: 50%; filter: blur(60px); }
+.net-bg::before {
   width: 70vmax; height: 50vmax; left: -20vmax; top: -18vmax; opacity: 0.22;
   background: radial-gradient(closest-side, var(--accent-color), transparent);
 }
-.login-bg::after {
+.net-bg::after {
   width: 60vmax; height: 45vmax; right: -20vmax; bottom: -20vmax; opacity: 0.12;
   background: radial-gradient(closest-side, var(--success-color), transparent);
 }
-.login-bg svg { position: absolute; inset: 0; width: 100%; height: 100%; }
-.login-bg line { stroke: var(--login-line); stroke-width: 1; }
-.login-bg circle { fill: var(--login-node); }
-.login-bg .login-flow {
+.net-bg svg { position: absolute; inset: 0; width: 100%; height: 100%; }
+.net-bg line { stroke: var(--net-line); stroke-width: 1; }
+.net-bg circle { fill: var(--net-node); }
+.net-bg .net-flow {
   stroke: var(--accent-color); stroke-width: 1.5; stroke-dasharray: 6 180; opacity: 0.7;
-  animation: login-flow 6s linear infinite;
+  animation: net-flow 6s linear infinite;
 }
-.login-bg .login-flow-b { stroke: var(--success-color); animation-duration: 8s; animation-delay: -3s; }
-.login-bg .login-hub {
+.net-bg .net-flow-b { stroke: var(--success-color); animation-duration: 8s; animation-delay: -3s; }
+.net-bg .net-hub {
   fill: var(--accent-color); transform-origin: center; transform-box: fill-box;
-  animation: login-pulse 3.2s ease-in-out infinite;
+  animation: net-pulse 3.2s ease-in-out infinite;
 }
-@keyframes login-flow { to { stroke-dashoffset: -186; } }
-@keyframes login-pulse { 0%, 100% { opacity: 0.55; transform: scale(1); } 50% { opacity: 1; transform: scale(1.35); } }
+@keyframes net-flow { to { stroke-dashoffset: -186; } }
+@keyframes net-pulse { 0%, 100% { opacity: 0.55; transform: scale(1); } 50% { opacity: 1; transform: scale(1.35); } }
 @media (prefers-reduced-motion: reduce) {
-  .login-bg .login-flow, .login-bg .login-hub { animation: none; }
+  .net-bg .net-flow, .net-bg .net-hub { animation: none; }
 }
+/* Panel: içeriğin ALTINDA (z-index -1 → kabuk ve çekmece/modal/toast katmanları olduğu gibi kalır), hareketsiz, sade. */
+.net-bg-panel { z-index: -1; --net-line: rgba(148, 163, 184, 0.12); --net-node: rgba(148, 163, 184, 0.30); }
+:root.light-theme .net-bg-panel { --net-line: rgba(71, 85, 105, 0.10); --net-node: rgba(71, 85, 105, 0.26); }
+.net-bg-panel::before { opacity: 0.20; }
+.net-bg-panel::after { opacity: 0.11; }
+/* Merkez düğüm ekranın ortasında içeriğin tam arkasına düşüyor (cam kartın içinden leke gibi görünüyordu) → panelde yok. */
+.net-bg-panel .net-hub { display: none; }
 
 .login-card { position: relative; z-index: 1; width: 100%; max-width: 400px; padding: 28px 22px 22px; border-radius: 16px; }
 .login-brand { display: flex; align-items: center; gap: 14px; }
