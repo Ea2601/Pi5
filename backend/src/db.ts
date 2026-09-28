@@ -277,17 +277,7 @@ export const initDb = () => {
       last_run TEXT DEFAULT '', next_run TEXT DEFAULT '', status TEXT DEFAULT 'idle'
     )`);
 
-    // Real cron jobs (these are actual maintenance tasks)
-    const cronJobs: [string, string, string, string][] = [
-      ['OS Guncelleme', '0 3 * * *', 'apt update -qq && apt upgrade -y -qq', 'Gunluk sistem paket guncellemesi'],
-      ['Pi-hole Gravity', '0 4 * * *', 'pihole -g', 'Reklam engelleme listelerini guncelle'],
-      ['Log Temizligi', '0 2 * * 1', 'journalctl --vacuum-time=7d', 'Eski loglari temizle'],
-      ['DNS Saglik Kontrolu', '*/10 * * * *', 'dig @127.0.0.1 -p 5335 google.com +short', 'DNS resolver kontrolu'],
-    ];
-    cronJobs.forEach(([name, schedule, command, desc]) => {
-      db.run(`INSERT OR IGNORE INTO cron_jobs (name, schedule, command, description) VALUES (?, ?, ?, ?)`,
-        [name, schedule, command, desc]);
-    });
+    // Varsayılan görevler app_settings tablosundan sonra eklenir (bkz. "CRON VARSAYILANLARI").
 
     // ═══════════════════ FEATURE TABLES (empty — real data from system) ═══════════════════
 
@@ -384,6 +374,35 @@ export const initDb = () => {
     db.run(`CREATE TABLE IF NOT EXISTS app_settings (
       key TEXT PRIMARY KEY, value TEXT DEFAULT ''
     )`);
+
+    // ═══════════════════ CRON VARSAYILANLARI ═══════════════════
+    // Varsayılan bakım görevleri (Sistem & Log → Cron) yalnız BİR KEZ eklenir. Eskiden her açılışta INSERT OR IGNORE ile
+    // ekleniyordu ama cron_jobs.name UNIQUE olmadığından IGNORE hiç işlemedi: her yeniden başlatma/güncelleme listeye aynı
+    // dört satırı yeniden ekliyordu. Birikmiş kopyalar her açılışta temizlenir (her varsayılanın en küçük id'li satırı kalır);
+    // kullanıcının sildiği varsayılan 'cron_defaults_seeded' işareti sayesinde geri gelmez.
+    const cronDefaults: [string, string, string, string][] = [
+      ['OS Guncelleme', '0 3 * * *', 'apt update -qq && apt upgrade -y -qq', 'Gunluk sistem paket guncellemesi'],
+      ['Pi-hole Gravity', '0 4 * * *', 'pihole -g', 'Reklam engelleme listelerini guncelle'],
+      ['Log Temizligi', '0 2 * * 1', 'journalctl --vacuum-time=7d', 'Eski loglari temizle'],
+      ['DNS Saglik Kontrolu', '*/10 * * * *', 'dig @127.0.0.1 -p 5335 google.com +short', 'DNS resolver kontrolu'],
+    ];
+    const cronNames = cronDefaults.map(j => j[0]);
+    const cronPh = cronNames.map(() => '?').join(',');
+    db.run(
+      `DELETE FROM cron_jobs WHERE name IN (${cronPh})
+         AND id NOT IN (SELECT MIN(id) FROM cron_jobs WHERE name IN (${cronPh}) GROUP BY name)`,
+      [...cronNames, ...cronNames],
+    );
+    cronDefaults.forEach(([name, schedule, command, desc]) => {
+      db.run(
+        `INSERT INTO cron_jobs (name, schedule, command, description)
+         SELECT ?, ?, ?, ?
+         WHERE NOT EXISTS (SELECT 1 FROM app_settings WHERE key = 'cron_defaults_seeded')
+           AND NOT EXISTS (SELECT 1 FROM cron_jobs WHERE name = ?)`,
+        [name, schedule, command, desc, name],
+      );
+    });
+    db.run(`INSERT OR IGNORE INTO app_settings (key, value) VALUES ('cron_defaults_seeded', '1')`);
 
     // Default app settings
     const defaultSettings: [string, string][] = [
