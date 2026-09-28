@@ -395,7 +395,7 @@ export const initDb = () => {
     const cronDefaults: [string, string, string, string][] = [
       ['OS Guncelleme', '0 3 * * *', 'apt update -qq && apt upgrade -y -qq', 'Gunluk sistem paket guncellemesi'],
       ['Pi-hole Gravity', '0 4 * * *', 'pihole -g', 'Reklam engelleme listelerini guncelle'],
-      ['Log Temizligi', '0 2 * * 1', 'journalctl --vacuum-time=7d', 'Eski loglari temizle'],
+      ['Log Temizligi', '0 2 * * 1', 'journalctl --vacuum-time=7d && find /var/log -name "*.gz" -mtime +30 -delete', 'Eski loglari temizle'],
       ['DNS Saglik Kontrolu', '*/10 * * * *', 'dig @127.0.0.1 -p 5335 google.com +short', 'DNS resolver kontrolu'],
     ];
     const cronNames = cronDefaults.map(j => j[0]);

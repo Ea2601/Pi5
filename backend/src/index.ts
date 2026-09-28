@@ -23,6 +23,7 @@ import { getRoutingSuggestions, MAX_HOURS as SUGGEST_MAX_HOURS } from './domainS
 import { startUpdate, getUpdateStatus } from './update';
 import { sampleBandwidth, neighborMacs, buildLive } from './bandwidth';
 import { authGate, registerAuthRoutes } from './auth';
+import { validateSchedule, validateCommand, syncCronJobs, readJobStatuses, readSystemCron, syncCronOnStartup } from './cronSync';
 import {
   shq, sedEscape, isValidMac, isValidDomain, isValidTimezone,
   isValidHexColor, normalizeAnimation, sanitizeName,
@@ -304,10 +305,26 @@ app.post('/api/services/setup', async (req, res) => {
 });
 
 // ─── Cron Jobs ───
+// Görevler Pi'nin zamanlayıcısına (/etc/cron.d/pi5-panel) yazılır — bkz. cronSync.ts. Her değişiklikten sonra eşitlenir;
+// yazılamazsa değişiklik kayıtlı kalır ve hata bildirilir.
+const syncCronError = async (): Promise<string | null> => {
+  try { await syncCronJobs(); return null; } catch (e: any) { return `kaydedildi ama zamanlayıcıya yazılamadı: ${e?.message || e}`; }
+};
+
 app.get('/api/cron/jobs', async (_req, res) => {
   try {
-    const jobs = await dbAll('SELECT * FROM cron_jobs ORDER BY id');
-    res.json({ jobs });
+    const jobs = await dbAll('SELECT * FROM cron_jobs ORDER BY id') as any[];
+    // Zamanlayıcının son çalıştırması panelden elle çalıştırmadan yeniyse o gösterilir.
+    const statuses = readJobStatuses();
+    for (const j of jobs) {
+      const st = statuses.get(Number(j.id));
+      const manualAt = j.last_run ? Date.parse(String(j.last_run).replace(' ', 'T') + 'Z') : 0;
+      if (st && st.at * 1000 > (Number.isFinite(manualAt) ? manualAt : 0)) {
+        j.last_run = new Date(st.at * 1000).toISOString().replace('T', ' ').slice(0, 19);
+        if (j.status !== 'running') j.status = st.rc === 0 ? 'success' : 'error';
+      }
+    }
+    res.json({ jobs, system: readSystemCron() });
   } catch (e: any) {
     res.status(500).json({ error: e.message });
   }
@@ -319,8 +336,12 @@ app.post('/api/cron/jobs', async (req, res) => {
     if (!name || !schedule || !command) {
       return res.status(400).json({ error: 'name, schedule, command gerekli' });
     }
+    const bad = validateSchedule(schedule) || validateCommand(command);
+    if (bad) return res.status(400).json({ error: bad });
     await dbRun('INSERT INTO cron_jobs (name, schedule, command, description) VALUES (?, ?, ?, ?)',
-      [name, schedule, command, description || '']);
+      [name, String(schedule).trim(), command, description || '']);
+    const err = await syncCronError();
+    if (err) return res.status(500).json({ error: err });
     res.json({ success: true });
   } catch (e: any) {
     res.status(500).json({ error: e.message });
@@ -330,16 +351,20 @@ app.post('/api/cron/jobs', async (req, res) => {
 app.put('/api/cron/jobs/:id', async (req, res) => {
   try {
     const { enabled, name, schedule, command, description } = req.body;
+    const bad = (schedule !== undefined && validateSchedule(schedule)) || (command !== undefined && validateCommand(command));
+    if (bad) return res.status(400).json({ error: bad });
     const updates: string[] = [];
     const params: any[] = [];
     if (enabled !== undefined) { updates.push('enabled = ?'); params.push(enabled ? 1 : 0); }
     if (name !== undefined) { updates.push('name = ?'); params.push(name); }
-    if (schedule !== undefined) { updates.push('schedule = ?'); params.push(schedule); }
+    if (schedule !== undefined) { updates.push('schedule = ?'); params.push(String(schedule).trim()); }
     if (command !== undefined) { updates.push('command = ?'); params.push(command); }
     if (description !== undefined) { updates.push('description = ?'); params.push(description); }
     if (updates.length === 0) return res.json({ success: true });
     params.push(req.params.id);
     await dbRun(`UPDATE cron_jobs SET ${updates.join(', ')} WHERE id = ?`, params);
+    const err = await syncCronError();
+    if (err) return res.status(500).json({ error: err });
     res.json({ success: true });
   } catch (e: any) {
     res.status(500).json({ error: e.message });
@@ -349,6 +374,8 @@ app.put('/api/cron/jobs/:id', async (req, res) => {
 app.delete('/api/cron/jobs/:id', async (req, res) => {
   try {
     await dbRun('DELETE FROM cron_jobs WHERE id = ?', [req.params.id]);
+    const err = await syncCronError();
+    if (err) return res.status(500).json({ error: err });
     res.json({ success: true });
   } catch (e: any) {
     res.status(500).json({ error: e.message });
@@ -3899,6 +3926,14 @@ const server = app.listen(Number(port), bindHost, () => {
   setInterval(() => { void refreshAsnRanges(); }, 6 * 3600 * 1000);
   // Cihaz engelleri (nft tablosu açılışta yoktur; pi5-gw-restore da yükler — burada DB'deki güncel liste yazılır).
   void reapplyBlockedDevices();
+  // Cron: panel görevleri zamanlayıcıya yazılır, ancak bu başarılıysa eski pi5-maintenance satırları çıkarılır (önce yeni
+  // dosya). Veritabanı ilk kurulum işleri bitsin diye kısa gecikmeyle.
+  setTimeout(() => {
+    void (async () => {
+      try { await syncCronOnStartup(); }
+      catch (e: any) { console.error('[cron] zamanlayıcı eşitlenemedi:', e?.message || e); }
+    })();
+  }, 5000);
   // Panel koruması: deneme sırasında Pi yeniden başladıysa (zamanlayıcı kalıcı değil) süresi geçen deneme geri alınır.
   if (isLinux && require('fs').existsSync(PANEL_AUTH_SCRIPT)) {
     void runPanelAuth(['ensure']).then(r => { if (r.code !== 0 || r.kv.warning) console.error('[panel-auth]', r.kv.error || r.kv.warning); });

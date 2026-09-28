@@ -12,12 +12,11 @@ function writeLog(message: string) {
   console.log(message);
 }
 
-// NOT: Gerçek bakım (apt update/upgrade, git pull, build, log temizliği) install.sh'in kurduğu
-// /etc/cron.d/pi5-maintenance ile yapılır. Buradaki eski `runMaintenance` sadece komutları `echo`layan
-// bir stub'dı (sahte "başarılı" logu üretiyordu) ve her gece 04:00'te gizlice `sudo reboot` çağırıyordu —
-// ikisi de kaldırıldı. Cron zamanlaması tek noktada (cron.d) yönetilir.
+// NOT: Zamanlama işletim sisteminin cron'undadır: panel görevleri (Sistem & Log → Cron) /etc/cron.d/pi5-panel'e yazılır
+// (cronSync.ts), panelin gece güncellemesi /etc/cron.d/pi5-maintenance'tadır. Buradaki eski `runMaintenance` sadece
+// komutları `echo`layan bir stub'dı ve her gece 04:00'te gizlice `sudo reboot` çağırıyordu — kaldırıldı.
 export function startCronJobs() {
-  writeLog('CRON: Bakım zamanlaması işletim sistemi cron.d üzerinden yönetiliyor (pi5-maintenance).');
+  writeLog('CRON: Panel görevleri /etc/cron.d/pi5-panel, gece güncellemesi /etc/cron.d/pi5-maintenance üzerinden çalışır.');
 }
 
 export function getSystemLogs(): string[] {

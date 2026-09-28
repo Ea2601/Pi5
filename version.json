@@ -1,8 +1,9 @@
 {
-  "version": "2.24.17",
-  "build": 94,
+  "version": "2.24.18",
+  "build": 95,
   "date": "2026-09-29",
   "changelog": [
+    "Cron görevleri gerçekten çalışır: Sistem & Log → Cron'daki görevler artık Pi'nin zamanlayıcısına yazılıyor (eskiden liste yalnız kayıttı; açıp kapatmak ya da saat değiştirmek hiçbir şeyi etkilemiyordu). Geçersiz zamanlama anlaşılır bir mesajla reddedilir, her görevin son çalışma zamanı ve sonucu listede görünür, hata veren çalıştırmanın çıktısı Sistem Logları'na 'CRON' ile düşer. Panelin gece güncellemesi ve Pi-hole'un kendi görevleri ayrı bir 'Sistem görevleri' bölümünde gösterilir. OS güncellemesi ve log temizliği panel görevlerine taşındı (aynı saatlerde, iki kez çalışmaz)",
     "Güncelleme bildirimleri anlık: yeni güncelleme yayınlanınca en geç ~1 dakika içinde zilde görünür ve bir bildirim çıkar (eskiden saatte bir bakılıyordu, ancak sayfa yenilenince görünüyordu); sekmeye dönünce hemen denetlenir. Pi güncellenince (ör. gece otomatik güncellemesi ya da başka cihazdan) açık sayfa bunu fark eder: sekme arka plandayken sessizce yenilenir, önündeyken altta 'Yenile' düğmeli bir çubuk çıkar — yazı yazarken, açık pencere, deneme süresi ya da DHCP sayfasındayken kendiliğinden yenilenmez",
     "Telegram için dinamik IP aralıkları (WhatsApp'taki gibi): Telegram uygulaması veri merkezlerine ve arama sunucularına alan adı sormadan doğrudan IP ile bağlandığı için yalnız alan adı kuralı onu yakalamıyordu. Telegram kuralına Telegram'ın beş ağı (AS62041, 59930, 62014, 211157, 44907 — resmî IP listesinin tamamı) eklendi; aralıklar RIPE'den günlük güncellenir. Telegram'a ait olmayan trafik etkilenmediği için tüm Telegram trafiği (443 dahil) kuralın çıkışını kullanır. Routing sayfasında aynı sağlayıcının aralıkları tek etikette gösterilir",
     "Sistem & Log → Cron listesinde aynı görevlerin tekrar tekrar görünmesi giderildi: varsayılan dört görev her yeniden başlatmada yeniden ekleniyordu. Birikmiş kopyalar ilk açılışta temizlenir, kendi eklediğiniz görevler korunur; sildiğiniz varsayılan görev geri gelmez",

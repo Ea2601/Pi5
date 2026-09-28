@@ -575,13 +575,12 @@ log "IP forwarding aktif"
 # ─── 10. Günlük Bakım Cron ───
 step "10/10 — Otomatik Bakım Ayarlanıyor"
 
-# Günlük otomatik güncelleme + restart
+# Günlük otomatik panel güncellemesi + restart. OS güncellemesi (03:00) ve log temizliği (pazartesi 02:00) panel görevidir:
+# backend ilk açılışta /etc/cron.d/pi5-panel'e yazar (Sistem & Log → Cron'dan açılıp kapatılabilir, bkz. cronSync.ts).
 cat > /etc/cron.d/pi5-maintenance << 'CRONEOF'
 # Pi5 Gateway günlük bakım
-0 3 * * * root apt update -qq && apt upgrade -y -qq >> /opt/pi5-gateway/core/system.log 2>&1
 # Güncelleme+build tek scriptte; backend restart YALNIZCA build başarılıysa (&&) yapılır — bozuk build'i canlıya almaz
 30 3 * * * root /bin/bash /opt/pi5-gateway/scripts/update.sh >> /opt/pi5-gateway/core/system.log 2>&1 && systemctl restart pi5-backend >> /opt/pi5-gateway/core/system.log 2>&1
-0 2 * * 1 root journalctl --vacuum-time=7d && find /var/log -name "*.gz" -mtime +30 -delete >> /opt/pi5-gateway/core/system.log 2>&1
 CRONEOF
 chmod 644 /etc/cron.d/pi5-maintenance
 log "Otomatik bakım cron görevleri ayarlandı"

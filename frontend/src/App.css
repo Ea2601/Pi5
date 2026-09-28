@@ -2434,6 +2434,10 @@ button.user-profile { cursor: pointer; font-family: var(--font-family); transiti
 .cron-row:hover .cron-delete, .routing-row:hover .cron-delete, .list-item:hover .cron-delete,
 .cron-delete:hover, .cron-delete:focus-visible { opacity: 1; }
 
+/* Sistem görevleri (panelin değiştiremediği: gece güncellemesi, Pi-hole) — salt okunur */
+.cron-system { margin-top: 18px; padding-top: 12px; border-top: 1px solid var(--panel-border); }
+.cron-row-system { opacity: 0.8; }
+
 .cron-add-form {
   padding: 16px;
   margin-top: 12px;

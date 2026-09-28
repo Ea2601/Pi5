@@ -10,6 +10,15 @@ interface LogResponse {
   logs: string[];
 }
 
+// Panelin değiştiremediği zamanlanmış görevler (Klyrix Gate gece güncellemesi, Pi-hole'un kendi görevleri).
+interface SystemCron { source: string; schedule: string; command: string }
+
+// Sunucu UTC "YYYY-MM-DD HH:MM:SS" döner → yerel saat.
+const fmtRun = (s: string) => {
+  const d = new Date(/[zZ]|[+]/.test(s) ? s : s.replace(' ', 'T') + 'Z');
+  return Number.isNaN(d.getTime()) ? s : d.toLocaleString('tr-TR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+};
+
 type MaintTab = 'logs' | 'cron';
 
 export function SystemLogs() {
@@ -143,29 +152,42 @@ function LogsView() {
 }
 
 function CronView() {
-  const { data, refetch } = useApi<{ jobs: CronJob[] }>('/cron/jobs', { jobs: [] }, 5000);
+  const { data, refetch } = useApi<{ jobs: CronJob[]; system?: SystemCron[] }>('/cron/jobs', { jobs: [] }, 5000);
   const [showAdd, setShowAdd] = useState(false);
   const [newJob, setNewJob] = useState({ name: '', schedule: '', command: '', description: '' });
   const [editId, setEditId] = useState<number | null>(null);
   const [editData, setEditData] = useState({ name: '', schedule: '', command: '', description: '' });
   const [running, setRunning] = useState<number | null>(null);
 
+  // Her değişiklik Pi'nin zamanlayıcısına yazılır; geçersiz zamanlama ya da yazım hatası sunucudan mesajla döner.
+  const guarded = async (fn: () => Promise<unknown>, okMsg?: string) => {
+    try {
+      await fn();
+      if (okMsg) toast.success(okMsg);
+      return true;
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'İşlem başarısız');
+      return false;
+    } finally {
+      await refetch();
+    }
+  };
+
   const handleAdd = async () => {
     if (!newJob.name || !newJob.schedule || !newJob.command) return;
-    await postApi('/cron/jobs', newJob);
-    setNewJob({ name: '', schedule: '', command: '', description: '' });
-    setShowAdd(false);
-    await refetch();
+    if (await guarded(() => postApi('/cron/jobs', newJob), 'Görev eklendi ve zamanlayıcıya yazıldı')) {
+      setNewJob({ name: '', schedule: '', command: '', description: '' });
+      setShowAdd(false);
+    }
   };
 
   const handleToggle = async (job: CronJob) => {
-    await putApi(`/cron/jobs/${job.id}`, { enabled: !job.enabled });
-    await refetch();
+    await guarded(() => putApi(`/cron/jobs/${job.id}`, { enabled: !job.enabled }));
   };
 
   const handleDelete = async (id: number) => {
-    await deleteApi(`/cron/jobs/${id}`);
-    await refetch();
+    if (!confirm('Görev silinsin mi? Pi\'nin zamanlayıcısından da kaldırılır.')) return;
+    await guarded(() => deleteApi(`/cron/jobs/${id}`), 'Görev silindi');
   };
 
   const handleRun = async (id: number) => {
@@ -186,9 +208,7 @@ function CronView() {
 
   const saveEdit = async () => {
     if (editId === null) return;
-    await putApi(`/cron/jobs/${editId}`, editData);
-    setEditId(null);
-    await refetch();
+    if (await guarded(() => putApi(`/cron/jobs/${editId}`, editData), 'Görev güncellendi')) setEditId(null);
   };
 
   const cronHelp: Record<string, string> = {
@@ -213,7 +233,10 @@ function CronView() {
             <Plus size={14} /> Yeni Görev
           </button>
         </div>
-        <p className="subtitle">Sistemde otomatik çalışan tüm zamanlanmış görevler</p>
+        <p className="subtitle">
+          Buradaki görevler Pi'nin zamanlayıcısına (cron) yazılır ve gerçekten çalışır: açıp kapatmak ya da saatini değiştirmek
+          hemen etkili olur. Hata veren çalıştırmaların çıktısı Sistem Logları'nda "CRON" filtresiyle görünür.
+        </p>
 
         {showAdd && (
           <div className="cron-add-form">
@@ -299,6 +322,9 @@ function CronView() {
                       <code className="cron-schedule">{job.schedule}</code>
                       <span className="cron-command">{job.command}</span>
                     </div>
+                    {job.last_run && (
+                      <span className="cron-desc">Son çalışma: {fmtRun(job.last_run)}</span>
+                    )}
                   </div>
                   <div className="cron-actions">
                     <button className="icon-btn icon-btn-sm" onClick={() => handleRun(job.id)}
@@ -330,6 +356,25 @@ function CronView() {
           <span>{data.jobs.filter(j => !j.enabled).length} devre dışı</span>
           <span>{data.jobs.length} toplam</span>
         </div>
+
+        {(data.system?.length ?? 0) > 0 && (
+          <div className="cron-system">
+            <h4 className="widget-title">Sistem görevleri <span className="cron-desc">— panelden değiştirilemez</span></h4>
+            <div className="cron-list">
+              {data.system!.map((s, i) => (
+                <div key={i} className="cron-row cron-row-system">
+                  <div className="cron-info">
+                    <div className="cron-name"><strong>{s.source}</strong></div>
+                    <div className="cron-details">
+                      <code className="cron-schedule">{s.schedule}</code>
+                      <span className="cron-command">{s.command}</span>
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );
