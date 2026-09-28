@@ -80,7 +80,10 @@ export const initDb = () => {
 
     // Default app routing rules with known domains
     const trafficRules: [number, string, string, string, string][] = [
-      [1, 'WhatsApp', 'voip', 'direct', '*.whatsapp.net,*.whatsapp.com,*.wa.me'],
+      // @asn:32934!443 = Meta'nın IP aralıkları, 443 hariç: WhatsApp aramaları aktarma sunucularına DNS'siz, doğrudan IP ile
+      // gider (canlı ölçüm: UDP 3478) — alan adı kuralı onları yakalamaz. 443 hariç: aynı sunuculardaki Facebook/Instagram
+      // web trafiği yerel kalır (bkz. ipRanges.ts).
+      [1, 'WhatsApp', 'voip', 'direct', '*.whatsapp.net,*.whatsapp.com,*.wa.me,@asn:32934!443'],
       [2, 'Telegram', 'voip', 'direct', '*.telegram.org,*.t.me,*.telesco.pe'],
       [3, 'Discord', 'voip', 'direct', '*.discord.com,*.discord.gg,*.discordapp.com'],
       [4, 'Signal', 'voip', 'direct', '*.signal.org,*.whispersystems.org'],
@@ -108,6 +111,10 @@ export const initDb = () => {
     trafficRules.forEach(([id, , , , domains]) => {
       db.run(`UPDATE traffic_routing SET domains = ? WHERE id = ? AND (domains IS NULL OR domains = '')`, [domains, id]);
     });
+    // WhatsApp aramaları (v2.24): WhatsApp satırında Meta aralığı girdisi yoksa listenin SONUNA eklenir (mevcut girdiler
+    // silinmez; arayüzde uygulama kuralı listesini düzenleme alanı olmadığı için elle eklemenin yolu yok). Varsa dokunulmaz.
+    db.run(`UPDATE traffic_routing SET domains = domains || ',@asn:32934!443'
+      WHERE id = 1 AND app_name = 'WhatsApp' AND COALESCE(domains, '') != '' AND instr(domains, '@asn:32934') = 0`);
 
     // Domain-based routing: route specific domains through specific profiles
     db.run(`CREATE TABLE IF NOT EXISTS domain_routing (

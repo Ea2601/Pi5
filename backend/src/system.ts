@@ -1003,6 +1003,12 @@ interface DomainRoute {
   enabled: number;
   redirect_url?: string; // if set, DNS-redirect domain to Pi5 IP → HTTP redirect to this URL
 }
+// IP aralığı kuralı (bkz. ipRanges.ts): DNS'e dayanmayan trafik (ör. WhatsApp aramaları) için. prefixes normalize edilmiş
+// IPv4 CIDR'lardır; excludeWeb → 443 (tcp/udp) yönlendirilmez (aynı sunuculardaki web trafiği yerel kalır).
+export interface RangeRoute { exit_node: string; dpi_bypass: number; prefixes: string[]; excludeWeb: boolean }
+// Statik IP aralığı seti (hash:net; dnsmasq doldurmaz): rt_n<mark> tüm portlar, rt_x<mark> 443 hariç.
+type NetSet = { mark: number; excludeWeb: boolean; prefixes: Set<string> };
+const CIDR_LINE = /^(\d{1,3}\.){3}\d{1,3}\/\d{1,2}$/;
 
 // Dosyayı yalnız içerik değiştiyse yazar; değişip değişmediğini döner (DNS gereksiz yere yeniden başlamasın).
 function writeIfChanged(file: string, content: string): boolean {
@@ -1255,6 +1261,21 @@ async function ipsetRestore(lines: string[]): Promise<boolean> {
   } finally {
     try { fs.unlinkSync(file); } catch { /* */ }
   }
+}
+// Statik IP aralığı setini (hash:net) atomik günceller: içerik geçici sete yazılır, gerçek setle takas edilir — arada
+// setin boş kaldığı an olmaz (açık aramalar kopmaz). Ad ve aralıklar çağıranda doğrulanmıştır. true = başarılı.
+async function syncNetSet(name: string, prefixes: string[]): Promise<boolean> {
+  const tmp = `${name}_t`;
+  const ok = await ipsetRestore([
+    `create ${name} hash:net family inet`,
+    `create ${tmp} hash:net family inet`,
+    `flush ${tmp}`,
+    ...prefixes.map(p => `add ${tmp} ${p}`),
+  ]);
+  let swapped = false;
+  if (ok) swapped = (await runResult(`ipset swap ${tmp} ${name}`, 5000)).code === 0;
+  await run(`ipset destroy ${tmp} 2>/dev/null || true`);
+  return swapped;
 }
 const addLines = (target: (set: string) => string, map: Map<string, Set<string>>): string[] => {
   const out: string[] = [];
@@ -1603,7 +1624,7 @@ async function detectGatewayLan(ns: NetModeState | null = readNetModeState()): P
   return { nets: all.filter(n => !all.some(o => o !== n && within(n, o))), ifaces: [...ifaces], selfIps: [...selfIps] };
 }
 
-export async function applyDomainRouting(domains?: DomainRoute[]): Promise<void> {
+export async function applyDomainRouting(domains?: DomainRoute[], ranges: RangeRoute[] = []): Promise<void> {
   if (!isLinux) return;
   if (!domains) return;
 
@@ -1737,6 +1758,18 @@ export async function applyDomainRouting(domains?: DomainRoute[]): Promise<void>
     ipsetLines.push(`ipset=/${base}/${setName}`);
   }
 
+  // 1b. IP aralığı setleri (kuralın çıkışına göre): aynı çıkış + aynı kip (tüm portlar / 443 hariç) tek sette birleşir.
+  const netSets = new Map<string, NetSet>();
+  for (const r of ranges) {
+    const mark = getFwmark(r.exit_node, r.dpi_bypass);
+    if (mark === 0) continue;
+    const name = `${r.excludeWeb ? 'rt_x' : 'rt_n'}${mark}`;
+    const e = netSets.get(name) || { mark, excludeWeb: r.excludeWeb, prefixes: new Set<string>() };
+    for (const p of r.prefixes) if (CIDR_LINE.test(p)) e.prefixes.add(p);
+    netSets.set(name, e);
+  }
+  for (const [name, e] of netSets) if (!e.prefixes.size) netSets.delete(name);
+
   // Önceki satırlar: bir satır ÇIKARILDIYSA (domain silindi / başka sete taşındı) o setteki eski IP'ler bayat kalır →
   // yalnız o set boşaltılır. Salt eklemede bayat içerik yoktur; boşaltmak tüm açık tünel bağlantılarını koparırdı.
   let oldRoutingLines: string[] = [];
@@ -1758,7 +1791,7 @@ export async function applyDomainRouting(domains?: DomainRoute[]): Promise<void>
   await run('nft delete table inet domain_routing 2>/dev/null || true');
 
   // run() hata yuttuğu için araç yoksa aşağıdaki adımların hepsi sessizce boşa gider — en azından günlükte görünsün.
-  if (markSets.size > 0) {
+  if (markSets.size > 0 || netSets.size > 0) {
     const missing: string[] = [];
     for (const bin of ['ipset', 'iptables']) if (!(await run(`command -v ${bin} 2>/dev/null`))) missing.push(bin);
     if (missing.length) {
@@ -1780,18 +1813,29 @@ export async function applyDomainRouting(domains?: DomainRoute[]): Promise<void>
   // Son domaini de çıkarılan (artık kullanılmayan) setler de boşaltılır: yeniden kullanılırlarsa eski IP'ler taşınmasın.
   for (const s of setsWithRemovals) markPendingFlush(s);
 
+  // 2b. IP aralığı setleri zincirden ÖNCE güncellenir (zincir var olan sete başvurmalı); içerik atomik takasla değişir.
+  //     Güncellenemeyen set zincire alınmaz (olmayan sete başvuran iptables-restore tüm zinciri reddederdi).
+  for (const [name, e] of netSets) {
+    if (!(await syncNetSet(name, [...e.prefixes]))) {
+      console.error(`[routing] IP aralığı seti ${name} güncellenemedi — bu aralıklar bu uygulamada yönlendirilmiyor`);
+      netSets.delete(name);
+    }
+  }
+
   // 3. iptables mangle ile marklama — `-m set` kernel ipset'lerini DOĞRU okur (nft @set okuyamaz).
   //    Zincir tek iptables-restore işlemiyle (atomik) yeniden kurulur: eski yöntemde -F ile -A'lar arasındaki boşlukta
   //    işaretsiz kalan tünel paketleri, masquerade arayüz değişimi yüzünden çekirdekçe kesiliyordu (her kural
   //    değişikliğinde açık tünel bağlantıları sıfırlanıyordu). Olmazsa eski adım adım yönteme düşülür (aynı kurallar).
-  if (!(await rebuildRoutingChainAtomic(markSets))) {
+  if (!(await rebuildRoutingChainAtomic(markSets, netSets))) {
     await run('iptables -t mangle -N PI5_ROUTING 2>/dev/null || true');
     await run('iptables -t mangle -F PI5_ROUTING 2>/dev/null || true');
-    for (const [mark, setName] of markSets) {
-      await run(`iptables -t mangle -A PI5_ROUTING -m set --match-set ${setName} dst -j CONNMARK --restore-mark`);
-      await run(`iptables -t mangle -A PI5_ROUTING -m set --match-set ${setName} dst -j MARK --set-mark ${mark}`);
-      await run(`iptables -t mangle -A PI5_ROUTING -m set --match-set ${setName} dst -j CONNMARK --save-mark`);
+    for (const line of buildRoutingChainRestore(markSets, netSets).split('\n')) {
+      if (line.startsWith('-A PI5_ROUTING ')) await run(`iptables -t mangle ${line}`);
     }
+  }
+  // Artık kullanılmayan IP aralığı setleri (zincir onlara artık başvurmuyor) ve yarım kalmış geçici setler kaldırılır.
+  for (const s of existingSets) {
+    if ((/^rt_[nx]\d+$/.test(s) && !netSets.has(s)) || /^rt_[nx]\d+_t$/.test(s)) await run(`ipset destroy ${s} 2>/dev/null || true`);
   }
   await run('iptables -t mangle -C PREROUTING -j PI5_ROUTING 2>/dev/null || iptables -t mangle -A PREROUTING -j PI5_ROUTING');
   await run('iptables -t mangle -C OUTPUT -j PI5_ROUTING 2>/dev/null || iptables -t mangle -A OUTPUT -j PI5_ROUTING');
@@ -1906,11 +1950,13 @@ export async function applyDomainRouting(domains?: DomainRoute[]): Promise<void>
     if (mark !== Number(m[2]) || mark < 100 || mark > 999) continue;
     ruleCounts.set(mark, (ruleCounts.get(mark) || 0) + 1);
   }
+  // Alan adı setlerinin ve IP aralığı setlerinin çıkışları birlikte (yalnız aralık kuralı olan bir çıkış da tabloya gider).
+  const allMarks = new Set<number>([...markSets.keys(), ...[...netSets.values()].map(e => e.mark)]);
   for (const [mark, count] of ruleCounts) {
-    const extra = markSets.has(mark) ? count - 1 : count;
+    const extra = allMarks.has(mark) ? count - 1 : count;
     for (let i = 0; i < extra; i++) await run(`ip rule del fwmark ${mark} table ${mark} 2>/dev/null || true`);
   }
-  for (const [mark] of markSets) {
+  for (const mark of allMarks) {
     if (mark < 100) continue;
     const vpsId = mark >= 300 ? mark - 300 : mark - 100;
     const iface = `wg_vps${vpsId}`;
@@ -1948,19 +1994,37 @@ export async function applyDomainRouting(domains?: DomainRoute[]): Promise<void>
 // bu zinciri aynı işlem içinde boşaltır). iptables ile iptables-restore farklı altyapıya (nf_tables/legacy) bağlıysa
 // ya da işlem başarısızsa false → çağıran eski adım adım yöntemi kullanır.
 let restoreBackendOk: boolean | null = null;
-export function buildRoutingChainRestore(markSets: Map<number, string>): string {
+// Sıra önemli: (1) alan adı setleri, (2) tüm portları yönlendirilen IP aralıkları, (3) EN SONDA 443 hariç aralıklar.
+// (3)'te 443 paketi RETURN ile zincirden çıkar: yukarıdaki bir alan adı setiyle işaretlendiyse işaretini korur (ör. WhatsApp
+// sohbeti, chat.cdn.whatsapp.net:443), işaretlenmediyse yerel kalır (ör. aynı Meta sunucusundaki Instagram); diğer portlar
+// işaretlenir (ör. WhatsApp aramaları, UDP 3478). RETURN yalnız sondaki 443-hariç bloklarını atlatır (onlar da 443'ü almaz).
+export function buildRoutingChainRestore(
+  markSets: Map<number, string>,
+  netSets: Map<string, { mark: number; excludeWeb: boolean }> = new Map(),
+): string {
   const out = ['*mangle', ':PI5_ROUTING - [0:0]'];
-  for (const [mark, setName] of markSets) {
+  const markRules = (set: string, mark: number) => [
+    `-A PI5_ROUTING -m set --match-set ${set} dst -j CONNMARK --restore-mark`,
+    `-A PI5_ROUTING -m set --match-set ${set} dst -j MARK --set-mark ${mark}`,
+    `-A PI5_ROUTING -m set --match-set ${set} dst -j CONNMARK --save-mark`,
+  ];
+  for (const [mark, setName] of markSets) out.push(...markRules(setName, mark));
+  for (const [name, e] of netSets) if (!e.excludeWeb) out.push(...markRules(name, e.mark));
+  for (const [name, e] of netSets) {
+    if (!e.excludeWeb) continue;
     out.push(
-      `-A PI5_ROUTING -m set --match-set ${setName} dst -j CONNMARK --restore-mark`,
-      `-A PI5_ROUTING -m set --match-set ${setName} dst -j MARK --set-mark ${mark}`,
-      `-A PI5_ROUTING -m set --match-set ${setName} dst -j CONNMARK --save-mark`,
+      `-A PI5_ROUTING -p tcp -m tcp --dport 443 -m set --match-set ${name} dst -j RETURN`,
+      `-A PI5_ROUTING -p udp -m udp --dport 443 -m set --match-set ${name} dst -j RETURN`,
+      ...markRules(name, e.mark),
     );
   }
   out.push('COMMIT');
   return out.join('\n') + '\n';
 }
-async function rebuildRoutingChainAtomic(markSets: Map<number, string>): Promise<boolean> {
+async function rebuildRoutingChainAtomic(
+  markSets: Map<number, string>,
+  netSets: Map<string, { mark: number; excludeWeb: boolean }> = new Map(),
+): Promise<boolean> {
   if (restoreBackendOk === null) {
     const tag = (s: string) => /\((nf_tables|legacy)\)/.exec(s)?.[1] || '';
     const a = tag((await runResult('iptables -V', 5000)).stdout);
@@ -1971,7 +2035,7 @@ async function rebuildRoutingChainAtomic(markSets: Map<number, string>): Promise
   const file = '/opt/pi5-gateway/core/pi5-routing.rules';
   try {
     fs.mkdirSync('/opt/pi5-gateway/core', { recursive: true });
-    fs.writeFileSync(file, buildRoutingChainRestore(markSets));
+    fs.writeFileSync(file, buildRoutingChainRestore(markSets, netSets));
   } catch {
     return false;
   }

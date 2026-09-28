@@ -23,6 +23,25 @@ const categoryMeta: Record<string, { label: string; icon: React.ReactNode; color
 
 interface VpsServer { id: number; ip: string; location: string }
 
+// Uygulama kuralının listesinde alan adları ile IP aralığı girdileri (backend ipRanges.ts) birlikte durur:
+// "@asn:<n>[!443]" bir ağın (AS) IP aralıkları, "a.b.c.d[/nn]" sabit aralık. Aralıklar etiket olarak gösterilir.
+const ASN_ENTRY = /^@asn:(\d{1,10})(!443)?$/i;
+const CIDR_ENTRY = /^\d{1,3}(\.\d{1,3}){3}(\/\d{1,2})?$/;
+const ASN_NAMES: Record<string, string> = { '32934': 'Meta' };
+function splitRuleEntries(list: string): { domains: string[]; ranges: string[] } {
+  const entries = list.split(',').map(s => s.trim()).filter(Boolean);
+  return {
+    domains: entries.filter(e => !ASN_ENTRY.test(e) && !CIDR_ENTRY.test(e)),
+    ranges: entries.filter(e => ASN_ENTRY.test(e) || CIDR_ENTRY.test(e)),
+  };
+}
+function describeRangeEntry(e: string): string {
+  const m = ASN_ENTRY.exec(e);
+  if (!m) return `IP aralığı ${e}`;
+  const who = ASN_NAMES[m[1]] ? `${ASN_NAMES[m[1]]} IP aralıkları` : `AS${m[1]} IP aralıkları`;
+  return m[2] ? `${who} — yalnız arama trafiği (443 hariç)` : `${who} — tüm trafik`;
+}
+
 // ─── Kural uygulama durumu: değişiklikten sonra "uygulanıyor… / hazır" ───
 // Sunucu kuralı yazıp yanıt döner; DNS yenilemesi arka planda (2-15 sn + yeniden başlatma) sürer.
 interface RoutingApplyStatus {
@@ -269,14 +288,22 @@ function AppRoutingView({ onApplied }: { onApplied: () => void }) {
                       </span>
                     </div>
 
-                    {isExpanded && rule.domains && (
-                      <div className="routing-domains-info">
-                        <span style={{ color: 'var(--text-muted)', fontSize: 11 }}>Domain'ler:</span>
-                        <span style={{ fontFamily: 'var(--font-mono, monospace)', fontSize: 11 }}>
-                          {rule.domains}
-                        </span>
-                      </div>
-                    )}
+                    {isExpanded && rule.domains && (() => {
+                      const { domains: names, ranges } = splitRuleEntries(rule.domains);
+                      return (
+                        <div className="routing-domains-info">
+                          <span style={{ color: 'var(--text-muted)', fontSize: 11 }}>Domain'ler:</span>
+                          <span style={{ fontFamily: 'var(--font-mono, monospace)', fontSize: 11 }}>
+                            {names.join(',')}
+                          </span>
+                          {ranges.map(r => (
+                            <span key={r} style={{ fontSize: 11 }} title={r}>
+                              <Badge variant="info">{describeRangeEntry(r)}</Badge>
+                            </span>
+                          ))}
+                        </div>
+                      );
+                    })()}
                   </div>
                 );
               })}

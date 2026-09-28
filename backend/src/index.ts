@@ -16,6 +16,8 @@ import {
   sampleMetrics, detectInterfaces, recoverInterruptedFtlRestart, VALID_DNSMASQ_DOMAIN, getRoutingApplyStatus,
   getLanIdentity, protectedMacs, getPi5LanIp, readNetModeState, runExclusiveDnsTask, AP_ADDR, AP_NET,
 } from './system';
+import type { RangeRoute } from './system';
+import { ASN_TOKEN, getAsnPrefixes, normalizeCidr, refreshAsnIfStale } from './ipRanges';
 import { getRoutingSuggestions, MAX_HOURS as SUGGEST_MAX_HOURS } from './domainSuggest';
 import {
   shq, sedEscape, isValidMac, isValidDomain, isValidTimezone,
@@ -1118,11 +1120,24 @@ async function applyAllRoutingRulesNow() {
   const domainRules = await dbAll('SELECT domain, exit_node, dpi_bypass, enabled, redirect_url FROM domain_routing WHERE enabled = 1');
 
   const allDomains: { domain: string; exit_node: string; dpi_bypass: number; enabled: number; redirect_url?: string }[] = [];
+  // IP aralığı girdileri (ipRanges.ts): @asn:<n>[!443] ve a.b.c.d[/nn] — DNS'siz trafik (ör. WhatsApp aramaları) için.
+  const ranges: RangeRoute[] = [];
 
   // App domains (wildcard patterns like *.whatsapp.net → whatsapp.net for dnsmasq)
   for (const rule of appRules) {
     const domains = (rule.domains as string).split(',').map((d: string) => d.trim()).filter(Boolean);
     for (const domain of domains) {
+      const asn = ASN_TOKEN.exec(domain);
+      if (asn) {
+        const r = await getAsnPrefixes(Number(asn[1]));
+        if (r.prefixes.length) ranges.push({ exit_node: rule.exit_node, dpi_bypass: rule.dpi_bypass, prefixes: r.prefixes, excludeWeb: !!asn[2] });
+        continue;
+      }
+      const cidr = normalizeCidr(domain);
+      if (cidr) {
+        ranges.push({ exit_node: rule.exit_node, dpi_bypass: rule.dpi_bypass, prefixes: [cidr], excludeWeb: false });
+        continue;
+      }
       // dnsmasq ipset handles subdomains automatically, strip leading *.
       const clean = domain.replace(/^\*\./, '');
       allDomains.push({ domain: clean, exit_node: rule.exit_node, dpi_bypass: rule.dpi_bypass, enabled: 1 });
@@ -1134,7 +1149,25 @@ async function applyAllRoutingRulesNow() {
     allDomains.push({ domain: rule.domain, exit_node: rule.exit_node, dpi_bypass: rule.dpi_bypass, enabled: 1, redirect_url: rule.redirect_url || undefined });
   }
 
-  await applyDomainRouting(allDomains);
+  await applyDomainRouting(allDomains, ranges);
+}
+
+// Etkin kurallardaki AS aralıkları (ör. WhatsApp → Meta AS32934) 6 saatte bir denetlenir; önbellek 24 saatten eskiyse
+// RIPE'den yenilenir ve liste değiştiyse kurallar yeniden uygulanır (Meta yeni aralık ilan ettiğinde aramalar kaçmasın).
+async function refreshAsnRanges() {
+  if (!isLinux) return;
+  try {
+    const rows = await dbAll('SELECT domains FROM traffic_routing WHERE enabled = 1 AND domains != ""');
+    const asns = new Set<number>();
+    for (const r of rows as any[]) {
+      for (const d of String(r.domains).split(',')) { const m = ASN_TOKEN.exec(d.trim()); if (m) asns.add(Number(m[1])); }
+    }
+    let changed = false;
+    for (const asn of asns) if (await refreshAsnIfStale(asn)) changed = true;
+    if (changed) await applyAllRoutingRules();
+  } catch (e: any) {
+    console.error('[routing] AS aralıkları yenilenemedi:', e?.message || e);
+  }
 }
 
 // Boot/restart sonrası Pi tünellerini (wg_vps*) ve routing çekirdek durumunu geri kurar: ipset, mangle,
@@ -3807,6 +3840,9 @@ const server = app.listen(Number(port), bindHost, () => {
     }
     await restoreTunnelsAndRouting();
   })();
+  // AS aralıkları (ör. WhatsApp aramaları için Meta) 6 saatte bir denetlenir; ilk denetim açılıştan 2 dk sonra.
+  setTimeout(() => { void refreshAsnRanges(); }, 120000);
+  setInterval(() => { void refreshAsnRanges(); }, 6 * 3600 * 1000);
   // Cihaz engelleri (nft tablosu açılışta yoktur; pi5-gw-restore da yükler — burada DB'deki güncel liste yazılır).
   void reapplyBlockedDevices();
   // Panel koruması: deneme sırasında Pi yeniden başladıysa (zamanlayıcı kalıcı değil) süresi geçen deneme geri alınır.
