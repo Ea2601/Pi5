@@ -8,6 +8,8 @@ import { promisify } from 'util';
 // postrouting'de, geri çevirisi prerouting'de yapıldığı için forward kancası cihazın kendi IP'sini görür (gerçek çekirdek
 // yönlendirmesi + NAT ile doğrulandı). Eskiden tüm arayüzlerin toplamı cihaz sayısına eşit bölünüyordu: her cihaz aynı
 // değeri gösteriyordu. Aynı ağdaki iki cihaz arasındaki trafik Pi'den geçmez, sayılmaz. Yalnız IPv4.
+// upm/downm aynı trafiği bağlantı işaretine (ct mark) göre de ayırır: PI5_ROUTING işareti CONNMARK ile bağlantıya yazar,
+// forward kancası onu iki yönde de görür → cihaz başı yerel / DPI / VPS tüneli ayrımı (ağ topolojisi, topology.ts).
 
 const execFileP = promisify(execFile);
 const TABLE = 'pi5_acct';
@@ -16,10 +18,14 @@ const RULES_FILE = '/run/pi5-acct.nft';
 const RULES = `table inet ${TABLE} {
 \tset down4 { type ipv4_addr; size 4096; flags dynamic; counter; }
 \tset up4 { type ipv4_addr; size 4096; flags dynamic; counter; }
+\tset downm { type ipv4_addr . mark; size 8192; flags dynamic; counter; }
+\tset upm { type ipv4_addr . mark; size 8192; flags dynamic; counter; }
 \tchain acct_fwd {
 \t\ttype filter hook forward priority -300; policy accept;
 \t\tip saddr { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16 } update @up4 { ip saddr }
 \t\tip daddr { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16 } update @down4 { ip daddr }
+\t\tip saddr { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16 } update @upm { ip saddr . ct mark }
+\t\tip daddr { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16 } update @downm { ip daddr . ct mark }
 \t}
 }
 `;
@@ -45,24 +51,53 @@ export function parseAcctJson(json: string): IpCounters {
   return out;
 }
 
-// Tablo yoksa kurar (ör. açılışta ya da nftables yeniden yüklenip kurallar silindiyse). VARSA dokunmaz: sayaçlar sıfırlanmaz.
+// Bağlantı işaretinin yönlendirme kısmı: Zapret kendi bitlerini (0x40000000, 0x20000000) üst bitlere yazar.
+export const ROUTE_MARK_MASK = 0xffff;
+export const markKey = (ip: string, mark: number) => `${ip}|${mark}`;
+
+// upm/downm → "ip|işaret" başına toplam bayt. İşaret maskelenir; üst bitleri farklı iki öğe aynı anahtarda toplanır.
+export function parseMarkJson(json: string): IpCounters {
+  const out: IpCounters = new Map();
+  const items = (JSON.parse(json)?.nftables || []) as any[];
+  for (const it of items) {
+    const set = it?.set;
+    if (!set || (set.name !== 'downm' && set.name !== 'upm')) continue;
+    for (const e of set.elem || []) {
+      const [ip, rawMark] = Array.isArray(e?.elem?.val?.concat) ? e.elem.val.concat : [];
+      const mark = typeof rawMark === 'string' ? Number(rawMark) : rawMark;
+      const bytes = Number(e?.elem?.counter?.bytes);
+      if (typeof ip !== 'string' || !Number.isInteger(mark) || !Number.isFinite(bytes)) continue;
+      const key = markKey(ip, mark & ROUTE_MARK_MASK);
+      const cur = out.get(key) || { down: 0, up: 0 };
+      if (set.name === 'downm') cur.down += bytes; else cur.up += bytes;
+      out.set(key, cur);
+    }
+  }
+  return out;
+}
+
+// Tablo yoksa kurar (ör. açılışta ya da nftables yeniden yüklenip kurallar silindiyse). Güncel haliyse dokunmaz: sayaçlar
+// sıfırlanmaz. İşaret setleri olmayan eski tablo (v2.24.10) tek işlemde silinip yeniden kurulur — sayaçlar bir kez sıfırlanır.
 async function ensureTable(): Promise<void> {
+  let current = '';
   try {
-    await execFileP('nft', ['list', 'table', 'inet', TABLE], { timeout: 5000 });
-    return;
+    current = (await execFileP('nft', ['list', 'table', 'inet', TABLE], { timeout: 5000 })).stdout;
+    if (/\bset upm\b/.test(current) && /\bset downm\b/.test(current)) return;
   } catch { /* yok → kur */ }
-  fs.writeFileSync(RULES_FILE, RULES);
+  fs.writeFileSync(RULES_FILE, (current ? `delete table inet ${TABLE}\n` : '') + RULES);
   await execFileP('nft', ['-f', RULES_FILE], { timeout: 5000 });
 }
 
-type Sample = { t: number; counters: IpCounters };
+type Rates = Map<string, { downBps: number; upBps: number }>;
+type Sample = { t: number; counters: IpCounters; markCounters: IpCounters };
 let last: Sample | null = null;
-let lastRates = new Map<string, { downBps: number; upBps: number }>();
+let lastRates: Rates = new Map();
+let lastMarkRates: Rates = new Map();
 let inflight: Promise<void> | null = null;
 
 // Hızlar iki okuma arasındaki farktan hesaplanır. Sayfa açıkken 3 sn'de bir çağrılır; aynı anda bakan birden çok tarayıcı
 // için 1 sn'den sık okunmaz. Uzun aradan sonra (>10 sn) gelen ilk okuma yalnız yeni başlangıç olur (ortalama "canlı" sanılmasın).
-export function computeRates(prev: Sample | null, cur: Sample): Map<string, { downBps: number; upBps: number }> {
+export function computeRates(prev: { t: number; counters: IpCounters } | null, cur: { t: number; counters: IpCounters }): Rates {
   const rates = new Map<string, { downBps: number; upBps: number }>();
   const dt = prev ? (cur.t - prev.t) / 1000 : 0;
   for (const [ip, c] of cur.counters) {
@@ -77,20 +112,23 @@ export function computeRates(prev: Sample | null, cur: Sample): Map<string, { do
   return rates;
 }
 
-export async function sampleBandwidth(): Promise<{ counters: IpCounters; rates: Map<string, { downBps: number; upBps: number }> }> {
+// markCounters/markRates: aynı okumanın "ip|işaret" (markKey) anahtarlı hali; hızlar aynı iki okumadan hesaplanır.
+export async function sampleBandwidth(): Promise<{ counters: IpCounters; rates: Rates; markCounters: IpCounters; markRates: Rates }> {
   const now = Date.now();
-  if (last && now - last.t < 1000) return { counters: last.counters, rates: lastRates };
+  const result = () => ({ counters: last!.counters, rates: lastRates, markCounters: last!.markCounters, markRates: lastMarkRates });
+  if (last && now - last.t < 1000) return result();
   if (!inflight) {
     inflight = (async () => {
       await ensureTable();
-      const { stdout } = await execFileP('nft', ['-j', 'list', 'table', 'inet', TABLE], { timeout: 5000, maxBuffer: 4 * 1024 * 1024 });
-      const cur = { t: Date.now(), counters: parseAcctJson(stdout) };
+      const { stdout } = await execFileP('nft', ['-j', 'list', 'table', 'inet', TABLE], { timeout: 5000, maxBuffer: 8 * 1024 * 1024 });
+      const cur: Sample = { t: Date.now(), counters: parseAcctJson(stdout), markCounters: parseMarkJson(stdout) };
       lastRates = computeRates(last, cur);
+      lastMarkRates = computeRates(last && { t: last.t, counters: last.markCounters }, { t: cur.t, counters: cur.markCounters });
       last = cur;
     })().finally(() => { inflight = null; });
   }
   await inflight;
-  return { counters: last!.counters, rates: lastRates };
+  return result();
 }
 
 // IP → MAC: çekirdeğin komşu (ARP) tablosu — Pi'den geçen her cihaz orada; cihaz listesindeki IP eskimiş olabilir.

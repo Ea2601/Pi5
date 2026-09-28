@@ -745,152 +745,225 @@ body.nav-open { overflow: hidden; }
 
 .svc-status { margin-left: auto; font-size: 11px; color: var(--text-muted); }
 
-/* ═══════════════════ MESH TOPOLOGY ═══════════════════ */
-.mesh-container {
+/* ═══════════════════ AĞ HARİTASI (NetworkTopology) ═══════════════════ */
+/* Katmanlı harita: cihaz → Pi → çıkış → internet. Renkler bağlantı türünü gösterir (yerel / DPI / VPS);
+   çizgiler ekranda sabit kalınlıkta (non-scaling-stroke), yazılar yakınlaştırmayla büyür. */
+.topo-stage {
+  --topo-local: #94a3b8;
+  --topo-dpi: #f59e0b;
+  --topo-vps: #60a5fa;
+  --topo-card: rgba(15, 20, 27, 0.94);
+  --topo-card-border: rgba(255, 255, 255, 0.09);
+  --topo-grid: rgba(148, 163, 184, 0.10);
   position: relative;
-  width: 100%;
-  margin-top: 16px;
-  overflow: hidden;
+  margin-top: 14px;
+  height: clamp(440px, 70vh, 820px);
   border-radius: var(--radius);
-  background:
-    radial-gradient(ellipse 50% 50% at 50% 50%, color-mix(in srgb, var(--accent-color) 4%, transparent), transparent),
-    rgba(0, 0, 0, 0.15);
-  border: 1px solid rgba(255, 255, 255, 0.04);
-}
-
-.mesh-svg {
-  position: absolute;
-  top: 0;
-  left: 0;
-  pointer-events: none;
-  z-index: 0;
-}
-
-/* Pi5 Gateway — merkez düğüm */
-.mesh-center-node {
-  position: absolute;
-  z-index: 2;
-  width: 140px;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 4px;
-  text-align: center;
-  padding: 14px 10px;
-  border-radius: var(--radius);
-  border: 1.5px solid var(--accent-color);
-  background: rgba(17, 24, 32, 0.9);
-  backdrop-filter: blur(12px);
-  box-shadow: 0 0 30px color-mix(in srgb, var(--accent-color) 15%, transparent);
-}
-
-.mesh-center-node svg {
-  color: var(--accent-color);
-}
-
-.mesh-gateway-glow {
-  position: absolute;
-  inset: -20px;
-  border-radius: 50%;
-  background: radial-gradient(circle, color-mix(in srgb, var(--accent-color) 12%, transparent), transparent 70%);
-  z-index: -1;
-  animation: gatewayPulse 3s ease-in-out infinite;
-}
-
-@keyframes gatewayPulse {
-  0%, 100% { opacity: 0.6; transform: scale(1); }
-  50% { opacity: 1; transform: scale(1.1); }
-}
-
-.mesh-node-name {
-  font-weight: 700;
-  font-size: 12px;
-  color: #f8fafc;
-  letter-spacing: -0.3px;
-}
-
-.mesh-node-sub {
-  font-size: 10px;
-  color: var(--text-muted);
-  font-family: var(--font-mono);
-}
-
-/* Cihaz kartları — radial pozisyonda */
-.mesh-device {
-  position: absolute;
-  z-index: 1;
-}
-
-.mesh-device-inner {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 3px;
-  padding: 10px 8px;
-  border-radius: var(--radius-sm);
   border: 1px solid var(--panel-border);
-  background: rgba(17, 24, 32, 0.85);
-  backdrop-filter: blur(8px);
-  text-align: center;
-  transition: all 0.2s ease;
-  cursor: default;
+  background: color-mix(in srgb, var(--bg-surface) 55%, transparent);
+  overflow: hidden;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+  cursor: grab;
+  outline: none;
 }
-
-.mesh-device-inner:hover {
-  border-color: var(--panel-border-hover);
-  background: rgba(17, 24, 32, 0.95);
-  transform: translateY(-2px);
-  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.3);
+.topo-stage.topo-narrow { height: clamp(460px, 74vh, 900px); }
+.topo-stage:active { cursor: grabbing; }
+.topo-stage:focus-visible { box-shadow: 0 0 0 2px var(--accent-ring); }
+:root.light-theme .topo-stage {
+  --topo-local: #64748b;
+  --topo-dpi: #d97706;
+  --topo-vps: #2563eb;
+  --topo-card: #ffffff;
+  --topo-card-border: rgba(15, 23, 42, 0.10);
+  --topo-grid: rgba(71, 85, 105, 0.12);
 }
+.topo-svg { display: block; }
+.topo-grid-dot { fill: var(--topo-grid); }
 
-.mesh-device-header {
-  display: flex;
-  align-items: center;
-  gap: 5px;
+.topo-c-local { --c: var(--topo-local); }
+.topo-c-dpi { --c: var(--topo-dpi); }
+.topo-c-vps { --c: var(--topo-vps); }
+.topo-c-none { --c: var(--text-muted); }
+
+.topo-tier { fill: var(--text-muted); font-weight: 600; letter-spacing: 0.12em; }
+
+.topo-link {
+  fill: none;
+  stroke: var(--c);
+  stroke-linecap: round;
+  vector-effect: non-scaling-stroke;
+  transition: opacity 0.2s ease, stroke-width 0.4s ease;
 }
+.topo-link.is-active { opacity: 0.75; }
+.topo-link.is-idle { opacity: 0.45; stroke-dasharray: 3 5; }
+.topo-link.is-none { opacity: 0.35; stroke: var(--text-muted); stroke-dasharray: 1 5; }
+.topo-p { fill: var(--c); pointer-events: none; }
 
-.mesh-device-icon {
-  display: flex;
-  align-items: center;
-  justify-content: center;
+.topo-node { cursor: pointer; transition: opacity 0.2s ease; }
+.topo-node:focus { outline: none; }
+.topo-card {
+  fill: var(--topo-card);
+  stroke: var(--topo-card-border);
+  stroke-width: 1;
+  vector-effect: non-scaling-stroke;
+  transition: stroke 0.15s ease;
 }
+.topo-node:hover .topo-card { stroke: var(--panel-border-hover); }
+.topo-node:focus-visible .topo-card { stroke: var(--accent-color); stroke-width: 2; }
+.topo-pi, .topo-net { cursor: default; }
+.topo-pi .topo-card { stroke: var(--accent-color); stroke-width: 1.4; }
+.topo-exit .topo-bar { fill: var(--c); }
+.topo-icon { color: var(--text-secondary); }
+.topo-pi .topo-icon { color: var(--accent-color); }
+.topo-icon-bg { fill: color-mix(in srgb, var(--c) 14%, transparent); }
+.topo-dot { fill: var(--c); }
+.topo-t-name { fill: var(--text-primary); font-weight: 600; }
+.topo-t-sub { fill: var(--text-secondary); }
+.topo-t-rate { fill: var(--text-primary); opacity: 0.85; font-variant-numeric: tabular-nums; }
+.topo-t-mono { fill: var(--text-secondary); font-family: var(--font-mono); }
+.topo-status { fill: var(--text-muted); }
+.topo-status.is-on { fill: var(--success-color); opacity: 0.55; }
+.topo-status.is-active, .topo-status.is-ok { fill: var(--success-color); }
+.topo-status.is-stale { fill: var(--warning-color); }
+.topo-status.is-down, .topo-status.is-blocked { fill: var(--danger-color); }
+.topo-dev.is-off { opacity: 0.55; }
+.topo-exit.is-off { opacity: 0.6; }
+.topo-dev.is-blocked .topo-card { stroke: color-mix(in srgb, var(--danger-color) 55%, transparent); }
 
-.mesh-device-name {
-  font-weight: 600;
+/* Seçim: seçilen cihazın/çıkışın yolları öne çıkar, diğerleri soluklaşır */
+.has-sel .topo-link:not(.is-hl) { opacity: 0.1; }
+.has-sel .topo-link.is-hl.is-idle { opacity: 0.8; }
+.has-sel .topo-node:not(.is-hl) { opacity: 0.35; }
+.has-sel .topo-dev.is-hl .topo-card, .has-sel .topo-exit.is-hl .topo-card { stroke: var(--accent-color); }
+
+/* Harita üstü araçlar */
+.topo-ui { position: absolute; z-index: 2; cursor: default; }
+.topo-ui-tl { top: 10px; left: 10px; display: flex; flex-wrap: wrap; gap: 6px; max-width: calc(100% - 250px); }
+.topo-ui-tr {
+  top: 10px; right: 10px;
+  display: flex; align-items: center; gap: 2px;
+  padding: 3px;
+  border-radius: 10px;
+  background: var(--topo-card);
+  border: 1px solid var(--topo-card-border);
+}
+.topo-chip {
+  padding: 4px 9px;
+  border-radius: 999px;
+  background: var(--topo-card);
+  border: 1px solid var(--topo-card-border);
+  color: var(--text-secondary);
   font-size: 11px;
-  color: #f8fafc;
+  white-space: nowrap;
 }
-
-.mesh-device-ip {
-  font-size: 10px;
+.topo-chip-btn { cursor: pointer; font-family: inherit; }
+.topo-chip-btn:hover, .topo-chip-btn.is-on { color: var(--text-primary); border-color: var(--panel-border-hover); }
+.topo-tool {
+  display: inline-flex; align-items: center; justify-content: center; gap: 5px;
+  height: 28px; min-width: 28px;
+  padding: 0 7px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text-secondary);
+  font-family: inherit;
+  font-size: 11.5px;
+  cursor: pointer;
+}
+.topo-tool:hover, .topo-tool.is-on { background: var(--accent-glow); color: var(--text-primary); }
+.topo-tool:focus-visible, .topo-chip-btn:focus-visible, .topo-drawer-close:focus-visible { outline: 2px solid var(--accent-ring); outline-offset: 1px; }
+.topo-tool-sep { width: 1px; height: 18px; margin: 0 3px; background: var(--topo-card-border); }
+.topo-zoom { min-width: 40px; text-align: center; color: var(--text-secondary); font-size: 11px; font-variant-numeric: tabular-nums; }
+.topo-banners {
+  top: 50px; left: 50%;
+  transform: translateX(-50%);
+  display: flex; flex-direction: column; align-items: center; gap: 6px;
+  max-width: calc(100% - 24px);
+  pointer-events: none;
+}
+.topo-banner {
+  max-width: 100%;
+  padding: 5px 12px;
+  border-radius: 999px;
+  background: var(--topo-card);
+  border: 1px solid var(--topo-card-border);
+  color: var(--text-secondary);
+  font-size: 11.5px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.topo-banner.is-warn { color: var(--warning-color); border-color: color-mix(in srgb, var(--warning-color) 35%, transparent); }
+.topo-legend {
+  left: 10px; bottom: 10px;
+  display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px;
+  max-width: calc(100% - 20px);
+  padding: 6px 10px;
+  border-radius: 10px;
+  background: var(--topo-card);
+  border: 1px solid var(--topo-card-border);
+  color: var(--text-secondary);
+  font-size: 11px;
+}
+.topo-legend span { display: inline-flex; align-items: center; gap: 6px; }
+.topo-legend i { width: 16px; height: 3px; border-radius: 2px; background: var(--c); }
+.topo-legend .topo-legend-note { color: var(--text-muted); }
+.topo-drawer {
+  left: 10px; bottom: 10px;
+  width: min(440px, calc(100% - 20px));
+  max-height: 48%;
+  overflow: auto;
+  padding: 12px 14px;
+  border-radius: 12px;
+  background: var(--topo-card);
+  border: 1px solid var(--topo-card-border);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.25);
+  user-select: text;
+  -webkit-user-select: text;
+  touch-action: pan-y;
+}
+.topo-drawer-close {
+  position: absolute; top: 8px; right: 8px;
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 26px; height: 26px;
+  border: 0; border-radius: 7px;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+.topo-drawer-close:hover { background: var(--accent-glow); color: var(--text-primary); }
+.topo-drawer-title { display: flex; align-items: center; gap: 8px; padding-right: 30px; color: var(--text-primary); font-size: 14px; font-weight: 600; }
+.topo-drawer-sub { margin-top: 3px; color: var(--text-secondary); font-size: 11.5px; }
+.topo-drawer-sub .mono { font-family: var(--font-mono); font-size: 11px; }
+.topo-drawer-empty { margin-top: 10px; color: var(--text-muted); font-size: 12px; }
+.topo-flows { width: 100%; margin-top: 10px; border-collapse: collapse; font-size: 12px; font-variant-numeric: tabular-nums; }
+.topo-flows th {
+  padding: 4px 6px;
+  border-bottom: 1px solid var(--topo-card-border);
   color: var(--text-muted);
-  font-family: var(--font-mono);
+  font-size: 10.5px; font-weight: 500;
+  text-align: left;
+  white-space: nowrap;
 }
-
-.mesh-speed {
-  display: flex;
-  gap: 8px;
-  font-family: var(--font-mono);
-  font-size: 9px;
+.topo-flows td { padding: 5px 6px; border-bottom: 1px solid var(--topo-card-border); color: var(--text-primary); white-space: nowrap; }
+.topo-flows td:first-child { white-space: normal; }
+.topo-flows tr:last-child td { border-bottom: 0; }
+.topo-swatch { display: inline-block; width: 8px; height: 8px; margin-right: 7px; border-radius: 50%; background: var(--c); vertical-align: 1px; flex: none; }
+.topo-note { color: var(--text-muted); font-size: 11px; }
+.topo-empty {
+  position: absolute; inset: 0;
+  display: flex; align-items: center; justify-content: center; gap: 10px;
+  padding: 16px;
+  color: var(--text-secondary);
+  font-size: 13px;
+  text-align: center;
 }
-
-.mesh-profile-row {
-  margin-top: 2px;
-}
-
-.mesh-device-mac {
-  font-size: 8px;
-  color: var(--text-muted);
-  font-family: var(--font-mono);
-  opacity: 0.5;
-}
-
-/* Profile legend line indicator */
-.profile-legend-line {
-  display: inline-block;
-  width: 20px;
-  height: 3px;
-  border-radius: 2px;
+.topo-narrow .topo-tool-label, .topo-narrow .topo-wide-only { display: none; }
+.topo-narrow .topo-ui-tl { max-width: calc(100% - 160px); gap: 5px; }
+.topo-narrow .topo-chip { padding: 3px 7px; font-size: 10.5px; }
+.topo-narrow .topo-legend { gap: 3px 10px; font-size: 10.5px; }
+@media (prefers-reduced-motion: reduce) {
+  .topo-link, .topo-node, .topo-card { transition: none; }
 }
 
 /* Legacy compat */
@@ -902,14 +975,6 @@ body.nav-open { overflow: hidden; }
 
 .device-icon-wrap { color: var(--text-secondary); }
 
-.device-status-dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-}
-.device-status-dot.active { background: var(--success-color); box-shadow: 0 0 6px var(--success-glow); }
-.device-status-dot.idle { background: var(--text-muted); }
-
 .node-speed-bar {
   display: flex;
   gap: 10px;
@@ -917,9 +982,6 @@ body.nav-open { overflow: hidden; }
   font-family: var(--font-mono);
   font-size: 10px;
 }
-
-.speed-down { color: var(--success-color); }
-.speed-up { color: var(--accent-color); }
 
 /* ═══════════════════ VoIP ═══════════════════ */
 .voip-list { display: flex; flex-direction: column; gap: 8px; margin-top: 16px; }
@@ -1461,9 +1523,6 @@ select:disabled,
 }
 
 @media (max-width: 768px) {
-  .mesh-container { min-height: 400px; }
-  .mesh-device-inner { padding: 8px 6px; }
-  .mesh-device-name { font-size: 10px; }
   .vps-grid { grid-template-columns: 1fr; }
 }
 
@@ -1877,32 +1936,11 @@ button.user-profile { cursor: pointer; font-family: var(--font-family); transiti
   color: var(--text-muted);
 }
 
-.device-profile-btn {
-  cursor: pointer;
-  border: none;
-  font-size: 9px;
-  padding: 2px 8px;
-}
-
 /* profile-select: now handled by global select styles, keeping size overrides */
 .profile-select {
   width: auto;
   padding: 2px 24px 2px 6px;
   font-size: 11px;
-}
-
-.profile-legend {
-  display: grid;
-  grid-template-columns: repeat(2, 1fr);
-  gap: 8px;
-}
-
-.profile-legend-item {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 12px;
-  color: var(--text-secondary);
 }
 
 /* ═══════════════════ PANEL HEADER ACTIONS ═══════════════════ */

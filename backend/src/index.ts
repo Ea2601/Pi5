@@ -22,6 +22,7 @@ import { ASN_TOKEN, getAsnPrefixes, normalizeCidr, refreshAsnIfStale } from './i
 import { getRoutingSuggestions, MAX_HOURS as SUGGEST_MAX_HOURS } from './domainSuggest';
 import { startUpdate, getUpdateStatus } from './update';
 import { sampleBandwidth, neighborMacs, buildLive } from './bandwidth';
+import { buildTopology, readNeighbors, readHandshakes, readDefaultRoute, readIfaces, readLocalIps, noteActivity } from './topology';
 import { authGate, registerAuthRoutes } from './auth';
 import { validateSchedule, validateCommand, syncCronJobs, readJobStatuses, readSystemCron, syncCronOnStartup } from './cronSync';
 import { validateListValue, normalizeListValue, syncPiholeLists, lastListSync, externalPiholeEntries } from './piholeLists';
@@ -1651,6 +1652,41 @@ app.get('/api/bandwidth/live', async (_req, res) => {
       }));
       res.json({ live: liveData, warning: 'Bant genişliği izleme sadece Pi5 üzerinde çalışır' });
     }
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Ağ haritası: cihaz → Pi → çıkış (yerel / DPI / VPS tüneli) ve her bağlantının canlı hızı (topology.ts). Sayaçlar
+// okunamazsa (nft yok/hata) harita yine çizilir, accounting=false ile hızlar sıfırdır.
+app.get('/api/topology/live', async (_req, res) => {
+  try {
+    const [devices, vps] = await Promise.all([
+      dbAll('SELECT mac_address, ip_address, hostname, device_type, blocked FROM devices'),
+      dbAll('SELECT id, ip, location, status FROM vps_servers ORDER BY id'),
+    ]);
+    let accounting = false;
+    let markCounters = new Map<string, { down: number; up: number }>();
+    let markRates = new Map<string, { downBps: number; upBps: number }>();
+    if (isLinux) {
+      try {
+        ({ markCounters, markRates } = await sampleBandwidth());
+        accounting = true;
+      } catch (e: any) {
+        console.warn(`[topology] sayaçlar okunamadı: ${String(e?.stderr || e?.message || e).trim()}`);
+      }
+    }
+    // Pi'nin adresi: cihazların ağ geçidi olarak kullandığı (sabit adres modunda 192.168.0.1), yoksa modem tarafı.
+    const [neighbors, handshakes, modem, localIps, lan] = isLinux
+      ? await Promise.all([readNeighbors(), readHandshakes(), readDefaultRoute(), readLocalIps(), getLanIdentity()])
+      : [new Map(), new Map(), null, new Set<string>(), null];
+    const lanIp = lan?.client.ip || lan?.transit.ip || '';
+    const now = Date.now();
+    res.json(buildTopology({
+      devices: devices as any[], vps: vps as any[], neighbors, markCounters, markRates,
+      recentIps: noteActivity(markRates, now), handshakes, ifacesUp: isLinux ? readIfaces() : new Set(),
+      lanIp, hostname: require('os').hostname(), modem, localIps, accounting, nowS: Math.floor(now / 1000),
+    }));
   } catch (e: any) {
     res.status(500).json({ error: e.message });
   }
