@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react';
-import { X } from 'lucide-react';
+import { X, LogOut } from 'lucide-react';
 import type { TabId } from '../types';
 import { BRAND } from '../brand';
 import { NAV_TABS } from '../nav';
@@ -10,6 +10,8 @@ interface SidebarProps {
   // Telefon/tablet: menü soldan açılan çekmecedir (≥1024px'te her zaman görünür, bu değerler etkisizdir)
   open: boolean;
   onClose: () => void;
+  // Giriş ekranı modunda çıkış (telefonda üst çubukta kullanıcı alanı gizli olduğu için menünün altında)
+  onLogout?: () => void;
 }
 
 // Grup başlığı yalnız grubun ilk öğesinin üstünde gösterilir (liste sabit: modül yüklenirken bir kez hesaplanır)
@@ -22,7 +24,7 @@ const GROUP_START = (() => {
   });
 })();
 
-export function Sidebar({ activeTab, onTabChange, open, onClose }: SidebarProps) {
+export function Sidebar({ activeTab, onTabChange, open, onClose, onLogout }: SidebarProps) {
   const closeRef = useRef<HTMLButtonElement>(null);
   const returnFocus = useRef<HTMLElement | null>(null);
 
@@ -68,7 +70,14 @@ export function Sidebar({ activeTab, onTabChange, open, onClose }: SidebarProps)
             );
           })}
         </ul>
-        <div className="sidebar-footer"><div className="version-badge">{BRAND.name} {BRAND.version}</div></div>
+        <div className="sidebar-footer">
+          {onLogout && (
+            <button className="nav-item sidebar-logout" onClick={onLogout}>
+              <LogOut size={17} /><span>Çıkış yap</span>
+            </button>
+          )}
+          <div className="version-badge">{BRAND.name} {BRAND.version}</div>
+        </div>
       </nav>
     </>
   );

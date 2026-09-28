@@ -12,6 +12,10 @@ import '@fontsource/jetbrains-mono/500.css'
 import './index.css'
 import App from './App.tsx'
 import { getStoredTheme, applyThemeClass } from './theme'
+import { installAuthInterceptor } from './auth'
+
+// Oturumsuz API yanıtını (401 + X-Pi5-Auth) her fetch'te yakala → giriş ekranı (bkz. auth.ts)
+installAuthInterceptor()
 
 // Render öncesi kayıtlı temayı uygula — açık temada dark-flash olmasın
 const storedTheme = getStoredTheme()

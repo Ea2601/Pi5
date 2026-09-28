@@ -1,16 +1,21 @@
 import { useEffect, useState } from 'react';
-import { ShieldAlert, ShieldCheck, KeyRound } from 'lucide-react';
+import { ShieldAlert, ShieldCheck, KeyRound, LogIn } from 'lucide-react';
 import { useApi, postApi } from '../hooks/useApi';
 import { toast } from '../toast';
 
 // Panel erişim koruması (nginx Basic Auth) bandı. Şifreyi kullanıcı belirler; açma her zaman 5 dk'lık denemedir:
 // şifreyle girip "Kalıcı yap"a basılmazsa Pi korumayı kendiliğinden geri kapatır (kilitlenme olmaz).
+// Koruma kalıcıyken giriş yöntemi de buradan değişir: tarayıcı şifre penceresi (basic) → panelin kendi giriş ekranı (form).
+// Geçiş de 5 dk'lık denemedir: yeni ekrandan girip "Kalıcı yap"a basılmazsa şifre penceresine kendiliğinden dönülür.
 interface PanelAuthStatus {
   state: 'pending' | 'trial' | 'on' | 'legacy' | 'unsupported' | 'error';
   user?: string; password_set?: boolean; trial_ends?: number; now?: number; error?: string;
+  mode?: 'basic' | 'form'; mode_trial_ends?: number;
 }
 
 const MIN_LEN = 12;
+const OFFER_KEY = 'pi5-login-offer-dismissed';
+const offerDismissed = () => { try { return localStorage.getItem(OFFER_KEY) === '1'; } catch { return false; } };
 
 export function PanelAuthBanner() {
   // Durum okunamazsa (eski backend, ağ hatası) veri null kalır ve bant gizlenir — panel etkilenmez.
@@ -20,10 +25,13 @@ export function PanelAuthBanner() {
   const [editing, setEditing] = useState(false);
   const [busy, setBusy] = useState(false);
   const [left, setLeft] = useState<number | null>(null);
+  const [dismissed, setDismissed] = useState(offerDismissed);
   const load = refetch;
 
   // Deneme sırasında geri sayım (sunucu saatine göre kalan) + 10 sn'de bir durum (süre dolunca bant "hazır"a döner).
-  const trialEnds = st?.state === 'trial' ? st.trial_ends || 0 : 0;
+  // İki deneme türü: korumanın açılması (state=trial) ve giriş ekranına geçiş (mode=form, mode_trial_ends).
+  const modeTrial = st?.state === 'on' && st.mode === 'form' && (st.mode_trial_ends || 0) > 0;
+  const trialEnds = st?.state === 'trial' ? st.trial_ends || 0 : modeTrial ? st?.mode_trial_ends || 0 : 0;
   const skew = st?.now ? st.now * 1000 : 0;
   useEffect(() => {
     if (!trialEnds) return;
@@ -35,7 +43,92 @@ export function PanelAuthBanner() {
     return () => { clearTimeout(first); clearInterval(tick); clearInterval(poll); };
   }, [trialEnds, skew, refetch]);
 
-  if (!st || st.state === 'on' || st.state === 'unsupported' || st.state === 'error' || st.state === 'legacy') return null;
+  if (!st || st.state === 'unsupported' || st.state === 'error' || st.state === 'legacy') return null;
+  // Koruma kalıcı: yalnız giriş ekranı önerisi (şifre penceresindeyken, kapatılmadıysa) ya da geçiş denemesi gösterilir.
+  if (st.state === 'on' && !modeTrial && (st.mode === 'form' || dismissed)) return null;
+
+  const fmtLeft = () => {
+    const rem = left ?? 0;
+    return left === null ? '…' : `${Math.floor(rem / 60)}:${String(rem % 60).padStart(2, '0')}`;
+  };
+
+  const switchToForm = async () => {
+    if (!confirm(
+      'Panelin kendi giriş ekranı 5 dakikalık deneme olarak açılacak.\n\n' +
+      '• Sayfa yenilenecek ve giriş ekranı açılacak.\n' +
+      '• Aynı kullanıcı adı (admin) ve şifreyle gir, sonra üstteki "Kalıcı yap" düğmesine bas.\n' +
+      '• 5 dakika içinde basmazsan tarayıcının şifre penceresine kendiliğinden dönülür.\n\nDevam edilsin mi?',
+    )) return;
+    setBusy(true);
+    try {
+      await postApi('/panel-auth/mode', { mode: 'form' });
+      toast.success('Giriş ekranı deneme olarak açıldı — sayfa yenileniyor');
+      setTimeout(() => window.location.reload(), 1500);
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Giriş ekranına geçilemedi');
+      setBusy(false);
+    }
+  };
+
+  const dismissOffer = () => {
+    try { localStorage.setItem(OFFER_KEY, '1'); } catch { /* depolama erişilemez: yalnız bu oturumda gizlenir */ }
+    setDismissed(true);
+  };
+
+  const confirmMode = async () => {
+    setBusy(true);
+    try {
+      await postApi('/panel-auth/mode/confirm', {});
+      toast.success('Giriş ekranı kalıcı olarak açık');
+      await load();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Onaylanamadı');
+      await load();
+    }
+    setBusy(false);
+  };
+
+  const rollbackMode = async () => {
+    setBusy(true);
+    try {
+      await postApi('/panel-auth/mode/rollback', {});
+      toast.info('Tarayıcının şifre penceresine dönüldü — sayfa yenileniyor');
+      setTimeout(() => window.location.reload(), 1500);
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Geri alınamadı');
+      setBusy(false);
+    }
+  };
+
+  if (st.state === 'on' && modeTrial) {
+    return (
+      <div className="panel-auth-banner panel-auth-trial" role="status">
+        <LogIn size={16} />
+        <span>
+          <strong>Yeni giriş ekranı deneniyor</strong> — kalan {fmtLeft()}. Giriş ekranından girebildiysen kalıcı yap; yapmazsan süre dolunca tarayıcının şifre penceresine dönülür.
+        </span>
+        <div className="panel-auth-actions">
+          <button className="btn-primary btn-sm" onClick={confirmMode} disabled={busy}>Giriş çalıştı — kalıcı yap</button>
+          <button className="btn-outline btn-sm" onClick={rollbackMode} disabled={busy}>Şifre penceresine dön</button>
+        </div>
+      </div>
+    );
+  }
+
+  if (st.state === 'on') {
+    return (
+      <div className="panel-auth-banner panel-auth-offer" role="status">
+        <LogIn size={16} />
+        <span>
+          <strong>Yeni giriş ekranı hazır.</strong> Tarayıcının şifre penceresi yerine panelin kendi giriş sayfası: çıkış düğmesi ve hatalı deneme sınırıyla. Geçiş 5 dakikalık denemedir.
+        </span>
+        <div className="panel-auth-actions">
+          <button className="btn-primary btn-sm" onClick={switchToForm} disabled={busy}>Yeni girişe geç (5 dk deneme)</button>
+          <button className="btn-outline btn-sm" onClick={dismissOffer} disabled={busy}>Şimdi değil</button>
+        </div>
+      </div>
+    );
+  }
 
   const savePassword = async () => {
     if (pw.length < MIN_LEN) { toast.error(`Şifre en az ${MIN_LEN} karakter olmalı`); return; }
@@ -96,14 +189,11 @@ export function PanelAuthBanner() {
   };
 
   if (st.state === 'trial') {
-    const rem = left ?? 0;
-    const m = Math.floor(rem / 60);
-    const s = String(rem % 60).padStart(2, '0');
     return (
       <div className="panel-auth-banner panel-auth-trial" role="status">
         <ShieldCheck size={16} />
         <span>
-          <strong>Koruma deneniyor</strong> — kalan {left === null ? '…' : `${m}:${s}`}. Şifreyle girebildiysen kalıcı yap; yapmazsan süre dolunca koruma kendiliğinden kapanır.
+          <strong>Koruma deneniyor</strong> — kalan {fmtLeft()}. Şifreyle girebildiysen kalıcı yap; yapmazsan süre dolunca koruma kendiliğinden kapanır.
         </span>
         <div className="panel-auth-actions">
           <button className="btn-primary btn-sm" onClick={confirmOn} disabled={busy}>Giriş çalıştı — kalıcı yap</button>

@@ -80,8 +80,8 @@ systemctl cat zapret 2>/dev/null | grep -E '^(ExecStart|ExecStop)='; ls -d /opt/
 grep -E '^(FWTYPE|MODE_FILTER|NFQWS_ENABLE|TPWS_ENABLE|DESYNC_MARK)=' /opt/zapret/config 2>/dev/null
 pgrep -a nfqws; pgrep -a tpws
 
-h "Panel erişimi (nginx Basic Auth)"
-bash /opt/pi5-gateway/scripts/panel-auth.sh status 2>/dev/null | grep -E '^(state|password_set|trial_ends)='
+h "Panel erişimi (nginx Basic Auth / giriş ekranı)"
+bash /opt/pi5-gateway/scripts/panel-auth.sh status 2>/dev/null | grep -E '^(state|password_set|trial_ends|mode|mode_trial_ends)='
 grep -rnE 'auth_basic|satisfy|include' /etc/nginx/sites-enabled/ /etc/nginx/snippets/ /etc/nginx/conf.d/ 2>/dev/null
 curl -s -o /dev/null -w "LAN IP'den /api/status: HTTP %{http_code} (200 = korumasız, 401 = korumalı)\n" --max-time 3 "http://$LANIP/api/status"
 

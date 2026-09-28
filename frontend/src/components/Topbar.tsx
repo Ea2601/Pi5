@@ -1,4 +1,4 @@
-import { Bell, User, ShieldCheck, ShieldAlert, Download, Loader2, Clock, Sun, Moon, Menu } from 'lucide-react';
+import { Bell, User, ShieldCheck, ShieldAlert, Download, Loader2, Clock, Sun, Moon, Menu, LogOut } from 'lucide-react';
 import { useState, useEffect } from 'react';
 import type { HealthStatus } from '../types';
 import { useApi } from '../hooks/useApi';
@@ -20,9 +20,12 @@ interface TopbarProps {
   onMenu?: () => void;
   menuOpen?: boolean;
   title?: string;
+  // Giriş ekranı modunda: oturumu kapatır (verilmezse kullanıcı alanı yalnız ad gösterir)
+  onLogout?: () => void;
+  userName?: string;
 }
 
-export function Topbar({ onShowAlerts, onMenu, menuOpen = false, title = '' }: TopbarProps) {
+export function Topbar({ onShowAlerts, onMenu, menuOpen = false, title = '', onLogout, userName }: TopbarProps) {
   const { data } = useApi<HealthStatus>('/system/health', {
     isFailOpen: false, lastCheckTime: '', lastCheckResult: 'pending',
     checksTotal: 0, checksFailed: 0, uptimePercent: 100,
@@ -145,10 +148,18 @@ export function Topbar({ onShowAlerts, onMenu, menuOpen = false, title = '' }: T
               <span className="notification-badge">{totalBadge}</span>
             )}
           </button>
-          <div className="user-profile">
-            <User size={14} />
-            <span>Admin</span>
-          </div>
+          {onLogout ? (
+            <button className="user-profile user-logout" onClick={onLogout} title="Çıkış yap">
+              <User size={14} />
+              <span>{userName || 'admin'}</span>
+              <LogOut size={14} />
+            </button>
+          ) : (
+            <div className="user-profile">
+              <User size={14} />
+              <span>Admin</span>
+            </div>
+          )}
         </div>
       </header>
 

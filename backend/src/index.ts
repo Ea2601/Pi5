@@ -21,6 +21,7 @@ import { runSpeedTest, SpeedtestUnavailable, type SpeedResult } from './speedtes
 import { ASN_TOKEN, getAsnPrefixes, normalizeCidr, refreshAsnIfStale } from './ipRanges';
 import { getRoutingSuggestions, MAX_HOURS as SUGGEST_MAX_HOURS } from './domainSuggest';
 import { startUpdate, getUpdateStatus } from './update';
+import { authGate, registerAuthRoutes } from './auth';
 import {
   shq, sedEscape, isValidMac, isValidDomain, isValidTimezone,
   isValidHexColor, normalizeAnimation, sanitizeName,
@@ -101,6 +102,11 @@ const writeLimiter = rateLimit({
 app.use('/api/vps/setup', writeLimiter);
 app.use('/api/backup/import', writeLimiter);
 app.use('/api/terminal/execute', writeLimiter);
+
+// Panel giriş ekranı (panel-auth.sh "mode form"): tüm uçlardan önce /api kapısı + giriş uçları (bkz. auth.ts). Mod
+// "basic" ya da tanımsızken kapı hiçbir şey yapmaz — koruma nginx Basic Auth'tadır.
+app.use('/api', authGate);
+registerAuthRoutes(app);
 
 // Graceful shutdown
 process.on('SIGTERM', () => {
@@ -3742,6 +3748,7 @@ app.get('/api/panel-auth/status', async (_req, res) => {
   res.json({
     state: r.kv.state || 'pending', user: r.kv.user || 'admin', password_set: r.kv.password_set === '1',
     trial_ends: Number(r.kv.trial_ends) || 0, now: Number(r.kv.now) || Math.floor(Date.now() / 1000),
+    mode: r.kv.mode === 'form' ? 'form' : 'basic', mode_trial_ends: Number(r.kv.mode_trial_ends) || 0,
   });
 });
 
@@ -3777,6 +3784,37 @@ app.post('/api/panel-auth/confirm', async (req, res) => {
 app.post('/api/panel-auth/rollback', async (_req, res) => {
   if (!isLinux) return res.status(400).json({ error: 'Yalnız Pi5 üzerinde çalışır' });
   const r = await runPanelAuth(['rollback']);
+  if (r.code !== 0) return res.status(500).json({ error: panelAuthError(r, 'geri alınamadı') });
+  res.json({ success: true });
+});
+
+// Giriş yöntemi: "form" = panelin kendi giriş ekranı (her zaman 5 dk'lık deneme), "basic" = tarayıcının şifre penceresi.
+// Onay, yeni giriş ekranından oturum açmış bir tarayıcıdan gelmeli (Pi'nin kendi ekranı şifre sormaz, onayı sayılmaz).
+app.post('/api/panel-auth/mode', async (req, res) => {
+  if (!isLinux) return res.status(400).json({ error: 'Yalnız Pi5 üzerinde çalışır' });
+  const mode = req.body?.mode;
+  if (mode !== 'form' && mode !== 'basic') return res.status(400).json({ error: "mod 'form' ya da 'basic' olmalı" });
+  const r = await runPanelAuth(mode === 'form' ? ['mode', 'form', '--trial', String(PANEL_AUTH_TRIAL_S)] : ['mode', 'basic']);
+  if (r.code !== 0) return res.status(500).json({ error: panelAuthError(r, 'giriş yöntemi değiştirilemedi') });
+  res.json({ success: true, mode_trial_ends: Number(r.kv.mode_trial_ends) || 0 });
+});
+
+app.post('/api/panel-auth/mode/confirm', async (req, res) => {
+  if (!isLinux) return res.status(400).json({ error: 'Yalnız Pi5 üzerinde çalışır' });
+  if (isLoopbackClient(req.ip)) {
+    return res.status(403).json({ error: 'Onayı, yeni giriş ekranından girdiğin başka bir cihazdan (PC/telefon) ver' });
+  }
+  if (!res.locals.pi5User) {
+    return res.status(403).json({ error: 'Önce yeni giriş ekranından giriş yapın (sayfayı yenileyin), sonra onaylayın' });
+  }
+  const r = await runPanelAuth(['mode-confirm']);
+  if (r.code !== 0) return res.status(409).json({ error: panelAuthError(r, 'onaylanamadı') });
+  res.json({ success: true });
+});
+
+app.post('/api/panel-auth/mode/rollback', async (_req, res) => {
+  if (!isLinux) return res.status(400).json({ error: 'Yalnız Pi5 üzerinde çalışır' });
+  const r = await runPanelAuth(['mode-rollback']);
   if (r.code !== 0) return res.status(500).json({ error: panelAuthError(r, 'geri alınamadı') });
   res.json({ success: true });
 });

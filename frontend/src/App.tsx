@@ -29,6 +29,8 @@ import { DdnsPanel } from './components/DdnsPanel';
 import { CaseControlPanel } from './components/CaseControlPanel';
 import { KioskSettingsPanel } from './components/KioskSettingsPanel';
 import { PanelAuthBanner } from './components/PanelAuthBanner';
+import { LoginScreen } from './components/LoginScreen';
+import { AUTH_REQUIRED_EVENT, fetchAuthStatus, logout, type AuthStatus } from './auth';
 import type { TabId } from './types';
 import { tabFromHash, tabLabel, initialTab, rememberTab } from './nav';
 import { seedThemeFromBackend } from './theme';
@@ -41,6 +43,39 @@ function App() {
   // son sayfa, o da yoksa Dashboard.
   const [activeTab, setActiveTab] = useState<TabId>(initialTab);
   const [navOpen, setNavOpen] = useState(false);
+  // Giriş ekranı (panel-auth "mode form"): undefined = durum soruluyor, null = eski arka uç / ulaşılamadı (panel açılır).
+  const [auth, setAuth] = useState<AuthStatus | null | undefined>(undefined);
+  const [needLogin, setNeedLogin] = useState(false);
+  // Girişten sonra panel baştan kurulur (bütün veriler oturumla yeniden istenir).
+  const [session, setSession] = useState(0);
+
+  useEffect(() => {
+    let alive = true;
+    void fetchAuthStatus().then(st => {
+      if (!alive) return;
+      setAuth(st);
+      if (st?.mode === 'form' && !st.authenticated) setNeedLogin(true);
+    });
+    // Durum 2 sn'de gelmezse panel açılır (giriş gerekiyorsa ilk API yanıtı giriş ekranını getirir).
+    const fallback = setTimeout(() => { if (alive) setAuth(a => (a === undefined ? null : a)); }, 2000);
+    const onRequired = () => setNeedLogin(true);
+    window.addEventListener(AUTH_REQUIRED_EVENT, onRequired);
+    return () => { alive = false; clearTimeout(fallback); window.removeEventListener(AUTH_REQUIRED_EVENT, onRequired); };
+  }, []);
+
+  const onLoggedIn = useCallback(async () => {
+    setAuth(await fetchAuthStatus());
+    setNeedLogin(false);
+    setSession(n => n + 1);
+  }, []);
+
+  const handleLogout = useCallback(async () => {
+    await logout();
+    setNavOpen(false);
+    setNeedLogin(true);
+  }, []);
+  // Çıkış yalnız giriş ekranı modunda anlamlı (şifre penceresinde tarayıcı kimliği unutmaz; Pi'nin kendi ekranı muaf).
+  const canLogout = auth?.mode === 'form' && !auth.loopback;
 
   // Sekme seçilince menü çekmecesi kapanır.
   const goTab = useCallback((tab: TabId) => {
@@ -91,7 +126,7 @@ function App() {
         }
       })
       .catch(() => {});
-  }, []);
+  }, [session]);
 
   const renderTab = () => {
     switch (activeTab) {
@@ -124,16 +159,30 @@ function App() {
     }
   };
 
+  if (auth === undefined) return <div className="auth-splash" />;
+  // Hata sınırı giriş ekranı / panel oturumu değişince sıfırlanır (panelde kalmış bir hata ekranı girişi örtmesin).
+  if (needLogin) {
+    return (
+      <ErrorBoundary key="login">
+        <LoginScreen onSuccess={onLoggedIn} />
+        <Toaster />
+      </ErrorBoundary>
+    );
+  }
+
   return (
-    <ErrorBoundary>
+    <ErrorBoundary key={`app-${session}`}>
       <div className="app-container">
-        <Sidebar activeTab={activeTab} onTabChange={goTab} open={navOpen} onClose={() => setNavOpen(false)} />
+        <Sidebar activeTab={activeTab} onTabChange={goTab} open={navOpen} onClose={() => setNavOpen(false)}
+          onLogout={canLogout ? handleLogout : undefined} />
         <main className="main-content">
           <Topbar
             onShowAlerts={() => goTab('alerts')}
             onMenu={() => setNavOpen(true)}
             menuOpen={navOpen}
             title={tabLabel(activeTab)}
+            onLogout={canLogout ? handleLogout : undefined}
+            userName={auth?.user}
           />
           <PanelAuthBanner />
           <div className="dashboard-content" key={activeTab}>
