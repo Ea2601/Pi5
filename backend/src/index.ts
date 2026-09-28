@@ -24,6 +24,7 @@ import { startUpdate, getUpdateStatus } from './update';
 import { sampleBandwidth, neighborMacs, buildLive } from './bandwidth';
 import { buildTopology, readNeighbors, readHandshakes, readDefaultRoute, readIfaces, readLocalIps, noteActivity, inCidr } from './topology';
 import { startLinkProbe, probeSamples, probeBaseline, noteTopologyView, type ProbeTarget } from './linkProbe';
+import { startTrafficRecorder, usageSummary, appActivity, appDefsFrom } from './trafficHistory';
 import { authGate, registerAuthRoutes } from './auth';
 import { validateSchedule, validateCommand, syncCronJobs, readJobStatuses, readSystemCron, syncCronOnStartup } from './cronSync';
 import { validateListValue, normalizeListValue, syncPiholeLists, lastListSync, externalPiholeEntries } from './piholeLists';
@@ -1691,6 +1692,35 @@ app.get('/api/topology/live', async (_req, res) => {
       lanIp, hostname: require('os').hostname(), modem, localIps, accounting, nowS: Math.floor(now / 1000),
       probe: probeSamples, probeBaseMs: probeBaseline(), onSetupWifi: ip => inCidr(ip, AP_NET),
     }));
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Trafik Kontrol → Trafik Analizi: 5 dk'lık cihaz × yol (yerel / DPI / VPS) bayt kayıtları (trafficHistory.ts) ve
+// Pi-hole sorgularından uygulama kullanımı (sorgu sayısı; bayt değil). range: 24h (saatlik) | 7d.
+app.get('/api/traffic/analytics', async (req, res) => {
+  try {
+    const range = req.query.range === '7d' ? '7d' : '24h';
+    const [usage, devices, appRows, vps] = await Promise.all([
+      usageSummary(range),
+      dbAll('SELECT mac_address, ip_address, hostname, device_type FROM devices'),
+      dbAll('SELECT app_name, category, domains FROM traffic_routing'),
+      dbAll('SELECT id, ip, location FROM vps_servers ORDER BY id'),
+    ]);
+    const macOfIp = new Map<string, string>();
+    for (const d of devices as any[]) if (d.ip_address) macOfIp.set(String(d.ip_address), String(d.mac_address).toLowerCase());
+    if (isLinux) for (const [ip, n] of await readNeighbors()) macOfIp.set(ip, n.mac);
+    let apps: any = { available: false, apps: [], matchedQueries: 0, totalQueries: 0 };
+    if (isLinux) {
+      try { apps = await appActivity(range, appDefsFrom(appRows as any[]), ip => macOfIp.get(ip)); }
+      catch (e: any) { apps = { ...apps, error: `Pi-hole sorgu kayıtları okunamadı: ${String(e?.message || e)}` }; }
+    }
+    res.json({
+      range, recording: isLinux, now: Math.floor(Date.now() / 1000), ...usage, apps,
+      deviceInfo: (devices as any[]).map(d => ({ mac: String(d.mac_address).toLowerCase(), ip: d.ip_address, hostname: d.hostname, type: d.device_type })),
+      vps,
+    });
   } catch (e: any) {
     res.status(500).json({ error: e.message });
   }
@@ -4016,6 +4046,8 @@ const server = app.listen(Number(port), bindHost, () => {
       const wiredUplink = !!modem?.dev && !fs.existsSync(`/sys/class/net/${modem.dev}/wireless`);
       return { targets, gateway: modem && gwN && wiredUplink ? { ip: modem.ip, mac: gwN.mac, dev: modem.dev } : null };
     });
+    // Trafik analizi: cihaz × yol bayt kayıtları, 5 dk'da bir (saat sınırlarına hizalı).
+    startTrafficRecorder();
   }
   // Cron: panel görevleri zamanlayıcıya yazılır, ancak bu başarılıysa eski pi5-maintenance satırları çıkarılır (önce yeni
   // dosya). Veritabanı ilk kurulum işleri bitsin diye kısa gecikmeyle.

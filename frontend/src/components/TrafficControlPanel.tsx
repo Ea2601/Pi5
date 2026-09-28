@@ -6,6 +6,7 @@ import {
 import { useApi, postApi, putApi, deleteApi } from '../hooks/useApi';
 import { Panel, Badge, Select } from './ui';
 import type { TrafficRule, TrafficSchedule, ThrottleRule } from '../types';
+import { TrafficAnalytics } from './TrafficAnalytics';
 
 interface VpsServer { id: number; ip: string; location: string }
 
@@ -42,7 +43,7 @@ export function TrafficControlPanel() {
 
       {activeTab === 'scheduler' && <SchedulerView />}
       {activeTab === 'throttle' && <ThrottleView />}
-      {activeTab === 'analytics' && <AnalyticsView />}
+      {activeTab === 'analytics' && <TrafficAnalytics />}
     </div>
   );
 }
@@ -431,20 +432,6 @@ function ThrottleView() {
             </div>
           )}
         </div>
-      </div>
-    </div>
-  );
-}
-
-function AnalyticsView() {
-  return (
-    <div style={{ marginTop: 14 }}>
-      <div className="empty-state" style={{ padding: 50 }}>
-        <BarChart3 size={40} />
-        <p>Trafik analizi Pi5 gateway modunda aktif olduğunda gerçek verilerle doldurulacaktır.</p>
-        <span className="text-muted" style={{ fontSize: 12 }}>
-          Pi5 router olarak çalıştığında cihaz bazlı bant genişliği, uygulama trafiği ve saatlik dağılım burada gösterilecek.
-        </span>
       </div>
     </div>
   );

@@ -969,6 +969,41 @@ body.nav-open { overflow: hidden; }
   .topo-link, .topo-node, .topo-card { transition: none; }
 }
 
+/* ═══════════════════ TRAFİK ANALİZİ (TrafficAnalytics) ═══════════════════ */
+.ta-root { --ta-local: #94a3b8; --ta-dpi: #f59e0b; --ta-vps: #60a5fa; }
+:root.light-theme .ta-root { --ta-local: #64748b; --ta-dpi: #d97706; --ta-vps: #2563eb; }
+.ta-c-local { --c: var(--ta-local); }
+.ta-c-dpi { --c: var(--ta-dpi); }
+.ta-c-vps { --c: var(--ta-vps); }
+.ta-range { display: inline-flex; gap: 2px; padding: 3px; border-radius: 10px; background: var(--panel-bg); border: 1px solid var(--panel-border); }
+.ta-range-btn {
+  height: 30px; padding: 0 12px; border: 0; border-radius: 7px; background: transparent;
+  color: var(--text-secondary); font-family: inherit; font-size: 12px; cursor: pointer;
+}
+.ta-range-btn:hover { color: var(--text-primary); }
+.ta-range-btn.is-on { background: var(--accent-glow); color: var(--text-primary); font-weight: 600; }
+.ta-range-btn:focus-visible { outline: 2px solid var(--accent-ring); outline-offset: 1px; }
+.ta-note {
+  margin-top: 10px; padding: 9px 12px; border-radius: var(--radius-sm);
+  border: 1px solid var(--panel-border); background: var(--panel-bg); color: var(--text-secondary); font-size: 12px;
+}
+.stat-value.ta-stat-text { font-size: 13px; line-height: 1.35; overflow-wrap: anywhere; }
+.ta-chart { height: 220px; margin-top: 8px; }
+.ta-legend { display: flex; gap: 14px; margin-top: 6px; font-size: 11px; color: var(--text-secondary); }
+.ta-legend span { display: inline-flex; align-items: center; gap: 6px; }
+.ta-legend i { width: 10px; height: 10px; border-radius: 3px; background: var(--c); }
+.ta-list { display: flex; flex-direction: column; gap: 10px; margin-top: 10px; }
+.ta-row-head { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; font-size: 12.5px; }
+.ta-name { font-weight: 600; color: var(--text-primary); }
+.ta-sub { color: var(--text-muted); font-size: 11px; font-family: var(--font-mono); }
+.ta-cat { color: var(--text-muted); font-size: 11px; }
+.ta-amount { margin-left: auto; color: var(--text-secondary); font-size: 12px; font-variant-numeric: tabular-nums; }
+.ta-bar { display: flex; height: 6px; margin-top: 5px; border-radius: 4px; overflow: hidden; background: rgba(148, 163, 184, 0.12); }
+.ta-bar > span { display: block; min-width: 2px; background: var(--c); }
+.ta-bar-app > span { flex-grow: 1; background: var(--accent-color); }
+.ta-devs { margin-top: 3px; color: var(--text-muted); font-size: 11px; }
+.ta-foot { margin-top: 12px; color: var(--text-muted); font-size: 11px; line-height: 1.5; }
+
 /* Legacy compat */
 .device-card-header {
   display: flex;
