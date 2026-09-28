@@ -1,8 +1,9 @@
 {
-  "version": "2.24.25",
-  "build": 102,
+  "version": "2.24.26",
+  "build": 103,
   "date": "2026-09-29",
   "changelog": [
+    "Unbound testi: Pi-hole'da aynı Unbound adresi iki kez yazılıysa artık 'başka üst DNS var' uyarısı verilmez (zararsız tekrar olarak not düşülür); yalnız Unbound dışı bir adres varsa uyarır",
     "Unbound DNS işlev testi (tanı aracı, hiçbir ayarı değiştirmez): sudo bash /opt/pi5-gateway/scripts/unbound-test.sh — servis, yalnız yerelden erişim, yapılandırma, çözümleme, gerçekten özyinelemeli olup olmadığı (başka DNS sağlayıcısına iletme ya da operatörün DNS'i yakalaması), DNSSEC doğrulaması (bozuk imzalı alan reddediliyor mu), önbellek, Pi-hole → Unbound bağlantısı ve istatistikler; her bölüm GEÇTİ / KALDI / UYARI yazar",
     "Arka plan dijital ağ (mesh) olarak yeniden tasarlandı: giriş ekranını ve paneli, üçgenlerden örülü ince bir ağ kaplıyor; kenarlarda belirgin, ortada (içeriğin arkasında) soluk olduğu için yazılar okunur kalıyor. Giriş ekranında ağ üzerinde ilerleyen ışık izleri ve yanıp sönen düğümler var. Panelde arka plan bilinçli olarak hareketsiz: cam kartların arkasında hareket, telefonda ısınma ve takılma yapardı. Koyu ve açık temaya uyar; hareket azaltma tercihinde animasyonlar kapanır. Giriş kartının ortasında görünen merkez düğüm lekesi de böylece ortadan kalktı",
     "FaceTime aramaları için Apple IP aralıkları (WhatsApp'taki gibi): FaceTime ve iMessage aramaları Apple'ın aktarma sunucularına alan adı sormadan doğrudan IP ile gittiği için yalnız alan adı kuralı onları yakalamıyordu. FaceTime kuralına Apple'ın ağı (AS714) eklendi; yalnız 443 dışı trafik kuralın çıkışını kullanır, Apple web trafiği yerel kalır. Aynı ağdaki iCloud Mail de FaceTime kuralının çıkışını kullanır. Apple'ın içerik ağı (güncelleme kataloğu, eski tip güncelleme indirmeleri, saat sunucusu) aralıklardan çıkarıldı, yerel kalır; büyük güncelleme indirmeleri zaten Fastly/du önbelleğinden gelir. Aralıklar RIPE'den günlük güncellenir",

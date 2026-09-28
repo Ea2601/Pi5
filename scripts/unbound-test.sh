@@ -105,8 +105,12 @@ h "9. Pi-hole → Unbound bağlantısı"
 UP=$(pihole-FTL --config dns.upstreams 2>/dev/null)
 echo "  Pi-hole üst DNS'leri: ${UP:-okunamadı}"
 CNT=$(echo "$UP" | tr -d '[] ' | tr ',' '\n' | grep -c .)
+OTHER=$(echo "$UP" | tr -d '[] ' | tr ',' '\n' | grep . | grep -v '^127\.0\.0\.1#5335$' | tr '\n' ' ')
 if echo "$UP" | grep -q '127.0.0.1#5335'; then
-  [ "$CNT" = 1 ] && ok "Pi-hole'un tek üst DNS'i Unbound" || uy "Unbound'un yanında başka üst DNS'ler de var — sorguların bir kısmı dış sağlayıcıya gider"
+  if [ -z "$OTHER" ]; then
+    ok "Pi-hole'un üst DNS'i yalnız Unbound"
+    [ "$CNT" -gt 1 ] && echo "  (not: aynı Unbound adresi $CNT kez yazılmış — zararsız tekrar)"
+  else uy "Unbound'un yanında başka üst DNS'ler de var ($OTHER) — sorguların bir kısmı dış sağlayıcıya gider"; fi
 else no "Pi-hole Unbound'u kullanmıyor"; fi
 LANIP=$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src"){print $(i+1); exit}}')
 for s in 127.0.0.1 $LANIP; do
