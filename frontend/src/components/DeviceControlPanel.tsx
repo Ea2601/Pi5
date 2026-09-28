@@ -1,12 +1,23 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import {
   Users, Shield, Clock, AlertTriangle, Plus, ChevronDown, ChevronRight,
-  Wifi, WifiOff, Check, X, Monitor, Smartphone, HardDrive, Palette
+  Wifi, WifiOff, Check, X, Monitor, Smartphone, HardDrive, Palette, Trash2, Pencil
 } from 'lucide-react';
-import { useApi, postApi } from '../hooks/useApi';
+import { useApi, getApi, postApi, putApi, deleteApi } from '../hooks/useApi';
 import { Panel, Badge } from './ui';
 import type { Device } from '../types';
 import { toast } from '../toast';
+
+// Arka uç ad bilgisini Pi-hole DHCP kiralarından ya da elle verilen addan doldurur (name_manual=1: elle).
+type Dev = Device & { name_manual?: number };
+
+// MAC'in "yerel yönetimli" biti (ilk baytın 2. biti): telefon/tabletlerin Wi-Fi'da kullandığı rastgele (gizli) adres.
+const isRandomMac = (mac: string) => /^[0-9a-f]([26ae])/i.test(mac);
+// Ad yoksa "Bilinmeyen" yerine ne olduğu hakkında ipucu veren etiket.
+function deviceLabel(d: { hostname?: string | null; mac_address: string }): string {
+  if (d.hostname) return d.hostname;
+  return isRandomMac(d.mac_address) ? 'Adsız cihaz (gizli MAC)' : 'Adsız cihaz';
+}
 
 type DeviceTab = 'groups' | 'blocking' | 'history' | 'unknown';
 
@@ -23,7 +34,7 @@ interface ConnectionEvent {
   id?: number;
   device_mac: string;
   timestamp: string;
-  event_type: 'connect' | 'disconnect';
+  event_type: string;
 }
 
 interface UnknownDevice {
@@ -89,6 +100,27 @@ function GroupsView() {
       setShowAdd(false);
       await refetch();
     } catch { /* */ }
+  };
+
+  const handleDeleteGroup = async (group: DeviceGroup) => {
+    if (!confirm(`"${group.name}" grubu silinsin mi? Cihazlar silinmez, yalnız grup ve üyelik kaydı kalkar.`)) return;
+    try {
+      await deleteApi(`/devices/groups/${group.id}`);
+      if (expanded === group.id) setExpanded(null);
+      toast.success('Grup silindi');
+      await refetch();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Grup silinemedi');
+    }
+  };
+
+  const handleRemoveMember = async (groupId: number, mac: string) => {
+    try {
+      await deleteApi(`/devices/groups/${groupId}/members/${encodeURIComponent(mac)}`);
+      await refetch();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Üye çıkarılamadı');
+    }
   };
 
   const handleAddMember = async (groupId: number) => {
@@ -189,6 +221,10 @@ function GroupsView() {
                 </div>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                   <Badge variant="info">{group.members.length} cihaz</Badge>
+                  <button className="icon-btn icon-btn-sm" title="Grubu sil" aria-label={`${group.name} grubunu sil`}
+                    onClick={e => { e.stopPropagation(); void handleDeleteGroup(group); }}>
+                    <Trash2 size={13} />
+                  </button>
                   {expanded === group.id ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
                 </div>
               </div>
@@ -196,8 +232,12 @@ function GroupsView() {
                 <div style={{ padding: '8px 16px 16px 56px' }}>
                   {group.members.map(m => (
                     <div key={m.mac_address} className="list-item" style={{ padding: '6px 10px', fontSize: 13 }}>
-                      <span>{m.hostname || m.mac_address}</span>
+                      <span style={{ flex: 1, minWidth: 0 }}>{deviceLabel(m)}</span>
                       <span className="text-muted">{m.ip_address}</span>
+                      <button className="icon-btn icon-btn-sm" title="Gruptan çıkar" aria-label="Gruptan çıkar"
+                        onClick={() => handleRemoveMember(group.id, m.mac_address)}>
+                        <X size={12} />
+                      </button>
                     </div>
                   ))}
                   {group.members.length === 0 && (
@@ -210,7 +250,7 @@ function GroupsView() {
                         <option value="">Cihaz seçin...</option>
                         {devicesData.devices.map(d => (
                           <option key={d.mac_address} value={d.mac_address}>
-                            {d.hostname || d.mac_address} ({d.ip_address})
+                            {deviceLabel(d)} ({d.ip_address})
                           </option>
                         ))}
                       </select>
@@ -244,8 +284,21 @@ function GroupsView() {
 }
 
 function BlockingView() {
-  const { data, refetch } = useApi<{ devices: Device[] }>('/devices', { devices: [] });
+  const { data, refetch } = useApi<{ devices: Dev[] }>('/devices', { devices: [] });
   const [blocking, setBlocking] = useState<string | null>(null);
+  const [editing, setEditing] = useState<string | null>(null);
+  const [nameDraft, setNameDraft] = useState('');
+
+  const startRename = (d: Dev) => { setEditing(d.mac_address); setNameDraft(d.hostname || ''); };
+  const saveName = async (mac: string) => {
+    try {
+      await putApi(`/devices/${encodeURIComponent(mac)}/name`, { name: nameDraft.trim() });
+      setEditing(null);
+      await refetch();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Ad kaydedilemedi');
+    }
+  };
 
   const handleToggleBlock = async (mac: string, currentlyBlocked: boolean) => {
     setBlocking(mac);
@@ -270,6 +323,8 @@ function BlockingView() {
         </div>
         <p className="subtitle">
           Engel, internete Pi üzerinden çıkan cihazlarda çalışır (Pi ağ geçidi/DHCP olduğunda tüm cihazlar). Modem ve Pi'nin kendisi engellenemez.
+          Adlar Pi'nin DHCP kayıtlarından gelir; adı gelmeyen cihaza kalem düğmesiyle ad verebilirsiniz. "Gizli MAC" genellikle
+          Wi-Fi'da rastgele adres kullanan bir telefon ya da tablettir.
         </p>
 
         <div className="list-items">
@@ -280,8 +335,22 @@ function BlockingView() {
                 style={blocked ? { borderLeft: '3px solid #ef4444', background: 'rgba(239,68,68,0.06)' } : {}}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 10, flex: 1 }}>
                   {blocked ? <WifiOff size={16} style={{ color: '#ef4444' }} /> : <Wifi size={16} style={{ color: '#10b981' }} />}
-                  <div>
-                    <strong>{device.hostname || 'Bilinmeyen'}</strong>
+                  <div style={{ minWidth: 0, flex: 1 }}>
+                    {editing === device.mac_address ? (
+                      <div className="dev-rename">
+                        <input className="config-input" value={nameDraft} maxLength={40} autoFocus
+                          placeholder="Ad (boş = otomatik)" onChange={e => setNameDraft(e.target.value)}
+                          onKeyDown={e => { if (e.key === 'Enter') void saveName(device.mac_address); if (e.key === 'Escape') setEditing(null); }} />
+                        <button className="btn-primary btn-sm" onClick={() => saveName(device.mac_address)} title="Kaydet"><Check size={13} /></button>
+                        <button className="btn-outline btn-sm" onClick={() => setEditing(null)} title="Vazgeç"><X size={13} /></button>
+                      </div>
+                    ) : (
+                      <div className="dev-name">
+                        <strong className={device.hostname ? '' : 'text-muted'}>{deviceLabel(device)}</strong>
+                        <button className="icon-btn icon-btn-sm" onClick={() => startRename(device)}
+                          title="Ad ver" aria-label="Ad ver"><Pencil size={12} /></button>
+                      </div>
+                    )}
                     <div className="text-muted" style={{ fontSize: 12 }}>
                       {device.ip_address} &middot; {device.mac_address}
                     </div>
@@ -313,13 +382,30 @@ function BlockingView() {
   );
 }
 
+// Arka uç olayı 'connected' diye kaydeder: cihaz ağda ilk kez ya da 5 dk'dan uzun aradan sonra yeniden görüldüğünde.
+// Kopma anı kaydedilmez. (Eski arayüz 'connect' bekliyordu → her kayıt "Bağlantı Kesildi" görünüyordu.)
+const EVENT_LABEL: Record<string, string> = {
+  connected: 'Ağda görüldü', connect: 'Ağda görüldü', disconnected: 'Bağlantı kesildi', disconnect: 'Bağlantı kesildi',
+};
+
 function HistoryView() {
-  const { data: devicesData } = useApi<{ devices: Device[] }>('/devices', { devices: [] });
+  const { data: devicesData } = useApi<{ devices: Dev[] }>('/devices', { devices: [] });
   const [selectedMac, setSelectedMac] = useState('');
-  const { data: historyData } = useApi<{ events: ConnectionEvent[] }>(
-    selectedMac ? `/devices/${selectedMac}/history` : '/devices/unknown',
-    { events: [] }
-  );
+  // Sonuçlar cihaz başına tutulur: seçim değiştiği anda eski yanıtın başka biçimdeki verisi (ör. {devices}) hiç
+  // okunmaz — önceki sürüm bu yüzden seçim anında "events.map" ile çöküyordu.
+  const [byMac, setByMac] = useState<Record<string, ConnectionEvent[] | 'error'>>({});
+
+  useEffect(() => {
+    if (!selectedMac) return;
+    let alive = true;
+    getApi<{ events?: ConnectionEvent[] }>(`/devices/${encodeURIComponent(selectedMac)}/history`)
+      .then(d => { if (alive) setByMac(m => ({ ...m, [selectedMac]: Array.isArray(d.events) ? d.events : [] })); })
+      .catch(() => { if (alive) setByMac(m => ({ ...m, [selectedMac]: 'error' })); });
+    return () => { alive = false; };
+  }, [selectedMac]);
+
+  const result = selectedMac ? byMac[selectedMac] : undefined;
+  const events = Array.isArray(result) ? result : [];
 
   return (
     <div style={{ marginTop: 14 }}>
@@ -327,48 +413,61 @@ function HistoryView() {
         <div className="widget-header">
           <h3><Clock size={18} style={{ marginRight: 8 }} />Bağlantı Geçmişi</h3>
         </div>
+        <p className="subtitle">
+          Kayıt, cihaz ağda ilk kez ya da 5 dakikadan uzun aradan sonra yeniden görüldüğünde tutulur; kopma anı kaydedilmez.
+        </p>
 
-        <div style={{ padding: '12px 0' }}>
+        <div style={{ padding: '0 0 12px' }}>
           <select className="config-select" value={selectedMac}
             onChange={e => setSelectedMac(e.target.value)}
             style={{ maxWidth: 400 }}>
             <option value="">Cihaz seçin...</option>
             {devicesData.devices.map(d => (
               <option key={d.mac_address} value={d.mac_address}>
-                {d.hostname || d.mac_address} ({d.ip_address})
+                {deviceLabel(d)} ({d.ip_address})
               </option>
             ))}
           </select>
         </div>
 
-        {selectedMac ? (
+        {!selectedMac ? (
+          <div className="empty-state" style={{ padding: 30 }}>
+            <Monitor size={32} />
+            <p>Geçmişi görüntülemek için bir cihaz seçin</p>
+          </div>
+        ) : result === undefined ? (
+          <div className="empty-state" style={{ padding: 30 }}><p>Yükleniyor…</p></div>
+        ) : result === 'error' ? (
+          <div className="empty-state" style={{ padding: 30 }}>
+            <AlertTriangle size={32} />
+            <p>Geçmiş okunamadı — sayfayı yenileyip yeniden deneyin</p>
+          </div>
+        ) : (
           <div className="list-items">
-            {historyData.events.map((event, i) => (
-              <div key={event.id ?? i} className="list-item" style={{ gap: 12 }}>
-                <span style={{
-                  width: 10, height: 10, borderRadius: '50%',
-                  background: event.event_type === 'connect' ? '#10b981' : '#ef4444',
-                  flexShrink: 0
-                }} />
-                <div style={{ flex: 1 }}>
-                  <strong>{event.event_type === 'connect' ? 'Bağlandı' : 'Bağlantı Kesildi'}</strong>
+            {events.map((event, i) => {
+              const up = event.event_type === 'connected' || event.event_type === 'connect';
+              return (
+                <div key={event.id ?? i} className="list-item" style={{ gap: 12 }}>
+                  <span style={{
+                    width: 10, height: 10, borderRadius: '50%',
+                    background: up ? '#10b981' : '#ef4444',
+                    flexShrink: 0
+                  }} />
+                  <div style={{ flex: 1 }}>
+                    <strong>{EVENT_LABEL[event.event_type] || event.event_type}</strong>
+                  </div>
+                  <span className="text-muted" style={{ fontSize: 12 }}>
+                    {event.timestamp ? new Date(/[zZ]|[+]/.test(event.timestamp) ? event.timestamp : event.timestamp.replace(' ', 'T') + 'Z').toLocaleString('tr-TR') : ''}
+                  </span>
                 </div>
-                <span className="text-muted" style={{ fontSize: 12 }}>
-                  {event.timestamp ? new Date(/[zZ]|[+]/.test(event.timestamp) ? event.timestamp : event.timestamp.replace(' ', 'T') + 'Z').toLocaleString('tr-TR') : ''}
-                </span>
-              </div>
-            ))}
-            {historyData.events.length === 0 && (
+              );
+            })}
+            {events.length === 0 && (
               <div className="empty-state" style={{ padding: 30 }}>
                 <Clock size={32} />
                 <p>Bu cihaz için geçmiş kaydı bulunamadı</p>
               </div>
             )}
-          </div>
-        ) : (
-          <div className="empty-state" style={{ padding: 30 }}>
-            <Monitor size={32} />
-            <p>Geçmişi görüntülemek için bir cihaz seçin</p>
           </div>
         )}
       </div>
@@ -408,13 +507,17 @@ function UnknownView() {
           <h3><AlertTriangle size={18} style={{ marginRight: 8 }} />Bilinmeyen Cihazlar</h3>
           <Badge variant="warning">{data.devices.length} cihaz</Badge>
         </div>
+        <p className="subtitle">
+          Ağda ilk kez görülen ve henüz "tanıyorum" demediğiniz cihazlar. Bu yalnız bir farkındalık listesidir: "Tanıyorum" demek
+          cihazı listeden çıkarır, internet erişimini değiştirmez. Tanımadığınız bir cihazı Engelleme sekmesinden engelleyebilirsiniz.
+        </p>
 
         <div className="list-items">
           {data.devices.map(device => (
             <div key={device.mac_address} className="list-item"
               style={{ borderLeft: '3px solid #f59e0b', background: 'rgba(245,158,11,0.04)' }}>
               <div style={{ flex: 1 }}>
-                <strong>{device.hostname || 'Bilinmeyen Cihaz'}</strong>
+                <strong>{deviceLabel(device)}</strong>
                 <div className="text-muted" style={{ fontSize: 12 }}>
                   {device.ip_address} &middot; {device.mac_address}
                 </div>
@@ -424,14 +527,14 @@ function UnknownView() {
               </div>
               <button className="btn-primary btn-sm" onClick={() => handleApprove(device.mac_address)}
                 disabled={approving === device.mac_address}>
-                <Check size={13} /> {approving === device.mac_address ? 'Onaylanıyor...' : 'Onayla'}
+                <Check size={13} /> {approving === device.mac_address ? 'Kaydediliyor...' : 'Tanıyorum'}
               </button>
             </div>
           ))}
           {data.devices.length === 0 && (
             <div className="empty-state" style={{ padding: 30 }}>
               <Check size={32} />
-              <p>Tüm cihazlar onaylanmış durumda</p>
+              <p>Tanımadığınız yeni cihaz yok</p>
             </div>
           )}
         </div>

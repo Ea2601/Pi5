@@ -145,6 +145,8 @@ export const initDb = () => {
       device_type TEXT DEFAULT 'unknown', route_profile TEXT DEFAULT 'default',
       blocked INTEGER DEFAULT 0, last_seen DATETIME DEFAULT CURRENT_TIMESTAMP
     )`);
+    // Elle verilen cihaz adı (1): DHCP kiralarından gelen otomatik ad bunu ezmez.
+    db.run(`ALTER TABLE devices ADD COLUMN name_manual INTEGER DEFAULT 0`, () => {});
 
     db.run(`CREATE TABLE IF NOT EXISTS service_status (
       name TEXT PRIMARY KEY, enabled INTEGER DEFAULT 0, status TEXT DEFAULT 'stopped',

@@ -553,6 +553,29 @@ app.get('/api/pihole/stats', async (_req, res) => {
 });
 
 // ─── Devices ───
+// Cihaz adı kaynakları: statik DHCP rezervasyonları (panelde verilen ad) ve Pi-hole'un kira dosyası (cihazın DHCP'de
+// bildirdiği ad; "*" = ad yok). Komşu tablosu (ip neigh) ad vermez — bu yapılmadan tüm cihazlar "Bilinmeyen" görünüyordu.
+// Yalnız elle ad verilmemiş (name_manual=0) satırlar güncellenir.
+async function fillDeviceNames(): Promise<void> {
+  const names = new Map<string, string>();
+  try {
+    const txt = String(require('fs').readFileSync('/etc/pihole/dhcp.leases', 'utf8'));
+    for (const line of txt.split('\n')) {
+      const [exp, mac, , host] = line.trim().split(/\s+/);
+      if (!/^\d+$/.test(exp || '') || !isValidMac(mac) || !host || host === '*') continue;
+      names.set(mac.toLowerCase(), host.slice(0, 63));
+    }
+  } catch { /* kira dosyası yok (Pi DHCP kapalı) */ }
+  const statics = await dbAll("SELECT mac_address, hostname FROM dhcp_leases WHERE is_static = 1 AND COALESCE(hostname, '') <> ''");
+  for (const r of statics as any[]) names.set(String(r.mac_address).toLowerCase(), String(r.hostname).slice(0, 63));
+  for (const [mac, name] of names) {
+    await dbRun(
+      "UPDATE devices SET hostname = ? WHERE lower(mac_address) = ? AND COALESCE(name_manual, 0) = 0 AND COALESCE(hostname, '') <> ?",
+      [name, mac, name],
+    );
+  }
+}
+
 app.get('/api/devices', async (_req, res) => {
   try {
     // On Linux, persist the live scan into the DB so profile/block updates target real rows.
@@ -583,9 +606,29 @@ app.get('/api/devices', async (_req, res) => {
         // Track first-seen for the "unknown devices" alert (approved defaults to 0)
         await dbRun('INSERT OR IGNORE INTO known_devices (mac_address) VALUES (?)', [live.mac]);
       }
+      await fillDeviceNames();
     }
     const dbDevices = await dbAll('SELECT * FROM devices ORDER BY last_seen DESC');
     res.json({ devices: dbDevices });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Elle cihaz adı. Boş ad elle adı kaldırır (ad yeniden DHCP kiralarından dolar).
+app.put('/api/devices/:mac/name', async (req, res) => {
+  try {
+    const mac = String(req.params.mac || '').toLowerCase();
+    if (!isValidMac(mac)) return res.status(400).json({ error: 'Geçersiz MAC adresi' });
+    const name = typeof req.body?.name === 'string' ? req.body.name.trim() : '';
+    if ([...name].length > 40 || /[\x00-\x1f\x7f<>]/.test(name)) {
+      return res.status(400).json({ error: 'Ad en fazla 40 karakter olmalı ve < > ya da kontrol karakteri içermemeli' });
+    }
+    const row = await dbGet('SELECT mac_address FROM devices WHERE lower(mac_address) = ?', [mac]);
+    if (!row) return res.status(404).json({ error: 'Cihaz bulunamadı' });
+    await dbRun('UPDATE devices SET hostname = ?, name_manual = ? WHERE lower(mac_address) = ?', [name, name ? 1 : 0, mac]);
+    if (!name && isLinux) await fillDeviceNames();
+    res.json({ success: true });
   } catch (e: any) {
     res.status(500).json({ error: e.message });
   }

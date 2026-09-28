@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/Ea2601/klyrix-gate/releases"><img src="https://img.shields.io/badge/version-2.24.12-38bdf8.svg?style=for-the-badge&logo=git&logoColor=white" alt="Version 2.24.12"></a>
+  <a href="https://github.com/Ea2601/klyrix-gate/releases"><img src="https://img.shields.io/badge/version-2.24.13-38bdf8.svg?style=for-the-badge&logo=git&logoColor=white" alt="Version 2.24.13"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-22c55e.svg?style=for-the-badge" alt="License MIT"></a>
   <img src="https://img.shields.io/badge/100%25-Free%20%26%20Open%20Source-ef4444.svg?style=for-the-badge&logo=opensourceinitiative&logoColor=white" alt="Free & Open Source">
   <img src="https://img.shields.io/badge/Telemetry-Zero-10b981.svg?style=for-the-badge" alt="Zero Telemetry">
