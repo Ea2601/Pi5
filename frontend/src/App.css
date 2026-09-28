@@ -26,8 +26,8 @@ button, a { -webkit-tap-highlight-color: transparent; }
   padding: 0 12px calc(20px + env(safe-area-inset-bottom));
   display: flex;
   flex-direction: column;
-  overflow-y: auto;
-  overscroll-behavior: contain;
+  /* Yalnız menü listesi kayar (.nav-links); logo başlığı ve alt kısım (Çıkış) her zaman yerinde kalır */
+  overflow: hidden;
   border-radius: 0 var(--radius-lg) var(--radius-lg) 0;
   background: var(--bg-surface);
   transform: translateX(-105%);
@@ -58,20 +58,17 @@ body.nav-open { overflow: hidden; }
   .sidebar, .sidebar.is-open, .sidebar-backdrop { transition-duration: 0.01ms; }
 }
 
-/* Logo kaydırmada üstte sabit kalır (sticky). Frosted arka plan + alt çizgi,
-   altından kayan menü öğelerini kapatır. Üst padding sidebar'dan buraya taşındı. */
+/* Logo menünün sabit başlığıdır: kaymaz, üstüne öğe binmez (eskiden sticky + bulanık katmandı; menü kayarken öğeler
+   onun arkasından geçip üst üste biniyordu). Alt çizgi çekmecenin iki kenarına kadar uzanır. */
 .logo {
   display: flex;
   align-items: center;
   gap: 10px;
-  position: sticky;
-  top: 0;
-  z-index: 5;
-  padding: calc(14px + env(safe-area-inset-top)) 4px 12px 10px;
-  margin-bottom: 10px;
-  background: inherit;
-  backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
-  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+  flex-shrink: 0;
+  margin: 0 -12px;
+  /* Üst çubukla aynı yükseklik (56px + çentik payı): çekmece açılınca iki alt çizgi aynı hizada, tek bant */
+  min-height: calc(56px + env(safe-area-inset-top));
+  padding: env(safe-area-inset-top) 16px 0 22px;
   border-bottom: 1px solid var(--panel-border);
 }
 
@@ -120,6 +117,12 @@ body.nav-open { overflow: hidden; }
   display: flex;
   flex-direction: column;
   gap: 2px;
+  /* Menünün tek kayan alanı */
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding-top: 10px;
 }
 
 .nav-group {
@@ -189,6 +192,7 @@ body.nav-open { overflow: hidden; }
 
 .sidebar-footer {
   margin-top: auto;
+  flex-shrink: 0;
   padding: 12px 10px 0;
 }
 
@@ -473,38 +477,60 @@ body.nav-open { overflow: hidden; }
   .user-profile { display: flex; }
 }
 
-/* Masaüstü: menü solda sabit, içerik kendi alanında kayar (önceki düzen) */
+/* Masaüstü: kenar çubuğu + üst çubuk + logo TEK PARÇA — ekranın sol ve üst kenarına oturan L biçimli tek yüzey.
+   Logo sol üst köşede sabit (üst çubukla aynı yükseklikte), yalnız menü listesi kayar; içerik kalan alanda kayar.
+   Eskiden kenar çubuğu ve üst çubuk aralarında boşluk olan iki ayrı yuvarlak karttı; logo bulanık yapışkan katmandı. */
 @media (min-width: 1024px) {
   .app-container {
     flex-direction: row;
     height: 100vh;
     min-height: 0;
-    padding: 14px;
-    gap: 14px;
+    padding: 0;
+    gap: 0;
+    max-width: none;
   }
+  .sidebar, .topbar {
+    border: none;
+    border-radius: 0;
+    box-shadow: none;
+    background: var(--panel-bg);
+  }
+  /* Cam parlaklık çizgisi iki parçada ayrı ayrı çizilip birleşim yerinde çift görünmesin */
+  .sidebar::before, .topbar::before { display: none; }
   .sidebar {
     position: relative;
     inset: auto;
     z-index: auto;
     width: 230px;
     flex-shrink: 0;
-    padding: 0 12px 20px;
-    border-radius: var(--radius-lg);
-    background: var(--panel-bg);
+    padding: 0;
     transform: none;
     visibility: visible;
     transition: none;
   }
+  /* Dikey ayraç yalnız logo satırının altından başlar: logo hücresi ile üst çubuk arasında çizgi yok (tek bant) */
+  .sidebar::after {
+    content: '';
+    position: absolute;
+    top: 56px;
+    bottom: 0;
+    right: 0;
+    width: 1px;
+    background: var(--panel-border);
+    pointer-events: none;
+  }
   .sidebar-backdrop, .sidebar-close, .topbar-menu, .topbar-page { display: none; }
   body.nav-open { overflow: visible; }
-  .logo { padding: 18px 10px 14px; margin-bottom: 14px; }
-  .logo-lockup { height: 32px; }
+  .logo { height: 56px; margin: 0; padding: 0 18px; }
+  .logo-lockup { height: 30px; }
+  .nav-links { padding: 10px 12px; }
   .nav-group { padding: 12px 10px 4px; }
   .nav-item { --nav-pad-x: 10px; min-height: 0; padding: 9px var(--nav-pad-x); gap: 9px; font-size: 13px; }
   .nav-item-sub { font-size: 12.5px; }
-  .sidebar-footer { padding: 12px 10px; }
+  .sidebar-footer { margin-top: 0; padding: 12px 22px 14px; border-top: 1px solid var(--panel-border); }
 
-  .main-content { gap: 14px; }
+  .main-content { gap: 0; }
+  /* Üst çubuk logo hücresinin devamı: aynı yükseklik, aynı yüzey, aynı alt çizgi */
   .topbar {
     position: relative;
     top: auto;
@@ -512,15 +538,17 @@ body.nav-open { overflow: hidden; }
     height: 56px;
     min-height: 0;
     padding: 0 20px;
-    border-top: 1px solid var(--panel-border);
-    border-radius: var(--radius-lg);
+    border-bottom: 1px solid var(--panel-border);
   }
   .topbar .icon-btn { width: 36px; height: 36px; }
   .status-indicator { font-size: 13px; gap: 10px; }
   .topbar-actions { gap: 10px; }
   .topbar-clock { display: flex; }
 
-  .dashboard-content { overflow-y: auto; padding-right: 4px; }
+  .main-content > .panel-auth-banner { margin: 14px 14px 0; }
+  .dashboard-content { flex: 1; min-height: 0; overflow-y: auto; padding: 14px; }
+  /* Kabuk artık ekranın tamamını kaplıyor; geniş ekranda içerik eskisi gibi ~1360px'te sınırlanır ve ortalanır */
+  .dashboard-content > * { max-width: 1360px; margin-inline: auto; }
   .panel-row { grid-template-columns: 1fr 1fr; gap: 14px; }
   .page-stack { gap: 14px; }
   .widget-large { padding: 24px; }
