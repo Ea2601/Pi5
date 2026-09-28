@@ -130,6 +130,9 @@ if command -v unbound &>/dev/null; then
 else
   warn "Unbound kuruluyor..."
   apt install -y -qq unbound
+  # Pi-hole'un resmî Unbound rehberindeki yapılandırma (docs.pi-hole.net/guides/dns/unbound). use-caps-for-id: no — rehber:
+  # büyük/küçük harf karıştırma zaman zaman DNSSEC sorunlarına yol açıyor. Önbellek/gizleme ayarları paneldedir
+  # (Unbound DNS → Ayarlar; /etc/unbound/unbound.conf.d/klyrix-panel.conf).
   cat > /etc/unbound/unbound.conf.d/pi5-unbound.conf << 'UBEOF'
 server:
     verbosity: 0
@@ -142,12 +145,10 @@ server:
     prefer-ip6: no
     harden-glue: yes
     harden-dnssec-stripped: yes
-    harden-additional-queries: yes
     aggressive-nsec: yes
-    use-caps-for-id: yes
+    use-caps-for-id: no
     hide-identity: yes
     hide-version: yes
-    auto-trust-anchor-file: "/var/lib/unbound/root.key"
     edns-buffer-size: 1232
     prefetch: yes
     num-threads: 1
@@ -157,6 +158,18 @@ server:
     private-address: 172.16.0.0/12
     private-address: 10.0.0.0/8
 UBEOF
+  # Debian paketi güven çapasını kendi dosyasında tanımlar; ikinci kez yazmak Unbound'u başlatmaz ("trust anchor presented
+  # twice"). Yalnız o dosya yoksa eklenir.
+  if [ ! -f /etc/unbound/unbound.conf.d/root-auto-trust-anchor-file.conf ]; then
+    echo '    auto-trust-anchor-file: "/var/lib/unbound/root.key"' >> /etc/unbound/unbound.conf.d/pi5-unbound.conf
+  fi
+  # Güven çapası (root.key) normalde Unbound'un ilk başlatılışında Debian yardımcısıyla oluşur (unbound.service
+  # ExecStartPre); denetimden önce aynı yardımcıyla oluşturulur (dns-root-data paketinden kopyalar).
+  [ -x /usr/libexec/unbound-helper ] && /usr/libexec/unbound-helper root_trust_anchor_update || true
+  if ! unbound-checkconf >/dev/null 2>&1; then
+    unbound-checkconf || true
+    err "Unbound yapılandırması geçersiz (yukarıdaki hata) — /etc/unbound/unbound.conf.d/pi5-unbound.conf düzeltilmeli"
+  fi
   systemctl enable unbound
   systemctl restart unbound
   log "Unbound kuruldu ve aktif (port 5335)"

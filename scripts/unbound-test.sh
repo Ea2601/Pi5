@@ -73,8 +73,10 @@ h "6. DNSSEC doğrulaması (sahte/değiştirilmiş yanıtlara karşı koruma)"
 R=$(q isc.org A +dnssec); FL=$(echo "$R" | fl)
 echo "$FL" | grep -qw ad && ok "imzalı alan (isc.org) doğrulandı: ad bayrağı var" \
   || no "isc.org yanıtında 'ad' (doğrulandı) bayrağı yok — DNSSEC doğrulaması çalışmıyor (durum $(echo "$R" | st), bayraklar: $FL)"
-# Bozuk imzada Unbound reddetmeden önce diğer yetkili sunucuları da dener (>3 sn sürebilir) → uzun süre.
+# Bozuk imzada Unbound reddetmeden önce alanın bütün yetkili sunucularını dener: önbellek boşken (Unbound yeni başlamışsa)
+# ilk ret 15 sn'yi aşabilir, ikinci sorgu önbellekteki retle hemen gelir → yanıt yoksa bir kez daha sorulur.
 S=$(dig +time=12 +tries=1 @"$U" -p "$P" dnssec-failed.org A 2>&1 | st)
+[ -z "$S" ] && S=$(dig +time=12 +tries=1 @"$U" -p "$P" dnssec-failed.org A 2>&1 | st)
 [ "$S" = SERVFAIL ] && ok "bozuk imzalı alan (dnssec-failed.org) reddedildi: SERVFAIL" \
   || no "bozuk imzalı alan reddedilmedi (durum: ${S:-yanıt yok}) — sahte yanıtlar kabul ediliyor"
 S=$(q dnssec-failed.org A +cd | st)
@@ -118,6 +120,7 @@ for s in 127.0.0.1 $LANIP; do
   [ "$S" = NOERROR ] && ok "Pi-hole ($s:53) üzerinden çözüm çalışıyor ($(echo "$R" | qt) ms)" || no "Pi-hole ($s:53) çözemedi (${S:-yanıt yok})"
 done
 S=$(dig +time=12 +tries=1 @127.0.0.1 dnssec-failed.org A 2>&1 | st)
+[ -z "$S" ] && S=$(dig +time=12 +tries=1 @127.0.0.1 dnssec-failed.org A 2>&1 | st)
 [ "$S" = SERVFAIL ] && ok "DNSSEC koruması istemcilere de ulaşıyor (Pi-hole üzerinden bozuk alan: SERVFAIL)" \
   || uy "Pi-hole üzerinden bozuk alan: ${S:-yanıt yok} (beklenen SERVFAIL)"
 

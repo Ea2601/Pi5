@@ -29,6 +29,7 @@ import { validateSchedule, validateCommand, syncCronJobs, readJobStatuses, readS
 import { validateListValue, normalizeListValue, syncPiholeLists, lastListSync, externalPiholeEntries } from './piholeLists';
 import { applyZapret, zapretStatus, startBlockcheck, blockcheckRunning, zapretInstalled, cleanDpiDomain } from './zapret';
 import type { ZapretApplyResult } from './zapret';
+import { unboundStatus, applyUnboundSettings, validateUnboundSettings } from './unbound';
 import {
   shq, sedEscape, isValidMac, isValidDomain, isValidTimezone,
   isValidHexColor, normalizeAnimation, sanitizeName,
@@ -3133,62 +3134,26 @@ app.get('/api/fail2ban/status', async (_req, res) => {
   }
 });
 
-// ─── Unbound Status ───
+// ─── Unbound ───
+// Gerçek durum ve ayarlar (unbound.ts): etkin yapılandırma unbound-checkconf'tan, sayaçlar unbound-control'den okunur.
 app.get('/api/unbound/status', async (_req, res) => {
   try {
-    if (!isLinux) return res.json({ stats: null, security: [] });
-    const exec = require('util').promisify(require('child_process').exec);
-
-    // Get unbound stats
-    let stats: any = {};
-    try {
-      const { stdout } = await exec('unbound-control stats_noreset 2>/dev/null', { timeout: 5000 });
-      const lines = stdout.trim().split('\n');
-      for (const line of lines) {
-        const [key, val] = line.split('=');
-        if (key && val) stats[key.trim()] = val.trim();
-      }
-    } catch { /* unbound-control may not be available */ }
-
-    // Get listening address from config
-    let listenAddr = '127.0.0.1:5335';
-    try {
-      const { stdout } = await exec("grep -E '^\\s*(interface|port):' /etc/unbound/unbound.conf 2>/dev/null | head -4", { timeout: 3000 });
-      const ifMatch = stdout.match(/interface:\s*(\S+)/);
-      const portMatch = stdout.match(/port:\s*(\d+)/);
-      if (ifMatch) listenAddr = ifMatch[1] + ':' + (portMatch ? portMatch[1] : '5335');
-    } catch { /* */ }
-
-    // Check security features from config
-    const security: { label: string; status: boolean }[] = [];
-    try {
-      const { stdout: conf } = await exec('cat /etc/unbound/unbound.conf /etc/unbound/unbound.conf.d/*.conf 2>/dev/null', { timeout: 3000 });
-      security.push({ label: 'DNSSEC Doğrulama', status: /auto-trust-anchor-file|trust-anchor-file/.test(conf) });
-      security.push({ label: 'Kimlik Gizleme', status: /hide-identity:\s*yes/.test(conf) });
-      security.push({ label: 'Sürüm Gizleme', status: /hide-version:\s*yes/.test(conf) });
-      security.push({ label: 'Glue Sıkılaştırma', status: /harden-glue:\s*yes/.test(conf) });
-      security.push({ label: 'Caps-for-ID (0x20)', status: /use-caps-for-id:\s*yes/.test(conf) });
-      security.push({ label: 'Ek Kayıt Temizleme', status: /harden-additional-queries:\s*yes|aggressive-nsec:\s*yes/.test(conf) });
-    } catch {
-      // Default: unknown
-      ['DNSSEC Doğrulama', 'Kimlik Gizleme', 'Sürüm Gizleme', 'Glue Sıkılaştırma', 'Caps-for-ID (0x20)', 'Ek Kayıt Temizleme']
-        .forEach(label => security.push({ label, status: false }));
-    }
-
-    // Thread count and cache
-    const threads = stats['num.threads'] || '1';
-    const cacheCount = stats['msg.cache.count'] || '0';
-    const cacheMax = stats['msg.cache.max_collisions'] || '';
-
-    res.json({
-      listenAddr,
-      threads,
-      cacheEntries: cacheCount,
-      totalQueries: stats['total.num.queries'] || '0',
-      security,
-    });
+    res.json(await unboundStatus());
   } catch (e: any) {
-    res.json({ stats: null, security: [], error: e.message });
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Ayarları Unbound'a uygular: doğrular, yeniden başlatır, yanıt vermezse eski ayarlara döner (DNS ~1-2 sn kesilir).
+app.post('/api/unbound/settings', async (req, res) => {
+  try {
+    const s = validateUnboundSettings(req.body?.settings);
+    if (typeof s === 'string') return res.status(400).json({ error: s });
+    const r = await applyUnboundSettings(s);
+    if (!r.ok) return res.status(500).json({ error: r.error || 'Uygulanamadı', result: r });
+    res.json({ success: true, result: r });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
   }
 });
 

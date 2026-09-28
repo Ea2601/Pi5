@@ -238,19 +238,9 @@ export const initDb = () => {
     // Ensure mode select has options (for existing DBs)
     db.run(`UPDATE service_config SET options = 'nfqws,tpws,singbox' WHERE service = 'zapret' AND key = 'mode'`);
 
-    // Unbound config
-    const unboundConfigs: [string, string, string, string, string, string, string][] = [
-      ['unbound', 'server', 'port', '5335', 'Port', 'Dinleme portu', 'number'],
-      ['unbound', 'server', 'interface', '127.0.0.1', 'Arayuz', 'Dinleme adresi', 'text'],
-      ['unbound', 'performance', 'num_threads', '2', 'Thread Sayisi', 'Islemci thread sayisi', 'number'],
-      ['unbound', 'performance', 'cache_min_ttl', '3600', 'Min TTL (sn)', 'Minimum cache TTL', 'number'],
-      ['unbound', 'performance', 'prefetch', 'true', 'Prefetch', 'Suresi dolan kayitlari onceden yenile', 'boolean'],
-      ['unbound', 'security', 'hide_identity', 'true', 'Kimlik Gizle', 'Sunucu kimligini gizle', 'boolean'],
-      ['unbound', 'security', 'harden_dnssec_stripped', 'true', 'DNSSEC Koruma', 'DNSSEC cikarma saldirilarina karsi', 'boolean'],
-    ];
-    unboundConfigs.forEach(([svc, cat, key, val, label, desc, type]) => {
-      db.run(`INSERT OR IGNORE INTO service_config VALUES (?, ?, ?, ?, ?, ?, ?, '')`, [svc, cat, key, val, label, desc, type]);
-    });
+    // Unbound ayarları artık Unbound'a gerçekten uygulanır (unbound.ts; app_settings.unbound_settings). Eski satırlar yalnız
+    // veritabanındaydı ve gerçeği yansıtmıyordu (Thread 2 / Min TTL 3600 görünürken Pi'de 1 / 0) → kaldırılır.
+    db.run(`DELETE FROM service_config WHERE service = 'unbound'`);
 
     // WireGuard config
     const wgConfigs: [string, string, string, string, string, string, string][] = [
