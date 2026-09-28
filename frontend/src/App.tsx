@@ -31,6 +31,7 @@ import { KioskSettingsPanel } from './components/KioskSettingsPanel';
 import { PanelAuthBanner } from './components/PanelAuthBanner';
 import { LoginScreen } from './components/LoginScreen';
 import { NetworkBackdrop } from './components/NetworkBackdrop';
+import { LiveVersionNotice } from './components/LiveVersionNotice';
 import { AUTH_REQUIRED_EVENT, fetchAuthStatus, logout, type AuthStatus } from './auth';
 import type { TabId } from './types';
 import { tabFromHash, tabLabel, initialTab, rememberTab } from './nav';
@@ -195,6 +196,7 @@ function App() {
           </div>
         </main>
       </div>
+      <LiveVersionNotice />
       <Toaster />
     </ErrorBoundary>
   );

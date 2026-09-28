@@ -3088,3 +3088,28 @@ button.user-profile { cursor: pointer; font-family: var(--font-family); transiti
 .vpn-card-header { display: flex; align-items: center; justify-content: space-between; }
 .vpn-card-location { display: flex; align-items: center; gap: 6px; font-size: 13px; }
 .vpn-card-ip { font-family: var(--font-mono); font-size: 12px; color: var(--text-muted); }
+
+/* ═══════════════════ YENİ SÜRÜM ÇUBUĞU (LiveVersionNotice) ═══════════════════
+   Pi güncellenince görünür sekmede çıkar (kendiliğinden yenilemez): alt ortada, bildirimlerin (sağ üst) altında kalmaz. */
+.live-version-bar {
+  position: fixed;
+  left: 16px;
+  right: 16px;
+  bottom: calc(16px + env(safe-area-inset-bottom));
+  z-index: 3900;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px 10px 14px;
+  font-size: 13px;
+  color: var(--text-primary);
+  animation: live-version-in 0.2s ease-out;
+}
+.live-version-bar > svg { flex-shrink: 0; color: var(--accent-color); }
+.live-version-bar > span { flex: 1; min-width: 0; }
+.live-version-bar > button { flex-shrink: 0; }
+@media (min-width: 640px) {
+  .live-version-bar { left: 50%; right: auto; transform: translateX(-50%); width: min(560px, calc(100vw - 32px)); }
+}
+@keyframes live-version-in { from { opacity: 0; translate: 0 8px; } to { opacity: 1; translate: 0 0; } }
+@media (prefers-reduced-motion: reduce) { .live-version-bar { animation: none; } }

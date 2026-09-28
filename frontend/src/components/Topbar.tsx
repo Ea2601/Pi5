@@ -7,6 +7,9 @@ import { setTheme, getCurrentTheme, type Theme } from '../theme';
 import { toast } from '../toast';
 import { startSystemUpdate } from '../systemUpdate';
 
+// Son bildirilen güncellemenin (en yeni commit) kısaltması — aynı güncelleme için bildirim bir kez çıksın
+const UPDATE_SEEN_KEY = 'updateNotifiedHash';
+
 interface UpdateInfo {
   available: boolean;
   commits: { hash: string; message: string; time: string }[];
@@ -59,19 +62,33 @@ export function Topbar({ onShowAlerts, onMenu, menuOpen = false, title = '', onL
     return () => clearInterval(interval);
   }, []);
 
-  // Check for updates every hour (and on mount)
+  // Güncelleme denetimi: açılışta, dakikada bir ve sekmeye dönülünce (eskiden saatte bir — yeni güncelleme ancak sayfa
+  // yenilenince görünüyordu). Backend GitHub'a en çok 60 sn'de bir sorar. Yeni bir güncelleme ilk görüldüğünde bir kez
+  // bildirim çıkar (son bildirilen commit tarayıcıda hatırlanır).
   useEffect(() => {
     const check = () => {
       fetch('/api/system/update-check')
         .then(r => (r.ok ? r.json() : null))
         // Yalnız beklenen biçimdeki yanıt kaydedilir: JSON hata gövdesi (ör. hız sınırının 429'u) güncelleme penceresinin
         // `commits.map`'ini — pencere kapalıyken de hesaplanır — ve onunla bütün paneli çökertmesin.
-        .then(d => { if (d && Array.isArray(d.commits)) setUpdateInfo(d); })
+        .then(d => {
+          if (!d || !Array.isArray(d.commits)) return;
+          setUpdateInfo(d);
+          const top = d.available && d.commits[0]?.hash;
+          let seen: string | null = null;
+          try { seen = localStorage.getItem(UPDATE_SEEN_KEY); } catch { /* depolama yok */ }
+          if (top && top !== seen) {
+            toast.info(`Yeni güncelleme hazır: ${d.commitCount} değişiklik — üst çubuktaki zile dokunun`, { duration: 8000 });
+            try { localStorage.setItem(UPDATE_SEEN_KEY, top); } catch { /* depolama yok */ }
+          }
+        })
         .catch(() => {});
     };
     check();
-    const interval = setInterval(check, 3600000); // 1 hour
-    return () => clearInterval(interval);
+    const interval = setInterval(check, 60000);
+    const onVisible = () => { if (document.visibilityState === 'visible') check(); };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => { clearInterval(interval); document.removeEventListener('visibilitychange', onVisible); };
   }, []);
 
   const handleUpdate = async () => {

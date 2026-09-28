@@ -3657,11 +3657,23 @@ app.get('/api/system/version', async (_req, res) => {
   }
 });
 
+// Panel dakikada bir sorar (eskiden saatte bir: yeni güncelleme ancak sayfa yenilenince görünüyordu). GitHub'a yapılan
+// git fetch en çok 60 sn'de bir çalışır; aynı anda gelen istekler tek denetimi paylaşır (açık sekme sayısı yükü artırmaz).
+let updateCheckCache: { at: number; data: unknown } | null = null;
+let updateCheckRun: Promise<unknown> | null = null;
 app.get('/api/system/update-check', async (_req, res) => {
+  if (!isLinux) return res.json({ available: false, commits: [], currentVersion: 'v2.0-dev' });
+  if (updateCheckCache && Date.now() - updateCheckCache.at < 60000) return res.json(updateCheckCache.data);
+  if (!updateCheckRun) {
+    updateCheckRun = computeUpdateCheck()
+      .then(data => { updateCheckCache = { at: Date.now(), data }; return data; })
+      .finally(() => { updateCheckRun = null; });
+  }
+  res.json(await updateCheckRun);
+});
+
+async function computeUpdateCheck(): Promise<unknown> {
   try {
-    if (!isLinux) {
-      return res.json({ available: false, commits: [], currentVersion: 'v2.0-dev' });
-    }
     const exec = require('util').promisify(require('child_process').exec);
     // Servis ortamında HOME yok → ~/.gitconfig'teki safe.directory görünmez ("dubious ownership"); her çağrıda
     // --global --add yeni kopya ekliyordu. Güvenli dizin komut satırından verilir (git ≥ 2.36).
@@ -3688,16 +3700,16 @@ app.get('/api/system/update-check', async (_req, res) => {
       ).catch(() => ({ stdout: 'unknown' }));
       currentVersion = `v2.0-${currentHash.trim()}`;
     }
-    res.json({
+    return {
       available: commits.length > 0,
       commits,
       currentVersion,
       commitCount: commits.length,
-    });
+    };
   } catch (e: any) {
-    res.json({ available: false, commits: [], currentVersion: 'v2.0', error: e.message });
+    return { available: false, commits: [], currentVersion: 'v2.0', error: e.message };
   }
-});
+}
 
 // ─── Quick System Update ───
 // İş systemd-run ile backend'in DIŞINDA koşar (update.ts → scripts/update-job.sh): istek hemen döner, panel ilerlemeyi
