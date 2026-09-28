@@ -31,7 +31,7 @@ const CIDR_ENTRY = /^\d{1,3}(\.\d{1,3}){3}(\/\d{1,2})?$/;
 const ASN_NAMES: Record<string, string> = {
   '32934': 'Meta',
   '62041': 'Telegram', '59930': 'Telegram', '62014': 'Telegram', '211157': 'Telegram', '44907': 'Telegram',
-  '32590': 'Valve', '30103': 'Zoom',
+  '32590': 'Valve', '30103': 'Zoom', '714': 'Apple',
 };
 function splitRuleEntries(list: string): { domains: string[]; ranges: string[] } {
   const entries = list.split(',').map(s => s.trim()).filter(Boolean);

@@ -113,7 +113,12 @@ export const initDb = () => {
       [14, 'Google', 'web', 'direct', '*.google.com,*.googleapis.com,*.gstatic.com'],
       [15, 'GitHub', 'web', 'direct', '*.github.com,*.githubusercontent.com,*.githubassets.com'],
       [16, 'Siri/iCloud', 'apple', 'direct', '*.apple.com,*.icloud.com,*.mzstatic.com,*.apple-dns.net'],
-      [17, 'FaceTime', 'apple', 'direct', '*.facetime.apple.com,*.push.apple.com'],
+      // @asn:714!443 = Apple'ın IP aralıkları, 443 hariç: FaceTime/iMessage aramaları Apple'ın aktarma sunucularına DNS'siz,
+      // IP ile gider (facetime/push/identity sunucuları AS714, canlı ölçüm 2026-09-29). 443 hariç: aynı ağdaki Apple web
+      // trafiği yerel kalır. Kullanıcı kararı: aynı ağdaki iCloud Mail (993/587) de bu kuralın çıkışını kullanır. Apple'ın
+      // içerik ağı (AS6185: güncelleme kataloğu, saat sunucusu) ipRanges.ts'te çıkarılır; büyük güncelleme indirmeleri
+      // zaten Fastly/du önbelleğinden gelir.
+      [17, 'FaceTime', 'apple', 'direct', '*.facetime.apple.com,*.push.apple.com,@asn:714!443'],
       // @asn:30103 = Zoom'un kendi veri merkezleri: toplantı ses/görüntüsü sunucularına DNS'siz, IP ile gider. Yalnız Zoom'a
       // ait olduğundan tüm trafik. Zoom'un resmî listesindeki bulut (AWS vb.) aralıkları paylaşımlı olduğundan eklenmez.
       [18, 'Zoom', 'voip', 'direct', '*.zoom.us,*.zoom.com,*.zoomgov.com,@asn:30103'],
@@ -142,6 +147,9 @@ export const initDb = () => {
       WHERE id = 11 AND app_name = 'Steam' AND COALESCE(domains, '') != '' AND instr(domains, '@asn:32590') = 0`);
     db.run(`UPDATE traffic_routing SET domains = domains || ',@asn:30103'
       WHERE id = 18 AND app_name = 'Zoom' AND COALESCE(domains, '') != '' AND instr(domains, '@asn:30103') = 0`);
+    // v2.24.23: FaceTime aramaları — Apple aralıkları (443 hariç) yoksa sona eklenir.
+    db.run(`UPDATE traffic_routing SET domains = domains || ',@asn:714!443'
+      WHERE id = 17 AND app_name = 'FaceTime' AND COALESCE(domains, '') != '' AND instr(domains, '@asn:714!443') = 0`);
 
     // Domain-based routing: route specific domains through specific profiles
     db.run(`CREATE TABLE IF NOT EXISTS domain_routing (

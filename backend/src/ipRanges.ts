@@ -45,6 +45,12 @@ const SEED: Record<number, string[]> = {
   44907: ['91.108.20.0/22'],
 };
 
+// Bir AS'nin ilanları başka bir AS'nin ağını da kapsayabilir; o AS'nin aralıkları sonuçtan çıkarılır. Apple AS714,
+// 17.0.0.0/8'in tamamını (/8, /9 ve özel öneklerle) ilan eder; içindeki AS6185 Apple'ın içerik ağıdır (yazılım güncellemesi
+// kataloğu mesu.apple.com, appldnld.apple.com, time.apple.com — canlı ölçüm 2026-09-29). FaceTime kuralı yalnız arama ve
+// posta sunucularını istediği için (kullanıcı kararı) içerik ağı yerel kalır.
+const SUBTRACT: Record<number, number[]> = { 714: [6185] };
+
 const CACHE_DIR = '/opt/pi5-gateway/core/asn';
 const MAX_AGE_MS = 24 * 3600 * 1000;
 const RETRY_AFTER_MS = 3600 * 1000; // başarısız çekimden sonra 1 sa yeniden deneme yok (her kural uygulamasını bekletmesin)
@@ -80,9 +86,42 @@ async function fetchRipe(asn: number): Promise<string[] | null> {
   } catch { return null; }
 }
 
-// Güncel liste: önbellek tazeyse o; değilse RIPE'den çekilir (başarısızlıkta 1 sa bekleme), olmazsa bayat önbellek,
-// o da yoksa anlık görüntü. force: tazelik denetimini atla (günlük yenileme).
+// CIDR farkı: `nets` aralıklarından `minus` aralıklarıyla örtüşen kısımlar çıkarılır (blok ikiye bölünerek; sonuç yine
+// geçerli CIDR listesi). Girdiler normalizeCidr biçiminde.
+export function subtractCidrs(nets: string[], minus: string[]): string[] {
+  const parse = (c: string): [number, number] => {
+    const [ip, p] = c.split('/');
+    return [ip.split('.').reduce((a, o) => a * 256 + Number(o), 0), Number(p)];
+  };
+  const fmt = (n: number, len: number) => [24, 16, 8, 0].map(sh => Math.floor(n / 2 ** sh) % 256).join('.') + `/${len}`;
+  const ex = minus.map(parse);
+  const cut = (net: number, len: number, hits: [number, number][]): string[] => {
+    const size = 2 ** (32 - len);
+    const over = hits.filter(([en, el]) => en < net + size && net < en + 2 ** (32 - el));
+    if (!over.length) return [fmt(net, len)];
+    if (over.some(([, el]) => el <= len)) return []; // hizalı bloklarda örtüşme + daha geniş önek = tamamen kapsanır
+    return [...cut(net, len + 1, over), ...cut(net + size / 2, len + 1, over)];
+  };
+  return [...new Set(nets.flatMap(c => { const [n, l] = parse(c); return cut(n, l, ex); }))].sort();
+}
+
+// Güncel liste (SUBTRACT uygulanmış): bkz. getRawAsnPrefixes.
 export async function getAsnPrefixes(asn: number, opts: { force?: boolean } = {}): Promise<AsnPrefixes> {
+  const r = await getRawAsnPrefixes(asn, opts);
+  const subs = SUBTRACT[asn];
+  if (!subs || !r.prefixes.length) return r;
+  const minus: string[] = [];
+  for (const s of subs) {
+    const x = await getRawAsnPrefixes(s, opts);
+    if (!x.prefixes.length) console.warn(`[routing] AS${asn} aralıklarından çıkarılacak AS${s} alınamadı — çıkarılmadan kullanılıyor`);
+    minus.push(...x.prefixes);
+  }
+  return { ...r, prefixes: subtractCidrs(r.prefixes, minus) };
+}
+
+// Ham liste: önbellek tazeyse o; değilse RIPE'den çekilir (başarısızlıkta 1 sa bekleme), olmazsa bayat önbellek,
+// o da yoksa anlık görüntü. force: tazelik denetimini atla (günlük yenileme).
+async function getRawAsnPrefixes(asn: number, opts: { force?: boolean } = {}): Promise<AsnPrefixes> {
   const cached = readCache(asn);
   const fresh = cached && Date.now() - cached.fetched_at < MAX_AGE_MS;
   if (cached && fresh && !opts.force) return { asn, prefixes: cached.prefixes, source: 'cache', fetchedAt: cached.fetched_at };
@@ -111,13 +150,16 @@ export async function getAsnPrefixes(asn: number, opts: { force?: boolean } = {}
 }
 
 // Günlük yenileme: önbellek 24 saatten eskiyse (ya da yoksa) RIPE'den çekilir. Yeni liste öncekinden farklıysa true
-// (çağıran kuralları yeniden uygular; ilk uygulama anlık görüntüyle yapılmış olabilir).
+// (çağıran kuralları yeniden uygular; ilk uygulama anlık görüntüyle yapılmış olabilir). Çıkarılan AS'ler (SUBTRACT) de yenilenir.
 export async function refreshAsnIfStale(asn: number): Promise<boolean> {
-  const before = readCache(asn);
-  if (before && Date.now() - before.fetched_at < MAX_AGE_MS) return false;
-  const r = await getAsnPrefixes(asn);
-  if (r.source !== 'ripe') return false;
-  return !before || before.prefixes.join(',') !== r.prefixes.join(',');
+  let changed = false;
+  for (const a of [asn, ...(SUBTRACT[asn] || [])]) {
+    const before = readCache(a);
+    if (before && Date.now() - before.fetched_at < MAX_AGE_MS) continue;
+    const r = await getRawAsnPrefixes(a);
+    if (r.source === 'ripe' && (!before || before.prefixes.join(',') !== r.prefixes.join(','))) changed = true;
+  }
+  return changed;
 }
 
 // Bir alan adı listesi girdisi IP aralığı biçiminde mi? (ASN belirteci ya da IPv4/CIDR.)
