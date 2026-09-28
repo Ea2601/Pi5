@@ -1,8 +1,9 @@
-import { Bell, User, ShieldCheck, ShieldAlert, Download, Loader2, Clock, Sun, Moon, Menu, LogOut } from 'lucide-react';
+import { User, ShieldCheck, ShieldAlert, Download, Loader2, Clock, Sun, Moon, Menu, LogOut } from 'lucide-react';
 import { useState, useEffect } from 'react';
 import type { HealthStatus } from '../types';
 import { useApi } from '../hooks/useApi';
 import { Modal, Badge } from './ui';
+import { NotificationBell } from './NotificationBell';
 import { setTheme, getCurrentTheme, type Theme } from '../theme';
 import { toast } from '../toast';
 import { startSystemUpdate } from '../systemUpdate';
@@ -78,7 +79,7 @@ export function Topbar({ onShowAlerts, onMenu, menuOpen = false, title = '', onL
           let seen: string | null = null;
           try { seen = localStorage.getItem(UPDATE_SEEN_KEY); } catch { /* depolama yok */ }
           if (top && top !== seen) {
-            toast.info(`Yeni güncelleme hazır: ${d.commitCount} değişiklik — üst çubuktaki zile dokunun`, { duration: 8000 });
+            toast.info(`Yeni güncelleme hazır: ${d.commitCount} değişiklik — üst çubuktaki zile dokunup en üstteki güncellemeyi seçin`, { duration: 8000 });
             try { localStorage.setItem(UPDATE_SEEN_KEY, top); } catch { /* depolama yok */ }
           }
         })
@@ -102,12 +103,8 @@ export function Topbar({ onShowAlerts, onMenu, menuOpen = false, title = '', onL
     setUpdatePhase('');
   };
 
-  // Unread alerts count
-  const { data: alertData } = useApi<{ count: number }>('/alerts/unread-count', { count: 0 }, 30000);
-
   const connected = data.lastCheckResult !== 'failed';
   const hasUpdate = updateInfo?.available ?? false;
-  const totalBadge = (hasUpdate ? updateInfo!.commitCount : 0) + alertData.count;
 
   return (
     <>
@@ -156,17 +153,12 @@ export function Topbar({ onShowAlerts, onMenu, menuOpen = false, title = '', onL
           >
             {theme === 'dark' ? <Sun size={18} /> : <Moon size={18} />}
           </button>
-          <button
-            className="icon-btn"
-            title="Bildirimler"
-            onClick={() => { if (hasUpdate) setShowUpdateModal(true); else onShowAlerts?.(); }}
-            style={{ position: 'relative' }}
-          >
-            <Bell size={18} />
-            {totalBadge > 0 && (
-              <span className="notification-badge">{totalBadge}</span>
-            )}
-          </button>
+          {/* Zil: son bildirimler açılır panelde; güncelleme varsa en üstte (güncelleme penceresini açar). */}
+          <NotificationBell
+            updateCount={hasUpdate ? updateInfo!.commitCount : 0}
+            onOpenUpdate={() => setShowUpdateModal(true)}
+            onShowAll={onShowAlerts}
+          />
           {onLogout ? (
             <button className="user-profile user-logout" onClick={onLogout} title="Çıkış yap">
               <User size={14} />

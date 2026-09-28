@@ -3242,3 +3242,57 @@ button.user-profile { cursor: pointer; font-family: var(--font-family); transiti
 .alert-message { font-size: 13px; line-height: 1.45; overflow-wrap: anywhere; }
 .alert-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; font-size: 11px; color: var(--text-muted); }
 .alert-row .btn-sm { flex-shrink: 0; }
+
+/* ═══════════════════ BİLDİRİM ZİLİ (açılır panel; konumu NotificationBell yazar) ═══════════════════ */
+/* Opak yüzey (açılır listelerle aynı): cam saydamlığında arkadaki sayfanın yazıları bildirimlerin arasından okunuyordu.
+   Katman: sayfa ve üst çubuğun (50) üstünde, pencerelerin (modal 1000) altında. */
+.glass-panel.notif-panel {
+  position: fixed; z-index: 900; display: flex; flex-direction: column; padding: 0; overflow: hidden;
+  background: var(--bg-surface); border-color: var(--panel-border-hover);
+  backdrop-filter: none; -webkit-backdrop-filter: none; box-shadow: 0 18px 48px rgba(0, 0, 0, 0.45);
+}
+:root.light-theme .glass-panel.notif-panel { box-shadow: 0 14px 36px rgba(15, 23, 42, 0.14); }
+.notif-panel:focus { outline: none; }
+.notif-head {
+  display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; padding: 12px 14px;
+  border-bottom: 1px solid var(--panel-border);
+}
+.notif-title { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.notif-title strong { font-size: 14px; }
+.notif-count { font-size: 11px; color: var(--text-muted); }
+.notif-list {
+  flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 6px;
+  display: flex; flex-direction: column; gap: 4px;
+}
+.notif-item {
+  display: flex; align-items: flex-start; gap: 10px; width: 100%; padding: 10px; border-radius: var(--radius-sm);
+  border: 1px solid transparent; background: rgba(255, 255, 255, 0.03); color: inherit; font: inherit; text-align: left;
+}
+button.notif-item { cursor: pointer; }
+.notif-item:hover { border-color: var(--panel-border); }
+.notif-read { opacity: 0.66; background: transparent; }
+.notif-icon { flex-shrink: 0; margin-top: 2px; color: var(--text-muted); }
+.notif-critical .notif-icon { color: var(--danger-color); }
+.notif-warning .notif-icon { color: var(--warning-color); }
+.notif-critical:not(.notif-read) { border-color: var(--danger-color); }
+.notif-warning:not(.notif-read) { border-color: var(--warning-color); }
+.notif-update { border-color: var(--accent-color); background: var(--accent-glow); }
+.notif-update .notif-icon { color: var(--accent-color); }
+.notif-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.notif-msg {
+  font-size: 13px; line-height: 1.4; overflow-wrap: anywhere;
+  display: -webkit-box; -webkit-line-clamp: 3; line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden;
+}
+.notif-meta { font-size: 11px; color: var(--text-muted); }
+.notif-ack { flex-shrink: 0; width: 34px; height: 34px; }
+.notif-empty { display: flex; justify-content: center; padding: 24px 12px; font-size: 13px; color: var(--text-muted); }
+.notif-foot {
+  display: flex; align-items: center; justify-content: center; gap: 4px; padding: 12px; border: none;
+  border-top: 1px solid var(--panel-border); background: none; color: var(--accent-color); font: inherit; font-size: 13px;
+  font-weight: 600; cursor: pointer;
+}
+.notif-foot:hover { background: var(--accent-glow); }
+@media (min-width: 640px) {
+  .glass-panel.notif-panel { width: 380px; }
+  .notif-ack { width: 28px; height: 28px; }
+}

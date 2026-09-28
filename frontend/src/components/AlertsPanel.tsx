@@ -1,45 +1,17 @@
 import { Bell, AlertTriangle, AlertCircle, Info, CheckCircle, Filter, CheckCheck, Loader2, MailOpen } from 'lucide-react';
 import { useApi, postApi, getApi } from '../hooks/useApi';
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useEffect } from 'react';
 import { Panel, Badge } from './ui';
 import { toast } from '../toast';
+import { type AlertItem, type AlertsPage, sourceLabel, parseAlertTime, dayLabel, severityMeta, notifyAlertsChanged, onAlertsChanged, markRead } from '../alerts';
 
 // Uyarılar + olay geçmişi (backend events.ts): sağlık denetiminin uyarıları (type=health) ve panelde yapılan işlemler
 // (type=event: güncelleme, Unbound/Zapret/Pi-hole ayarları, VPS, cihaz engeli, Cron hatası, servis, DHCP / ağ modu).
-// Bilgi olayları okunmuş gelir; okunmamış sayısı yalnız uyarı/kritik içindir. Kayıtlar 30 gün tutulur.
+// Bilgi olayları okunmuş gelir; okunmamış sayısı yalnız uyarı/kritik içindir. Kayıtlar 30 gün tutulur. Son kayıtlar
+// üst çubuktaki zilden de görülür (NotificationBell); okundu bilgisi ikisi arasında anında paylaşılır.
 type SeverityFilter = 'all' | 'critical' | 'warning' | 'info';
 
-interface AlertItem {
-  id: number;
-  type: string;
-  severity: 'critical' | 'warning' | 'info';
-  message: string;
-  created_at: string;
-  acknowledged: number | boolean;
-  source: string;
-}
-interface AlertsPage { alerts: AlertItem[]; hasMore?: boolean }
-
 const PAGE = 50;
-const SOURCE_LABEL: Record<string, string> = {
-  cpu: 'İşlemci', memory: 'Bellek', disk: 'Disk', dns: 'DNS', network: 'İnternet', dhcp: 'DHCP', 'dhcp-rogue': 'DHCP',
-  'dhcp-probe': 'DHCP', netmode: 'Ağ modu', 'netmode-ap': 'Ağ modu', service: 'Servis', update: 'Güncelleme',
-  unbound: 'Unbound', zapret: 'Zapret', pihole: 'Pi-hole', vps: 'VPS', device: 'Cihaz', cron: 'Cron',
-};
-const sourceLabel = (s: string) => SOURCE_LABEL[(s || '').split(':')[0]] || s || 'Sistem';
-const parseTime = (s: string) => new Date(s.replace(' ', 'T') + 'Z'); // SQLite CURRENT_TIMESTAMP = UTC
-function dayLabel(d: Date): string {
-  const start = (x: Date) => new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime();
-  const diff = Math.round((start(new Date()) - start(d)) / 86400000);
-  if (diff === 0) return 'Bugün';
-  if (diff === 1) return 'Dün';
-  return d.toLocaleDateString('tr-TR', { day: 'numeric', month: 'long', weekday: 'long' });
-}
-const SEVERITY: Record<string, { label: string; badge: 'error' | 'warning' | 'info'; icon: React.ReactNode }> = {
-  critical: { label: 'Kritik', badge: 'error', icon: <AlertCircle size={16} /> },
-  warning: { label: 'Uyarı', badge: 'warning', icon: <AlertTriangle size={16} /> },
-  info: { label: 'Bilgi', badge: 'info', icon: <Info size={16} /> },
-};
 
 export function AlertsPanel() {
   const [filter, setFilter] = useState<SeverityFilter>('all');
@@ -47,6 +19,7 @@ export function AlertsPanel() {
   const [rev, setRev] = useState(0); // "Tümünü okundu say" sonrası liste baştan yüklenir
   const [ackingAll, setAckingAll] = useState(false);
   const { data: unread, refetch: refetchUnread } = useApi<{ count: number }>('/alerts/unread-count', { count: 0 }, 15000);
+  useEffect(() => onAlertsChanged(() => { void refetchUnread(); }), [refetchUnread]);
   const query = `/alerts?limit=${PAGE}${filter !== 'all' ? `&severity=${filter}` : ''}${unreadOnly ? '&unread=1' : ''}`;
 
   const handleAckAll = async () => {
@@ -59,7 +32,7 @@ export function AlertsPanel() {
     } finally {
       setAckingAll(false);
       setRev(r => r + 1);
-      await refetchUnread();
+      notifyAlertsChanged('all'); // zil de yenilensin
     }
   };
 
@@ -96,19 +69,24 @@ export function AlertsPanel() {
       </Panel>
 
       <div style={{ marginTop: 14 }}>
-        <AlertList key={`${query}#${rev}`} query={query} unreadOnly={unreadOnly} onChanged={refetchUnread} />
+        <AlertList key={`${query}#${rev}`} query={query} unreadOnly={unreadOnly} />
       </div>
     </div>
   );
 }
 
 // Süzgeç değişince (key) baştan kurulur: ilk sayfa 10 sn'de bir yenilenir, "Daha fazla göster" daha eskileri ekler.
-function AlertList({ query, unreadOnly, onChanged }: { query: string; unreadOnly: boolean; onChanged: () => Promise<void> }) {
+function AlertList({ query, unreadOnly }: { query: string; unreadOnly: boolean }) {
   const { data, refetch } = useApi<AlertsPage>(query, { alerts: [] }, 10000);
   const [older, setOlder] = useState<AlertItem[]>([]);
   const [olderHasMore, setOlderHasMore] = useState<boolean | null>(null);
   const [loadingMore, setLoadingMore] = useState(false);
   const [acking, setAcking] = useState<number | null>(null);
+  // Zilden (ya da bu sayfadan) okundu yapılınca: ilk sayfa yenilenir, eklenmiş eski kayıtlar yerinde işaretlenir.
+  useEffect(() => onAlertsChanged(read => {
+    setOlder(prev => markRead(prev, read));
+    void refetch();
+  }), [refetch]);
 
   const items = useMemo(() => {
     const seen = new Set<number>();
@@ -135,8 +113,7 @@ function AlertList({ query, unreadOnly, onChanged }: { query: string; unreadOnly
     setAcking(id);
     try {
       await postApi(`/alerts/acknowledge/${id}`, {});
-      setOlder(prev => prev.map(a => (a.id === id ? { ...a, acknowledged: 1 } : a)));
-      await Promise.all([refetch(), onChanged()]);
+      notifyAlertsChanged(id); // bu liste, sayfanın okunmamış sayısı ve zil yenilenir
     } catch (e) {
       toast.error(e instanceof Error ? e.message : 'İşlem başarısız');
     } finally {
@@ -148,17 +125,17 @@ function AlertList({ query, unreadOnly, onChanged }: { query: string; unreadOnly
   const rows: React.ReactNode[] = [];
   let lastDay = '';
   for (const a of items) {
-    const t = a.created_at ? parseTime(a.created_at) : null;
+    const t = a.created_at ? parseAlertTime(a.created_at) : null;
     const day = t ? dayLabel(t) : '—';
     if (day !== lastDay) {
       rows.push(<div key={`d-${a.id}`} className="alert-day">{day}</div>);
       lastDay = day;
     }
-    const sev = SEVERITY[a.severity] || SEVERITY.info;
+    const sev = severityMeta(a.severity);
     const read = !!a.acknowledged;
     rows.push(
       <div key={a.id} className={`list-item alert-row alert-${a.severity} ${read ? 'alert-read' : ''}`}>
-        <span className="alert-icon">{sev.icon}</span>
+        <span className="alert-icon"><sev.Icon size={16} /></span>
         <div className="list-item-content">
           <span className="alert-message">{a.message}</span>
           <span className="alert-meta">
