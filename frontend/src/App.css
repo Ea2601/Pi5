@@ -3225,3 +3225,20 @@ button.user-profile { cursor: pointer; font-family: var(--font-family); transiti
 }
 @keyframes live-version-in { from { opacity: 0; translate: 0 8px; } to { opacity: 1; translate: 0 0; } }
 @media (prefers-reduced-motion: reduce) { .live-version-bar { animation: none; } }
+
+/* ═══════════════════ UYARI MERKEZİ (olay geçmişi) ═══════════════════ */
+.alert-toolbar { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+.alert-chip-on { border-color: var(--accent-color); color: var(--accent-color); background: var(--accent-glow); }
+.alert-list { display: flex; flex-direction: column; gap: 6px; }
+.alert-day { margin: 10px 2px 2px; font-size: 12px; font-weight: 600; color: var(--text-muted); }
+.alert-day:first-child { margin-top: 0; }
+.alert-row { align-items: flex-start; border-left: 3px solid var(--panel-border); }
+.alert-row.alert-critical { border-left-color: var(--danger-color); }
+.alert-row.alert-warning { border-left-color: var(--warning-color); }
+.alert-row.alert-read { opacity: 0.72; }
+.alert-icon { display: flex; padding-top: 1px; color: var(--text-muted); }
+.alert-critical .alert-icon { color: var(--danger-color); }
+.alert-warning .alert-icon { color: var(--warning-color); }
+.alert-message { font-size: 13px; line-height: 1.45; overflow-wrap: anywhere; }
+.alert-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; font-size: 11px; color: var(--text-muted); }
+.alert-row .btn-sm { flex-shrink: 0; }

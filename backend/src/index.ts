@@ -31,6 +31,8 @@ import { validateListValue, normalizeListValue, syncPiholeLists, lastListSync, e
 import { applyZapret, zapretStatus, startBlockcheck, blockcheckRunning, zapretInstalled, cleanDpiDomain } from './zapret';
 import type { ZapretApplyResult } from './zapret';
 import { unboundStatus, applyUnboundSettings, validateUnboundSettings } from './unbound';
+import { recordEvent, recordEventOnce, recordVersionChange, serviceLabel } from './events';
+import type { ListSyncResult } from './piholeLists';
 import {
   shq, sedEscape, isValidMac, isValidDomain, isValidTimezone,
   isValidHexColor, normalizeAnimation, sanitizeName,
@@ -239,9 +241,11 @@ app.post('/api/services/toggle', async (req, res) => {
       [st.status === 'running' ? 1 : 0, st.status, name]);
     if (!ok) {
       const why = actionError || `durum ${st.status}${st.detail ? ` — ${st.detail}` : ''} (${st.active_state || '?'}/${st.sub_state || '?'})`;
+      await recordEvent(`service:${name}`, `${serviceLabel(name)} ${enabled ? 'başlatılamadı' : 'durdurulamadı'}: ${why}`, 'warning');
       return res.status(500).json({ success: false, name, enabled: st.status === 'running', status: st.status,
         error: `${name} ${enabled ? 'başlatılamadı' : 'durdurulamadı'}: ${why}` });
     }
+    await recordEvent(`service:${name}`, `${serviceLabel(name)} ${enabled ? 'açıldı' : 'kapatıldı'}`);
     res.json({ success: true, name, enabled: st.status === 'running', status: st.status, ...(zapret ? { zapret } : {}) });
   } catch (e: any) {
     res.status(500).json({ success: false, error: e.message });
@@ -453,6 +457,11 @@ app.put('/api/services/:name/config', async (req, res) => {
 // Kayıtlar Pi-hole'a gerçekten uygulanır (piholeLists.ts): her değişiklikten sonra eşitlenir; yanıttaki `sync` sonucu
 // (ok / errors / gravity) arayüzde gösterilir. Kayıt veritabanında kalır — Pi-hole'a ulaşılamazsa sonraki eşitlemede uygulanır.
 const PIHOLE_LIST_TYPES = new Set(['adlist', 'whitelist', 'blacklist', 'localdns']);
+const PIHOLE_LIST_LABEL: Record<string, string> = { adlist: 'Bloklisteleri', whitelist: 'Beyaz liste', blacklist: 'Kara liste', localdns: 'Yerel DNS' };
+// Liste değişikliği + Pi-hole'a uygulama sonucu olay geçmişine.
+const piholeEvent = (what: string, sync: ListSyncResult) => recordEvent('pihole',
+  sync.ok ? `${what}${sync.gravity ? ' — liste indiriliyor' : ''}` : `${what} — Pi-hole'a uygulanamadı: ${sync.errors.join('; ') || 'bilinmeyen hata'}`,
+  sync.ok ? 'info' : 'warning');
 app.get('/api/pihole/lists', async (req, res) => {
   try {
     const lists = await dbAll('SELECT * FROM pihole_lists ORDER BY list_type, id');
@@ -471,7 +480,9 @@ app.post('/api/pihole/lists', async (req, res) => {
     if (bad) return res.status(400).json({ error: bad });
     await dbRun('INSERT OR IGNORE INTO pihole_lists (list_type, value, comment) VALUES (?, ?, ?)',
       [list_type, normalizeListValue(list_type, value), String(comment || '').slice(0, 200)]);
-    res.json({ success: true, sync: await syncPiholeLists() });
+    const sync = await syncPiholeLists();
+    await piholeEvent(`${PIHOLE_LIST_LABEL[list_type]}: eklendi ${normalizeListValue(list_type, value)}`, sync);
+    res.json({ success: true, sync });
   } catch (e: any) {
     res.status(500).json({ error: e.message });
   }
@@ -480,7 +491,7 @@ app.post('/api/pihole/lists', async (req, res) => {
 app.put('/api/pihole/lists/:id', async (req, res) => {
   try {
     const { enabled, value, comment } = req.body;
-    const row: any = await dbGet('SELECT list_type FROM pihole_lists WHERE id = ?', [req.params.id]);
+    const row: any = await dbGet('SELECT list_type, value FROM pihole_lists WHERE id = ?', [req.params.id]);
     if (!row) return res.status(404).json({ error: 'Kayıt bulunamadı' });
     if (value !== undefined) {
       const bad = validateListValue(row.list_type, value);
@@ -494,7 +505,10 @@ app.put('/api/pihole/lists/:id', async (req, res) => {
     if (updates.length === 0) return res.json({ success: true });
     params.push(req.params.id);
     await dbRun(`UPDATE pihole_lists SET ${updates.join(', ')} WHERE id = ?`, params);
-    res.json({ success: true, sync: await syncPiholeLists() });
+    const sync = await syncPiholeLists();
+    const what = enabled !== undefined ? (enabled ? 'etkinleştirildi' : 'devre dışı bırakıldı') : 'düzenlendi';
+    await piholeEvent(`${PIHOLE_LIST_LABEL[row.list_type]}: ${what} ${value !== undefined ? normalizeListValue(row.list_type, value) : row.value}`, sync);
+    res.json({ success: true, sync });
   } catch (e: any) {
     res.status(500).json({ error: e.message });
   }
@@ -502,8 +516,11 @@ app.put('/api/pihole/lists/:id', async (req, res) => {
 
 app.delete('/api/pihole/lists/:id', async (req, res) => {
   try {
+    const row: any = await dbGet('SELECT list_type, value FROM pihole_lists WHERE id = ?', [req.params.id]);
     await dbRun('DELETE FROM pihole_lists WHERE id = ?', [req.params.id]);
-    res.json({ success: true, sync: await syncPiholeLists() });
+    const sync = await syncPiholeLists();
+    if (row) await piholeEvent(`${PIHOLE_LIST_LABEL[row.list_type]}: silindi ${row.value}`, sync);
+    res.json({ success: true, sync });
   } catch (e: any) {
     res.status(500).json({ error: e.message });
   }
@@ -512,7 +529,9 @@ app.delete('/api/pihole/lists/:id', async (req, res) => {
 // Elle yeniden eşitleme (panelde "Pi-hole'a uygula")
 app.post('/api/pihole/lists/sync', async (_req, res) => {
   try {
-    res.json({ success: true, sync: await syncPiholeLists() });
+    const sync = await syncPiholeLists();
+    await piholeEvent('Pi-hole listeleri yeniden uygulandı', sync);
+    res.json({ success: true, sync });
   } catch (e: any) {
     res.status(500).json({ error: e.message });
   }
@@ -521,6 +540,11 @@ app.post('/api/pihole/lists/sync', async (_req, res) => {
 // ─── Zapret (DPI atlatma) ───
 // Listeler Zapret'e gerçekten yazılır (zapret.ts): her değişiklikten sonra uygulanır; yanıttaki `zapret` sonucu
 // (ok / warnings / error) arayüzde gösterilir. Routing'de çıkışı ISP olan DPI kurallarının alan adları da listeye girer.
+// Liste değişikliği + Zapret'e uygulama sonucu olay geçmişine.
+const zapretEvent = (what: string, z: ZapretApplyResult) => recordEvent('zapret',
+  z.ok ? `${what}${z.installed ? '' : ' (Zapret kurulu değil — yalnız kaydedildi)'}` : `${what} — Zapret'e uygulanamadı: ${z.error || 'bilinmeyen hata'}`,
+  z.ok ? 'info' : 'warning');
+const ZAPRET_LIST_LABEL = (t: string) => (t === 'exclude' ? 'hariç tutulanlar' : 'bypass listesi');
 app.get('/api/zapret/domains', async (_req, res) => {
   try {
     const domains = await dbAll('SELECT * FROM zapret_domains ORDER BY list_type, domain');
@@ -538,7 +562,9 @@ app.post('/api/zapret/domains', async (req, res) => {
     const clean = cleanDpiDomain(domain);
     if (!clean) return res.status(400).json({ error: 'Geçersiz alan adı (ör. discord.com ya da *.discord.com)' });
     await dbRun('INSERT OR IGNORE INTO zapret_domains (list_type, domain) VALUES (?, ?)', [type, clean]);
-    res.json({ success: true, zapret: await applyZapret() });
+    const zapret = await applyZapret();
+    await zapretEvent(`Zapret ${ZAPRET_LIST_LABEL(type)}: eklendi ${clean}`, zapret);
+    res.json({ success: true, zapret });
   } catch (e: any) {
     res.status(500).json({ error: e.message });
   }
@@ -548,7 +574,10 @@ app.put('/api/zapret/domains/:id', async (req, res) => {
   try {
     const { enabled } = req.body;
     await dbRun('UPDATE zapret_domains SET enabled = ? WHERE id = ?', [enabled ? 1 : 0, req.params.id]);
-    res.json({ success: true, zapret: await applyZapret() });
+    const row: any = await dbGet('SELECT list_type, domain FROM zapret_domains WHERE id = ?', [req.params.id]);
+    const zapret = await applyZapret();
+    if (row) await zapretEvent(`Zapret ${ZAPRET_LIST_LABEL(row.list_type)}: ${enabled ? 'etkinleştirildi' : 'devre dışı bırakıldı'} ${row.domain}`, zapret);
+    res.json({ success: true, zapret });
   } catch (e: any) {
     res.status(500).json({ error: e.message });
   }
@@ -556,8 +585,11 @@ app.put('/api/zapret/domains/:id', async (req, res) => {
 
 app.delete('/api/zapret/domains/:id', async (req, res) => {
   try {
+    const row: any = await dbGet('SELECT list_type, domain FROM zapret_domains WHERE id = ?', [req.params.id]);
     await dbRun('DELETE FROM zapret_domains WHERE id = ?', [req.params.id]);
-    res.json({ success: true, zapret: await applyZapret() });
+    const zapret = await applyZapret();
+    if (row) await zapretEvent(`Zapret ${ZAPRET_LIST_LABEL(row.list_type)}: silindi ${row.domain}`, zapret);
+    res.json({ success: true, zapret });
   } catch (e: any) {
     res.status(500).json({ error: e.message });
   }
@@ -575,7 +607,9 @@ app.get('/api/zapret/status', async (_req, res) => {
 // Elle yeniden uygulama (panelde "Zapret'e uygula")
 app.post('/api/zapret/apply', async (_req, res) => {
   try {
-    res.json({ success: true, zapret: await applyZapret() });
+    const zapret = await applyZapret();
+    await zapretEvent(`Zapret listeleri yeniden uygulandı (${zapret.hostlist} alan adı)`, zapret);
+    res.json({ success: true, zapret });
   } catch (e: any) {
     res.status(500).json({ error: e.message });
   }
@@ -589,6 +623,7 @@ app.post('/api/zapret/blockcheck', async (req, res) => {
     if (!domain) return res.status(400).json({ error: 'Geçersiz alan adı' });
     if (await blockcheckRunning()) return res.status(409).json({ error: 'Blockcheck zaten çalışıyor' });
     await startBlockcheck(domain);
+    await recordEvent('zapret', `Blockcheck başlatıldı: ${domain}`);
     res.json({ success: true, domain });
   } catch (e: any) {
     res.status(500).json({ error: String(e?.stderr || e?.message || e).trim() });
@@ -621,8 +656,10 @@ app.post('/api/services/:name/restart', async (req, res) => {
       [st.status === 'running' ? 1 : 0, st.status, name]);
     if (actionError || st.status !== 'running') {
       const why = actionError || `yeniden başlatıldı ama çalışmıyor: ${st.status}${st.detail ? ` — ${st.detail}` : ''} (${st.active_state || '?'}/${st.sub_state || '?'})`;
+      await recordEvent(`service:${name}`, `${serviceLabel(name)} yeniden başlatılamadı: ${why}`, 'warning');
       return res.status(500).json({ success: false, status: st.status, error: `${name}: ${why}` });
     }
+    await recordEvent(`service:${name}`, `${serviceLabel(name)} yeniden başlatıldı`);
     res.json({ success: true, message: `${name} yeniden başlatıldı`, status: 'running' });
   } catch (e: any) {
     res.status(500).json({ success: false, error: e.message });
@@ -1186,7 +1223,9 @@ app.post('/api/vps/:id/connect', async (req, res) => {
 
     // First verify VPS is reachable via SSH
     const connTest = await testSSHConnection({ ip: server.ip, username: server.username, password: server.password || undefined });
+    const vpsLabel = `${server.location || 'VPS'} (${server.ip})`;
     if (!connTest.success) {
+      await recordEvent('vps', `VPS'e bağlanılamadı: ${vpsLabel} — ${connTest.message}`, 'warning');
       return res.status(500).json({ error: `VPS erişilemiyor: ${connTest.message}` });
     }
 
@@ -1209,10 +1248,13 @@ app.post('/api/vps/:id/connect', async (req, res) => {
 
     // wg-quick down/up arayüzün tablo rotalarını siler → routing'i yeniden uygula (tünel yoksa rota eklenmez).
     if (tunnelResult) await applyAllRoutingRules().catch((e: any) => console.error('Routing yeniden uygulanamadı:', e.message));
+    await recordEvent('vps', tunnelResult ? `VPS tüneli bağlandı: ${vpsLabel}`
+      : `VPS'e ulaşıldı ama Pi tüneli kurulamadı: ${vpsLabel}${tunnelError ? ` — ${tunnelError}` : ''}`, tunnelResult ? 'info' : 'warning');
 
     res.json({ success: true, tunnel: tunnelResult ? true : false, tunnelError: tunnelError || undefined, message: tunnelResult ? 'VPS bağlı + tünel aktif' : 'VPS bağlı (tünel Pi5 üzerinde kurulacak)' });
   } catch (e: any) {
     await dbRun('UPDATE vps_servers SET status = ? WHERE id = ?', ['error', req.params.id]);
+    await recordEvent('vps', `VPS bağlantısı başarısız (#${req.params.id}): ${e.message || 'bilinmeyen hata'}`, 'warning');
     res.status(500).json({ error: e.message || 'Bağlantı başarısız' });
   }
 });
@@ -1222,6 +1264,8 @@ app.post('/api/vps/:id/disconnect', async (req, res) => {
     await disconnectPi5FromVps(Number(req.params.id));
     await dbRun('UPDATE vps_servers SET status = ? WHERE id = ?', ['disconnected', req.params.id]);
     await applyAllRoutingRules().catch((e: any) => console.error('Routing yeniden uygulanamadı:', e.message));
+    const server: any = await dbGet('SELECT ip, location FROM vps_servers WHERE id = ?', [req.params.id]);
+    await recordEvent('vps', `VPS tüneli kesildi: ${server ? `${server.location || 'VPS'} (${server.ip})` : `#${req.params.id}`}`);
     res.json({ success: true });
   } catch (e: any) {
     res.status(500).json({ error: e.message });
@@ -1237,11 +1281,13 @@ app.get('/api/vps/:id/tunnel-status', async (req, res) => {
 
 app.delete('/api/vps/:id', async (req, res) => {
   try {
+    const server: any = await dbGet('SELECT ip, location FROM vps_servers WHERE id = ?', [req.params.id]);
     // Disconnect Pi5 tunnel before deleting
     await disconnectPi5FromVps(Number(req.params.id));
     await dbRun('DELETE FROM wg_clients WHERE vps_id = ?', [req.params.id]);
     await dbRun('DELETE FROM vps_servers WHERE id = ?', [req.params.id]);
     await applyAllRoutingRules().catch((e: any) => console.error('Routing yeniden uygulanamadı:', e.message));
+    if (server) await recordEvent('vps', `VPS silindi: ${server.location || 'VPS'} (${server.ip})`);
     res.json({ success: true });
   } catch (e: any) {
     res.status(500).json({ error: e.message });
@@ -1300,7 +1346,11 @@ async function applyAllRoutingRulesNow() {
     await applyDomainRouting(allDomains, ranges);
   } finally {
     // Routing'deki "DPI" kurallarının alan adları Zapret listesine de yazılır (zapret.ts); routing'i bekletmez.
-    void applyZapret().then(r => { if (!r.ok) console.error('[zapret] uygulanamadı:', r.error); });
+    void applyZapret().then(r => {
+      if (r.ok) return;
+      console.error('[zapret] uygulanamadı:', r.error);
+      void recordEventOnce('zapret', `Zapret'e uygulanamadı: ${r.error || 'bilinmeyen hata'}`, 'warning', 60);
+    });
   }
 }
 
@@ -2071,6 +2121,13 @@ if (isLinux) {
         console.error('[health] DHCP/sabit adres kontrolü başarısız:', e?.message || e);
       }
 
+      // Olay geçmişi: arka planda gerçekleşen hatalar (Cron görevi, panel güncellemesi) — kendi try'ı.
+      try {
+        await recordBackgroundFailures();
+      } catch (e: any) {
+        console.error('[olay] arka plan denetimi başarısız:', e?.message || e);
+      }
+
       // Cleanup old alerts (30 days)
       await dbRun(`DELETE FROM alerts WHERE created_at < datetime('now', '-30 days')`);
     } catch { /* silent */ }
@@ -2078,6 +2135,24 @@ if (isLinux) {
   // Run first check after 30 seconds, then every 5 minutes
   setTimeout(healthCheck, 30000);
   setInterval(healthCheck, 300000);
+}
+
+// Cron görevlerinin ve panel güncellemesinin hatası panelin dışında olur (zamanlayıcı / arka plan işi): 5 dk'lık sağlık
+// denetiminde durum dosyalarından okunur, her hata bir kez yazılır (kaynak + mesaj tekrar önleme; mesajda çalışma zamanı).
+async function recordBackgroundFailures() {
+  const statuses = readJobStatuses();
+  if (statuses.size) {
+    const names = new Map((await dbAll('SELECT id, name FROM cron_jobs') as any[]).map(j => [Number(j.id), String(j.name)]));
+    for (const [id, st] of statuses) {
+      if (st.rc === 0 || !names.has(id) || Date.now() / 1000 - st.at > 29 * 86400) continue;
+      await recordEventOnce(`cron:${id}`, `Cron görevi hata verdi: ${names.get(id)} (çıkış kodu ${st.rc}, ${new Date(st.at * 1000).toLocaleString('tr-TR')}) — çıktısı Sistem Logları'nda`, 'warning', 0);
+    }
+  }
+  const up = await getUpdateStatus();
+  if (up.state === 'failed' && up.id) {
+    const step = up.steps?.find(s => !s.success)?.step || 'bilinmeyen adım';
+    await recordEventOnce(`update:${up.id}`, `Panel güncellemesi başarısız: ${step}`, 'warning', 0);
+  }
 }
 
 // ─── Alerts ───
@@ -2088,10 +2163,30 @@ app.get('/api/alerts/unread-count', async (_req, res) => {
   } catch { res.json({ count: 0 }); }
 });
 
-app.get('/api/alerts', async (_req, res) => {
+// Uyarılar + olay geçmişi, en yeni önce. Süzgeç: severity=critical|warning|info, unread=1; sayfalama: before=<id> (daha
+// eskiler), limit (en çok 200). hasMore: daha eski kayıt var.
+app.get('/api/alerts', async (req, res) => {
   try {
-    const alerts = await dbAll('SELECT * FROM alerts ORDER BY created_at DESC LIMIT 100');
-    res.json({ alerts });
+    const where: string[] = [];
+    const params: any[] = [];
+    const sev = String(req.query.severity || '');
+    if (['critical', 'warning', 'info'].includes(sev)) { where.push('severity = ?'); params.push(sev); }
+    if (req.query.unread === '1') where.push('acknowledged = 0');
+    const before = Number(req.query.before);
+    if (Number.isInteger(before) && before > 0) { where.push('id < ?'); params.push(before); }
+    const limit = Math.min(Math.max(Math.floor(Number(req.query.limit)) || 100, 1), 200);
+    const rows = await dbAll(`SELECT id, type, severity, message, source, acknowledged, created_at FROM alerts
+      ${where.length ? `WHERE ${where.join(' AND ')}` : ''} ORDER BY id DESC LIMIT ?`, [...params, limit + 1]);
+    res.json({ alerts: rows.slice(0, limit), hasMore: rows.length > limit });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post('/api/alerts/acknowledge-all', async (_req, res) => {
+  try {
+    await dbRun('UPDATE alerts SET acknowledged = 1 WHERE acknowledged = 0');
+    res.json({ success: true });
   } catch (e: any) {
     res.status(500).json({ error: e.message });
   }
@@ -2259,6 +2354,7 @@ app.post('/api/dhcp/static', async (req, res) => {
        ON CONFLICT(mac_address) DO UPDATE SET ip_address = ?, hostname = ?, is_static = 1`,
       [mac_address, ip_address, hostname || '', ip_address, hostname || '']
     );
+    await recordEvent('dhcp', `Sabit IP ataması: ${hostname || mac_address} → ${ip_address}`);
     res.json({ success: true });
   } catch (e: any) {
     res.status(500).json({ error: e.message });
@@ -2268,6 +2364,7 @@ app.post('/api/dhcp/static', async (req, res) => {
 app.delete('/api/dhcp/static/:mac', async (req, res) => {
   try {
     await dbRun('UPDATE dhcp_leases SET is_static = 0 WHERE mac_address = ?', [req.params.mac]);
+    await recordEvent('dhcp', `Sabit IP ataması kaldırıldı: ${req.params.mac}`);
     res.json({ success: true });
   } catch (e: any) {
     res.status(500).json({ error: e.message });
@@ -2408,6 +2505,10 @@ const netAdminGuard = async (req: express.Request, res: express.Response, next: 
   next();
 };
 app.use('/api/netmode', netAdminGuard);
+// Ağ modu / DHCP işleminin sonucu olay geçmişine (başarısızlıkta betiğin hata metniyle). okMsg boşsa başarı yazılmaz.
+const kvEvent = (source: string, r: KvResult, okMsg: string, failMsg: string, secret = '') =>
+  r.code === 0 ? (okMsg ? recordEvent(source, okMsg) : Promise.resolve())
+    : recordEvent(source, maskSecret(`${failMsg}: ${kvError(r, 'bilinmeyen hata')}`, secret), 'warning');
 app.use('/api/dhcp/pi', netAdminGuard);
 
 app.get('/api/netmode/status', async (_req, res) => {
@@ -2423,6 +2524,7 @@ app.post('/api/netmode/static', async (_req, res) => {
   if (scriptMissing(NET_MODE_SCRIPT, res)) return;
   const r = await runKvScript(NET_MODE_SCRIPT, ['static', '--trial', String(NET_TRIAL_S), '--client', NET_CLIENT_CIDR], 120000);
   await routingAfterNetChange(r);
+  await kvEvent('netmode', r, `Sabit adres denemesi başladı (${NET_TRIAL_S / 60} dk içinde "Kalıcı yap" gelmezse geri alınır)`, 'Sabit adres verilemedi');
   if (r.code !== 0) return res.status(500).json({ error: kvError(r, 'sabit adres verilemedi') });
   res.json({ success: true, trial_ends: Number(r.kv.trial_ends) || 0 });
 });
@@ -2433,6 +2535,7 @@ app.post('/api/netmode/confirm', async (req, res) => {
     return res.status(403).json({ error: 'Onayı başka bir cihazdan (PC/telefon) verin — Pi\'nin kendi ekranı ağ bağlantısını kanıtlamaz' });
   }
   const r = await runKvScript(NET_MODE_SCRIPT, ['confirm'], 90000);
+  await kvEvent('netmode', r, 'Sabit adres kalıcı yapıldı', 'Sabit adres onaylanamadı');
   if (r.code !== 0) return res.status(409).json({ error: kvError(r, 'onaylanamadı') });
   await routingAfterNetChange(r);
   res.json({ success: true });
@@ -2442,6 +2545,7 @@ app.post('/api/netmode/rollback', async (_req, res) => {
   if (scriptMissing(NET_MODE_SCRIPT, res)) return;
   const r = await runKvScript(NET_MODE_SCRIPT, ['rollback'], 150000);
   await routingAfterNetChange(r);
+  await kvEvent('netmode', r, r.kv.rolled_back === '1' ? 'Sabit adres denemesi geri alındı' : '', 'Sabit adres geri alınamadı');
   if (r.code !== 0) return res.status(500).json({ error: kvError(r, 'geri alınamadı') });
   res.json({ success: true, rolled_back: r.kv.rolled_back === '1' });
 });
@@ -2451,6 +2555,7 @@ app.post('/api/netmode/dhcp', async (_req, res) => {
   if (scriptMissing(NET_MODE_SCRIPT, res)) return;
   const r = await runKvScript(NET_MODE_SCRIPT, ['dhcp'], 150000);
   await routingAfterNetChange(r);
+  await kvEvent('netmode', r, 'Pi otomatik adrese döndü (modemden DHCP)', 'Otomatik adrese dönülemedi');
   if (r.code !== 0) return res.status(409).json({ error: kvError(r, 'otomatik adrese dönülemedi') });
   res.json({ success: true });
 });
@@ -2461,6 +2566,8 @@ app.post('/api/netmode/wifi', async (req, res) => {
   const enabled = req.body?.enabled;
   if (typeof enabled !== 'boolean') return res.status(400).json({ error: 'enabled alanı true/false olmalı' });
   const r = await runKvScript(NET_MODE_SCRIPT, ['wifi', enabled ? 'on' : 'off'], 90000);
+  await kvEvent('netmode', r, enabled ? 'Pi\'nin Wi-Fi\'si ev ağına bağlandı' : 'Pi\'nin Wi-Fi\'si ev ağından ayrıldı',
+    enabled ? 'Wi-Fi açılamadı' : 'Wi-Fi kapatılamadı');
   if (r.code !== 0) return res.status(409).json({ error: kvError(r, enabled ? 'Wi-Fi açılamadı' : 'Wi-Fi kapatılamadı') });
   res.json({ success: true });
 });
@@ -2495,6 +2602,7 @@ app.post('/api/netmode/ap', async (req, res) => {
   }
   const r = await runKvScript(NET_MODE_SCRIPT, ['ap', 'on', '--trial', String(AP_TRIAL_S), '--ssid', ssid], 180000, `${password}\n`);
   await routingAfterNetChange(r);
+  await kvEvent('netmode', r, `Kurulum Wi-Fi'ı denemesi başladı: ${ssid}`, 'Kurulum Wi-Fi\'ı açılamadı', password);
   if (r.code !== 0) return res.status(500).json({ error: maskSecret(kvError(r, 'kurulum Wi-Fi\'ı açılamadı'), password) });
   res.json({ success: true, ap_trial_ends: Number(r.kv.ap_trial_ends) || 0 });
 });
@@ -2512,6 +2620,7 @@ app.post('/api/netmode/ap/confirm', async (req, res) => {
   const r = await runKvScript(NET_MODE_SCRIPT, ['ap', 'confirm'], 90000);
   // Onay reddedildiyse deneme o an geri alınmış olabilir: kurallar her durumda güncel duruma göre yazılır.
   await routingAfterNetChange(r);
+  await kvEvent('netmode', r, 'Kurulum Wi-Fi\'ı kalıcı yapıldı', 'Kurulum Wi-Fi\'ı onaylanamadı');
   if (r.code !== 0) return res.status(409).json({ error: kvError(r, 'onaylanamadı') });
   res.json({ success: true });
 });
@@ -2520,6 +2629,7 @@ app.post('/api/netmode/ap/rollback', async (_req, res) => {
   if (scriptMissing(NET_MODE_SCRIPT, res)) return;
   const r = await runKvScript(NET_MODE_SCRIPT, ['ap', 'rollback'], 150000);
   await routingAfterNetChange(r);
+  await kvEvent('netmode', r, r.kv.rolled_back === '1' ? 'Kurulum Wi-Fi\'ı denemesi geri alındı' : '', 'Kurulum Wi-Fi\'ı geri alınamadı');
   if (r.code !== 0) return res.status(500).json({ error: kvError(r, 'geri alınamadı') });
   res.json({ success: true, rolled_back: r.kv.rolled_back === '1' });
 });
@@ -2529,6 +2639,7 @@ app.post('/api/netmode/ap/off', async (_req, res) => {
   if (scriptMissing(NET_MODE_SCRIPT, res)) return;
   const r = await runKvScript(NET_MODE_SCRIPT, ['ap', 'off'], 150000);
   await routingAfterNetChange(r);
+  await kvEvent('netmode', r, `Kurulum Wi-Fi'ı kapatıldı${r.kv.warning ? ` — ${r.kv.warning}` : ''}`, 'Kurulum Wi-Fi\'ı kapatılamadı');
   if (r.code !== 0) return res.status(409).json({ error: kvError(r, 'kurulum Wi-Fi\'ı kapatılamadı') });
   // Yayın kalktı ama Wi-Fi kapatılamadıysa (warning=…) arayüz bunu gösterir: Pi'nin Wi-Fi'si ev ağına dönebilir.
   res.json({ success: true, warning: r.kv.warning || undefined });
@@ -2562,6 +2673,8 @@ app.post('/api/dhcp/pi/enable', async (_req, res) => {
       'enable', '--trial', String(DHCP_TRIAL_S), '--start', plan.start, '--end', plan.end, '--router', plan.ip,
       '--netmask', plan.netmask, '--lease', '5m',
     ], 240000);
+    await kvEvent('dhcp', r, `Pi DHCP denemesi başladı (${DHCP_TRIAL_S / 60} dk içinde "Kalıcı yap" gelmezse geri alınır)`, 'Pi DHCP açılamadı');
+    if (r.kv.warning === 'modem_dhcp') await recordEvent('dhcp', 'Modemin DHCP\'sini hemen geri açın — Pi DHCP denemesi düştü', 'critical');
     // warning=modem_dhcp: deneme başladıktan sonra düştü (ayarlar geri yüklendi) → modemin DHCP'si hemen açılmalı.
     if (r.code !== 0) return res.status(500).json({ error: kvError(r, 'Pi DHCP açılamadı'), warning: r.kv.warning || undefined });
     res.json({ success: true, trial_ends: Number(r.kv.trial_ends) || 0 });
@@ -2586,6 +2699,8 @@ app.post('/api/dhcp/pi/confirm', async (req, res) => {
       return res.status(403).json({ error: `Onayı Pi'den adres almış bir cihazdan verin: telefonun Wi-Fi'ını kapatıp açın, sonra http://${plan.ip}/#dhcp adresini (menü → DHCP Ayarları) açıp onaylayın` });
     }
     const r = await runPiDhcpExclusive(['confirm', '--lease', '12h'], 240000);
+    await kvEvent('dhcp', r, 'Pi DHCP kalıcı yapıldı — evin adres dağıtıcısı artık Pi', 'Pi DHCP onaylanamadı');
+    if (r.kv.warning === 'modem_dhcp') await recordEvent('dhcp', 'Modemin DHCP\'sini hemen geri açın — Pi DHCP onayı başarısız, deneme geri alındı', 'critical');
     // Onay başarısız olup deneme hemen geri alındıysa (warning=modem_dhcp) arayüz "modemin DHCP'sini geri açın" der.
     if (r.code !== 0) {
       return res.status(409).json({ error: kvError(r, 'onaylanamadı'), warning: r.kv.warning || undefined, rolled_back: r.kv.rolled_back === '1' });
@@ -2602,6 +2717,7 @@ app.post('/api/dhcp/pi/rollback', async (_req, res) => {
   if (scriptMissing(PI_DHCP_SCRIPT, res)) return;
   try {
     const r = await runPiDhcpExclusive(['rollback'], 240000);
+    await kvEvent('dhcp', r, r.kv.rolled_back === '1' ? 'Pi DHCP denemesi geri alındı' : '', 'Pi DHCP geri alınamadı');
     if (r.code !== 0) return res.status(500).json({ error: kvError(r, 'geri alınamadı') });
     res.json({ success: true, rolled_back: r.kv.rolled_back === '1', warning: r.kv.warning || undefined });
   } catch (e: any) {
@@ -2615,6 +2731,7 @@ app.post('/api/dhcp/pi/disable', async (req, res) => {
   try {
     const force = req.body?.force === true;
     const r = await runPiDhcpExclusive(force ? ['disable', '--force'] : ['disable'], 240000);
+    await kvEvent('dhcp', r, 'Pi DHCP kapatıldı — adres dağıtımı modeme döndü', 'Pi DHCP kapatılamadı');
     if (r.code !== 0) return res.status(409).json({ error: kvError(r, 'Pi DHCP kapatılamadı') });
     res.json({ success: true, warning: r.kv.warning || undefined });
   } catch (e: any) {
@@ -2941,8 +3058,11 @@ app.post('/api/devices/:mac/block', async (req, res) => {
     // Önce nft'ye uygula, başarılıysa DB'ye yaz: uygulanamayan engel panelde "engelli" görünmesin.
     await applyBlockedDevices(await blockList({ mac: String(device.mac_address), blocked: want }));
     await dbRun('UPDATE devices SET blocked = ? WHERE mac_address = ?', [newStatus, req.params.mac]);
+    const who = `${device.hostname || device.mac_address}${device.ip_address ? ` (${device.ip_address})` : ''}`;
+    await recordEvent('device', want ? `Cihaz engellendi: ${who}` : `Cihazın engeli kaldırıldı: ${who}`);
     res.json({ success: true, mac: req.params.mac, blocked: newStatus });
   } catch (e: any) {
+    await recordEvent('device', `Cihaz engeli uygulanamadı (${req.params.mac}): ${e.message}`, 'warning');
     res.status(500).json({ error: e.message });
   }
 });
@@ -3180,7 +3300,14 @@ app.post('/api/unbound/settings', async (req, res) => {
     const s = validateUnboundSettings(req.body?.settings);
     if (typeof s === 'string') return res.status(400).json({ error: s });
     const r = await applyUnboundSettings(s);
-    if (!r.ok) return res.status(500).json({ error: r.error || 'Uygulanamadı', result: r });
+    if (!r.ok) {
+      await recordEvent('unbound', `Unbound ayarları uygulanamadı${r.rolledBack ? ' — eski ayarlar geri yüklendi' : ''}: ${r.error || 'bilinmeyen hata'}`, 'warning');
+      return res.status(500).json({ error: r.error || 'Uygulanamadı', result: r });
+    }
+    if (r.changed) {
+      const yn = (b: boolean) => (b ? 'açık' : 'kapalı');
+      await recordEvent('unbound', `Unbound ayarları uygulandı: önbellek ${s.cache_mb} MB, iş parçacığı ${s.num_threads}, en kısa önbellek süresi ${s.cache_min_ttl} sn, önceden yenileme ${yn(s.prefetch)}, süresi dolmuş kayıt ${yn(s.serve_expired)}, kimlik/sürüm gizleme ${yn(s.hide_identity)}/${yn(s.hide_version)}`);
+    }
     res.json({ success: true, result: r });
   } catch (e: any) {
     res.status(500).json({ error: e.message });
@@ -3851,6 +3978,7 @@ app.post('/api/system/update', async (_req, res) => {
       return res.json({ success: false, error: 'Guncelleme sadece Pi5 uzerinde calisir.' });
     }
     const r = await startUpdate();
+    if (r.started) await recordEvent('update', 'Panel güncellemesi başlatıldı');
     // steps: bu sürümden önce açılmış sayfa (eski arayüz) yalnız success/steps okur — sayfayı yenilemesi söylenir.
     res.json({ ...r, steps: [{ step: 'Güncelleme arka planda sürüyor — sayfayı yenileyin (Ctrl+Shift+R)', output: '', success: false }] });
   } catch (e: any) {
@@ -4059,8 +4187,14 @@ const server = app.listen(Number(port), bindHost, () => {
   }, 5000);
   // Pi-hole listeleri: panel kayıtları Pi-hole'a uygulanır (FTL açılışta geç hazır olabilir → 30 sn sonra).
   setTimeout(() => {
-    void syncPiholeLists().then(r => { if (!r.ok) console.error('[pihole-lists] eşitleme:', r.errors.join('; ')); });
+    void syncPiholeLists().then(r => {
+      if (r.ok) return;
+      console.error('[pihole-lists] eşitleme:', r.errors.join('; '));
+      void recordEventOnce('pihole', `Pi-hole listeleri açılışta uygulanamadı: ${r.errors.join('; ')}`, 'warning', 60);
+    });
   }, 30000);
+  // Olay geçmişi: sürüm değiştiyse (elle ya da gece otomatik güncellemesiyle) "Panel güncellendi" bir kez yazılır.
+  void recordVersionChange();
   // Panel koruması: deneme sırasında Pi yeniden başladıysa (zamanlayıcı kalıcı değil) süresi geçen deneme geri alınır.
   if (isLinux && require('fs').existsSync(PANEL_AUTH_SCRIPT)) {
     void runPanelAuth(['ensure']).then(r => { if (r.code !== 0 || r.kv.warning) console.error('[panel-auth]', r.kv.error || r.kv.warning); });
