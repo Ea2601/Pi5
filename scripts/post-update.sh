@@ -50,17 +50,20 @@ pkg_ensure() {
 #      (ağ vb.) ya da güncelleme yeniden denenirse HEAD@{1} aynı commit'i gösterir, kurulum atlanır ve derleme eksik paket
 #      yüzünden her seferinde düşerdi. Kurulum hatası günlüğe ayrıntılı yazılır (eskiden son 3 satır).
 # NOT: --production KULLANMA — tsc (typescript) devDependencies'te; --production onu siler ve build kırılır.
+# --include=dev ŞART: panelden başlatılan güncelleme pi5-backend'in NODE_ENV=production ortamını devralır; npm 10 o
+# ortamda `npm install` ile kurulu devDependencies'i (tsc, vite) SİLER, `npm ls` de eksik devDependency'yi göstermez
+# (npm 10.9 ile denendi) → derleme her güncellemede düşer ve eksik paket hiç fark edilmezdi.
 npm_sync() {
   local dir="$BASE/$1" name=$2 why="" out
   [ -f "$dir/package.json" ] || return 0
   if git diff 'HEAD@{1}' --name-only 2>/dev/null | grep -q "$1/package"; then why="package.json değişti"
   elif [ ! -d "$dir/node_modules" ]; then why="node_modules yok"
   # Yalnız eksik / sürümü tutmayan paket (npm ls "missing:" / "invalid:"); fazladan paket (extraneous) kurulum sebebi değil.
-  elif (cd "$dir" && npm ls --depth=0 2>&1) | grep -qE "missing:|invalid:"; then why="eksik ya da uyumsuz paket"
+  elif (cd "$dir" && npm ls --depth=0 --include=dev 2>&1) | grep -qE "missing:|invalid:"; then why="eksik ya da uyumsuz paket"
   fi
   [ -n "$why" ] || return 0
   echo "  $name bağımlılıkları güncelleniyor ($why)..." >> "$LOG"
-  if out=$(cd "$dir" && npm install --no-audit --no-fund 2>&1); then
+  if out=$(cd "$dir" && npm install --include=dev --no-audit --no-fund 2>&1); then
     printf '%s\n' "$out" | tail -3 >> "$LOG"
   else
     echo "  [npm] UYARI: $name npm install başarısız (derleme eksik paketle düşebilir):" >> "$LOG"
