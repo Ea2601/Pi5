@@ -1,8 +1,9 @@
 {
-  "version": "2.24.2",
-  "build": 79,
+  "version": "2.24.3",
+  "build": 80,
   "date": "2026-09-28",
   "changelog": [
+    "Panel son açık sayfayı hatırlar: sayfa yenilenince ya da panel adresi (yer imi, elle yazılan adres) yeniden açılınca en son bakılan sayfadan devam edilir; adres çubuğundaki #sayfa (ör. #dhcp) her zaman önceliklidir, tanınmayan adres Dashboard'u açar",
     "Kasa LED → LCD Ekran Döngüsü taşmaları giderildi: başlıktaki düğmeler (Sayfa Ekle, Metin Ekle, Varsayılan, Kaydet & Uygula) dar ekranda alt satıra kayar; telefonda sayfa satırlarının içerik bilgisi alt satıra iner. I2C adres/port, süre ve birim adı kutuları olması gereken genişliğe döndü; masaüstünde I2C port kutusu artık Animasyon sütununa binmiyor",
     "Güncelleme düzeltildi: v2.23.1'den beri panelden yapılan güncellemelerde 'Frontend Build' adımı 'tsc: not found' ile düşüyor, arayüz yenilenmiyordu (sürüm numarası yeni görünse de ekran eski kalıyordu). Neden: güncelleme panel servisinin ortamında (NODE_ENV=production) çalışırken npm derleme araçlarını (tsc, vite) sildi; eksik paket denetimi de bu ortamda onları görmüyordu. Artık derleme araçları her durumda kurulur, eksikse tamamlanır",
     "Panel güncellemesi arka planda sürer: 'Güncelle'ye basınca Pi işi kendi başına yürütür, panel o anki adımı gösterir (kod indiriliyor → kurulum → derleme → yeniden başlatma). Telefon ekranı kapansa, sayfa yenilense ya da bağlantı kopsa da güncelleme yarıda kalmaz. Eskiden istek 5 dk'ya kadar açık kalıyordu ve bağlantı kopunca 'Failed to fetch' görünüyordu",

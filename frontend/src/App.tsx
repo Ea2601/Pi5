@@ -30,26 +30,32 @@ import { CaseControlPanel } from './components/CaseControlPanel';
 import { KioskSettingsPanel } from './components/KioskSettingsPanel';
 import { PanelAuthBanner } from './components/PanelAuthBanner';
 import type { TabId } from './types';
-import { tabFromHash, tabLabel } from './nav';
+import { tabFromHash, tabLabel, initialTab, rememberTab } from './nav';
 import { seedThemeFromBackend } from './theme';
 import { Toaster } from './toast';
 import './index.css';
 import './App.css';
 
 function App() {
-  // Açılış sekmesi adres çubuğundan: http://<pi>/#dhcp doğrudan DHCP sayfasını açar, yenileyince aynı sayfada kalınır.
-  const [activeTab, setActiveTab] = useState<TabId>(() => tabFromHash(window.location.hash));
+  // Açılış sekmesi: adres çubuğundaki #sekme (http://<pi>/#dhcp doğrudan DHCP'yi açar), yoksa tarayıcının hatırladığı
+  // son sayfa, o da yoksa Dashboard.
+  const [activeTab, setActiveTab] = useState<TabId>(initialTab);
   const [navOpen, setNavOpen] = useState(false);
 
-  // Sekme değişince: menü çekmecesi kapanır, adres #sekme olur (geçmişe kayıt eklemeden), sayfa başa döner.
+  // Sekme seçilince menü çekmecesi kapanır.
   const goTab = useCallback((tab: TabId) => {
     setActiveTab(tab);
     setNavOpen(false);
-    const hash = tab === 'dashboard' ? '' : `#${tab}`;
+  }, []);
+
+  // Açık sayfa hatırlanır ve adres #sekme olur (geçmişe kayıt eklemeden): yenileyince ya da yeniden açınca aynı sayfa.
+  useEffect(() => {
+    rememberTab(activeTab);
+    const hash = activeTab === 'dashboard' ? '' : `#${activeTab}`;
     if (window.location.hash !== hash) {
       history.replaceState(null, '', hash || window.location.pathname + window.location.search);
     }
-  }, []);
+  }, [activeTab]);
 
   // Sayfa içi bağlantılar (ör. Pi-hole → "DHCP Ayarları") ve elle yazılan #sekme
   useEffect(() => {

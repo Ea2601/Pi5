@@ -55,6 +55,23 @@ export function tabFromHash(hash: string): TabId {
   return TAB_IDS.has(id) ? (id as TabId) : 'dashboard';
 }
 
+// Son açık sayfa tarayıcıda hatırlanır: adres çubuğunda #sekme yoksa (yer imi, elle yazılan adres) oradan devam edilir.
+// localStorage kapalı/erişilemezse (gizli pencere vb.) sessizce Dashboard'a düşer.
+const LAST_TAB_KEY = 'lastTab';
+
+export function initialTab(): TabId {
+  if (window.location.hash.replace(/^#/, '')) return tabFromHash(window.location.hash);
+  try {
+    const saved = localStorage.getItem(LAST_TAB_KEY);
+    if (saved && TAB_IDS.has(saved)) return saved as TabId;
+  } catch { /* depolama erişilemez */ }
+  return 'dashboard';
+}
+
+export function rememberTab(tab: TabId): void {
+  try { localStorage.setItem(LAST_TAB_KEY, tab); } catch { /* depolama erişilemez */ }
+}
+
 export function tabLabel(id: TabId): string {
   return NAV_TABS.find(t => t.id === id)?.label ?? '';
 }
