@@ -74,6 +74,10 @@ else
 fi
 log "Proje dosyaları hazır: $INSTALL_DIR"
 
+# Hız testi motoru: Ookla Speedtest CLI (resmi; en yakın sunucu, çoklu bağlantı). Kurulamazsa speedtest-cli kullanılır.
+if bash "$INSTALL_DIR/scripts/ookla-ensure.sh"; then log "Hız testi: Ookla Speedtest CLI hazır"
+else warn "Ookla Speedtest CLI kurulamadı — hız testi speedtest-cli ile sürer (sonra: sudo bash $INSTALL_DIR/scripts/ookla-ensure.sh)"; fi
+
 # ─── 4. Backend Kurulumu ───
 step "4/10 — Backend Kuruluyor"
 cd "$INSTALL_DIR/backend"

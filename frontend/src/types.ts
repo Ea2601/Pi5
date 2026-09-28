@@ -163,8 +163,9 @@ export interface SpeedTestResult {
   download_mbps: number;
   upload_mbps: number;
   ping_ms: number;
-  jitter_ms: number;
-  packet_loss: number;
+  // null = ölçülmedi (eski speedtest-cli yolu jitter / paket kaybı ölçmez)
+  jitter_ms: number | null;
+  packet_loss: number | null;
   server: string;
   isp: string;
   timestamp: string;

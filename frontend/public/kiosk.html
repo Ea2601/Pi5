@@ -294,7 +294,7 @@ async function buildSpeedPage() {
     ${card('İndirme', t.download_mbps.toFixed(1) + ' Mbps', '', 'text-blue')}
     ${card('Yükleme', t.upload_mbps.toFixed(1) + ' Mbps', '', 'text-green')}
     ${card('Ping', t.ping_ms.toFixed(1) + ' ms', '', 'text-orange')}
-    ${card('Jitter', (t.jitter_ms || 0).toFixed(1) + ' ms', '', 'text-purple')}
+    ${card('Jitter', t.jitter_ms == null ? '—' : t.jitter_ms.toFixed(1) + ' ms', '', 'text-purple')}
   </div>`;
 }
 

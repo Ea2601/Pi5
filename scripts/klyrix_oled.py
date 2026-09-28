@@ -485,11 +485,22 @@ def _nice(v):
     return 100 if v <= 100 else 200 if v <= 200 else 500 if v <= 500 else 1000
 
 
+def _st_text(fb, st, running, t, maxw=124):
+    """Son ölçülen hız HER ZAMAN görünür (eskiden test sürerken yalnız 'SPEEDTEST RUNNING' yazıyordu); test sürerken
+    başlık 'TESTING...' olur. Biçim en uzun nokta sayısıyla ölçülüp seçilir (kare kare kısa/uzun arası titremesin)."""
+    vals = '↓%s ↑%s' % (st['dl'], st['ul']) if st.get('has', True) else 'NO DATA'
+    heads = ('TESTING', 'TEST') if running else ('SPEEDTEST', 'ST')
+    dots = '.' * (1 + int(t * 3) % 3) if running else ''
+    for h in heads:
+        if fb.measure('%s%s %s' % (h, '...' if running else '', vals)) <= maxw:
+            return '%s%s %s' % (h, dots, vals)
+    return vals
+
+
 def r_inet(fb, c):
     D, dl, ul = c['D'], c['S']['dl'], c['S']['ul']
     last3 = c['tt'] >= c['dwell'] - 3
-    dots = '.' * (1 + int(c['t'] * 3) % 3)
-    st_txt = ('SPEEDTEST RUNNING' + dots) if c['running'] else 'SPEEDTEST ↓%s ↑%s' % (D['st']['dl'], D['st']['ul'])
+    st_txt = _st_text(fb, D['st'], c['running'], c['t'])
     header(fb, c, 'INTERNET', '%dMS J%d' % (D['ping'], D['jitter']))
     if dl:
         fb.spark(2, 13, 124, 23, dl, vmin=0, vmax=_nice(max(dl)), fill='dots')
@@ -618,6 +629,22 @@ def _sh(cmd, timeout=3):
         return subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=timeout).stdout.strip()
     except Exception:
         return ''
+
+
+# Hız testi sürüyor mu: backend ölçüme başlarken yazar, bitince siler (backend/src/speedtest.ts). Eskiden
+# `pgrep -f speedtest` kabuk üzerinden çalıştığı için kendi kabuğunu da buluyordu → ekran hep "SPEEDTEST RUNNING",
+# son ölçüm hiç görünmüyordu. Backend çökmüşse kalan dosya 300 sn sonra sayılmaz (ölçüm en çok 150 sn sürer).
+SPEEDTEST_STATE = '/run/pi5-speedtest/state'
+
+
+def _speedtest_running(now=None):
+    try:
+        with open(SPEEDTEST_STATE) as f:
+            kv = dict(line.strip().split('=', 1) for line in f if '=' in line)
+        age = (time.time() if now is None else now) - int(kv.get('started', '0'))
+        return 0 <= age <= 300
+    except Exception:
+        return False
 
 
 # Pi'de WireGuard tünelleri wg_vps<ID> arayüzleridir (wg0 yoktur); panel bağlantısı wg-quick'i doğrudan çalıştırdığı
@@ -845,10 +872,10 @@ class Live(Source):
         row = _db("SELECT download_mbps, upload_mbps, ping_ms, jitter_ms FROM speed_tests ORDER BY timestamp DESC LIMIT 1")
         if row is None:
             row = _db("SELECT download_mbps, upload_mbps, ping_ms FROM speed_tests ORDER BY timestamp DESC LIMIT 1")
-        s['st'] = {'dl': int(row[0] or 0), 'ul': int(row[1] or 0)} if row else {'dl': 0, 'ul': 0}
+        s['st'] = {'dl': int(row[0] or 0), 'ul': int(row[1] or 0), 'has': True} if row else {'dl': 0, 'ul': 0, 'has': False}
         s['ping'] = int(row[2] or 0) if row else 0
         s['jitter'] = int(row[3] or 0) if row and len(row) > 3 else 0
-        s['running'] = bool(_sh('pgrep -f speedtest'))
+        s['running'] = _speedtest_running()
         up = float((_rf('/proc/uptime').split() or ['0'])[0])
         d, rem = divmod(int(up), 86400)
         s['uptime'] = '%dD %dH' % (d, rem // 3600) if d else '%dH %dM' % (rem // 3600, (rem % 3600) // 60)

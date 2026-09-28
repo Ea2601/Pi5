@@ -12,11 +12,12 @@ import {
   MANAGED_SERVICE_NAMES, TOGGLEABLE_SERVICES, FTL_SETTLE_TIMEOUT,
   getNetworkDevices, getBandwidthLive, getWireguardStatus,
   getFail2banStatus, getDnsQueries, getCurrentExternalIp,
-  runSpeedTest, executeCommand, applyDomainRouting, applyBlockedDevices,
+  executeCommand, applyDomainRouting, applyBlockedDevices,
   sampleMetrics, detectInterfaces, recoverInterruptedFtlRestart, VALID_DNSMASQ_DOMAIN, getRoutingApplyStatus,
   getLanIdentity, protectedMacs, getPi5LanIp, readNetModeState, runExclusiveDnsTask, AP_ADDR, AP_NET,
 } from './system';
 import type { RangeRoute } from './system';
+import { runSpeedTest, SpeedtestUnavailable, type SpeedResult } from './speedtest';
 import { ASN_TOKEN, getAsnPrefixes, normalizeCidr, refreshAsnIfStale } from './ipRanges';
 import { getRoutingSuggestions, MAX_HOURS as SUGGEST_MAX_HOURS } from './domainSuggest';
 import { startUpdate, getUpdateStatus } from './update';
@@ -1583,20 +1584,28 @@ app.get('/api/dns/queries', async (req, res) => {
 });
 
 // ─── Speed Test ───
+// Ölçüm (speedtest.ts) + kayıt tek işlemdir: manuel test otomatik ölçüm sürerken gelirse ikinci ölçüm başlatılmaz, aynı
+// sonucu alır (eskiden iki ölçüm aynı anda hattı paylaşıp ikisi de düşük çıkabilirdi) ve sonuç bir kez kaydedilir.
+let speedtestRun: Promise<SpeedResult> | null = null;
+function measureAndStore(): Promise<SpeedResult> {
+  if (!speedtestRun) {
+    speedtestRun = runSpeedTest().then(async r => {
+      await dbRun(
+        'INSERT INTO speed_tests (download_mbps, upload_mbps, ping_ms, jitter_ms, packet_loss, server, isp) VALUES (?, ?, ?, ?, ?, ?, ?)',
+        [r.download_mbps, r.upload_mbps, r.ping_ms, r.jitter_ms, r.packet_loss, r.server, r.isp]
+      );
+      return r;
+    }).finally(() => { speedtestRun = null; });
+  }
+  return speedtestRun;
+}
+
 app.post('/api/speedtest/run', async (_req, res) => {
   try {
-    const result = await runSpeedTest();
-    if (!result) {
-      return res.status(503).json({ error: 'speedtest-cli kurulu degil veya gelistirme ortaminda calisiyorsunuz. Pi5 uzerinde: sudo apt install speedtest-cli' });
-    }
-    const { download_mbps, upload_mbps, ping_ms, jitter_ms, packet_loss, server, isp } = result;
-    await dbRun(
-      'INSERT INTO speed_tests (download_mbps, upload_mbps, ping_ms, jitter_ms, packet_loss, server, isp) VALUES (?, ?, ?, ?, ?, ?, ?)',
-      [download_mbps, upload_mbps, ping_ms, jitter_ms, packet_loss, server, isp]
-    );
-    res.json({ success: true, result: { download_mbps, upload_mbps, ping_ms, jitter_ms, packet_loss, server, isp, timestamp: new Date().toISOString() } });
+    const result = await measureAndStore();
+    res.json({ success: true, result: { ...result, timestamp: new Date().toISOString() } });
   } catch (e: any) {
-    res.status(500).json({ error: e.message });
+    res.status(e instanceof SpeedtestUnavailable ? 503 : 500).json({ error: e.message });
   }
 });
 
@@ -1636,17 +1645,14 @@ async function getSpeedtestIntervalMin(): Promise<number> {
 
 async function runAutoSpeedtest(): Promise<void> {
   try {
-    const result = await runSpeedTest();
-    if (result) {
-      await dbRun(
-        'INSERT INTO speed_tests (download_mbps, upload_mbps, ping_ms, jitter_ms, packet_loss, server, isp) VALUES (?, ?, ?, ?, ?, ?, ?)',
-        [result.download_mbps, result.upload_mbps, result.ping_ms, result.jitter_ms, result.packet_loss, result.server, result.isp]
-      );
-      console.log(`[SpeedTest] Otomatik ölçüm kaydedildi: ${result.download_mbps}↓ / ${result.upload_mbps}↑ Mbps, ping ${result.ping_ms}ms`);
-    } else {
-      console.warn('[SpeedTest] Otomatik ölçüm atlandı — speedtest-cli yok. Kur: sudo apt install speedtest-cli');
+    try {
+      const result = await measureAndStore();
+      console.log(`[SpeedTest] Otomatik ölçüm kaydedildi: ${result.download_mbps}↓ / ${result.upload_mbps}↑ Mbps, ping ${result.ping_ms}ms, ${result.server}`);
+    } catch (e: any) {
+      if (e instanceof SpeedtestUnavailable) console.warn(`[SpeedTest] Otomatik ölçüm atlandı — ${e.message}`);
+      else console.error('[SpeedTest] Otomatik ölçüm hatası:', e?.message || e);
     }
-    // Retention temizliği
+    // Retention temizliği (ölçüm başarısız olsa da yapılır)
     await dbRun(`DELETE FROM speed_tests WHERE timestamp < datetime('now', '-30 days')`);
     await dbRun(`DELETE FROM ddns_ip_history WHERE detected_at < datetime('now', '-90 days')`);
     await dbRun(`DELETE FROM connection_history WHERE timestamp < datetime('now', '-30 days')`);
@@ -3710,6 +3716,9 @@ function runPanelAuth(args: string[], input = ''): Promise<{ code: number | null
       for (const line of out.split('\n')) { const i = line.indexOf('='); if (i > 0) kv[line.slice(0, i).trim()] = line.slice(i + 1).trim(); }
       resolve({ code, kv });
     });
+    // Betik şifreyi okumadan çıkarsa yazma EPIPE verir; dinleyicisiz 'error' olayı tüm backend'i düşürürdü (runKvScript
+    // ile aynı). Sonuç yine 'close' ile bildirilir.
+    child.stdin.on('error', () => { /* betik stdin'i okumadan çıktı */ });
     child.stdin.end(input);
   });
 }

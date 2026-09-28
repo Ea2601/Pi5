@@ -8,6 +8,10 @@ import type { SpeedTestResult } from '../types';
 
 type Period = '24h' | '7d' | '30d';
 
+// null = ölçülmedi (eski speedtest-cli yolu jitter / paket kaybı ölçmez) → "—", 0 değil.
+const fmtOpt = (v: number | null | undefined, digits: number, unit: string) =>
+  v == null ? '—' : `${v.toFixed(digits)}${unit}`;
+
 export function SpeedTestPanel() {
   const [period, setPeriod] = useState<Period>('7d');
   const { data, refetch } = useApi<{ tests: SpeedTestResult[] }>(`/speedtest/history?period=${period}`, { tests: [] });
@@ -64,7 +68,7 @@ export function SpeedTestPanel() {
   return (
     <div className="fade-in">
       <Panel title="Hız Testi" icon={<Gauge size={20} style={{ marginRight: 8 }} />}
-        subtitle="Her 10 dakikada otomatik ölçüm — jitter, packet loss dahil"
+        subtitle="Ookla Speedtest — en yakın sunucu otomatik seçilir; otomatik ölçüm aralığı Ayarlar'da"
         actions={
           <button className="btn-primary btn-sm" onClick={handleRun} disabled={running}>
             {running ? <><Loader2 size={14} className="spin" /> Test ({elapsed}s)...</> : <><Play size={14} /> Manuel Test</>}
@@ -84,7 +88,7 @@ export function SpeedTestPanel() {
           <StatCard icon={<ArrowDown size={20} />} label="İndirme" value={`${latest.download_mbps.toFixed(1)} Mbps`} color="blue" />
           <StatCard icon={<ArrowUp size={20} />} label="Yükleme" value={`${latest.upload_mbps.toFixed(1)} Mbps`} color="green" />
           <StatCard icon={<Clock size={20} />} label="Ping" value={`${latest.ping_ms.toFixed(1)} ms`} color="orange" />
-          <StatCard icon={<Zap size={20} />} label="Jitter" value={`${(latest.jitter_ms || 0).toFixed(1)} ms`} color="purple" />
+          <StatCard icon={<Zap size={20} />} label="Jitter" value={fmtOpt(latest.jitter_ms, 1, ' ms')} color="purple" />
         </div>
       )}
 
@@ -93,7 +97,7 @@ export function SpeedTestPanel() {
           <div className="glass-panel" style={{ flex: 1, minWidth: 200, padding: '10px 14px', display: 'flex', alignItems: 'center', gap: 8 }}>
             <Wifi size={14} style={{ color: 'var(--accent-color)' }} />
             <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>Packet Loss:</span>
-            <strong style={{ fontSize: 13 }}>{(latest.packet_loss || 0).toFixed(2)}%</strong>
+            <strong style={{ fontSize: 13 }}>{fmtOpt(latest.packet_loss, 2, '%')}</strong>
           </div>
           <div className="glass-panel" style={{ flex: 1, minWidth: 200, padding: '10px 14px', display: 'flex', alignItems: 'center', gap: 8 }}>
             <Server size={14} style={{ color: 'var(--accent-color)' }} />
@@ -181,9 +185,9 @@ export function SpeedTestPanel() {
                   <span style={{ width: 80, color: '#3b82f6', fontWeight: 600 }}>{t.download_mbps.toFixed(1)}</span>
                   <span style={{ width: 80, color: '#10b981', fontWeight: 600 }}>{t.upload_mbps.toFixed(1)}</span>
                   <span style={{ width: 60 }}>{t.ping_ms.toFixed(1)}</span>
-                  <span style={{ width: 60 }}>{(t.jitter_ms || 0).toFixed(1)}</span>
+                  <span style={{ width: 60 }}>{fmtOpt(t.jitter_ms, 1, '')}</span>
                   <span style={{ width: 60, color: (t.packet_loss || 0) > 1 ? 'var(--danger-color)' : '' }}>
-                    {(t.packet_loss || 0).toFixed(2)}%
+                    {fmtOpt(t.packet_loss, 2, '%')}
                   </span>
                   <span style={{ flex: 1, fontSize: 11, color: 'var(--text-muted)' }}>{t.server}</span>
                 </div>
