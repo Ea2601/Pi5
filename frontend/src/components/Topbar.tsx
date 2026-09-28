@@ -63,8 +63,10 @@ export function Topbar({ onShowAlerts, onMenu, menuOpen = false, title = '', onL
   useEffect(() => {
     const check = () => {
       fetch('/api/system/update-check')
-        .then(r => r.json())
-        .then(setUpdateInfo)
+        .then(r => (r.ok ? r.json() : null))
+        // Yalnız beklenen biçimdeki yanıt kaydedilir: JSON hata gövdesi (ör. hız sınırının 429'u) güncelleme penceresinin
+        // `commits.map`'ini — pencere kapalıyken de hesaplanır — ve onunla bütün paneli çökertmesin.
+        .then(d => { if (d && Array.isArray(d.commits)) setUpdateInfo(d); })
         .catch(() => {});
     };
     check();

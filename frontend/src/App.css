@@ -452,6 +452,8 @@ body.nav-open { overflow: hidden; }
   font-variant-numeric: tabular-nums;
   overflow-wrap: anywhere;
 }
+/* Açık tema: sabit beyaz değer açık zeminde okunmuyordu */
+:root.light-theme .stat-value { color: #0f172a; }
 
 /* ═══════════════════ SHELL BREAKPOINTS ═══════════════════ */
 @media (min-width: 640px) {
