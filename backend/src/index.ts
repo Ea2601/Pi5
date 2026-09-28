@@ -21,6 +21,7 @@ import { runSpeedTest, SpeedtestUnavailable, type SpeedResult } from './speedtes
 import { ASN_TOKEN, getAsnPrefixes, normalizeCidr, refreshAsnIfStale } from './ipRanges';
 import { getRoutingSuggestions, MAX_HOURS as SUGGEST_MAX_HOURS } from './domainSuggest';
 import { startUpdate, getUpdateStatus } from './update';
+import { sampleBandwidth, neighborMacs, buildLive } from './bandwidth';
 import { authGate, registerAuthRoutes } from './auth';
 import {
   shq, sedEscape, isValidMac, isValidDomain, isValidTimezone,
@@ -1495,34 +1496,13 @@ app.delete('/api/firewall/rules/:id', async (req, res) => {
 // ─── Bandwidth Monitor ───
 app.get('/api/bandwidth/live', async (_req, res) => {
   try {
-    const devices = await dbAll('SELECT mac_address, hostname FROM devices');
+    const devices = await dbAll('SELECT mac_address, hostname, ip_address FROM devices');
     if (isLinux) {
+      // Cihaz başı gerçek ölçüm (bandwidth.ts: nftables sayaçları). Eskiden arayüz toplamı cihaz sayısına eşit bölünüyordu.
+      // interfaces: kiosk sayfası arayüz toplamlarını buradan okur (değişmedi).
       const bw = await getBandwidthLive();
-      // Distribute interface bandwidth proportionally across devices
-      // Real per-device bandwidth requires iptables counters (complex), so provide interface-level data
-      const liveData = (devices as any[]).map((d: any) => ({
-        device_mac: d.mac_address,
-        hostname: d.hostname,
-        bytes_in: 0,
-        bytes_out: 0,
-        speed_in_kbps: 0,
-        speed_out_kbps: 0,
-        timestamp: new Date().toISOString(),
-      }));
-      // Distribute interface bandwidth proportionally across devices
-      const totalRxSpeed = bw.interfaces.reduce((s, i) => s + i.rx_speed_bps, 0);
-      const totalTxSpeed = bw.interfaces.reduce((s, i) => s + i.tx_speed_bps, 0);
-      const totalRx = bw.interfaces.reduce((s, i) => s + i.rx_bytes, 0);
-      const totalTx = bw.interfaces.reduce((s, i) => s + i.tx_bytes, 0);
-      const count = liveData.length || 1;
-      liveData.forEach((d: any, idx: number) => {
-        const share = 1 / count;
-        d.bytes_in = Math.round(totalRx * share);
-        d.bytes_out = Math.round(totalTx * share);
-        d.speed_in_kbps = Math.round((totalRxSpeed * share) / 125); // bytes/s to kbps
-        d.speed_out_kbps = Math.round((totalTxSpeed * share) / 125);
-      });
-      res.json({ live: liveData, interfaces: bw.interfaces });
+      const [{ counters, rates }, macs] = await Promise.all([sampleBandwidth(), neighborMacs()]);
+      res.json({ live: buildLive(devices as any[], counters, rates, macs), interfaces: bw.interfaces });
     } else {
       // Non-Linux: return zeroed data (no mock)
       const liveData = (devices as any[]).map((d: any) => ({

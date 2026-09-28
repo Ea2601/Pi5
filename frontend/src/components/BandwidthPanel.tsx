@@ -112,7 +112,7 @@ export function BandwidthPanel() {
                   <span className="ban-ip" style={{ flex: 2 }}>Cihaz</span>
                   <span style={{ flex: 1 }}>Indirme</span>
                   <span style={{ flex: 1 }}>Yukleme</span>
-                  <span style={{ flex: 1 }}>Toplam Veri</span>
+                  <span style={{ flex: 1 }} title="Pi üzerinden geçen trafik; sayaçlar Pi açılınca (ya da güvenlik duvarı yeniden yüklenince) sıfırlanır">Toplam Veri (açılıştan beri)</span>
                 </div>
                 {liveData.live.length === 0 && (
                   <div className="empty-state" style={{ padding: '20px' }}>Aktif cihaz bulunamadi.</div>

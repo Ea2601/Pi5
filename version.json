@@ -1,8 +1,9 @@
 {
-  "version": "2.24.9",
-  "build": 86,
+  "version": "2.24.10",
+  "build": 87,
   "date": "2026-09-28",
   "changelog": [
+    "Bant Genişliği sayfası cihaz başına gerçek ölçüm gösterir: eskiden Pi'nin toplam trafiği cihaz sayısına eşit bölünüyordu, bu yüzden bütün cihazlar aynı değeri gösteriyordu (üstelik toplam iki kez sayılıyordu). Artık Pi'den geçen trafik her cihaz için ayrı sayılır (indirme / yükleme hızı ve Pi açılışından beri toplam veri); en çok kullanan cihaz üstte. Sayım trafiği etkilemez; aynı ağdaki iki cihaz arasındaki trafik Pi'den geçmediği için sayılmaz",
     "Telefonda menü açılınca klavye/ekran okuyucu odağı artık menünün içindeki kapat düğmesine gelir (önceki sürümlerde odak arkadaki sayfada kalıyordu); Esc ile kapatınca odak menü düğmesine döner",
     "Kenar çubuğu, üst çubuk ve logo tek parça: masaüstünde logo sol üst köşede sabit durur, üst çubuk onunla aynı yükseklikte devam eder, menü altından başlar — ekranın sol ve üst kenarına oturan tek bir çerçeve. Yalnız menü listesi kayar; eskiden logonun bulanık arka planı belli oluyor ve menü kaydırılınca öğeler logonun arkasından geçip üst üste biniyordu. Telefondaki açılır menüde de logo başlığı sabit, üst çubukla aynı hizada; liste altında kayar, 'Çıkış yap' her zaman görünür",
     "Düzeltmeler: güncelleme denetimi hata yanıtı alınca (ör. çok fazla istek) panelin tamamı 'Bir hata oluştu' ekranına düşebiliyordu — artık yalnız geçerli yanıt kullanılır. Açık temada Dashboard ve diğer sayfalardaki istatistik değerleri (sayılar) soluk beyazdı, okunmuyordu — artık koyu",
