@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { Sidebar } from './components/Sidebar';
 import { Topbar } from './components/Topbar';
@@ -35,7 +35,7 @@ import { RolesPanel } from './components/RolesPanel';
 import { LiveVersionNotice } from './components/LiveVersionNotice';
 import { AUTH_REQUIRED_EVENT, fetchAuthStatus, logout, type AuthStatus } from './auth';
 import type { TabId } from './types';
-import { tabFromHash, tabLabel, initialTab, rememberTab } from './nav';
+import { tabFromHash, tabLabel, initialTab, rememberTab, navTabsFor, isMainOnly, type DeviceRole } from './nav';
 import { seedThemeFromBackend } from './theme';
 import { Toaster } from './toast';
 import './index.css';
@@ -51,6 +51,16 @@ function App() {
   const [needLogin, setNeedLogin] = useState(false);
   // Girişten sonra panel baştan kurulur (bütün veriler oturumla yeniden istenir).
   const [session, setSession] = useState(0);
+  // Cihaz rolü (R2): mesh uydusunda menü sadeleşir (ağ geçidi sayfaları gizli). Eski arka uç / hata → ana cihaz.
+  const [role, setRole] = useState<DeviceRole>('main');
+  useEffect(() => {
+    let alive = true;
+    fetch('/api/system/role').then(r => (r.ok ? r.json() : null)).then(d => {
+      if (alive && d?.role === 'satellite') setRole('satellite');
+    }).catch(() => {});
+    return () => { alive = false; };
+  }, [session]);
+  const navTabs = useMemo(() => navTabsFor(role), [role]);
 
   useEffect(() => {
     let alive = true;
@@ -133,6 +143,16 @@ function App() {
   }, [session]);
 
   const renderTab = () => {
+    // Uyduda ağ geçidi sayfası (eski yer imi / elle yazılan #sekme): sayfa ana cihazda.
+    if (role === 'satellite' && isMainOnly(activeTab)) {
+      return (
+        <div className="glass-panel sat-notice">
+          <strong>Bu cihaz mesh uydusu</strong>
+          <span>"{tabLabel(activeTab)}" ana cihazda yönetilir — uydu yalnız ana cihazın Wi-Fi'ını yayınlar.</span>
+          <button className="btn-outline btn-sm" onClick={() => goTab('roles')}>Cihaz Rolleri → Uydular</button>
+        </div>
+      );
+    }
     switch (activeTab) {
       case 'dashboard': return <Dashboard />;
       case 'topology': return <NetworkTopology />;
@@ -180,7 +200,7 @@ function App() {
       <NetworkBackdrop variant="panel" />
       <div className="app-container">
         <Sidebar activeTab={activeTab} onTabChange={goTab} open={navOpen} onClose={() => setNavOpen(false)}
-          onLogout={canLogout ? handleLogout : undefined} />
+          onLogout={canLogout ? handleLogout : undefined} tabs={navTabs} />
         <main className="main-content">
           <Topbar
             onShowAlerts={() => goTab('alerts')}

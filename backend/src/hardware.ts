@@ -29,6 +29,8 @@ export type Hardware = {
   net: {
     uplinkIface: string | null; netStage: string; apStage: string; apIface: string | null; piDhcp: boolean;
     homeStage?: string; homeIface?: string | null;
+    // R2: cihaz rolü, eşleşmiş uydu sayısı (ana cihaz), uydunun eşleşmesi, kablosuz mesh yapılandırıldı mı.
+    role?: 'main' | 'satellite'; satellites?: number; paired?: boolean; meshConfigured?: boolean;
   };
 };
 
@@ -141,6 +143,9 @@ export function evaluateRoles(hw: Hardware): RoleEval[] {
   const names = (xs: { name: string }[]) => xs.map(e => e.name).join(', ');
   const unk = 'okunamadı';
   const out: RoleEval[] = [];
+  // Mesh uydusu (R2): ağ geçidi rolleri ana cihazdadır; uydunun yayını ana cihazın ev Wi-Fi'ı ayarlarıyla yapılır.
+  const satRole = hw.net.role === 'satellite';
+  const satNote: Note = { kind: 'info', text: 'Bu cihaz uydu: ağ geçidi rolleri ana cihazda. Ana cihaz yapmak için Uydu panelinden rolü çevirin.' };
 
   // LAN router: mevcut ağın arkasında DHCP + DNS + NAT (DHCP Ayarları sihirbazı).
   const lanActive = hw.net.piDhcp && hw.net.netStage === 'static';
@@ -153,7 +158,7 @@ export function evaluateRoles(hw: Hardware): RoleEval[] {
       { ok: hw.net.piDhcp, label: 'Pi DHCP sunucusu', value: hw.net.piDhcp ? 'açık' : 'kapalı' },
     ],
     need: eth.length ? [] : [HW_SUGGEST.usbEth],
-    notes: lanActive ? [] : [{ kind: 'info', text: 'DHCP Ayarları sayfasındaki sihirbazla açılır.' }],
+    notes: satRole ? [satNote] : lanActive ? [] : [{ kind: 'info', text: 'DHCP Ayarları sayfasındaki sihirbazla açılır.' }],
   });
 
   // WAN router: internet bir porttan, ev ağı ayrı porttan (ya da tek port + VLAN destekli yönetilebilir anahtar).
@@ -170,7 +175,7 @@ export function evaluateRoles(hw: Hardware): RoleEval[] {
       { ok: hw.tools.pppd ? !!hw.modules.pppoe : null, label: 'PPPoE (operatör isterse)', value: hw.tools.pppd ? (hw.modules.pppoe ? 'hazır' : 'modül yok') : "R3'te kurulur" },
     ],
     need: eth.length >= 2 ? [] : [HW_SUGGEST.usbEth],
-    notes: wanNotes,
+    notes: satRole ? [satNote, ...wanNotes.filter(n => n.kind === 'warn')] : wanNotes,
   });
 
   // Erişim noktası: ev Wi-Fi'ı Pi'den, ev ağına köprülü (net-mode.sh home: eth0 + Wi-Fi kartı tek köprüde, R1).
@@ -182,17 +187,20 @@ export function evaluateRoles(hw: Hardware): RoleEval[] {
   if (homeStage === 'none' && hw.net.apStage !== 'none') {
     apNotes.push({ kind: 'warn', text: "Kurulum Wi-Fi'ı açık: ev Wi-Fi'ı aynı Wi-Fi kartını kullanır — önce kurulum Wi-Fi'ını kapatın." });
   }
-  if (homeStage === 'none' && !isStatic) apNotes.push({ kind: 'info', text: "Önce DHCP Ayarları sihirbazında Pi'ye sabit adres verip kalıcı yapın." });
+  if (satRole) apNotes.push({ kind: 'info', text: hw.net.paired ? "Bu cihaz uydu: ana cihazın ev Wi-Fi'ını aynı ağ adı ve şifreyle yayınlar." : 'Bu cihaz uydu: ana cihazla eşleşince onun ev Wi-Fi\'ını yayınlar.' });
+  else if (homeStage === 'none' && !isStatic) apNotes.push({ kind: 'info', text: "Önce DHCP Ayarları sihirbazında Pi'ye sabit adres verip kalıcı yapın." });
   if (apRadios.some(r => r.driver === 'brcmfmac') && !apRadios.some(r => r.bus === 'usb')) {
     apNotes.push({ kind: 'info', text: 'Dahili radyo tek antenli Wi-Fi 5: küçük alan ve az cihaz için uygun; geniş ev için USB adaptör önerilir.' });
   }
   out.push({
     id: 'ap', group: 'wireless', phase: null,
-    status: unknownRadios ? 'unknown' : homeStage === 'on' ? 'active' : apRadios.length ? 'available' : 'needs-hw',
+    status: unknownRadios ? 'unknown' : homeStage === 'on' || (satRole && hw.net.paired) ? 'active' : apRadios.length ? 'available' : 'needs-hw',
     checks: [
       { ok: unknownRadios ? null : apRadios.length > 0, label: 'AP modu', value: unknownRadios ? unk : apRadios.map(radioLabel).join(', ') || 'yok' },
       { ok: unknownRadios ? null : apRadios.some(r => r.bands.includes('5')), label: '5 GHz bant', value: unknownRadios ? unk : apRadios.some(r => r.bands.includes('5')) ? 'var' : 'yalnız 2.4 GHz' },
-      { ok: isStatic, label: 'Sabit adres', value: isStatic ? 'kalıcı' : hw.net.netStage === 'trial' ? 'deneme sürüyor' : 'yok' },
+      satRole
+        ? { ok: !!hw.net.paired, label: 'Ana cihazla eşleşme', value: hw.net.paired ? 'eşleşti' : 'yok' }
+        : { ok: isStatic, label: 'Sabit adres', value: isStatic ? 'kalıcı' : hw.net.netStage === 'trial' ? 'deneme sürüyor' : 'yok' },
     ],
     need: !unknownRadios && !apRadios.length ? [HW_SUGGEST.wifiMesh] : [],
     notes: apNotes,
@@ -219,29 +227,47 @@ export function evaluateRoles(hw: Hardware): RoleEval[] {
     notes: repNotes,
   });
 
-  // Kablolu mesh uydusu: ikinci Klyrix cihazı kabloyla ağa bağlanır, aynı ağ adıyla yayın yapar.
+  // Kablolu mesh uydusu: ikinci Klyrix cihazı kabloyla ağa bağlanır, ana cihazın ev Wi-Fi'ını aynı ağ adı ve şifreyle
+  // (farklı kanalda) yayınlar (R2: mesh.ts, net-mode.sh sat). Ana cihazda uydu eklenir; uyduda eşleşme gösterilir.
+  const isSat = hw.net.role === 'satellite';
+  const sats = hw.net.satellites || 0;
+  const homeOn = hw.net.homeStage === 'on';
+  const baseOk = eth.length > 0 && apRadios.length > 0;
+  const wiredNotes: Note[] = [];
+  if (isSat) wiredNotes.push({ kind: 'info', text: hw.net.paired ? 'Bu cihaz uydu: yayın ayarlarını ana cihazdan alır.' : 'Bu cihaz uydu: Uydular panelinden ana cihazla eşleştirin.' });
+  else {
+    if (!homeOn) wiredNotes.push({ kind: 'info', text: "Uydular bu cihazın ev Wi-Fi'ını yayınlar — önce ev Wi-Fi'ını açın." });
+    wiredNotes.push({ kind: 'info', text: 'Uydu: ikinci Klyrix cihazı kurulumda "Uydu" seçilerek kurulur; eşleştirme Uydular panelinden.' });
+  }
   out.push({
-    id: 'mesh-wired', group: 'mesh', phase: 'R2',
-    status: unknownRadios ? 'unknown' : eth.length && apRadios.length ? 'hw-ready' : 'needs-hw',
+    id: 'mesh-wired', group: 'mesh', phase: null,
+    status: unknownRadios ? 'unknown' : (isSat ? hw.net.paired : sats > 0) ? 'active' : baseOk ? 'available' : 'needs-hw',
     checks: [
       { ok: eth.length > 0, label: 'Ethernet (uydu bağlantısı)', value: names(linked) || names(eth) || 'yok' },
       { ok: unknownRadios ? null : apRadios.length > 0, label: 'AP modu (yayın)', value: unknownRadios ? unk : apRadios.length ? 'var' : 'yok' },
+      isSat
+        ? { ok: !!hw.net.paired, label: 'Ana cihazla eşleşme', value: hw.net.paired ? 'eşleşti' : 'yok' }
+        : { ok: sats > 0 ? true : homeOn, label: 'Uydular', value: sats > 0 ? `${sats} uydu` : homeOn ? 'eklenmedi' : "ev Wi-Fi'ı kapalı" },
     ],
-    need: [HW_SUGGEST.secondDevice],
-    notes: [{ kind: 'info', text: 'Her uydu Klyrix yazılımıyla kurulur; kurulumda "ana cihaz / uydu" sorulur.' }],
+    need: isSat || sats > 0 ? [] : [HW_SUGGEST.secondDevice],
+    notes: wiredNotes,
   });
 
-  // Kablosuz mesh: 802.11s bağlantısı. İdeali mesh radyosu + ayrı yayın radyosu; tek radyoda AP + mesh birlikte olabiliyorsa o da olur.
+  // Kablosuz mesh: 802.11s + SAE (scripts/mesh.sh). İdeali mesh radyosu + ayrı yayın radyosu; tek radyoda AP + mesh
+  // birlikte olabiliyorsa o da olur. Omurga ana cihazdan açılır, uydular ayarı senkronla alır.
   const meshWithAp = meshRadios.some(r => r.apMesh) || meshRadios.some(m => apRadios.some(a => a !== m));
+  const meshNotes: Note[] = [];
+  if (radios.some(r => r.driver === 'brcmfmac')) meshNotes.push({ kind: 'info', text: "Pi'nin dahili Wi-Fi'ı (brcmfmac) mesh ve 4 adresli köprüyü desteklemez." });
+  if (!isSat && meshWithAp && !hw.net.meshConfigured) meshNotes.push({ kind: 'info', text: 'Uydular panelinden açılır; uydularda da mesh destekli radyo olmalı.' });
   out.push({
-    id: 'mesh-wireless', group: 'mesh', phase: 'R2',
-    status: unknownRadios ? 'unknown' : meshWithAp ? 'hw-ready' : 'needs-hw',
+    id: 'mesh-wireless', group: 'mesh', phase: null,
+    status: unknownRadios ? 'unknown' : hw.net.meshConfigured ? 'active' : meshWithAp ? 'available' : 'needs-hw',
     checks: [
       { ok: unknownRadios ? null : meshRadios.length > 0, label: '802.11s mesh modu', value: unknownRadios ? unk : meshRadios.map(radioLabel).join(', ') || 'yok' },
       { ok: unknownRadios ? null : meshWithAp, label: 'Mesh + yayın birlikte', value: unknownRadios ? unk : meshWithAp ? 'var' : 'yok' },
     ],
-    need: [...(!unknownRadios && !meshWithAp ? [HW_SUGGEST.wifiMesh] : []), HW_SUGGEST.secondDevice],
-    notes: radios.some(r => r.driver === 'brcmfmac') ? [{ kind: 'info', text: "Pi'nin dahili Wi-Fi'ı (brcmfmac) mesh ve 4 adresli köprüyü desteklemez." }] : [],
+    need: [...(!unknownRadios && !meshWithAp ? [HW_SUGGEST.wifiMesh] : []), ...(isSat || sats > 0 ? [] : [HW_SUGGEST.secondDevice])],
+    notes: meshNotes,
   });
   return out;
 }

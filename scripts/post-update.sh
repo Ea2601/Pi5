@@ -272,6 +272,26 @@ else
   echo "  [ağ] UYARI: pi5-net-guard.service etkinleştirilemedi" >> "$LOG"
 fi
 
+# 7d. Kablosuz mesh (R2, 802.11s) — pi5-mesh.service yalnız yazılır; mesh panelden yapılandırılınca scripts/mesh.sh
+#     etkinleştirir. Çalışıyorsa yeni betikle yeniden başlatılır. Hata güncellemeyi durdurmaz.
+cat > /etc/systemd/system/pi5-mesh.service << 'MSEOF' || echo "  [ağ] UYARI: pi5-mesh.service yazılamadı" >> "$LOG"
+[Unit]
+Description=Klyrix Gate kablosuz mesh (802.11s)
+After=NetworkManager.service
+Wants=NetworkManager.service
+
+[Service]
+Type=simple
+ExecStart=/bin/bash /opt/pi5-gateway/scripts/mesh.sh run
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+MSEOF
+systemctl daemon-reload 2>/dev/null || true
+systemctl try-restart pi5-mesh.service >/dev/null 2>&1 || true
+
 # 8. Panel erişim koruması: durum dosyasını kurar, açık korumayı onarır, süresi geçen denemeyi geri alır. Korumayı
 #    ASLA kendiliğinden açmaz (gece 03:30 güncellemesi kimse başında değilken kilitlemesin); şifre yazdırmaz.
 bash "$BASE/scripts/panel-auth.sh" ensure >> "$LOG" 2>&1 || echo "  [auth] UYARI: panel koruması denetlenemedi" >> "$LOG"

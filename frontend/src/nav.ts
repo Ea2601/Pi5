@@ -15,28 +15,30 @@ export interface NavTab {
   icon: LucideIcon;
   group?: string;
   sub?: boolean;
+  // Yalnız ana cihazda anlamlı (ağ geçidi, DNS, DHCP, yönlendirme): mesh uydusunda (R2) menüde gösterilmez.
+  mainOnly?: boolean;
 }
 
 export const NAV_TABS: NavTab[] = [
   { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
-  { id: 'topology', label: 'Ağ Haritası', icon: Network, group: 'Ağ Yönetimi' },
-  { id: 'routing', label: 'Routing', icon: Route },
-  { id: 'bandwidth', label: 'Bant Genisligi', icon: Activity },
-  { id: 'dnslog', label: 'DNS Sorgu Logu', icon: Search },
+  { id: 'topology', label: 'Ağ Haritası', icon: Network, group: 'Ağ Yönetimi', mainOnly: true },
+  { id: 'routing', label: 'Routing', icon: Route, mainOnly: true },
+  { id: 'bandwidth', label: 'Bant Genisligi', icon: Activity, mainOnly: true },
+  { id: 'dnslog', label: 'DNS Sorgu Logu', icon: Search, mainOnly: true },
   { id: 'speedtest', label: 'Hız Testi', icon: Gauge },
-  { id: 'ddns', label: 'DDNS', icon: Globe },
-  { id: 'pihole', label: 'Pi-hole DNS', icon: ShieldBan, group: 'Güvenlik' },
-  { id: 'dhcp', label: 'DHCP Ayarları', icon: Radio },
-  { id: 'zapret', label: 'Zapret DPI', icon: Zap },
-  { id: 'firewall', label: 'Firewall', icon: Flame },
-  { id: 'unbound', label: 'Unbound DNS', icon: Globe },
-  { id: 'fail2ban', label: 'Fail2Ban', icon: ShieldAlert },
-  { id: 'parental', label: 'Ebeveyn Kontrol', icon: Users },
-  { id: 'devicecontrol', label: 'Cihaz Yönetimi', icon: MonitorSmartphone, group: 'Cihaz & Trafik' },
-  { id: 'trafficcontrol', label: 'Trafik Kontrol', icon: Sliders },
+  { id: 'ddns', label: 'DDNS', icon: Globe, mainOnly: true },
+  { id: 'pihole', label: 'Pi-hole DNS', icon: ShieldBan, group: 'Güvenlik', mainOnly: true },
+  { id: 'dhcp', label: 'DHCP Ayarları', icon: Radio, mainOnly: true },
+  { id: 'zapret', label: 'Zapret DPI', icon: Zap, mainOnly: true },
+  { id: 'firewall', label: 'Firewall', icon: Flame, mainOnly: true },
+  { id: 'unbound', label: 'Unbound DNS', icon: Globe, mainOnly: true },
+  { id: 'fail2ban', label: 'Fail2Ban', icon: ShieldAlert, mainOnly: true },
+  { id: 'parental', label: 'Ebeveyn Kontrol', icon: Users, mainOnly: true },
+  { id: 'devicecontrol', label: 'Cihaz Yönetimi', icon: MonitorSmartphone, group: 'Cihaz & Trafik', mainOnly: true },
+  { id: 'trafficcontrol', label: 'Trafik Kontrol', icon: Sliders, mainOnly: true },
   { id: 'nettools', label: 'Ağ Araçları', icon: Wrench },
   { id: 'alerts', label: 'Bildirimler', icon: Bell },
-  { id: 'vps', label: 'VPS WireGuard', icon: Server, group: 'Altyapı' },
+  { id: 'vps', label: 'VPS WireGuard', icon: Server, group: 'Altyapı', mainOnly: true },
   { id: 'roles', label: 'Cihaz Rolleri', icon: Layers },
   { id: 'maintenance', label: 'Sistem & Log', icon: Terminal },
   { id: 'terminal', label: 'SSH Terminal', icon: TerminalSquare },
@@ -48,6 +50,11 @@ export const NAV_TABS: NavTab[] = [
 ];
 
 const TAB_IDS = new Set<string>(NAV_TABS.map(t => t.id));
+
+export type DeviceRole = 'main' | 'satellite';
+// Rolün menüsü: uyduda ağ geçidi sayfaları gizli.
+export const navTabsFor = (role: DeviceRole): NavTab[] => (role === 'satellite' ? NAV_TABS.filter(t => !t.mainOnly) : NAV_TABS);
+export const isMainOnly = (id: TabId): boolean => !!NAV_TABS.find(t => t.id === id)?.mainOnly;
 
 // Adres çubuğundaki #sekme (ör. http://192.168.0.1/#dhcp) → sekme; boş ya da tanınmayan değer Dashboard açar.
 export function tabFromHash(hash: string): TabId {

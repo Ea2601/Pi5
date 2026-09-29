@@ -38,6 +38,27 @@ echo "  ║     Klyrix/gate Kurulum Başlıyor             ║"
 echo "  ╚══════════════════════════════════════════════╝"
 echo -e "${NC}"
 
+# ─── Cihaz rolü (R2): ana cihaz ya da mesh uydusu ───
+# Kurulum ikisinde de aynıdır (tam kurulum). Uyduda panel ağ geçidi işlerini (yönlendirme, DNS/DHCP kuralları, tüneller)
+# çalıştırmaz; ana cihazın ev Wi-Fi'ını aynı ağ adı ve şifreyle yayınlar. Soru terminalden (/dev/tty) sorulur: curl | bash
+# ile de çalışır. Terminal yoksa önceki rol korunur (ilk kurulumda ana cihaz). KLYRIX_ROLE=main|satellite ile de verilir;
+# rol sonradan panelden (Cihaz Rolleri → Uydular) değiştirilebilir.
+ROLE_FILE=/etc/pi5-gateway/role
+ROLE=${KLYRIX_ROLE:-}
+PREV_ROLE=$(sed -n 's/^role=//p' "$ROLE_FILE" 2>/dev/null | head -1)
+if [ -z "$ROLE" ] && ( exec </dev/tty ) 2>/dev/null; then
+  echo "Bu cihaz nasıl kullanılacak?"
+  echo "  1) Ana cihaz — ağ geçidi, DNS, DHCP, yönlendirme (varsayılan)"
+  echo "  2) Uydu (mesh) — ana cihazın Wi-Fi'ını evin başka bir yerinde yayınlar"
+  ROLE_ANS=""
+  read -r -p "Seçim [1/2]: " ROLE_ANS < /dev/tty || ROLE_ANS=""
+  case "$ROLE_ANS" in 2|u|U|uydu|Uydu) ROLE=satellite ;; *) ROLE=main ;; esac
+fi
+[ -n "$ROLE" ] || ROLE=${PREV_ROLE:-main}
+case "$ROLE" in satellite) ;; *) ROLE=main ;; esac
+mkdir -p /etc/pi5-gateway && chmod 755 /etc/pi5-gateway && printf 'role=%s\n' "$ROLE" > "$ROLE_FILE"
+if [ "$ROLE" = satellite ]; then log "Cihaz rolü: uydu (mesh)"; else log "Cihaz rolü: ana cihaz"; fi
+
 # ─── 1. Sistem Güncellemesi ───
 step "1/10 — Sistem Güncelleniyor"
 apt update -qq
@@ -583,6 +604,23 @@ WantedBy=multi-user.target NetworkManager.service
 NGEOF
 systemctl daemon-reload 2>/dev/null || true
 systemctl enable pi5-net-guard.service >/dev/null 2>&1 || warn "pi5-net-guard.service etkinleştirilemedi"
+# Kablosuz mesh (802.11s): birim yalnız yazılır; mesh panelden yapılandırılınca scripts/mesh.sh etkinleştirir.
+cat > /etc/systemd/system/pi5-mesh.service << 'MSEOF' || warn "pi5-mesh.service yazılamadı"
+[Unit]
+Description=Klyrix Gate kablosuz mesh (802.11s)
+After=NetworkManager.service
+Wants=NetworkManager.service
+
+[Service]
+Type=simple
+ExecStart=/bin/bash /opt/pi5-gateway/scripts/mesh.sh run
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+MSEOF
+systemctl daemon-reload 2>/dev/null || true
 log "IP forwarding aktif"
 
 # ─── 10. Günlük Bakım Cron ───
@@ -597,6 +635,33 @@ cat > /etc/cron.d/pi5-maintenance << 'CRONEOF'
 CRONEOF
 chmod 644 /etc/cron.d/pi5-maintenance
 log "Otomatik bakım cron görevleri ayarlandı"
+
+# ─── Uydu eşleştirmesi (R2) ───
+# Kod ana cihazın panelinden alınır (Cihaz Rolleri → Uydular → Uydu ekle; 10 dk geçerli) — kurulum uzun sürdüğü için
+# burada, en sonda sorulur. Eşleştirmeyi uydunun kendi backend'i yapar (yerel API; kod argv'de görünmez). Boş bırakılırsa
+# uydunun panelinden yapılır.
+if [ "$ROLE" = satellite ] && ( exec </dev/tty ) 2>/dev/null; then
+  echo ""
+  echo "Uydu eşleştirmesi: ana cihazın panelinde Cihaz Rolleri → Uydular → Uydu ekle'ye basın."
+  MAIN_ADDR=""; PAIR_CODE=""
+  read -r -p "Ana cihazın adresi (ör. 192.168.1.153; boş = sonra panelden): " MAIN_ADDR < /dev/tty || MAIN_ADDR=""
+  if [ -n "$MAIN_ADDR" ]; then
+    read -r -p "Eşleştirme kodu (6 hane): " PAIR_CODE < /dev/tty || PAIR_CODE=""
+  fi
+  if [[ $MAIN_ADDR =~ ^[A-Za-z0-9.:-]{1,64}$ ]] && [[ $PAIR_CODE =~ ^[0-9]{6}$ ]]; then
+    for _ in $(seq 1 30); do curl -s -o /dev/null -m 2 http://127.0.0.1:3001/api/status && break; sleep 2; done
+    JOIN_OUT=$(printf '{"main":"%s","code":"%s"}' "$MAIN_ADDR" "$PAIR_CODE" \
+      | curl -s -m 240 -X POST -H 'Content-Type: application/json' --data-binary @- http://127.0.0.1:3001/api/mesh/join || true)
+    if printf '%s' "$JOIN_OUT" | grep -q '"success":true'; then
+      log "Uydu eşleşti — ana cihazın ev Wi-Fi'ı birkaç dakika içinde bu cihazdan da yayınlanır"
+    else
+      warn "Eşleştirme yapılamadı: $(printf '%s' "$JOIN_OUT" | sed -n 's/.*"error":"\([^"]*\)".*/\1/p' | cut -c1-200) — uydunun panelinden yeniden deneyin"
+    fi
+  elif [ -n "$MAIN_ADDR" ]; then
+    warn "Adres ya da kod biçimi geçersiz — eşleştirmeyi uydunun panelinden yapın"
+  fi
+  unset PAIR_CODE
+fi
 
 # ─── Tamamlandı ───
 echo ""

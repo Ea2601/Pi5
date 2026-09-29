@@ -23,6 +23,13 @@
 #                                        Parola STDIN'in ilk satırından okunur. SN saniye içinde "home confirm" gelmezse
 #                                        Pi köprüsüz sabit profile (pi5-eth0) döner
 #   home confirm | rollback | off        ev Wi-Fi'ını kalıcı yapar | yalnız deneme sürüyorsa geri alır | bilerek kapatır
+#   home secret                          kalıcı ev Wi-Fi'ının ağ adı / bant / kanal / parolası (uydulara aktarım; salt okunur)
+#   sat on --trial SN --ssid AD [--band bg|a] [--channel N]
+#                                        uydu (mesh uydusu): eth0 + Wi-Fi kartı köprüde (br0, adres DHCP'den), ana cihazın
+#                                        ev Wi-Fi'ı aynı ağ adı ve parolayla yayınlanır. Parola STDIN'den. SN saniye içinde
+#                                        "sat confirm" gelmezse eth0 eski profiline döner
+#   sat confirm | rollback | off         uyduyu kalıcı yapar | yalnız deneme sürüyorsa geri alır | kapatır
+#   sat apply --ssid AD [--band] [--channel]  uydunun yayın ayarını değiştirir (parola STDIN'den; köprü kesilmez)
 #   ensure                             güncelleme / açılış: süresi geçen denemeleri geri alır, kalıcı profili ve kalıcı
 #                                        kurulum Wi-Fi'ını denetler. Hiçbir şeyi kendiliğinden AÇMAZ.
 #   guard                                pi5-net-guard.service (açılış + her NetworkManager (yeniden) başlatması): kalıcı
@@ -40,6 +47,7 @@
 #                       sudo bash /opt/pi5-gateway/scripts/net-mode.sh dhcp       (kalıcı sabit adresten dönüş)
 #                       sudo bash /opt/pi5-gateway/scripts/net-mode.sh ap off     (kurulum Wi-Fi'ını kapatma)
 #                       sudo bash /opt/pi5-gateway/scripts/net-mode.sh home off   (ev Wi-Fi'ını / köprüyü kapatma)
+#                       sudo bash /opt/pi5-gateway/scripts/net-mode.sh sat off    (uydu köprüsünü kapatma)
 set -u
 export LC_ALL=C
 umask 077
@@ -80,8 +88,11 @@ HOME_KEYFILE=/etc/NetworkManager/system-connections/pi5-home.nmconnection
 HOME_BACKUP=$DIR/pi5-home.nmconnection
 HOME_TIMER_UNIT=pi5-home-rollback
 HOME_RETRY_PREFIX=$HOME_TIMER_UNIT-retry
+# Uydu (aynı köprü / profil adları; ev Wi-Fi'ıyla birbirini dışlar)
+SAT_TIMER_UNIT=pi5-sat-rollback
+SAT_RETRY_PREFIX=$SAT_TIMER_UNIT-retry
 SELF=$(readlink -f "$0")
-STATE_KEYS="stage trial_ends iface transit client gw dns old_uuid old_name old_ipv6 wifi_off ap_stage ap_trial_ends ap_iface ap_ssid ap_old_uuid ap_radio_was_off home_stage home_trial_ends home_iface home_ssid home_band home_channel home_radio_was_off lan_if"
+STATE_KEYS="stage trial_ends iface transit client gw dns old_uuid old_name old_ipv6 wifi_off ap_stage ap_trial_ends ap_iface ap_ssid ap_old_uuid ap_radio_was_off home_stage home_trial_ends home_iface home_ssid home_band home_channel home_radio_was_off lan_if sat_stage sat_trial_ends sat_iface sat_old_uuid sat_old_name sat_wifi sat_ssid sat_band sat_channel sat_radio_was_off sat_backhaul"
 
 die() { echo "error=$*"; exit 1; }
 log() { logger -t pi5-net-mode "$*" 2>/dev/null || true; }
@@ -114,6 +125,14 @@ read_state() {
   [[ $S_home_channel =~ ^[0-9]{1,3}$ ]] || S_home_channel=""
   [ "$S_home_radio_was_off" = 1 ] || S_home_radio_was_off=0
   [[ $S_lan_if =~ ^[A-Za-z0-9_.-]{1,15}$ ]] || S_lan_if=""
+  case "$S_sat_stage" in trial|on) ;; *) S_sat_stage=none ;; esac
+  [[ $S_sat_trial_ends =~ ^[0-9]+$ ]] || S_sat_trial_ends=0
+  [[ $S_sat_iface =~ ^[A-Za-z0-9_.-]{1,15}$ ]] || S_sat_iface=""
+  [[ $S_sat_wifi =~ ^[A-Za-z0-9_.-]{1,15}$ ]] || S_sat_wifi=""
+  [ "$S_sat_band" = a ] || S_sat_band="bg"
+  [[ $S_sat_channel =~ ^[0-9]{1,3}$ ]] || S_sat_channel=""
+  [ "$S_sat_radio_was_off" = 1 ] || S_sat_radio_was_off=0
+  [ "$S_sat_backhaul" = mesh ] || S_sat_backhaul=wired
 }
 write_state() {
   local k v
@@ -134,6 +153,11 @@ ap_reset() {
 home_reset() {
   S_home_stage=none; S_home_trial_ends=0; S_home_iface=""; S_home_ssid=""; S_home_band="bg"; S_home_channel=""
   S_home_radio_was_off=0; S_lan_if=""
+}
+# Uydu alanlarını boşaltır (sat_stage=none, lan_if boş).
+sat_reset() {
+  S_sat_stage=none; S_sat_trial_ends=0; S_sat_iface=""; S_sat_old_uuid=""; S_sat_old_name=""; S_sat_wifi=""
+  S_sat_ssid=""; S_sat_band="bg"; S_sat_channel=""; S_sat_radio_was_off=0; S_sat_backhaul=wired; S_lan_if=""
 }
 
 # static/confirm/dhcp: zamanlayıcıyı ve (varsa) biten geri alma servisini temizler. Geri alma işi KENDİ servisinde
@@ -907,9 +931,10 @@ home_rollback_trial() {
 home_trial_check() {
   if [ "$S_home_trial_ends" -le "$(date +%s)" ] || ! home_timer_active; then home_rollback_trial; fi
 }
-# Ev Wi-Fi'ı yayında değilse başlatır (Wi-Fi kapatılmışsa açılır). 0 = yayında; değilse HOME_AP_OUT.
+# Ev Wi-Fi'ı yayında değilse başlatır (Wi-Fi kapatılmışsa açılır). 0 = yayında; değilse HOME_AP_OUT. $1 = kart (uydu;
+# verilmezse ev Wi-Fi'ının kartı).
 home_ap_repair() {
-  local wifi=$S_home_iface out
+  local wifi=${1:-$S_home_iface} out
   HOME_AP_OUT=""
   home_ap_ok "$wifi" && return 0
   if [ "$(nmcli radio wifi 2>/dev/null)" = disabled ]; then
@@ -983,9 +1008,214 @@ home_guard_routine() {
   return 0
 }
 
+# --- Uydu (mesh uydusu, R2): ana cihazın ev Wi-Fi'ını aynı ağ adı ve şifreyle yayınlar ---
+# Uydu ev ağının bir istemcisidir: adresini DHCP'den alır (sabit adres yok). Köprü br0 = eth0 (kablolu bağlantı) + Wi-Fi
+# kartı (erişim noktası); kablosuz mesh bağlantısı (mesh.sh, mesh0) varsa o da bu köprüye eklenir. Profil adları ev
+# Wi-Fi'ıyla aynıdır (pi5-br0 / pi5-br0-eth / pi5-home): uydu ile sabit adres / ev Wi-Fi'ı / kurulum Wi-Fi'ı birbirini
+# dışlar. Köprüde STP açık (iletim gecikmesi 4 sn): kablo ve mesh aynı anda bağlıyken döngü kurulmasın.
+# Açma denemedir: backend ana cihaza köprü üzerinden ulaşınca "sat confirm" der; demezse eski DHCP profiline dönülür.
+# Köprü kurulamaz / IPv4 almazsa: eth0'ın eski profili (netplan-eth0; hiç değiştirilmez).
+SAT_FWD_DELAY=4
+# Köprü yerinde: pi5-br0 br0'da etkin ve br0'da IPv4 var; eth0 varsa pi5-br0-eth ile köprünün portu.
+sat_br_ok() {
+  [ "$(active_conn "$BR_IF")" = "$BR_PROFILE" ] && [ -n "$(iface_addrs "$BR_IF")" ] || return 1
+  [ -z "$S_sat_iface" ] && return 0
+  [ "$(active_conn "$S_sat_iface")" = "$PORT_PROFILE" ] && br_port "$S_sat_iface"
+}
+wait_sat_br() {
+  local end=$((SECONDS + $1))
+  while ! sat_br_ok; do
+    [ "$SECONDS" -ge "$end" ] && return 1
+    sleep 1
+  done
+}
+sat_stop_timer() {
+  systemctl stop "$SAT_TIMER_UNIT.timer" "$SAT_TIMER_UNIT.service" "$SAT_RETRY_PREFIX-*.timer" "$SAT_RETRY_PREFIX-*.service" >/dev/null 2>&1 || true
+  systemctl reset-failed "$SAT_TIMER_UNIT.timer" "$SAT_TIMER_UNIT.service" "$SAT_RETRY_PREFIX-*.timer" "$SAT_RETRY_PREFIX-*.service" >/dev/null 2>&1 || true
+}
+sat_retry_active() { systemctl list-units --type=timer --state=active --no-legend "$SAT_RETRY_PREFIX-*" 2>/dev/null | grep -q .; }
+sat_timer_active() { systemctl is-active --quiet "$SAT_TIMER_UNIT.timer" 2>/dev/null || sat_retry_active; }
+arm_sat_retry() {
+  systemd-run --quiet --collect --unit="$SAT_RETRY_PREFIX-$(date +%s)-$$" --on-active="$1" --timer-property=AccuracySec=1s \
+    /bin/bash "$SELF" sat rollback >/dev/null 2>&1 9>&-
+}
+# Uydu köprüsünün varsayılan rotasının ağ geçidi (DHCP'den).
+sat_gw() { ip -4 route show default dev "$BR_IF" 2>/dev/null | awk '{ for (i = 1; i < NF; i++) if ($i == "via") { print $(i + 1); exit } }'; }
+# $1 kart, $2 ağ adı, $3 parola, $4 bant, $5 kanal, $6 eth MAC (boş: eth yok), $7 IPv6 yöntemi, $8 DHCP istemci kimliği,
+# $9 true|false (kendiliğinden bağlanma). Erişim noktası profili ev Wi-Fi'ıyla aynı biçimde.
+sat_write_keyfiles() {
+  local u1 u2 u3 cid=""
+  u1=$(new_uuid) && u2=$(new_uuid) && u3=$(new_uuid) || return 1
+  [ -n "$8" ] && cid="dhcp-client-id=$8"
+  home_put_keyfile "$BR_KEYFILE" "[connection]
+id=$BR_PROFILE
+uuid=$u1
+type=bridge
+interface-name=$BR_IF
+autoconnect=$9
+autoconnect-priority=250
+${6:+
+[ethernet]
+cloned-mac-address=$6
+}
+[bridge]
+stp=true
+forward-delay=$SAT_FWD_DELAY
+
+[ipv4]
+method=auto
+$cid
+
+[ipv6]
+method=$7" || return 1
+  if [ -n "$S_sat_iface" ]; then
+    home_put_keyfile "$PORT_KEYFILE" "[connection]
+id=$PORT_PROFILE
+uuid=$u2
+type=ethernet
+interface-name=$S_sat_iface
+master=$BR_IF
+slave-type=bridge
+autoconnect=$9
+autoconnect-priority=250
+
+[ethernet]
+
+[bridge-port]" || return 1
+  fi
+  sat_write_ap_keyfile "$1" "$2" "$3" "$4" "$5" "$9" "$u3"
+}
+# $1 kart, $2 ağ adı, $3 parola, $4 bant, $5 kanal, $6 autoconnect, $7 uuid
+sat_write_ap_keyfile() {
+  home_put_keyfile "$HOME_KEYFILE" "[connection]
+id=$HOME_PROFILE
+uuid=$7
+type=wifi
+interface-name=$1
+master=$BR_IF
+slave-type=bridge
+autoconnect=$6
+autoconnect-priority=300
+
+[wifi]
+mode=ap
+ssid=$2
+band=$4
+channel=$5
+
+[wifi-security]
+key-mgmt=wpa-psk
+proto=rsn;
+pairwise=ccmp;
+group=ccmp;
+pmf=1
+psk=$3
+
+[bridge-port]"
+}
+sat_load_all() {
+  local f out
+  HOME_LOAD_OUT=""
+  for f in "$BR_KEYFILE" "$HOME_KEYFILE" ${S_sat_iface:+"$PORT_KEYFILE"}; do
+    out=$(nmcli connection load "$f" 2>&1) || { HOME_LOAD_OUT=$(printf '%s' "$out" | oneline); return 1; }
+    [ "$(file_of_name "$(sed -n 's/^id=//p' "$f" | head -1)")" = "$f" ] \
+      || { HOME_LOAD_OUT="$(basename "$f") NetworkManager'da görünmüyor"; return 1; }
+  done
+}
+# Uyduyu kaldırır, eth0'ı eski profiline döndürür (deneme geri alma, kapatma, başarısız açma). Wi-Fi önceden kapalıysa
+# yeniden kapatılır.
+sat_unwind() {
+  local ifc=$S_sat_iface out
+  if [ "$S_sat_radio_was_off" = 1 ]; then
+    nmcli radio wifi off >/dev/null 2>&1 || echo "warning=Pi'nin Wi-Fi'si kapatılamadı — elle kapatın (nmcli radio wifi off)"
+  fi
+  nmcli connection down id "$HOME_PROFILE" >/dev/null 2>&1 || true
+  nmcli connection down id "$BR_PROFILE" >/dev/null 2>&1 || true
+  home_delete_all
+  br_link_remove
+  rm -f "$BR_BACKUP" "$PORT_BACKUP" "$HOME_BACKUP"
+  [ -n "$ifc" ] || return 0
+  if [ "$(dev_state "$ifc")" = 10 ]; then nmcli device set "$ifc" managed yes >/dev/null 2>&1; sleep 1; fi
+  if uuid_exists "$S_sat_old_uuid"; then
+    if [ "$(active_uuid "$ifc")" = "$S_sat_old_uuid" ] && [ -n "$(iface_addrs "$ifc")" ]; then return 0; fi
+    if out=$(nmcli -w 30 connection up uuid "$S_sat_old_uuid" 2>&1) && wait_ipv4 "$ifc" 20; then return 0; fi
+    echo "warning=eski profil (${S_sat_old_name:-$S_sat_old_uuid}) adres alamadı: $(printf '%s' "${out:-IPv4 gelmedi}" | oneline)"
+    return 0
+  fi
+  # Eski profil yok (silinmiş): NM'nin kendiliğinden bağlanması beklenir; olmazsa geçici DHCP profili.
+  wait_ipv4 "$ifc" 15 && return 0
+  delete_named "$FALLBACK"
+  nmcli connection add type ethernet con-name "$FALLBACK" ifname "$ifc" ipv4.method auto connection.autoconnect yes >/dev/null 2>&1 \
+    && nmcli -w 30 connection up id "$FALLBACK" >/dev/null 2>&1 && wait_ipv4 "$ifc" 20 && return 0
+  echo "warning=$ifc adres alamadı — modemin / ana cihazın DHCP'si açık mı?"
+  return 0
+}
+sat_finish_none() {
+  rm -f "$GUARD_STATUS"
+  sat_reset
+  write_state
+}
+sat_rollback_trial() {
+  systemctl stop "$SAT_TIMER_UNIT.timer" "$SAT_RETRY_PREFIX-*.timer" >/dev/null 2>&1 || true
+  sat_unwind
+  sat_finish_none
+  log "uydu denemesi geri alındı"
+  echo "rolled_back=1"
+}
+sat_trial_check() {
+  if [ "$S_sat_trial_ends" -le "$(date +%s)" ] || ! sat_timer_active; then sat_rollback_trial; fi
+}
+# Kalıcı uyduyu denetler / onarır. Önce erişim: köprü kurulamazsa eth0 eski profiliyle (DHCP) çalışır, yayın yapılmaz.
+# $1 = NM'nin köprüyü kendiliğinden kurması için beklenecek süre, $2 = passive (ensure: köprüsüz çalışan uyduya dokunmaz).
+sat_guard_routine() {
+  local wait=$1 ifc=$S_sat_iface end detail="" out
+  if [ -z "$S_sat_wifi" ]; then write_guard error "durum kaydı eksik (sat_wifi, $STATE_FILE)"; return 0; fi
+  if [ "${2:-}" = passive ] && ! sat_br_ok && [ -n "$ifc" ] && [ "$(active_uuid "$ifc")" = "$S_sat_old_uuid" ] \
+     && [ -n "$(iface_addrs "$ifc")" ]; then
+    echo "guard_result=unbridged"
+    echo "guard_detail=köprü kurulamamıştı; uydu eski profille (DHCP) çalışıyor, yayın yok — onarım açılışta ya da NetworkManager yeniden başlatılınca denenir"
+    return 0
+  fi
+  end=$((SECONDS + wait))
+  while ! sat_br_ok; do
+    [ "$SECONDS" -ge "$end" ] && break
+    sleep 1
+  done
+  if ! sat_br_ok; then
+    if [ -n "$ifc" ] && [ "$(carrier "$ifc")" != 1 ] && [ "$S_sat_backhaul" != mesh ]; then
+      home_ap_repair "$S_sat_wifi" || true
+      write_guard no_carrier "kablo bağlantısı yok ($ifc)"; return 0
+    fi
+    home_restore_backups; detail=$HOME_RESTORE_DETAIL
+    if [ -n "$ifc" ]; then out=$(nmcli -w 20 connection up id "$PORT_PROFILE" 2>&1); fi
+    wait_sat_br 20 || { nmcli -w 20 connection up id "$BR_PROFILE" >/dev/null 2>&1 && wait_sat_br 15; }
+    if sat_br_ok; then
+      detail="${detail:+$detail; }köprü yeniden kuruldu"
+    else
+      detail="${detail:+$detail; }köprü kurulamadı: $(printf '%s' "${out:-köprü IPv4 almadı}" | oneline)"
+      nmcli connection down id "$HOME_PROFILE" >/dev/null 2>&1 || true
+      nmcli connection down id "$BR_PROFILE" >/dev/null 2>&1 || true
+      br_link_remove
+      if [ -n "$ifc" ] && uuid_exists "$S_sat_old_uuid" && nmcli -w 30 connection up uuid "$S_sat_old_uuid" >/dev/null 2>&1 \
+         && wait_ipv4 "$ifc" 20; then
+        write_guard unbridged "$detail — uydu eski profille (DHCP) çalışıyor, bu açılışta yayın yok"
+      else
+        write_guard failed "$detail — eski profil de adres alamadı"
+      fi
+      return 0
+    fi
+  fi
+  if home_ap_repair "$S_sat_wifi"; then
+    if [ -n "$detail" ]; then write_guard repaired "$detail"; else write_guard ok ""; fi
+  else
+    write_guard ap_failed "${detail:+$detail; }yayın başlamadı: $HOME_AP_OUT"
+  fi
+  return 0
+}
+
 cmd_status() {
   local now dr pifc pgw ptr="" ifc nm=0 ac="" au="" method="" wifi="" gr="" ga="" gd="" k v pok=0
-  local wifc apc=0 apa=0 agr="" agd="" lifc hifc hc=0 ha=0 bra=0
+  local wifc apc=0 apa=0 agr="" agd="" lifc hifc hc=0 ha=0 bra=0 sa=0 sb=0
   read_state
   now=$(date +%s)
   dr=$(default_route); pifc=${dr%% *}; pgw=${dr#"$pifc"}; pgw=${pgw# }
@@ -994,7 +1224,7 @@ cmd_status() {
   [ -n "$ifc" ] || ifc=$pifc
   # Cihaz ağının arayüzü: ev Wi-Fi'ı açıkken köprü (adresler ve etkin profil orada), değilse kart.
   lifc=$ifc
-  if [ "$S_home_stage" != none ] && [ -e "/sys/class/net/$BR_IF" ]; then lifc=$BR_IF; fi
+  if { [ "$S_home_stage" != none ] || [ "$S_sat_stage" != none ]; } && [ -e "/sys/class/net/$BR_IF" ]; then lifc=$BR_IF; fi
   # Kurulum Wi-Fi'ı kartı: kayıtlıysa o, değilse ilk Wi-Fi kartı (erişim noktası desteği gösterilsin).
   wifc=$S_ap_iface
   hifc=$S_home_iface
@@ -1014,6 +1244,10 @@ cmd_status() {
     if [ "$S_home_stage" != none ]; then
       home_ap_ok "$hifc" && ha=1
       br_up_ok && bra=1
+    fi
+    if [ "$S_sat_stage" != none ]; then
+      home_ap_ok "$S_sat_wifi" && sa=1
+      sat_br_ok && sb=1
     fi
   fi
   if [ -f "$GUARD_STATUS" ]; then
@@ -1074,6 +1308,18 @@ cmd_status() {
   echo "home_capable=$hc"
   echo "home_active=$ha"
   echo "br_active=$bra"
+  echo "sat_stage=$S_sat_stage"
+  echo "sat_trial_ends=$S_sat_trial_ends"
+  echo "sat_ssid=$S_sat_ssid"
+  echo "sat_band=$S_sat_band"
+  echo "sat_channel=$S_sat_channel"
+  echo "sat_wifi=$S_sat_wifi"
+  echo "sat_iface=$S_sat_iface"
+  echo "sat_backhaul=$S_sat_backhaul"
+  echo "sat_active=$sa"
+  echo "sat_br=$sb"
+  echo "sat_ip=$( [ "$S_sat_stage" != none ] && iface_addrs "$BR_IF" | head -1)"
+  echo "sat_gw=$( [ "$S_sat_stage" != none ] && sat_gw)"
 }
 
 cmd_static() {
@@ -1092,6 +1338,7 @@ cmd_static() {
   # 1. Ön koşullar
   read_state
   [ "$S_stage" = static ] && die "zaten sabit adres var"
+  [ "$S_sat_stage" = none ] || die "bu cihaz uydu olarak çalışıyor — sabit adres ana cihaz içindir"
   [ "$S_stage" = trial ] && die "deneme sürüyor"
   command -v nmcli >/dev/null 2>&1 || die "nmcli bulunamadı (NetworkManager kurulu değil)"
   nm_running || die "NetworkManager çalışmıyor"
@@ -1275,6 +1522,7 @@ cmd_wifi() {
   nm_running || die "NetworkManager çalışmıyor"
   # Ev Wi-Fi'ı kartı yayında kullanır: ne kapatılabilir ne de ev ağına istemci olarak bağlanabilir.
   [ "$S_home_stage" = none ] || die "ev Wi-Fi'ı açık — Wi-Fi kartı yayında; önce Cihaz Rolleri'nden ev Wi-Fi'ını kapatın"
+  [ "$S_sat_stage" = none ] || die "bu cihaz uydu olarak yayın yapıyor — Wi-Fi kartı yayında"
   case "${1:-}" in
     off)
       [ "$S_ap_stage" = none ] || die "Kurulum Wi-Fi'ı açık — önce onu kapatın"
@@ -1340,6 +1588,7 @@ cmd_ap_on() {
   [ "$S_ap_stage" = on ] && die "kurulum Wi-Fi'ı zaten açık"
   [ "$S_ap_stage" = trial ] && die "kurulum Wi-Fi'ı denemesi sürüyor"
   [ "$S_home_stage" = none ] || die "ev Wi-Fi'ı açık — kurulum Wi-Fi'ı aynı kartı kullanır; önce ev Wi-Fi'ını kapatın"
+  [ "$S_sat_stage" = none ] || die "bu cihaz uydu olarak yayın yapıyor — kurulum Wi-Fi'ı açılamaz"
   dr=$(default_route)
   [ "${dr%% *}" = "$ifc" ] && die "Pi'nin interneti Wi-Fi'dan geliyor — önce kabloyla bağlayın"
   # 192.168.50.0/24 başka bir kartta (ör. ev ağı bu aralıktaysa) kullanılıyorsa rota karışır.
@@ -1498,6 +1747,7 @@ cmd_home_on() {
   nm_running || die "NetworkManager çalışmıyor"
   [ "$S_home_stage" = on ] && die "ev Wi-Fi'ı zaten açık"
   [ "$S_home_stage" = trial ] && die "ev Wi-Fi'ı denemesi sürüyor"
+  [ "$S_sat_stage" = none ] || die "bu cihaz uydu olarak çalışıyor — ev Wi-Fi'ı ana cihazdan yönetilir"
   [ "$S_stage" = static ] || die "önce Pi'ye sabit adres verin ve kalıcı yapın (DHCP Ayarları, 1. adım)"
   [ "$S_ap_stage" = none ] || die "kurulum Wi-Fi'ı açık — ev Wi-Fi'ı aynı kartı kullanır; önce kurulum Wi-Fi'ını kapatın"
   { [ "$(active_conn "$S_iface")" = "$PROFILE" ] && both_addrs "$S_iface" "$S_transit" "$S_client"; } \
@@ -1640,6 +1890,235 @@ cmd_home() {
   esac
 }
 
+# Ana cihazın ev Wi-Fi'ı ayarları (uydulara aktarılır; backend okur). Kilitsiz, salt okunur; parola yalnız stdout'a.
+cmd_home_secret() {
+  local psk
+  read_state
+  [ "$S_home_stage" = on ] || die "ev Wi-Fi'ı kalıcı değil (home_stage=$S_home_stage)"
+  [ -s "$HOME_KEYFILE" ] || die "ev Wi-Fi'ı profil dosyası yok"
+  psk=$(sed -n 's/^psk=//p' "$HOME_KEYFILE" | head -1)
+  [ -n "$psk" ] || die "ev Wi-Fi'ı profilinde parola yok"
+  echo "ssid=$(sed -n 's/^ssid=//p' "$HOME_KEYFILE" | head -1)"
+  echo "band=$(sed -n 's/^band=//p' "$HOME_KEYFILE" | head -1)"
+  echo "channel=$(sed -n 's/^channel=//p' "$HOME_KEYFILE" | head -1)"
+  echo "psk=$psk"
+  echo "ok=1"
+}
+
+# Uydu denemesi (backend, eşleştirmeden sonra). Parola STDIN'in ilk satırından; argv'ye, günlüğe, durum dosyasına girmez.
+cmd_sat_on() {
+  local trial="" ssid="" psk="" band=bg ch="" wifi dr ifc radio_off=0 end out why="" mac="" v6 cid old_uuid old_name gw base_ping=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --trial) trial=${2:-}; shift ;;
+      --ssid) ssid=${2:-}; shift ;;
+      --band) band=${2:-}; shift ;;
+      --channel) ch=${2:-}; shift ;;
+      *) die "bilinmeyen seçenek: $1" ;;
+    esac
+    shift
+  done
+  if [ -t 0 ]; then
+    printf "Ev Wi-Fi'ı parolası (8-63 karakter): " >&2
+    IFS= read -r -s -t 120 psk || true
+    echo >&2
+  else
+    IFS= read -r -t 30 psk || true
+  fi
+  { [[ $trial =~ ^[0-9]{1,5}$ ]] && [ "$((10#$trial))" -ge 30 ] && [ "$((10#$trial))" -le 3600 ]; } \
+    || die "geçersiz deneme süresi (--trial 30-3600 sn)"
+  trial=$((10#$trial))
+  case "$band" in bg|a) ;; *) die "geçersiz bant: $band (bg = 2,4 GHz, a = 5 GHz)" ;; esac
+  if [ -z "$ch" ]; then if [ "$band" = a ]; then ch=36; else ch=6; fi; fi
+  valid_channel "$band" "$ch" || die "geçersiz kanal: $ch"
+  read_state
+  command -v nmcli >/dev/null 2>&1 || die "nmcli bulunamadı (NetworkManager kurulu değil)"
+  nm_running || die "NetworkManager çalışmıyor"
+  [ "$S_sat_stage" = none ] || die "uydu zaten açık (sat_stage=$S_sat_stage)"
+  [ "$S_stage" = none ] || die "bu cihazda sabit adres var (ana cihaz ayarı) — uydu olmak için önce otomatik adrese dönün"
+  [ "$S_ap_stage" = none ] || die "kurulum Wi-Fi'ı açık — önce kapatın"
+  [ "$S_home_stage" = none ] || die "ev Wi-Fi'ı (ana cihaz) açık — önce kapatın"
+  [ -e "/sys/class/net/$BR_IF" ] && die "$BR_IF arayüzü zaten var — önce kaldırın"
+  wifi=$(wifi_dev)
+  [ -n "$wifi" ] || die "Pi'de Wi-Fi kartı bulunamadı"
+  [[ $wifi =~ ^[A-Za-z0-9_.-]{1,15}$ ]] || die "Wi-Fi kartının adı beklenmedik: $wifi"
+  ap_capable "$wifi" || die "Wi-Fi kartı ($wifi) erişim noktası (AP) kipini desteklemiyor"
+  # İlk bağlantı kabloyla: ana cihaza ulaşım ve eşleştirme eth üzerinden (kablosuz mesh sonradan eklenir).
+  dr=$(default_route); ifc=${dr%% *}; gw=${dr#"$ifc"}; gw=${gw# }
+  [ -n "$ifc" ] || die "varsayılan rota yok — uydu ev ağına bağlı değil"
+  [ "$ifc" = "$wifi" ] && die "uydunun ağ bağlantısı Wi-Fi'dan geliyor — ilk kurulum için uyduyu kabloyla bağlayın"
+  [ "$(dev_type "$ifc")" = ethernet ] || die "uydu kabloyla bağlı değil ($ifc)"
+  [[ $ifc =~ ^[A-Za-z0-9_.-]{1,15}$ ]] || die "arayüz adı beklenmedik: $ifc"
+  valid_ssid "$ssid" || die "geçersiz ağ adı"
+  valid_psk "$psk" || die "geçersiz parola"
+  mac=$(tr 'A-F' 'a-f' < "/sys/class/net/$ifc/address" 2>/dev/null)
+  [[ $mac =~ ^([0-9a-f]{2}:){5}[0-9a-f]{2}$ ]] || die "$ifc MAC adresi okunamadı"
+  old_uuid=$(active_uuid "$ifc")
+  [ -n "$old_uuid" ] || die "$ifc üzerinde etkin bir NetworkManager profili yok"
+  old_name=$(nmcli -g connection.id connection show uuid "$old_uuid" 2>/dev/null)
+  v6=$(nmcli -g ipv6.method connection show uuid "$old_uuid" 2>/dev/null)
+  case "$v6" in auto|dhcp|ignore|link-local|disabled) ;; *) v6=auto ;; esac
+  # DHCP istemci kimliği eski profildekiyle aynı (yoksa MAC): DHCP sunucusu uyduya aynı adresi versin.
+  cid=$(nmcli -g ipv4.dhcp-client-id connection show uuid "$old_uuid" 2>/dev/null)
+  [[ $cid =~ ^[A-Za-z0-9:._-]{1,64}$ ]] || cid=mac
+  valid_ip "${gw:-x}" && ping -c2 -W2 "$gw" >/dev/null 2>&1 && base_ping=1
+  [ "$(nmcli radio wifi 2>/dev/null)" = disabled ] && radio_off=1
+  S_sat_iface=$ifc
+  home_delete_all
+  if ! sat_write_keyfiles "$wifi" "$ssid" "$psk" "$band" "$ch" "$mac" "$v6" "$cid" false; then
+    home_delete_all; die "uydu profil dosyaları yazılamadı — değişiklik yapılmadı"
+  fi
+  if ! sat_load_all; then
+    home_delete_all; die "uydu profilleri NetworkManager'a yüklenemedi: $HOME_LOAD_OUT — değişiklik yapılmadı"
+  fi
+  end=$(( $(date +%s) + trial ))
+  S_sat_stage=trial; S_sat_trial_ends=$end; S_sat_old_uuid=$old_uuid; S_sat_old_name=$old_name; S_sat_wifi=$wifi
+  S_sat_ssid=$ssid; S_sat_band=$band; S_sat_channel=$ch; S_sat_radio_was_off=$radio_off; S_sat_backhaul=wired; S_lan_if=$BR_IF
+  if ! write_state; then home_delete_all; sat_reset; die "durum dosyası yazılamadı ($STATE_FILE) — değişiklik yapılmadı"; fi
+  sat_stop_timer
+  if ! systemd-run --quiet --collect --unit="$SAT_TIMER_UNIT" --on-active="$trial" --timer-property=AccuracySec=1s \
+       /bin/bash "$SELF" sat rollback >/dev/null 2>&1 9>&-; then
+    home_delete_all; sat_reset; write_state
+    die "geri alma zamanlayıcısı kurulamadı — uydu açılmadı"
+  fi
+  log "uydu denemesi: $ifc → $BR_IF, $wifi \"$ssid\" ($band kanal $ch, $trial sn)"
+  # STP: port önce dinleme/öğrenme (2 × iletim gecikmesi) sonra iletir; DHCP bundan sonra tamamlanır.
+  if ! out=$(nmcli -w 45 connection up id "$PORT_PROFILE" 2>&1); then
+    why="köprü portu ($ifc) etkinleştirilemedi: $(printf '%s' "$out" | oneline)"
+  elif ! wait_sat_br 40 && ! { nmcli -w 30 connection up id "$BR_PROFILE" >/dev/null 2>&1 && wait_sat_br 20; }; then
+    why="köprü adres almadı ($BR_IF: $(iface_addrs "$BR_IF" | csv); $ifc profili: $(active_conn "$ifc"))"
+  elif [ -z "$(sat_gw)" ]; then
+    why="köprüde varsayılan rota yok"
+  elif [ "$base_ping" = 1 ] && ! ping -c3 -W2 "$(sat_gw)" >/dev/null 2>&1; then
+    why="ağ geçidi ($(sat_gw)) köprüden ping'e yanıt vermiyor"
+  fi
+  if [ -z "$why" ] && [ "$radio_off" = 1 ]; then
+    if out=$(nmcli radio wifi on 2>&1); then wait_dev_ready "$wifi" 15 || true
+    else why="Wi-Fi açılamadı: $(printf '%s' "$out" | oneline)"; fi
+  fi
+  if [ -z "$why" ] && ! out=$(nmcli -w 30 connection up id "$HOME_PROFILE" 2>&1); then
+    why="yayın etkinleştirilemedi: $(printf '%s' "$out" | oneline)"
+  fi
+  if [ -z "$why" ] && ! wait_home_ap "$wifi" 15; then
+    why="yayın başlamadı (kartın etkin bağlantısı: $(active_conn "$wifi"))"
+  fi
+  if [ -n "$why" ]; then
+    echo "detail=$why"
+    sat_unwind; sat_finish_none; sat_stop_timer
+    echo "rolled_back=1"
+    log "uydu denemesi başarısız, geri alındı: $why"
+    die "uydu açılamadı — eski ayara dönüldü"
+  fi
+  echo "sat_trial_ends=$end"
+  echo "sat_ip=$(iface_addrs "$BR_IF" | head -1)"
+  echo "ok=1"
+}
+
+cmd_sat_confirm() {
+  local out p
+  read_state
+  [ "$S_sat_stage" = trial ] || die "uydu denemesi sürmüyor (süre dolduysa geri alınmıştır)"
+  nm_running || die "NetworkManager çalışmıyor"
+  sat_br_ok || die "uydu köprüsü etkin değil"
+  home_ap_ok "$S_sat_wifi" || die "uydu yayında değil"
+  for p in "$BR_PROFILE" "$HOME_PROFILE" ${S_sat_iface:+"$PORT_PROFILE"}; do
+    out=$(nmcli connection modify id "$p" connection.autoconnect yes 2>&1) \
+      || die "$p kalıcı yapılamadı: $(printf '%s' "$out" | oneline) — deneme sürüyor"
+  done
+  grep -q '^autoconnect=false' "$BR_KEYFILE" "$HOME_KEYFILE" ${S_sat_iface:+"$PORT_KEYFILE"} \
+    && die "profiller kendiliğinden bağlanmaya ayarlanamadı — deneme sürüyor"
+  sync
+  { cp -f "$BR_KEYFILE" "$BR_BACKUP" && cp -f "$HOME_KEYFILE" "$HOME_BACKUP" \
+      && { [ -z "$S_sat_iface" ] || cp -f "$PORT_KEYFILE" "$PORT_BACKUP"; } \
+      && chmod 600 "$BR_BACKUP" "$HOME_BACKUP" && { [ -z "$S_sat_iface" ] || chmod 600 "$PORT_BACKUP"; }; } \
+    || die "profil yedekleri yazılamadı — deneme sürüyor"
+  sat_stop_timer
+  S_sat_stage=on; S_sat_trial_ends=0
+  write_state || die "durum dosyası yazılamadı ($STATE_FILE)"
+  rm -f "$GUARD_STATUS"
+  log "uydu kalıcı: $BR_IF (${S_sat_iface:-eth yok} + $S_sat_wifi \"$S_sat_ssid\")"
+  echo "ok=1"
+}
+
+cmd_sat_rollback() {
+  read_state
+  [ "$S_sat_stage" = trial ] && sat_rollback_trial
+  echo "ok=1"
+}
+
+cmd_sat_off() {
+  read_state
+  [ "$S_sat_stage" = none ] && { echo "ok=1"; return 0; }
+  nm_running || die "NetworkManager çalışmıyor"
+  sat_stop_timer
+  sat_unwind
+  sat_finish_none || die "durum dosyası yazılamadı ($STATE_FILE)"
+  log "uydu kapatıldı; eth0 eski profilinde"
+  echo "ok=1"
+}
+
+# Yayın ayarlarını değiştirir (ana cihazda ağ adı / şifre / bant değişti ya da kanal planı): yalnız erişim noktası
+# profili yeniden yazılır ve yeniden etkinleştirilir; köprü kesilmez. Başlamazsa önceki profile dönülür.
+cmd_sat_apply() {
+  local ssid="" psk="" band=bg ch="" prev out ac=false uuid
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --ssid) ssid=${2:-}; shift ;;
+      --band) band=${2:-}; shift ;;
+      --channel) ch=${2:-}; shift ;;
+      *) die "bilinmeyen seçenek: $1" ;;
+    esac
+    shift
+  done
+  IFS= read -r -t 30 psk || true
+  case "$band" in bg|a) ;; *) die "geçersiz bant: $band" ;; esac
+  if [ -z "$ch" ]; then if [ "$band" = a ]; then ch=36; else ch=6; fi; fi
+  valid_channel "$band" "$ch" || die "geçersiz kanal: $ch"
+  valid_ssid "$ssid" || die "geçersiz ağ adı"
+  valid_psk "$psk" || die "geçersiz parola"
+  read_state
+  case "$S_sat_stage" in trial|on) ;; *) die "uydu açık değil" ;; esac
+  nm_running || die "NetworkManager çalışmıyor"
+  [ "$S_sat_stage" = on ] && ac=true
+  prev=$(mktemp "$DIR/.home-prev.XXXXXX") || die "geçici dosya açılamadı"
+  cp -f "$HOME_KEYFILE" "$prev" 2>/dev/null
+  uuid=$(sed -n 's/^uuid=//p' "$HOME_KEYFILE" | head -1)
+  [[ $uuid =~ ^[0-9a-f-]{36}$ ]] || uuid=$(new_uuid)
+  if ! sat_write_ap_keyfile "$S_sat_wifi" "$ssid" "$psk" "$band" "$ch" "$ac" "$uuid" \
+     || ! nmcli connection load "$HOME_KEYFILE" >/dev/null 2>&1; then
+    rm -f "$prev"; die "yayın profili yazılamadı"
+  fi
+  if out=$(nmcli -w 30 connection up id "$HOME_PROFILE" 2>&1) && wait_home_ap "$S_sat_wifi" 15; then
+    [ "$ac" = true ] && { cp -f "$HOME_KEYFILE" "$HOME_BACKUP"; chmod 600 "$HOME_BACKUP"; }
+    rm -f "$prev"
+    S_sat_ssid=$ssid; S_sat_band=$band; S_sat_channel=$ch
+    write_state || die "durum dosyası yazılamadı ($STATE_FILE)"
+    log "uydu yayını güncellendi: \"$ssid\" ($band kanal $ch)"
+    echo "ok=1"
+    return 0
+  fi
+  echo "detail=$(printf '%s' "${out:-yayın başlamadı}" | oneline)"
+  if [ -s "$prev" ]; then
+    cp -f "$prev" "$HOME_KEYFILE" && chmod 600 "$HOME_KEYFILE" && nmcli connection load "$HOME_KEYFILE" >/dev/null 2>&1 \
+      && nmcli -w 30 connection up id "$HOME_PROFILE" >/dev/null 2>&1
+  fi
+  rm -f "$prev"
+  die "yeni yayın ayarı başlamadı — önceki ayara dönüldü"
+}
+
+cmd_sat() {
+  local sub=${1:-}
+  shift || true
+  case "$sub" in
+    on) cmd_sat_on "$@" ;;
+    confirm) cmd_sat_confirm ;;
+    rollback) cmd_sat_rollback ;;
+    off) cmd_sat_off ;;
+    apply) cmd_sat_apply "$@" ;;
+    *) die "kullanım: sat on --trial SN --ssid AD [--band bg|a] [--channel N] | sat confirm | sat rollback | sat off | sat apply --ssid AD [--band] [--channel]" ;;
+  esac
+}
+
 cmd_ensure() {
   mkdir -p "$DIR" && chmod 700 "$DIR"
   read_state
@@ -1655,6 +2134,11 @@ cmd_ensure() {
       case "$S_home_stage" in
         on) home_guard_routine 5 passive ;;
         none) guard_routine 5 passive ;;
+      esac ;;
+    none)
+      case "$S_sat_stage" in
+        trial) sat_trial_check ;;
+        on) sat_guard_routine 5 passive ;;
       esac ;;
   esac
   ap_check ensure
@@ -1673,6 +2157,12 @@ cmd_guard() {
         on) home_guard_routine 40 ;;
         none) guard_routine 45 ;;
       esac ;;
+    none)
+      # Açılışta geçici zamanlayıcı yoktur: uydu denemesi geri alınır (profilleri kendiliğinden bağlanmaz).
+      case "$S_sat_stage" in
+        trial) sat_trial_check ;;
+        on) sat_guard_routine 60 ;;
+      esac ;;
   esac
   ap_check guard
   return 0
@@ -1682,9 +2172,11 @@ cmd_guard() {
 cmd=${1:-status}
 shift || true
 if [ "$cmd" = status ]; then cmd_status; exit 0; fi
+# Salt okunur, kilitsiz: ana cihazın ev Wi-Fi'ı ayarları (backend uydulara aktarır).
+if [ "$cmd" = home ] && [ "${1:-}" = secret ]; then cmd_home_secret; exit 0; fi
 case "$cmd" in
-  ensure|guard|static|confirm|rollback|dhcp|wifi|ap|home) ;;
-  *) die "bilinmeyen komut: $cmd (status|static|confirm|rollback|dhcp|wifi|ap|home|ensure|guard)" ;;
+  ensure|guard|static|confirm|rollback|dhcp|wifi|ap|home|sat) ;;
+  *) die "bilinmeyen komut: $cmd (status|static|confirm|rollback|dhcp|wifi|ap|home|sat|ensure|guard)" ;;
 esac
 exec 9>"$LOCK"
 if ! flock -w 60 9; then
@@ -1693,12 +2185,13 @@ if ! flock -w 60 9; then
   if [ "$cmd" = rollback ]; then arm_retry 30 || true; fi
   if [ "$cmd" = ap ] && [ "${1:-}" = rollback ]; then arm_ap_retry 30 || true; fi
   if [ "$cmd" = home ] && [ "${1:-}" = rollback ]; then arm_home_retry 30 || true; fi
+  if [ "$cmd" = sat ] && [ "${1:-}" = rollback ]; then arm_sat_retry 30 || true; fi
   die "başka bir ağ işlemi sürüyor"
 fi
 # Kullanıcının başlattığı değişiklikler kilit alındıktan sonra SIGTERM/SIGHUP ile yarıda kesilmez (panelin istek zaman
 # aşımı ya da kapanan SSH oturumu Pi'yi adressiz bırakmasın). Kilit beklerken öldürülebilir: onay, kilidi bekleyen
 # geri alma servisini durdurabilsin. guard/ensure idempotenttir, systemd'nin durdurmasına engel olmaz.
-case "$cmd" in static|confirm|rollback|dhcp|wifi|ap|home) trap '' TERM HUP ;; esac
+case "$cmd" in static|confirm|rollback|dhcp|wifi|ap|home|sat) trap '' TERM HUP ;; esac
 case "$cmd" in
   ensure) cmd_ensure ;;
   guard) cmd_guard; exit 0 ;;
@@ -1709,4 +2202,5 @@ case "$cmd" in
   wifi) cmd_wifi "$@" ;;
   ap) cmd_ap "$@" ;;
   home) cmd_home "$@" ;;
+  sat) cmd_sat "$@" ;;
 esac

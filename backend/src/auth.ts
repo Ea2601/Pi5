@@ -21,7 +21,9 @@ const FAIL_WINDOW_MS = 15 * 60 * 1000;
 const FAIL_MAX = 5;
 const GLOBAL_FAIL_MAX_PER_MIN = 20;
 // Oturumsuz erişilebilen uçlar (req.originalUrl'ün yolu birebir). Kodlanmış/../ içeren yollar bunlara denk sayılmaz.
-const EXEMPT = new Set(['/api/auth/login', '/api/auth/logout', '/api/auth/status', '/api/captive']);
+// /api/mesh/pair ve /api/mesh/sync: uydular (R2) ana cihaza oturumsuz gelir; kimliği 6 haneli kod / uyduya özel anahtar
+// kanıtlar (mesh.ts). panel-auth.sh'nin nginx haritası da aynı iki yolu muaf tutar.
+const EXEMPT = new Set(['/api/auth/login', '/api/auth/logout', '/api/auth/status', '/api/captive', '/api/mesh/pair', '/api/mesh/sync']);
 
 export type LoginMode = 'basic' | 'form';
 

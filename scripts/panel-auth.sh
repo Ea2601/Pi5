@@ -18,7 +18,8 @@
 #   mode-rollback    yalnız giriş ekranı denemesi sürüyorsa şifre penceresine döner (zamanlayıcı / açılış çağırır)
 # Pi'nin kendisi (127.0.0.1, ::1: kiosk, OLED, yerel betikler) her istekte muaftır; LAN'daki herkes şifre girer.
 # Tek istisna kurulum Wi-Fi'ının giriş sayfasıdır: /portal.html ve /api/captive herkese şifresiz (telefonun "ağa giriş"
-# ekranı şifre soramaz; ikisi de gizli bilgi taşımaz).
+# ekranı şifre soramaz; ikisi de gizli bilgi taşımaz). Mesh uyduları (R2) için /api/mesh/pair ve /api/mesh/sync de
+# şifresizdir: uydu ana cihaza oturumsuz gelir, kimliğini 6 haneli kod / uyduya özel anahtar kanıtlar (backend/src/mesh.ts).
 # nginx site dosyasına dokunulmaz: koruma http seviyesindeki conf.d/pi5-auth.conf ile gelir (certbot / eski sürüm
 # değişiklikleri sorun olmaz). Her değişiklik: yedek → atomik yazım → nginx -t → reload (restart değil) → erişim testi
 # → sorun varsa otomatik geri alma.
@@ -90,9 +91,10 @@ conf_enabled_text() {
   cat <<'EOF'
 # Klyrix Gate panel koruması — scripts/panel-auth.sh yönetir, elle düzenlemeyin.
 # Pi'nin kendisi (127.0.0.1, ::1: kiosk, OLED, yerel betikler) muaf; diğer herkes Basic Auth.
-# Kurulum Wi-Fi'ının giriş sayfası (/portal.html) ve captive API'si (/api/captive) herkese şifresiz — yalnız normalize
-# yol ($uri) VE istek satırındaki ham yol tam olarak bu ikisiyse: arka uca ham yol gider; kodlanmış ya da ../ içeren bir
-# yol normalize edilince bu ikisine denk gelse de başka bir API ucuna şifresiz ulaşamasın.
+# Kurulum Wi-Fi'ının giriş sayfası (/portal.html), captive API'si (/api/captive) ve mesh uydularının uçları (/api/mesh/pair,
+# /api/mesh/sync; kimliği kod / anahtar kanıtlar) herkese şifresiz — yalnız normalize
+# yol ($uri) VE istek satırındaki ham yol tam olarak bu yollardan biriyse: arka uca ham yol gider; kodlanmış ya da ../
+# içeren bir yol normalize edilince bunlara denk gelse de başka bir API ucuna şifresiz ulaşamasın.
 geo $pi5_auth_geo {
     default "Klyrix Gate";
     127.0.0.0/8 off;
@@ -102,11 +104,15 @@ map $request_uri $pi5_auth_raw {
     default $pi5_auth_geo;
     ~^/portal\.html(\?|$) off;
     ~^/api/captive(\?|$) off;
+    ~^/api/mesh/pair(\?|$) off;
+    ~^/api/mesh/sync(\?|$) off;
 }
 map $uri $pi5_auth_realm {
     default $pi5_auth_geo;
     /portal.html $pi5_auth_raw;
     /api/captive $pi5_auth_raw;
+    /api/mesh/pair $pi5_auth_raw;
+    /api/mesh/sync $pi5_auth_raw;
 }
 auth_basic $pi5_auth_realm;
 auth_basic_user_file /etc/nginx/pi5-gateway.htpasswd;
@@ -174,8 +180,9 @@ http_code() { curl -s -o /dev/null -m 5 -w '%{http_code}' "$@" 2>/dev/null; }
 # testi geçici bir sonda kullanıcısıyla yapılır (kullanıcının şifresi bilinmez) — dosya izni / özet biçimi / nginx
 # okuma sorunları (500/403/sürekli 401) burada yakalanır. Reload eşzamansız olduğundan birkaç kez denenir.
 # Giriş sayfası ve /api/captive LAN'dan şifresiz 401 OLMAMALI (200; dosya/arka uç henüz güncellenmemişse 404 de kabul).
+# Mesh uydu ucu (/api/mesh/pair, GET) da 401 OLMAMALI: nginx sormaz, arka uç 404 döner (yalnız POST'u var).
 verify_enabled() {
-  local ip probe_pw probe_hash a c d p k i ok=1
+  local ip probe_pw probe_hash a c d p k m i ok=1
   ip=$(lan_ip)
   [ -n "$ip" ] || { echo "detail=LAN IP bulunamadı"; return 1; }
   probe_pw=$(head -c 48 /dev/urandom | base64 | tr -dc 'A-Za-z0-9' | head -c 24)
@@ -188,12 +195,13 @@ verify_enabled() {
     d=$(printf 'user = "pi5probe:%s"\n' "$probe_pw" | http_code -K - "http://$ip/")
     p=$(http_code "http://$ip/portal.html")
     k=$(http_code "http://$ip/api/captive")
-    if [ "$a" = 200 ] && [ "$c" = 401 ] && [ "$d" = 200 ] && [ "$p" != 401 ] && [ "$k" != 401 ]; then ok=0; break; fi
+    m=$(http_code "http://$ip/api/mesh/pair")
+    if [ "$a" = 200 ] && [ "$c" = 401 ] && [ "$d" = 200 ] && [ "$p" != 401 ] && [ "$k" != 401 ] && [ "$m" != 401 ]; then ok=0; break; fi
     sleep 0.5
   done
   mapfile -t keep < <(htpasswd_lines_without pi5probe)
   write_htpasswd "${keep[@]}" || true
-  [ "$ok" = 0 ] || echo "detail=erişim testi: yerel=$a LAN-şifresiz=$c LAN-şifreli=$d giriş-sayfası=$p captive=$k (beklenen 200/401/200, giriş sayfası ve captive 401 olmamalı)"
+  [ "$ok" = 0 ] || echo "detail=erişim testi: yerel=$a LAN-şifresiz=$c LAN-şifreli=$d giriş-sayfası=$p captive=$k mesh=$m (beklenen 200/401/200, giriş sayfası, captive ve mesh 401 olmamalı)"
   return "$ok"
 }
 

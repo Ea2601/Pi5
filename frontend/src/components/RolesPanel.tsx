@@ -3,9 +3,11 @@ import { Layers, Router, Globe, Wifi, Repeat2, Cable, Share2, Check, X, CircleHe
 import { useApi } from '../hooks/useApi';
 import { Panel, Badge } from './ui';
 import { HomeWifiPanel } from './HomeWifiPanel';
+import { MeshPanel } from './MeshPanel';
 
 // Cihaz Rolleri: Pi'nin takılı donanımına göre hangi ağ rollerini üstlenebileceği (R0). Erişim noktası (R1) "Kablosuz
-// yayın" grubunun altındaki Ev Wi-Fi'ı panelinden açılır (HomeWifiPanel); diğer roller salt okunur. Roller üç grupta
+// yayın" grubunun altındaki Ev Wi-Fi'ı panelinden, mesh (R2) "Mesh" grubunun altındaki Uydular panelinden (MeshPanel)
+// yönetilir; diğerleri salt okunur. Roller üç grupta
 // (yönlendirme / kablosuz yayın / mesh), her kart aynı iskelette: başlık + durum, açıklama, gereksinim tablosu, tipli
 // notlar, altta eksik donanım ve faz. Donanım üç tabloda: kablolu arayüzler, radyo yetenekleri, yazılım bileşenleri.
 // Veri /api/system/hardware (backend/src/hardware.ts).
@@ -25,6 +27,7 @@ type Radio = {
 type HardwareResp = {
   supported: boolean; board?: string; kernel?: string; iwMissing?: boolean; eth?: EthPort[]; radios?: Radio[];
   tools?: Record<string, boolean>; modules?: Record<string, boolean>; roles?: RoleEval[];
+  net?: { role?: 'main' | 'satellite' };
 };
 
 const EN = ({ children }: { children: ReactNode }) => <span lang="en">{children}</span>; // büyük harfte "i" → "İ" olmasın
@@ -132,7 +135,7 @@ export function RolesPanel() {
   return (
     <div className="fade-in page-stack rl-page">
       <Panel title="Cihaz Rolleri" icon={<Layers size={20} style={{ marginRight: 8 }} />}
-        subtitle="Klyrix Gate'in takılı donanıma göre üstlenebileceği ağ rolleri. Erişim noktası bu sayfadan açılır; diğer roller ilgili fazlarda eklenecek."
+        subtitle="Klyrix Gate'in takılı donanıma göre üstlenebileceği ağ rolleri. Erişim noktası ve mesh (uydular) bu sayfadan yönetilir; diğer roller ilgili fazlarda eklenecek."
         actions={<button className="icon-btn" onClick={refetch} title="Yeniden tara" aria-label="Donanımı yeniden tara"><RefreshCw size={14} className={loading ? 'spin' : ''} /></button>}>
         {!data && <div className="rl-state">{error ? `Donanım bilgisi alınamadı (${error})` : 'Donanım taranıyor…'}</div>}
         {data && !data.supported && <div className="rl-state">Donanım taraması yalnız Pi üzerinde çalışır.</div>}
@@ -162,9 +165,11 @@ export function RolesPanel() {
           <section key={g.id} className="rl-group" aria-labelledby={`rl-g-${g.id}`}>
             <h2 id={`rl-g-${g.id}`} className="rl-group-title">{g.title}</h2>
             <div className="rl-grid">{items.map(r => <RoleCard key={r.id} r={r} />)}</div>
-            {g.id === 'wireless' && items.some(r => r.id === 'ap' && (r.status === 'available' || r.status === 'active')) && (
+            {/* Uyduda ev Wi-Fi'ı ana cihazdan gelir (net-mode.sh sat); panel yalnız ana cihazda. */}
+            {g.id === 'wireless' && data.net?.role !== 'satellite' && items.some(r => r.id === 'ap' && (r.status === 'available' || r.status === 'active')) && (
               <HomeWifiPanel onChange={refetch} />
             )}
+            {g.id === 'mesh' && <MeshPanel onChange={refetch} />}
           </section>
         );
       })}

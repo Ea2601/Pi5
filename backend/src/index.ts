@@ -27,6 +27,12 @@ import { startLinkProbe, probeSamples, probeBaseline, noteTopologyView, type Pro
 import { startTrafficRecorder, usageSummary, appActivity, appDefsFrom } from './trafficHistory';
 import { readHardware, evaluateRoles } from './hardware';
 import { readHomeStations } from './homeWifi';
+import { STARTUP_ROLE, isSatellite, readRole, writeRole, type DeviceRole } from './role';
+import {
+  createPairing, cancelPairing, pairingState, pairSatellite, syncSatellite, listSatellites, removeSatellite, satelliteStations,
+  checkOfflineSatellites, setMainWireless, mainMeshState, joinMain, syncOnce, leaveMain, satelliteState, startSatelliteAgent,
+  readSatState, MeshError, validSatId,
+} from './mesh';
 import { authGate, registerAuthRoutes } from './auth';
 import { validateSchedule, validateCommand, syncCronJobs, readJobStatuses, readSystemCron, syncCronOnStartup } from './cronSync';
 import { validateListValue, normalizeListValue, syncPiholeLists, lastListSync, externalPiholeEntries } from './piholeLists';
@@ -1828,6 +1834,8 @@ app.get('/api/topology/live', async (_req, res) => {
     // Ev Wi-Fi'ı açıkken Pi'nin kendi yayınına bağlı cihazlar kesin bilinir (istasyon listesi).
     const ns = isLinux ? readNetModeState() : null;
     const piWifi = ns && ns.homeStage !== 'none' && ns.homeIface ? await readHomeStations(ns.homeIface, HOME_BRIDGE) : new Set<string>();
+    // Uyduların (R2) yayınına bağlı cihazlar da kesin Wi-Fi (uydunun dakikalık bildiriminden).
+    if (isLinux) for (const m of await satelliteStations()) piWifi.add(m);
     const now = Date.now();
     noteTopologyView(); // harita açıkken bağlantı türü ölçümü sıklaşır
     res.json(buildTopology({
@@ -1881,6 +1889,8 @@ app.get('/api/system/hardware', async (_req, res) => {
     const hw = await readHardware({
       netStage: ns?.stage || 'none', apStage: ns?.apStage || 'none', apIface: ns?.apIface || null, piDhcp,
       homeStage: ns?.homeStage || 'none', homeIface: ns?.homeIface || null,
+      role: STARTUP_ROLE, satellites: isSatellite() ? 0 : (await listSatellites().catch(() => [])).length,
+      paired: isSatellite() && !!readSatState(), meshConfigured: (await mainMeshState().catch(() => null))?.configured || false,
     });
     res.json({ supported: true, ...hw, roles: evaluateRoles(hw) });
   } catch (e: any) {
@@ -2857,6 +2867,108 @@ app.post('/api/netmode/home/off', async (_req, res) => {
   res.json({ success: true, warning: r.kv.warning || undefined });
 });
 
+// ─── Cihaz rolü (R2): ana cihaz ↔ uydu ───
+// Rol dosyası yazılır, backend yeniden başlatılır (açılış işleri role göre seçilir). Uyduya geçişte ana cihaz ağ ayarları
+// (sabit adres, ev Wi-Fi'ı, kurulum Wi-Fi'ı, Pi DHCP, eşleşmiş uydular) kapalı olmalı; Ev VPN'i ve kablosuz mesh kapatılır.
+// Ana cihaza geçişte uydu yayını ve eşleşmesi kaldırılır.
+app.get('/api/system/role', (_req, res) => {
+  res.json({ role: STARTUP_ROLE, file_role: readRole() });
+});
+app.post('/api/system/role', netAdminGuard, async (req, res) => {
+  const role = req.body?.role as DeviceRole;
+  if (role !== 'main' && role !== 'satellite') return res.status(400).json({ error: "Rol 'main' ya da 'satellite' olmalı" });
+  try {
+    if (role === readRole()) return res.json({ success: true, restart: false });
+    if (role === 'satellite') {
+      const ns = readNetModeState();
+      if (ns && ns.stage !== 'none') return res.status(409).json({ error: 'Önce menü → DHCP Ayarları\'ndan otomatik adrese dönün (sabit adres ana cihaz içindir)' });
+      if (ns && ns.homeStage !== 'none') return res.status(409).json({ error: "Önce ev Wi-Fi'ını kapatın (Cihaz Rolleri → Ev Wi-Fi'ı)" });
+      if (ns && ns.apStage !== 'none') return res.status(409).json({ error: "Önce kurulum Wi-Fi'ını kapatın (DHCP Ayarları, 3. adım)" });
+      if (await piDhcpActive()) return res.status(409).json({ error: PI_DHCP_BUSY_MSG });
+      if ((await listSatellites()).length) return res.status(409).json({ error: 'Bu cihaza eşleşmiş uydular var — önce onları kaldırın' });
+      const wg = await wgServerStatus().catch(() => null);
+      if (wg && 'enabled' in wg && wg.enabled) await setServerEnabled(false);
+      if ((await mainMeshState()).configured) await setMainWireless(false, 0);
+    } else {
+      await leaveMain();
+    }
+    writeRole(role);
+    await recordEvent('mesh', role === 'satellite' ? 'Cihaz rolü: uydu — panel yeniden başlıyor' : 'Cihaz rolü: ana cihaz — panel yeniden başlıyor');
+    res.json({ success: true, restart: true });
+    // spawn hatası (systemctl yok) dinlenmezse süreç düşerdi; yeniden başlatma olmazsa rol bir sonraki açılışta geçerli olur.
+    if (isLinux) setTimeout(() => {
+      const c = _spawn('systemctl', ['restart', 'pi5-backend'], { detached: true, stdio: 'ignore' });
+      c.on('error', e => console.error('[rol] backend yeniden başlatılamadı:', e.message));
+      c.unref();
+    }, 1500);
+  } catch (e: any) {
+    res.status(e instanceof MeshError ? e.status : 500).json({ error: e.message });
+  }
+});
+
+// ─── Mesh (R2) ───
+// /pair ve /sync uydudan gelir: panel şifresinden muaf (auth.ts EXEMPT, panel-auth.sh), kimliği kod / anahtar kanıtlar;
+// Host denetimi de uygulanmaz (uydu ana cihaza IP ile gelir). Diğer yazma uçları panel içindir (netAdminGuard).
+app.use('/api/mesh', (req, res, next) => (req.path === '/pair' || req.path === '/sync' ? next() : netAdminGuard(req, res, next)));
+const meshFail = (res: express.Response, e: any) => res.status(e instanceof MeshError ? e.status : 500).json({ error: e?.message || 'mesh hatası' });
+const clientIp = (req: express.Request) => String(req.ip || '').replace(/^::ffff:/, '');
+
+app.get('/api/mesh/state', async (_req, res) => {
+  try {
+    if (isSatellite()) return res.json({ role: 'satellite', satellite: await satelliteState() });
+    const st = await runKvScript(NET_MODE_SCRIPT, ['status'], 30000);
+    const lan = await getLanIdentity();
+    res.json({
+      role: 'main', satellites: await listSatellites(), pairing: pairingState(), mesh: await mainMeshState(),
+      wifi: st.code === 0 ? { stage: st.kv.home_stage || 'none', ssid: st.kv.home_ssid || '', band: st.kv.home_band || 'bg', channel: Number(st.kv.home_channel) || null } : null,
+      addresses: [...new Set([lan?.transit.ip, lan?.client.ip].filter(Boolean))],
+    });
+  } catch (e: any) { meshFail(res, e); }
+});
+app.post('/api/mesh/pairing', async (_req, res) => {
+  if (isSatellite()) return res.status(409).json({ error: 'Bu cihaz uydu — uydu eklemek ana cihazdan yapılır' });
+  try { res.json(await createPairing()); } catch (e: any) { meshFail(res, e); }
+});
+app.delete('/api/mesh/pairing', (_req, res) => { cancelPairing(); res.json({ success: true }); });
+app.post('/api/mesh/pair', async (req, res) => {
+  if (isSatellite()) return res.status(409).json({ error: 'Bu cihaz ana cihaz değil' });
+  try { res.json(await pairSatellite(req.body, clientIp(req))); } catch (e: any) { meshFail(res, e); }
+});
+app.post('/api/mesh/sync', async (req, res) => {
+  if (isSatellite()) return res.status(409).json({ error: 'Bu cihaz ana cihaz değil' });
+  try { res.json(await syncSatellite(req.headers.authorization, req.body, clientIp(req))); } catch (e: any) { meshFail(res, e); }
+});
+app.delete('/api/mesh/satellites/:id', async (req, res) => {
+  if (!validSatId(req.params.id)) return res.status(400).json({ error: 'Geçersiz uydu kimliği' });
+  try { res.json({ success: await removeSatellite(req.params.id) }); } catch (e: any) { meshFail(res, e); }
+});
+app.post('/api/mesh/wireless', async (req, res) => {
+  if (isSatellite()) return res.status(409).json({ error: 'Kablosuz mesh ana cihazdan açılır; uydu ayarı senkronla alır' });
+  const enabled = req.body?.enabled;
+  if (typeof enabled !== 'boolean') return res.status(400).json({ error: 'enabled alanı true/false olmalı' });
+  try {
+    await setMainWireless(enabled, Number(req.body?.channel) || 36);
+    await recordEvent('mesh', enabled ? 'Kablosuz mesh açıldı' : 'Kablosuz mesh kapatıldı');
+    res.json({ success: true, mesh: await mainMeshState() });
+  } catch (e: any) { meshFail(res, e); }
+});
+// Uydu tarafı: ana cihaza katılma / ayrılma / hemen senkron.
+app.post('/api/mesh/join', async (req, res) => {
+  if (!isSatellite()) return res.status(409).json({ error: 'Bu cihaz ana cihaz — önce rolünü uyduya çevirin' });
+  try {
+    const r = await joinMain(String(req.body?.main || '').trim(), String(req.body?.code || '').trim());
+    res.json({ success: true, applied: r.applied, state: await satelliteState() });
+  } catch (e: any) { meshFail(res, e); }
+});
+app.post('/api/mesh/leave', async (_req, res) => {
+  if (!isSatellite()) return res.status(409).json({ error: 'Bu cihaz uydu değil' });
+  try { await leaveMain(); res.json({ success: true }); } catch (e: any) { meshFail(res, e); }
+});
+app.post('/api/mesh/sync-now', async (_req, res) => {
+  if (!isSatellite()) return res.status(409).json({ error: 'Bu cihaz uydu değil' });
+  try { await syncOnce(); res.json({ success: true, state: await satelliteState() }); } catch (e: any) { meshFail(res, e); }
+});
+
 // RFC 8908 giriş sayfası API'si: kurulum Wi-Fi'ının DHCP yanıtı (seçenek 114) bu adresi verir; telefon ağın giriş
 // istediğini ve sayfanın adresini buradan öğrenir. nginx bu yolu şifresiz bırakır (salt okunur, sabit yanıt).
 app.get('/api/captive', (_req, res) => {
@@ -3743,10 +3855,12 @@ async function ddnsAutoUpdate(): Promise<void> {
   }
 }
 
-// Start DDNS cron: every 5 minutes
-setInterval(ddnsAutoUpdate, 5 * 60 * 1000);
-// Run once at startup after 30s
-setTimeout(ddnsAutoUpdate, 30000);
+// Start DDNS cron: every 5 minutes. Uyduda (R2) çalışmaz: evin genel adresi ana cihazda güncellenir.
+if (!isSatellite()) {
+  setInterval(ddnsAutoUpdate, 5 * 60 * 1000);
+  // Run once at startup after 30s
+  setTimeout(ddnsAutoUpdate, 30000);
+}
 
 app.post('/api/ddns/configs/:id/test', async (req, res) => {
   try {
@@ -4362,8 +4476,16 @@ const server = app.listen(Number(port), bindHost, () => {
         else if (r.kv.warning) console.error(`[${tag}] uyarı:`, r.kv.warning);
       }
     }
-    await restoreTunnelsAndRouting();
+    if (!isSatellite()) await restoreTunnelsAndRouting();
   })();
+  // Uydu (R2): ağ geçidi işleri (yönlendirme kuralları, tüneller, cihaz engelleri, AS aralıkları, ağ haritası ölçümü,
+  // trafik kaydı, Pi-hole listeleri, Ev VPN'i) çalışmaz — onlar ana cihazındır. Uydu ana cihazla senkron kalır.
+  if (isSatellite()) {
+    console.log('[rol] uydu — ağ geçidi işleri kapalı, ana cihazla senkron');
+    startSatelliteAgent();
+  } else {
+  // Uydular: çevrimdışı uyarısı 5 dk'da bir.
+  setInterval(() => { void checkOfflineSatellites(); }, 5 * 60 * 1000);
   // AS aralıkları (ör. WhatsApp aramaları için Meta) 6 saatte bir denetlenir; ilk denetim açılıştan 2 dk sonra.
   setTimeout(() => { void refreshAsnRanges(); }, 120000);
   setInterval(() => { void refreshAsnRanges(); }, 6 * 3600 * 1000);
@@ -4389,6 +4511,7 @@ const server = app.listen(Number(port), bindHost, () => {
     // Trafik analizi: cihaz × yol bayt kayıtları, 5 dk'da bir (saat sınırlarına hizalı).
     startTrafficRecorder();
   }
+  } // !isSatellite
   // Cron: panel görevleri zamanlayıcıya yazılır, ancak bu başarılıysa eski pi5-maintenance satırları çıkarılır (önce yeni
   // dosya). Veritabanı ilk kurulum işleri bitsin diye kısa gecikmeyle.
   setTimeout(() => {
@@ -4397,8 +4520,8 @@ const server = app.listen(Number(port), bindHost, () => {
       catch (e: any) { console.error('[cron] zamanlayıcı eşitlenemedi:', e?.message || e); }
     })();
   }, 5000);
-  // Pi-hole listeleri: panel kayıtları Pi-hole'a uygulanır (FTL açılışta geç hazır olabilir → 30 sn sonra).
-  setTimeout(() => {
+  // Pi-hole listeleri: panel kayıtları Pi-hole'a uygulanır (FTL açılışta geç hazır olabilir → 30 sn sonra). Uyduda yok.
+  if (!isSatellite()) setTimeout(() => {
     void syncPiholeLists().then(r => {
       if (r.ok) return;
       console.error('[pihole-lists] eşitleme:', r.errors.join('; '));
@@ -4408,7 +4531,8 @@ const server = app.listen(Number(port), bindHost, () => {
   // Olay geçmişi: sürüm değiştiyse (elle ya da gece otomatik güncellemesiyle) "Panel güncellendi" bir kez yazılır.
   void recordVersionChange();
   // Ev VPN'i: açıksa yapılandırma ve kurallar güncel hâle getirilir (arayüz açılışta kendi PostUp'ıyla kuralları yükler).
-  setTimeout(() => { void reapplyWgServer(); }, 15000);
+  // Uyduda uygulanmaz (rol geçişinde kapatılır: /api/system/role).
+  if (!isSatellite()) setTimeout(() => { void reapplyWgServer(); }, 15000);
   // Panel koruması: deneme sırasında Pi yeniden başladıysa (zamanlayıcı kalıcı değil) süresi geçen deneme geri alınır.
   if (isLinux && require('fs').existsSync(PANEL_AUTH_SCRIPT)) {
     void runPanelAuth(['ensure']).then(r => { if (r.code !== 0 || r.kv.warning) console.error('[panel-auth]', r.kv.error || r.kv.warning); });

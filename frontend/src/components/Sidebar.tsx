@@ -1,8 +1,8 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useMemo, useRef } from 'react';
 import { X, LogOut } from 'lucide-react';
 import type { TabId } from '../types';
 import { BRAND } from '../brand';
-import { NAV_TABS } from '../nav';
+import { NAV_TABS, type NavTab } from '../nav';
 
 interface SidebarProps {
   activeTab: TabId;
@@ -12,19 +12,30 @@ interface SidebarProps {
   onClose: () => void;
   // Giriş ekranı modunda çıkış (telefonda üst çubukta kullanıcı alanı gizli olduğu için menünün altında)
   onLogout?: () => void;
+  // Gösterilecek menü (mesh uydusunda ağ geçidi sayfaları çıkarılır — nav.ts navTabsFor); verilmezse tam menü.
+  tabs?: NavTab[];
 }
 
-// Grup başlığı yalnız grubun ilk öğesinin üstünde gösterilir (liste sabit: modül yüklenirken bir kez hesaplanır)
-const GROUP_START = (() => {
+// Her öğenin grubu: grup adı yalnız grubun ilk öğesinde yazılı, sonrakiler onu taşır (tam menüden bir kez hesaplanır).
+const GROUP_OF = (() => {
+  let g = '';
+  const m = new Map<string, string>();
+  for (const t of NAV_TABS) { if (t.group) g = t.group; m.set(t.id, g); }
+  return m;
+})();
+// Grup başlığı grubun görünen ilk öğesinin üstünde gösterilir (uydu menüsünde grubun ilk öğesi gizli olabilir).
+function groupStarts(tabs: NavTab[]): string[] {
   let last = '';
-  return NAV_TABS.map(t => {
-    const start = !!t.group && t.group !== last;
-    if (t.group) last = t.group;
+  return tabs.map(t => {
+    const g = GROUP_OF.get(t.id) || '';
+    const start = g && g !== last ? g : '';
+    if (g) last = g;
     return start;
   });
-})();
+}
 
-export function Sidebar({ activeTab, onTabChange, open, onClose, onLogout }: SidebarProps) {
+export function Sidebar({ activeTab, onTabChange, open, onClose, onLogout, tabs = NAV_TABS }: SidebarProps) {
+  const starts = useMemo(() => groupStarts(tabs), [tabs]);
   const closeRef = useRef<HTMLButtonElement>(null);
   const returnFocus = useRef<HTMLElement | null>(null);
 
@@ -63,13 +74,13 @@ export function Sidebar({ activeTab, onTabChange, open, onClose, onLogout }: Sid
           </button>
         </div>
         <ul className="nav-links">
-          {NAV_TABS.map((tab, i) => {
-            const showGroup = GROUP_START[i];
+          {tabs.map((tab, i) => {
+            const showGroup = starts[i];
             const active = activeTab === tab.id;
             const Icon = tab.icon;
             return (
               <li key={tab.id}>
-                {showGroup && <span className="nav-group">{tab.group}</span>}
+                {showGroup && <span className="nav-group">{showGroup}</span>}
                 <button
                   className={`nav-item ${tab.sub ? 'nav-item-sub' : ''} ${active ? 'active' : ''}`}
                   aria-current={active ? 'page' : undefined}
