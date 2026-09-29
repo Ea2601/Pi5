@@ -3577,3 +3577,5 @@ button.notif-item { cursor: pointer; }
 .pivpn-device + .pivpn-device { padding-top: 12px; border-top: 1px dashed var(--panel-border); }
 .pivpn-guide .pivpn-guide-final { margin: 12px 0 0; color: var(--text-primary); }
 .pivpn-guide .pivpn-guide-note { margin: 10px 0 0; font-size: 12px; color: var(--text-muted); }
+.pivpn-reach-auto { display: flex; align-items: flex-start; gap: 6px; margin: 8px 0 0; font-size: 12px; color: var(--text-muted); }
+.pivpn-reach-auto > svg { flex-shrink: 0; margin-top: 2px; }

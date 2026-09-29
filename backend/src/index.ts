@@ -42,6 +42,7 @@ import { unboundStatus, applyUnboundSettings, validateUnboundSettings } from './
 import { recordEvent, recordEventOnce, recordVersionChange, serviceLabel } from './events';
 import { wgServerStatus, setServerEnabled, addPeer, updatePeerRole, deletePeer, peerConfig, reapplyWgServer,
   validatePeerName, validRole, WG_PORT, reachabilityTest } from './wgServer';
+import { startReachWatch, noteReachResult, reachWatchState, REACH_WATCH_INTERVAL_H } from './wgWatch';
 import type { ListSyncResult } from './piholeLists';
 import {
   shq, sedEscape, isValidMac, isValidDomain, isValidTimezone,
@@ -1317,6 +1318,7 @@ app.get('/api/wg-server/peers/:id/config', async (req, res) => {
 app.post('/api/wg-server/reachability', async (_req, res) => {
   try {
     const r = await reachabilityTest();
+    await noteReachResult(r, 'manual');
     const ext = r.external.status === 'reachable' ? 'dışarıdan ulaşılıyor'
       : r.external.status === 'unreachable' ? 'dışarıdan ulaşılamıyor' : `dış deneme yapılamadı (${r.external.reason})`;
     await recordEvent('vpn', `Ev VPN'i erişim testi: ${ext}; evdeki cihazlar: ${r.routers.join(' → ') || 'bilinmiyor'}`,
@@ -1326,6 +1328,13 @@ app.post('/api/wg-server/reachability', async (_req, res) => {
     res.status(500).json({ error: e.message });
   }
 });
+
+// Otomatik erişim denetimi (wgWatch.ts): Ev VPN'i açıkken 6 saatte bir; bozulunca / düzelince zile yazar. Arayüz son
+// denetimi kartta gösterir.
+app.get('/api/wg-server/watch', async (_req, res) => {
+  res.json({ ...(await reachWatchState()), intervalH: REACH_WATCH_INTERVAL_H });
+});
+startReachWatch();
 
 // ─── Pi5 ↔ VPS Connection (Gateway Tunnel) ───
 app.post('/api/vps/:id/connect', async (req, res) => {

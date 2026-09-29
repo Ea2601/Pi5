@@ -1,6 +1,7 @@
 import { useState, type ReactNode } from 'react';
-import { Router, Loader2, CheckCircle, XCircle, AlertTriangle, MinusCircle, RefreshCw, Globe, ChevronRight } from 'lucide-react';
-import { postApi } from '../hooks/useApi';
+import { Router, Loader2, CheckCircle, XCircle, AlertTriangle, MinusCircle, RefreshCw, Globe, ChevronRight, Clock } from 'lucide-react';
+import { postApi, useApi } from '../hooks/useApi';
+import { relativeTime } from '../alerts';
 import { toast } from '../toast';
 
 // Ev VPN'i — dışarıdan bağlantı testi ve senaryo rehberi (backend wgServer.ts reachabilityTest). Test evden çıkış yolunu
@@ -17,6 +18,13 @@ interface ReachResult {
   external: { status: 'reachable' | 'unreachable' | 'untested'; via: string; reason: string; sent: number; received: number };
   scenario: 'reachable' | 'cgnat' | 'nat' | 'unknown';
 }
+
+// Otomatik denetim (backend wgWatch.ts): Ev VPN'i açıkken birkaç saatte bir; bozulunca zile uyarı düşer.
+interface ReachWatch {
+  status: 'reachable' | 'unreachable' | 'none'; lastRun: string; lastExternal: 'reachable' | 'unreachable' | 'untested' | '';
+  intervalH: number;
+}
+const WATCH_LABEL = { reachable: 'ulaşıyor', unreachable: 'ulaşılamıyor', untested: 'dış deneme yapılamadı', '': '' };
 
 type Tone = 'ok' | 'bad' | 'warn' | 'muted';
 const TONE_ICON = { ok: CheckCircle, bad: XCircle, warn: AlertTriangle, muted: MinusCircle };
@@ -46,6 +54,7 @@ function Check({ tone, title, children }: { tone: Tone; title: string; children:
 export function PiVpnReachability({ running }: { running: boolean }) {
   const [result, setResult] = useState<ReachResult | null>(lastResult);
   const [testing, setTesting] = useState(false);
+  const { data: watch, refetch: refetchWatch } = useApi<ReachWatch | null>('/wg-server/watch', null, 60000);
 
   const run = async () => {
     setTesting(true);
@@ -57,6 +66,7 @@ export function PiVpnReachability({ running }: { running: boolean }) {
       toast.error(e instanceof Error ? e.message : 'Test yapılamadı');
     } finally {
       setTesting(false);
+      void refetchWatch();
     }
   };
 
@@ -69,6 +79,18 @@ export function PiVpnReachability({ running }: { running: boolean }) {
           {testing ? ' Test ediliyor…' : result ? ' Yeniden test et' : ' Testi başlat'}
         </button>
       </div>
+      {watch && (
+        <p className="pivpn-reach-auto">
+          <Clock size={12} />
+          <span>
+            {running
+              ? <>Otomatik denetim: {watch.intervalH} saatte bir{watch.lastRun
+                ? ` · son: ${relativeTime(new Date(watch.lastRun))}, ${WATCH_LABEL[watch.lastExternal] || '—'}`
+                : ' · ilk denetim açılıştan birkaç dakika sonra'}. Bozulursa zile bildirim düşer.</>
+              : "Otomatik denetim Ev VPN'i açıkken çalışır."}
+          </span>
+        </p>
+      )}
       {testing ? (
         <p className="subtitle">Evden internete giden yol inceleniyor ve dışarıdan evin adresine deneme paketleri gönderiliyor (10-15 sn)…</p>
       ) : !result ? (
