@@ -30,7 +30,15 @@
 #                                        "sat confirm" gelmezse eth0 eski profiline döner
 #   sat confirm | rollback | off         uyduyu kalıcı yapar | yalnız deneme sürüyorsa geri alır | kapatır
 #   sat apply --ssid AD [--band] [--channel]  uydunun yayın ayarını değiştirir (parola STDIN'den; köprü kesilmez)
-#   ensure                             güncelleme / açılış: süresi geçen denemeleri geri alır, kalıcı profili ve kalıcı
+#   wan on --trial SN --port KART --type dhcp|static|pppoe [--vlan ID [--prio 0-7]] [--mac MAC] [--mtu N]
+#          [--addr IP/ÖNEK --gw IP [--dns IP,IP]] [--user AD]
+#                                        internet kartı (WAN router rolü, R3): ikinci Ethernet kartı internete bağlanır,
+#                                        eth0 / br0 yalnız ev ağı olur (cihaz adresi kalır, modem tarafı adres ve ağ
+#                                        geçidi kalkar). PPPoE parolası STDIN'in ilk satırından. SN saniye içinde
+#                                        "wan confirm" gelmezse eski (tek kablolu) düzene dönülür
+#   wan confirm | rollback | off         kalıcı yapar | yalnız deneme sürüyorsa geri alır | bilerek kapatır (eski düzen)
+#   wan fw                               internet kartı güvenlik duvarını yeniden yükler (Ev VPN'i portu değişince)
+#   ensure                            güncelleme / açılış: süresi geçen denemeleri geri alır, kalıcı profili ve kalıcı
 #                                        kurulum Wi-Fi'ını denetler. Hiçbir şeyi kendiliğinden AÇMAZ.
 #   guard                                pi5-net-guard.service (açılış + her NetworkManager (yeniden) başlatması): kalıcı
 #                                        profil etkin değilse yedekten onarır; olmazsa adresleri bu açılış için elle tutar.
@@ -48,6 +56,7 @@
 #                       sudo bash /opt/pi5-gateway/scripts/net-mode.sh ap off     (kurulum Wi-Fi'ını kapatma)
 #                       sudo bash /opt/pi5-gateway/scripts/net-mode.sh home off   (ev Wi-Fi'ını / köprüyü kapatma)
 #                       sudo bash /opt/pi5-gateway/scripts/net-mode.sh sat off    (uydu köprüsünü kapatma)
+#                       sudo bash /opt/pi5-gateway/scripts/net-mode.sh wan off    (internet kartından tek kabloya dönüş)
 set -u
 export LC_ALL=C
 umask 077
@@ -91,8 +100,25 @@ HOME_RETRY_PREFIX=$HOME_TIMER_UNIT-retry
 # Uydu (aynı köprü / profil adları; ev Wi-Fi'ıyla birbirini dışlar)
 SAT_TIMER_UNIT=pi5-sat-rollback
 SAT_RETRY_PREFIX=$SAT_TIMER_UNIT-retry
+# İnternet kartı (WAN router, R3)
+WAN_PROFILE=pi5-wan
+WAN_KEYFILE=/etc/NetworkManager/system-connections/pi5-wan.nmconnection
+WAN_VLAN_PROFILE=pi5-wan-vlan
+WAN_VLAN_KEYFILE=/etc/NetworkManager/system-connections/pi5-wan-vlan.nmconnection
+WAN_PPP_PROFILE=pi5-wan-ppp
+WAN_PPP_KEYFILE=/etc/NetworkManager/system-connections/pi5-wan-ppp.nmconnection
+WAN_PPP_IF=pppwan
+WAN_IDLE_PROFILE=pi5-wan-idle
+WAN_IDLE_KEYFILE=/etc/NetworkManager/system-connections/pi5-wan-idle.nmconnection
+WAN_BACKUP_DIR=$DIR/wan
+WAN_GUARD_STATUS=$DIR/wan-guard.status
+WAN_NFT=/etc/nftables.d/pi5-wan.conf
+WAN_FW_UNIT=pi5-wan-fw
+WAN_TIMER_UNIT=pi5-wan-rollback
+WAN_RETRY_PREFIX=$WAN_TIMER_UNIT-retry
+WAN_METRIC=50
 SELF=$(readlink -f "$0")
-STATE_KEYS="stage trial_ends iface transit client gw dns old_uuid old_name old_ipv6 wifi_off ap_stage ap_trial_ends ap_iface ap_ssid ap_old_uuid ap_radio_was_off home_stage home_trial_ends home_iface home_ssid home_band home_channel home_radio_was_off lan_if sat_stage sat_trial_ends sat_iface sat_old_uuid sat_old_name sat_wifi sat_ssid sat_band sat_channel sat_radio_was_off sat_backhaul"
+STATE_KEYS="stage trial_ends iface transit client gw dns old_uuid old_name old_ipv6 wifi_off ap_stage ap_trial_ends ap_iface ap_ssid ap_old_uuid ap_radio_was_off home_stage home_trial_ends home_iface home_ssid home_band home_channel home_radio_was_off lan_if sat_stage sat_trial_ends sat_iface sat_old_uuid sat_old_name sat_wifi sat_ssid sat_band sat_channel sat_radio_was_off sat_backhaul wan_stage wan_trial_ends wan_port wan_dev wan_type wan_vlan wan_prio wan_mac wan_mtu wan_user wan_addr wan_gw wan_dns wan_lan"
 
 die() { echo "error=$*"; exit 1; }
 log() { logger -t pi5-net-mode "$*" 2>/dev/null || true; }
@@ -133,6 +159,17 @@ read_state() {
   [[ $S_sat_channel =~ ^[0-9]{1,3}$ ]] || S_sat_channel=""
   [ "$S_sat_radio_was_off" = 1 ] || S_sat_radio_was_off=0
   [ "$S_sat_backhaul" = mesh ] || S_sat_backhaul=wired
+  case "$S_wan_stage" in trial|on) ;; *) S_wan_stage=none ;; esac
+  [[ $S_wan_trial_ends =~ ^[0-9]+$ ]] || S_wan_trial_ends=0
+  # Kart adları nft kuralına ve profil dosyasına girer: biçim dışıysa boş sayılır.
+  [[ $S_wan_port =~ ^[A-Za-z0-9_.-]{1,15}$ ]] || S_wan_port=""
+  [[ $S_wan_dev =~ ^[A-Za-z0-9_.-]{1,15}$ ]] || S_wan_dev=""
+  case "$S_wan_type" in dhcp|static|pppoe) ;; *) S_wan_type="" ;; esac
+  [[ $S_wan_vlan =~ ^[0-9]{1,4}$ ]] || S_wan_vlan=""
+  [[ $S_wan_prio =~ ^[0-7]$ ]] || S_wan_prio=""
+  [[ $S_wan_mac =~ ^([0-9a-f]{2}:){5}[0-9a-f]{2}$ ]] || S_wan_mac=""
+  [[ $S_wan_mtu =~ ^[0-9]{3,4}$ ]] || S_wan_mtu=""
+  [ "$S_wan_lan" = 1 ] || S_wan_lan=0
 }
 write_state() {
   local k v
@@ -158,6 +195,11 @@ home_reset() {
 sat_reset() {
   S_sat_stage=none; S_sat_trial_ends=0; S_sat_iface=""; S_sat_old_uuid=""; S_sat_old_name=""; S_sat_wifi=""
   S_sat_ssid=""; S_sat_band="bg"; S_sat_channel=""; S_sat_radio_was_off=0; S_sat_backhaul=wired; S_lan_if=""
+}
+# İnternet kartı alanlarını boşaltır (wan_stage=none, wan_lan=0: ev ağı profilleri tek kollu düzende).
+wan_reset() {
+  S_wan_stage=none; S_wan_trial_ends=0; S_wan_port=""; S_wan_dev=""; S_wan_type=""; S_wan_vlan=""; S_wan_prio=""
+  S_wan_mac=""; S_wan_mtu=""; S_wan_user=""; S_wan_addr=""; S_wan_gw=""; S_wan_dns=""; S_wan_lan=0
 }
 
 # static/confirm/dhcp: zamanlayıcıyı ve (varsa) biten geri alma servisini temizler. Geri alma işi KENDİ servisinde
@@ -196,6 +238,17 @@ home_timer_active() { systemctl is-active --quiet "$HOME_TIMER_UNIT.timer" 2>/de
 arm_home_retry() {
   systemd-run --quiet --collect --unit="$HOME_RETRY_PREFIX-$(date +%s)-$$" --on-active="$1" --timer-property=AccuracySec=1s \
     /bin/bash "$SELF" home rollback >/dev/null 2>&1 9>&-
+}
+# İnternet kartı denemesinin zamanlayıcıları (ayrı birim adları).
+wan_stop_timer() {
+  systemctl stop "$WAN_TIMER_UNIT.timer" "$WAN_TIMER_UNIT.service" "$WAN_RETRY_PREFIX-*.timer" "$WAN_RETRY_PREFIX-*.service" >/dev/null 2>&1 || true
+  systemctl reset-failed "$WAN_TIMER_UNIT.timer" "$WAN_TIMER_UNIT.service" "$WAN_RETRY_PREFIX-*.timer" "$WAN_RETRY_PREFIX-*.service" >/dev/null 2>&1 || true
+}
+wan_retry_active() { systemctl list-units --type=timer --state=active --no-legend "$WAN_RETRY_PREFIX-*" 2>/dev/null | grep -q .; }
+wan_timer_active() { systemctl is-active --quiet "$WAN_TIMER_UNIT.timer" 2>/dev/null || wan_retry_active; }
+arm_wan_retry() {
+  systemd-run --quiet --collect --unit="$WAN_RETRY_PREFIX-$(date +%s)-$$" --on-active="$1" --timer-property=AccuracySec=1s \
+    /bin/bash "$SELF" wan rollback >/dev/null 2>&1 9>&-
 }
 
 # --- IPv4 hesapları (bash tamsayısı; girdiler önceden doğrulanır) ---
@@ -250,6 +303,17 @@ wait_both() {
 wait_ipv4() {
   local end=$((SECONDS + $2))
   while [ -z "$(iface_addrs "$1")" ]; do
+    [ "$SECONDS" -ge "$end" ] && return 1
+    sleep 1
+  done
+}
+# Ev ağı tarafının adresleri: internet kartı (WAN router) modunda (wan_lan=1) eth0 / br0 yalnız ev ağıdır — yalnız cihaz
+# adresi (client) aranır; değilse iki adres (transit + client). $1 arayüz.
+lan_addrs_ok() { if [ "$S_wan_lan" = 1 ]; then addr_static "$1" "$S_client"; else both_addrs "$1" "$S_transit" "$S_client"; fi; }
+# $1 arayüz, $2 sn: ev ağı adresleri görünene kadar bekler
+wait_lan() {
+  local end=$((SECONDS + $2))
+  while ! lan_addrs_ok "$1"; do
     [ "$SECONDS" -ge "$end" ] && return 1
     sleep 1
   done
@@ -320,7 +384,9 @@ restore_old() {
   if uuid_exists "$S_old_uuid"; then
     # Açılışta NM eski profili zaten etkinleştirmişse yeniden başlatılmaz (gereksiz kesinti olmasın).
     if [ "$(active_uuid "$ifc")" = "$S_old_uuid" ] && [ -n "$(iface_addrs "$ifc")" ]; then drop_fallback; return 0; fi
-    if out=$(nmcli -w 30 connection up uuid "$S_old_uuid" 2>&1); then
+    # ifname: rpt4 netplan profilleri karta bağlı değildir (match: {}) — ikinci bir kart (internet kartı) varken NM
+    # profili o karta da bağlayabilirdi.
+    if out=$(nmcli -w 30 connection up uuid "$S_old_uuid" ifname "$ifc" 2>&1); then
       wait_ipv4 "$ifc" 20 && { drop_fallback; return 0; }
       out="IPv4 adresi gelmedi"
     fi
@@ -374,24 +440,38 @@ write_guard() {
 
 # ACİL MOD (yalnız bu açılış): NM arayüzü bırakır, adresler ve varsayılan rota elle kurulur. Profilde olmayan IPv4
 # adresleri (ör. eski DHCP adresi) kaldırılır: kaynak adres seçimi belirsiz kalmasın. Yeniden başlatmada /run silinir
-# ve NM arayüzü yeniden yönetir; NM yeniden başlatılırsa koruma önce onarmayı dener.
+# ve NM arayüzü yeniden yönetir; NM yeniden başlatılırsa koruma önce onarmayı dener. İnternet kartı modunda (wan_lan=1)
+# yalnız cihaz adresi kurulur: varsayılan rota internet kartındadır.
 emergency() {
   local ifc=$S_iface a
   nmcli device set "$ifc" managed no >/dev/null 2>&1 || true
   ip link set "$ifc" up 2>/dev/null
   for a in $(iface_addrs "$ifc"); do
-    [ "$a" = "$S_transit" ] || [ "$a" = "$S_client" ] || ip addr del "$a" dev "$ifc" 2>/dev/null
+    [ "$a" = "$S_client" ] && continue
+    [ "$S_wan_lan" != 1 ] && [ "$a" = "$S_transit" ] && continue
+    ip addr del "$a" dev "$ifc" 2>/dev/null
   done
+  if [ "$S_wan_lan" = 1 ]; then ip addr replace "$S_client" brd + dev "$ifc"; return; fi
   ip addr replace "$S_transit" brd + dev "$ifc" \
     && ip addr replace "$S_client" brd + dev "$ifc" \
     && ip route replace default via "$S_gw" dev "$ifc" metric 100
 }
 
+# Profil `nmcli connection delete` ile silindiyse NM o UUID için mezar taşı bırakır (<uuid>.nmmeta → /dev/null): aynı
+# UUID'li dosya yüklense de gizli kalır (gerçek NM 1.52). $1 profil dosyası: yüklemeden önce mezar taşı kaldırılır.
+drop_tombstone() {
+  local u
+  u=$(sed -n 's/^uuid=//p' "$1" 2>/dev/null | head -1)
+  if [[ $u =~ ^[0-9a-f-]{36}$ ]] && [ "$(readlink "$(dirname "$1")/$u.nmmeta" 2>/dev/null)" = /dev/null ]; then
+    rm -f "$(dirname "$1")/$u.nmmeta"
+  fi
+}
 # Yedeği profil dosyasının yerine atomik koyar ve yalnız o dosyayı NM'ye yükler (con reload yok). RESTORE_DETAIL.
 restore_backup() {
   local tmp out
   tmp="$(dirname "$KEYFILE")/.pi5-eth0.tmp"
   if cp -f "$BACKUP" "$tmp" && chown root:root "$tmp" && chmod 600 "$tmp" && mv -f "$tmp" "$KEYFILE"; then
+    drop_tombstone "$KEYFILE"
     if out=$(nmcli connection load "$KEYFILE" 2>&1); then RESTORE_DETAIL="profil dosyası yedekten geri yüklendi"
     else RESTORE_DETAIL="yedekten geri konan profil yüklenemedi: $(printf '%s' "$out" | oneline)"; fi
   else
@@ -399,12 +479,13 @@ restore_backup() {
   fi
 }
 
-# Profili etkinleştirir ve iki adresi bekler. 0 = tamam; değilse UP_OUT (tek satır neden).
+# Profili etkinleştirir ve ev ağı adreslerini (bkz. lan_addrs_ok) bekler. 0 = tamam; değilse UP_OUT (tek satır neden).
 try_up() {
   local out
   if out=$(nmcli -w 30 connection up id "$PROFILE" 2>&1); then
-    wait_both "$1" 10 && return 0
-    UP_OUT="profil etkinleşti ama iki adres de gelmedi"
+    wait_lan "$1" 10 && return 0
+    if [ "$S_wan_lan" = 1 ]; then UP_OUT="profil etkinleşti ama ev ağı adresi gelmedi"
+    else UP_OUT="profil etkinleşti ama iki adres de gelmedi"; fi
   else
     UP_OUT=$(printf '%s' "$out" | oneline)
   fi
@@ -420,8 +501,8 @@ guard_routine() {
   if [ -z "$ifc" ] || [ -z "$S_transit" ] || [ -z "$S_client" ] || [ -z "$S_gw" ]; then
     write_guard error "durum kaydı eksik ($STATE_FILE)"; return 0
   fi
-  if [ "${2:-}" = passive ] && [ "$(dev_state "$ifc")" = 10 ] && both_addrs "$ifc" "$S_transit" "$S_client" \
-     && ip -4 route show default 2>/dev/null | grep -Eq "via $(rx "$S_gw") dev $ifc( |\$)"; then
+  if [ "${2:-}" = passive ] && [ "$(dev_state "$ifc")" = 10 ] && lan_addrs_ok "$ifc" \
+     && { [ "$S_wan_lan" = 1 ] || ip -4 route show default 2>/dev/null | grep -Eq "via $(rx "$S_gw") dev $ifc( |\$)"; }; then
     echo "guard_result=emergency"
     echo "guard_detail=acil mod sürüyor (adresler elle tutuluyor) — onarım açılışta ya da NetworkManager yeniden başlatılınca denenir"
     return 0
@@ -429,7 +510,7 @@ guard_routine() {
   # 1. Açılışta NM profili birazdan kendisi etkinleştirir: beklenir.
   end=$((SECONDS + wait))
   while :; do
-    if [ "$(active_conn "$ifc")" = "$PROFILE" ] && both_addrs "$ifc" "$S_transit" "$S_client"; then
+    if [ "$(active_conn "$ifc")" = "$PROFILE" ] && lan_addrs_ok "$ifc"; then
       write_guard ok ""; return 0
     fi
     # Arayüz yönetilmiyor (önceki acil mod, NM yeniden başlatıldı): beklemek boşuna.
@@ -736,9 +817,9 @@ HOME_CH_A='^(36|40|44|48)$'
 valid_channel() { if [ "$1" = a ]; then [[ $2 =~ $HOME_CH_A ]]; else [[ $2 =~ $HOME_CH_BG ]]; fi; }
 # $1 arayüz köprünün (br0) portu mu
 br_port() { [ "$(basename "$(readlink "/sys/class/net/$1/master" 2>/dev/null)")" = "$BR_IF" ]; }
-# Köprü yerinde: pi5-br0 br0'da etkin, iki adres br0'da, eth0 pi5-br0-eth ile köprünün portu.
+# Köprü yerinde: pi5-br0 br0'da etkin, ev ağı adresleri br0'da, eth0 pi5-br0-eth ile köprünün portu.
 br_up_ok() {
-  [ "$(active_conn "$BR_IF")" = "$BR_PROFILE" ] && both_addrs "$BR_IF" "$S_transit" "$S_client" \
+  [ "$(active_conn "$BR_IF")" = "$BR_PROFILE" ] && lan_addrs_ok "$BR_IF" \
     && [ "$(active_conn "$S_iface")" = "$PORT_PROFILE" ] && br_port "$S_iface"
 }
 wait_br() {
@@ -777,6 +858,16 @@ new_uuid() {
   u=$(cat /proc/sys/kernel/random/uuid 2>/dev/null)
   [[ $u =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]] && echo "$u"
 }
+# Köprü profilinin [ipv4] bölümü: tek kollu düzende iki adres + modem ağ geçidi; internet kartı (WAN router) modunda
+# yalnız cihaz adresi — varsayılan rota internet kartındadır (bkz. lan_profiles_set).
+br_ipv4_section() {
+  if [ "$S_wan_lan" = 1 ]; then
+    printf 'method=manual\naddress1=%s\ndns=127.0.0.1;\nnever-default=true\nroute-metric=100' "$S_client"
+  else
+    printf 'method=manual\naddress1=%s\naddress2=%s\ngateway=%s\ndns=127.0.0.1;%s;\nroute-metric=100' \
+      "$S_transit" "$S_client" "$S_gw" "$S_gw"
+  fi
+}
 # $1 Wi-Fi kartı, $2 ağ adı, $3 parola, $4 bant, $5 kanal, $6 eth0 MAC, $7 IPv6 yöntemi. Kendiliğinden bağlanma deneme
 # boyunca KAPALI ("home confirm" açar). pmf=1 (yalnız WPA2): bkz. ap_write_keyfile.
 home_write_keyfiles() {
@@ -797,12 +888,7 @@ cloned-mac-address=$6
 stp=false
 
 [ipv4]
-method=manual
-address1=$S_transit
-address2=$S_client
-gateway=$S_gw
-dns=127.0.0.1;$S_gw;
-route-metric=100
+$(br_ipv4_section)
 
 [ipv6]
 method=$7" || return 1
@@ -907,8 +993,8 @@ home_unwind() {
   [ -n "$ifc" ] || return 0
   if [ "$(dev_state "$ifc")" = 10 ]; then nmcli device set "$ifc" managed yes >/dev/null 2>&1; sleep 1; fi
   # Köprü kalkınca NM pi5-eth0'ı kendiliğinden etkinleştirmiş olabilir: yeniden başlatılmaz.
-  if [ "$(active_conn "$ifc")" = "$PROFILE" ] && both_addrs "$ifc" "$S_transit" "$S_client"; then return 0; fi
-  if out=$(nmcli -w 30 connection up id "$PROFILE" 2>&1) && wait_both "$ifc" 10; then return 0; fi
+  if [ "$(active_conn "$ifc")" = "$PROFILE" ] && lan_addrs_ok "$ifc"; then return 0; fi
+  if out=$(nmcli -w 30 connection up id "$PROFILE" 2>&1) && wait_lan "$ifc" 10; then return 0; fi
   echo "warning=sabit profil ($PROFILE) yeniden etkinleşmedi: $(printf '%s' "${out:-adresler gelmedi}" | oneline) — koruma onarıyor"
   guard_routine 0 >/dev/null
   return 0
@@ -953,12 +1039,12 @@ home_guard_routine() {
   if [ -z "$ifc" ] || [ -z "$S_transit" ] || [ -z "$S_client" ] || [ -z "$S_gw" ] || [ -z "$S_home_iface" ]; then
     write_guard error "durum kaydı eksik ($STATE_FILE)"; return 0
   fi
-  if [ "${2:-}" = passive ] && [ "$(dev_state "$ifc")" = 10 ] && both_addrs "$ifc" "$S_transit" "$S_client"; then
+  if [ "${2:-}" = passive ] && [ "$(dev_state "$ifc")" = 10 ] && lan_addrs_ok "$ifc"; then
     echo "guard_result=emergency"
     echo "guard_detail=acil mod sürüyor (adresler elle tutuluyor) — onarım açılışta ya da NetworkManager yeniden başlatılınca denenir"
     return 0
   fi
-  if [ "${2:-}" = passive ] && ! br_up_ok && [ "$(active_conn "$ifc")" = "$PROFILE" ] && both_addrs "$ifc" "$S_transit" "$S_client"; then
+  if [ "${2:-}" = passive ] && ! br_up_ok && [ "$(active_conn "$ifc")" = "$PROFILE" ] && lan_addrs_ok "$ifc"; then
     echo "guard_result=unbridged"
     echo "guard_detail=köprü kurulamamıştı; Pi köprüsüz (pi5-eth0) çalışıyor, ev Wi-Fi'ı yayında değil — onarım açılışta ya da NetworkManager yeniden başlatılınca denenir"
     return 0
@@ -1213,6 +1299,506 @@ sat_guard_routine() {
   return 0
 }
 
+# --- İnternet kartı (WAN router, R3) ---
+# İkinci Ethernet kartı (ör. USB adaptör) internete bağlanır: DHCP (modem arkası), sabit adres ya da PPPoE; her biri
+# isteğe bağlı VLAN'lı (operatör etiketi + 802.1p önceliği), MAC kopyalama ve MTU ile. eth0 / br0 yalnız ev ağı olur:
+# modem tarafı adres ve ağ geçidi kalkar, cihaz adresi (192.168.0.1) HİÇ kalkmaz → panel her an ev ağından açılır.
+# Profiller (yerli keyfile, doğrudan yazılır; PPPoE parolası hiçbir komutun argv'sinde görünmez, 0600):
+#   pi5-wan       kartın kendisi: DHCP / sabit adres burada; VLAN ya da PPPoE varsa adressiz (yalnız bağlantı, MAC)
+#   pi5-wan-vlan  VLAN arayüzü wan.<ID>: DHCP / sabit adres burada; PPPoE varsa adressiz
+#   pi5-wan-ppp   PPPoE (arayüz pppwan); üst arayüz kart ya da VLAN
+# Varsayılan rota metriği 50 (ev ağı profilleri 100 idi). IPv6 kapalı: VPS yönlendirme kuralları yalnız IPv4 — IPv6
+# trafik tünelleri atlardı. Güvenlik duvarı (inet pi5_wan + ip pi5_wan_nat) bağlantıdan ÖNCE yüklenir: internetten
+# gelen her şey düşer (kurulu bağlantıların yanıtları, DHCP yanıtı, Ev VPN'i portu ve port yönlendirmeleri hariç), ev
+# ağından çıkan trafik maskelenir, TCP MSS yola göre kırpılır (PPPoE). Herhangi bir tablodaki drop kesindir: başka
+# tabloların kart ayrımı yapmayan izinleri internet kartını açamaz. Açılışta pi5-wan-fw.service tabloyu
+# NetworkManager'dan ÖNCE yükler (kart bağlanırken korumasız an olmaz).
+
+# Katman-3 arayüzü (adresin ve varsayılan rotanın olduğu arayüz): PPPoE → pppwan, VLAN → wan.<ID>, değilse kartın kendisi.
+wan_l3_of() { if [ "$2" = pppoe ]; then echo "$WAN_PPP_IF"; elif [ -n "$3" ]; then echo "wan.$3"; else echo "$1"; fi; }
+# Bu kurulumun profilleri (etkinleştirme sırası): kart → VLAN → PPPoE.
+wan_profiles() {
+  echo "$WAN_PROFILE"
+  if [ -n "$S_wan_vlan" ]; then echo "$WAN_VLAN_PROFILE"; fi
+  if [ "$S_wan_type" = pppoe ]; then echo "$WAN_PPP_PROFILE"; fi
+}
+wan_keyfile_of() {
+  case "$1" in
+    "$WAN_PROFILE") echo "$WAN_KEYFILE" ;;
+    "$WAN_VLAN_PROFILE") echo "$WAN_VLAN_KEYFILE" ;;
+    "$WAN_PPP_PROFILE") echo "$WAN_PPP_KEYFILE" ;;
+  esac
+}
+# nft arayüz kümesi: kart + (varsa) VLAN + (varsa) PPPoE — internetten gelen trafik bunların hangisinden gelirse gelsin.
+wan_ifset() {
+  local s="\"$S_wan_port\""
+  if [ -n "$S_wan_vlan" ]; then s="$s, \"wan.$S_wan_vlan\""; fi
+  if [ "$S_wan_type" = pppoe ]; then s="$s, \"$WAN_PPP_IF\""; fi
+  echo "{ $s }"
+}
+# Ev VPN'inin (wg_pi) dinleme portu; yapılandırma yoksa ya da Ev VPN'i kapalıysa (birim etkin değil, arayüz yok) boş —
+# panel Ev VPN'ini kapatınca yapılandırma dosyası kalır.
+wg_listen_port() {
+  local p
+  [ -e /sys/class/net/wg_pi ] || systemctl is-enabled --quiet wg-quick@wg_pi.service 2>/dev/null || return 1
+  p=$(sed -n 's/^[[:space:]]*ListenPort[[:space:]]*=[[:space:]]*\([0-9]\{1,5\}\).*/\1/p' /etc/wireguard/wg_pi.conf 2>/dev/null | head -1)
+  [[ $p =~ ^[0-9]{1,5}$ ]] && [ "$p" -ge 1 ] && [ "$p" -le 65535 ] && echo "$p"
+}
+# [ipv4] bölümü. $1 = 1: bu profil adresi taşır (katman 3); değilse adressiz. $2 = ppp: PPPoE profili (adres operatörden).
+wan_ipv4_section() {
+  if [ "$1" != 1 ]; then printf 'method=disabled'; return 0; fi
+  if [ "$S_wan_type" = static ] && [ "${2:-}" != ppp ]; then
+    printf 'method=manual\naddress1=%s\ngateway=%s\n' "$S_wan_addr" "$S_wan_gw"
+    if [ -n "$S_wan_dns" ]; then printf 'dns=%s;\n' "${S_wan_dns//,/;}"; fi
+  else
+    printf 'method=auto\n'
+  fi
+  # Operatörün DNS'i Pi'nin kendi DNS'inden (127.0.0.1, Pi-hole) SONRA gelsin: daha yüksek değer = daha düşük öncelik.
+  printf 'route-metric=%s\ndns-priority=200\nmay-fail=false' "$WAN_METRIC"
+}
+# Profil dosyaları (kendiliğinden bağlanma deneme boyunca KAPALI; "wan confirm" açar). $1 = PPPoE parolası.
+wan_write_keyfiles() {
+  local u1 u2 u3 l3port=1 l3vlan=0 eth="" vlan_eth="" prio="" ppp="" parent i
+  u1=$(new_uuid) && u2=$(new_uuid) && u3=$(new_uuid) || return 1
+  if [ -n "$S_wan_vlan" ]; then l3port=0; l3vlan=1; fi
+  if [ "$S_wan_type" = pppoe ]; then l3port=0; l3vlan=0; fi
+  if [ -n "$S_wan_mac" ]; then eth="cloned-mac-address=$S_wan_mac"; fi
+  if [ -n "$S_wan_mtu" ] && [ "$l3port" = 1 ]; then eth="${eth:+$eth
+}mtu=$S_wan_mtu"; fi
+  home_put_keyfile "$WAN_KEYFILE" "[connection]
+id=$WAN_PROFILE
+uuid=$u1
+type=ethernet
+interface-name=$S_wan_port
+autoconnect=false
+autoconnect-priority=200
+autoconnect-retries=0
+
+[ethernet]
+$eth
+
+[ipv4]
+$(wan_ipv4_section "$l3port")
+
+[ipv6]
+method=disabled" || return 1
+  if [ -n "$S_wan_vlan" ]; then
+    # 802.1p: tüm çıkış trafiği (çekirdek önceliği 0-7) operatörün istediği önceliğe eşlenir.
+    if [ -n "$S_wan_prio" ]; then
+      # keyfile liste biçimi: "0:5;1:5;..." (nmcli'deki virgül değil)
+      prio="egress-priority-map="
+      for i in 0 1 2 3 4 5 6 7; do prio="$prio$i:$S_wan_prio;"; done
+    fi
+    if [ -n "$S_wan_mtu" ] && [ "$l3vlan" = 1 ]; then vlan_eth="mtu=$S_wan_mtu"; fi
+    home_put_keyfile "$WAN_VLAN_KEYFILE" "[connection]
+id=$WAN_VLAN_PROFILE
+uuid=$u2
+type=vlan
+interface-name=wan.$S_wan_vlan
+autoconnect=false
+autoconnect-priority=200
+autoconnect-retries=0
+
+[ethernet]
+$vlan_eth
+
+[vlan]
+parent=$S_wan_port
+id=$S_wan_vlan
+$prio
+
+[ipv4]
+$(wan_ipv4_section "$l3vlan")
+
+[ipv6]
+method=disabled" || return 1
+  fi
+  if [ "$S_wan_type" = pppoe ]; then
+    parent=$S_wan_port
+    if [ -n "$S_wan_vlan" ]; then parent="wan.$S_wan_vlan"; fi
+    if [ -n "$S_wan_mtu" ]; then ppp="mtu=$S_wan_mtu
+mru=$S_wan_mtu"; fi
+    home_put_keyfile "$WAN_PPP_KEYFILE" "[connection]
+id=$WAN_PPP_PROFILE
+uuid=$u3
+type=pppoe
+interface-name=$WAN_PPP_IF
+autoconnect=false
+autoconnect-priority=200
+autoconnect-retries=0
+
+[pppoe]
+parent=$parent
+username=$S_wan_user
+password=$1
+
+[ppp]
+$ppp
+
+[ipv4]
+$(wan_ipv4_section 1 ppp)
+
+[ipv6]
+method=disabled" || return 1
+  fi
+}
+# Profiller NM'ye beklenen dosyalardan yüklenmiş.
+wan_loaded() {
+  local p f
+  for p in $(wan_profiles); do
+    f=$(wan_keyfile_of "$p")
+    [ -s "$f" ] && [ "$(file_of_name "$p")" = "$f" ] || return 1
+  done
+}
+# Yalnız bu kurulumun dosyaları yüklenir (con reload yok). Hata → 1, neden WAN_LOAD_OUT'ta.
+wan_load_all() {
+  local p f out
+  WAN_LOAD_OUT=""
+  for p in $(wan_profiles); do
+    f=$(wan_keyfile_of "$p")
+    out=$(nmcli connection load "$f" 2>&1) || { WAN_LOAD_OUT="$p: $(printf '%s' "$out" | oneline)"; return 1; }
+  done
+  wan_loaded || { WAN_LOAD_OUT="profiller NetworkManager'da beklenen dosyalardan görünmüyor (dosya reddedilmiş olabilir)"; return 1; }
+}
+# Üç profili (tüm kopyaları) ve dosyalarını kaldırır; durum dosyasına dokunmaz.
+wan_delete_all() {
+  local f
+  delete_named "$WAN_PPP_PROFILE"; delete_named "$WAN_VLAN_PROFILE"; delete_named "$WAN_PROFILE"
+  for f in "$WAN_PPP_KEYFILE" "$WAN_VLAN_KEYFILE" "$WAN_KEYFILE"; do rm -f "$f" "$(dirname "$f")/.$(basename "$f").tmp"; done
+}
+# Profilleri sırayla etkinleştirir (kart → VLAN → PPPoE). Hata → 1, neden WAN_UP_OUT'ta.
+wan_up() {
+  local p out w
+  WAN_UP_OUT=""
+  for p in $(wan_profiles); do
+    w=30; [ "$p" = "$WAN_PPP_PROFILE" ] && w=60
+    if ! out=$(nmcli -w "$w" connection up id "$p" 2>&1); then
+      WAN_UP_OUT="$p etkinleştirilemedi: $(printf '%s' "$out" | oneline)"; return 1
+    fi
+  done
+}
+# İnternet kartının IPv4 adresi (ip/önek). PPPoE'de "adres peer karşı/32" → adres/32.
+wan_ip() {
+  [ -n "$S_wan_dev" ] || return 0
+  ip -4 -o addr show dev "$S_wan_dev" 2>/dev/null | awk '{ if ($5 == "peer") print $4 "/32"; else print $4; exit }' | head -1
+}
+# İnternet kartının ağ geçidi (DHCP / sabit: varsayılan rotanın "via"sı; PPPoE: karşı uç).
+wan_gateway() {
+  local g
+  [ -n "$S_wan_dev" ] || return 0
+  g=$(ip -4 route show default dev "$S_wan_dev" 2>/dev/null | awk '{ for (i = 1; i < NF; i++) if ($i == "via") { print $(i + 1); exit } }')
+  [ -n "$g" ] || g=$(ip -4 -o addr show dev "$S_wan_dev" 2>/dev/null | awk '$5 == "peer" { sub(/\/.*/, "", $6); print $6; exit }')
+  echo "$g"
+}
+# Bağlı: kartta bu kurulumun profili etkin, adres var ve varsayılan rota bu arayüzde. Kartı başka bir profil almışsa
+# (ör. karta bağlı olmayan eski netplan profili, pi5-wan silindiğinde) bağlı sayılmaz — koruma yedekten onarır.
+wan_up_ok() {
+  [ "$(active_conn "$S_wan_port")" = "$WAN_PROFILE" ] && [ -n "$(wan_ip)" ] \
+    && ip -4 route show default dev "$S_wan_dev" 2>/dev/null | grep -q .
+}
+wait_wan_ip() {
+  local end=$((SECONDS + $1))
+  while ! wan_up_ok; do
+    [ "$SECONDS" -ge "$end" ] && return 1
+    sleep 1
+  done
+}
+# İnternet: internet kartına bağlı ping (SO_BINDTODEVICE: VPS yönlendirme kuralları araya girmez), olmazsa TCP 443.
+wan_internet_ok() {
+  local t
+  for t in 1.1.1.1 8.8.8.8 9.9.9.9; do ping -c1 -W3 -I "$S_wan_dev" "$t" >/dev/null 2>&1 && return 0; done
+  timeout 6 bash -c 'exec 3<>/dev/tcp/1.1.1.1/443' >/dev/null 2>&1
+}
+# Ev ağı arayüzü: ev Wi-Fi'ı açıkken köprü, değilse kart.
+lan_dev() { if [ "$S_home_stage" != none ] && [ -e "/sys/class/net/$BR_IF" ]; then echo "$BR_IF"; else echo "$S_iface"; fi; }
+
+# pi5_wan + pi5_wan_nat tabloları (boş-tanımla → sil → yeniden-tanımla: her yüklemede idempotent). Hata → 1, WAN_NFT_OUT.
+wan_nft_load() {
+  local ifs dhcp="" wgr="" wg out
+  WAN_NFT_OUT=""
+  command -v nft >/dev/null 2>&1 || { WAN_NFT_OUT="nft bulunamadı"; return 1; }
+  [ -n "$S_wan_port" ] || { WAN_NFT_OUT="internet kartı kaydı yok"; return 1; }
+  ifs=$(wan_ifset)
+  if [ "$S_wan_type" != pppoe ]; then dhcp="        iifname $ifs udp sport 67 udp dport 68 accept"; fi
+  if wg=$(wg_listen_port); then wgr="        iifname $ifs udp dport $wg accept"; fi
+  mkdir -p "$(dirname "$WAN_NFT")" 2>/dev/null
+  if ! printf '%s\n' "table inet pi5_wan {}
+delete table inet pi5_wan
+table inet pi5_wan {
+    chain input {
+        type filter hook input priority -10; policy accept;
+        iifname $ifs ct state established,related accept
+$dhcp
+$wgr
+        iifname $ifs drop
+    }
+    chain forward {
+        type filter hook forward priority -10; policy accept;
+        iifname $ifs tcp flags syn tcp option maxseg size set rt mtu
+        oifname $ifs tcp flags syn tcp option maxseg size set rt mtu
+        iifname $ifs ct state established,related accept
+        iifname $ifs ct status dnat accept
+        iifname $ifs drop
+    }
+}
+table ip pi5_wan_nat {}
+delete table ip pi5_wan_nat
+table ip pi5_wan_nat {
+    chain postrouting {
+        type nat hook postrouting priority srcnat; policy accept;
+        oifname $ifs masquerade
+    }
+}" > "$WAN_NFT.tmp" || ! mv -f "$WAN_NFT.tmp" "$WAN_NFT"; then
+    rm -f "$WAN_NFT.tmp"; WAN_NFT_OUT="$WAN_NFT yazılamadı"; return 1
+  fi
+  out=$(nft -f "$WAN_NFT" 2>&1) || { WAN_NFT_OUT=$(printf '%s' "$out" | oneline); return 1; }
+  return 0
+}
+# Tabloları kaldırır: dosyaya önce yalnız silen biçim yazılıp yüklenir (bkz. ap_nft_remove), sonra dosya silinir.
+wan_nft_remove() {
+  local del out rc=0
+  del=$'table inet pi5_wan {}\ndelete table inet pi5_wan\ntable ip pi5_wan_nat {}\ndelete table ip pi5_wan_nat'
+  if command -v nft >/dev/null 2>&1; then
+    if [ -d "$(dirname "$WAN_NFT")" ] && printf '%s\n' "$del" > "$WAN_NFT.tmp" && mv -f "$WAN_NFT.tmp" "$WAN_NFT"; then
+      out=$(nft -f "$WAN_NFT" 2>&1) || rc=1
+    else
+      out=$(printf '%s\n' "$del" | nft -f - 2>&1) || rc=1
+    fi
+    [ "$rc" = 0 ] || echo "warning=internet kartı güvenlik duvarı tabloları kaldırılamadı: $(printf '%s' "$out" | oneline)"
+  fi
+  rm -f "$WAN_NFT" "$WAN_NFT.tmp"
+}
+wan_nft_loaded() { nft list table inet pi5_wan >/dev/null 2>&1 && nft list table ip pi5_wan_nat >/dev/null 2>&1; }
+# Açılışta tabloyu NetworkManager'dan ÖNCE yükleyen birim (nftables.service'in "flush ruleset"inden sonra).
+wan_fw_unit_install() {
+  local u="/etc/systemd/system/$WAN_FW_UNIT.service" nftb
+  nftb=$(command -v nft) || return 1
+  printf '%s\n' "[Unit]
+Description=Klyrix Gate: internet kartı güvenlik duvarı (NetworkManager'dan önce)
+DefaultDependencies=no
+After=local-fs.target nftables.service
+Before=network-pre.target NetworkManager.service shutdown.target
+Wants=network-pre.target
+Conflicts=shutdown.target
+ConditionPathExists=$WAN_NFT
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=$nftb -f $WAN_NFT
+
+[Install]
+WantedBy=multi-user.target NetworkManager.service" > "$u.tmp" && mv -f "$u.tmp" "$u" || { rm -f "$u.tmp"; return 1; }
+  systemctl daemon-reload >/dev/null 2>&1
+  systemctl enable "$WAN_FW_UNIT.service" >/dev/null 2>&1
+}
+wan_fw_unit_remove() {
+  local u="/etc/systemd/system/$WAN_FW_UNIT.service"
+  [ -e "$u" ] || return 0
+  systemctl disable "$WAN_FW_UNIT.service" >/dev/null 2>&1 || true
+  rm -f "$u"
+  systemctl daemon-reload >/dev/null 2>&1 || true
+}
+
+# eth0 / br0 profillerini internet kartı moduna (lanonly: yalnız cihaz adresi, varsayılan rota yok) ya da tek kollu
+# düzene (onearm: modem tarafı adres + cihaz adresi + modem ağ geçidi) çevirir. Etkin olana bağlantı kesilmeden
+# uygulanır (nmcli device reapply; olmazsa profil yeniden etkinleştirilir). Hata → 1, neden LAN_SET_OUT'ta.
+lan_profiles_set() {
+  local p u dev ac out
+  LAN_SET_OUT=""
+  for p in "$PROFILE" "$BR_PROFILE"; do
+    for u in $(uuids_named "$p"); do
+      # Metrik 100: sabit adres (static) ve köprü (home) profilleriyle aynı — köprü profili WAN modunda yazıldıysa
+      # metriksiz olabilir (NM köprü varsayılanı 425).
+      if [ "$1" = lanonly ]; then
+        out=$(nmcli connection modify uuid "$u" ipv4.addresses "$S_client" ipv4.gateway "" ipv4.never-default yes \
+              ipv4.dns 127.0.0.1 ipv4.route-metric 100 2>&1)
+      else
+        out=$(nmcli connection modify uuid "$u" ipv4.addresses "$S_transit,$S_client" ipv4.gateway "$S_gw" \
+              ipv4.never-default no ipv4.dns "127.0.0.1,$S_gw" ipv4.route-metric 100 2>&1)
+      fi || { LAN_SET_OUT="$p: $(printf '%s' "$out" | oneline)"; return 1; }
+    done
+  done
+  for dev in "$BR_IF" "$S_iface"; do
+    [ -e "/sys/class/net/$dev" ] || continue
+    ac=$(active_conn "$dev")
+    case "$ac" in
+      "$PROFILE"|"$BR_PROFILE")
+        if ! nmcli device reapply "$dev" >/dev/null 2>&1; then
+          out=$(nmcli -w 30 connection up id "$ac" 2>&1) \
+            || { LAN_SET_OUT="$ac uygulanamadı: $(printf '%s' "$out" | oneline)"; return 1; }
+        fi ;;
+    esac
+  done
+  if [ "$1" = lanonly ]; then S_dns="127.0.0.1"; else S_dns="127.0.0.1,$S_gw"; fi
+  return 0
+}
+# WAN modundaki ev ağı profil dosyası: yalnız cihaz adresi, varsayılan rota yok. $1 dosya.
+verify_lan_only() {
+  [ -s "$1" ] && grep -Eq "^address1=$(rx "$S_client")\$" "$1" && ! grep -q '^address2=' "$1" \
+    && grep -q '^never-default=true$' "$1" && ! grep -q '^gateway=' "$1"
+}
+# Ev ağı profillerinin yedekleri (açılış koruması bunlardan onarır) şu anki dosyalardan yenilenir — dosya beklenen
+# düzendeyse. $1 = lanonly | onearm.
+lan_backups_refresh() {
+  if [ "$1" = lanonly ]; then verify_lan_only "$KEYFILE" || return 1
+  else verify_keyfile "$S_transit" "$S_client" "$S_gw" >/dev/null || return 1; fi
+  { cp -f "$KEYFILE" "$BACKUP" && chmod 600 "$BACKUP"; } || return 1
+  if [ "$S_home_stage" = on ] && [ -s "$BR_KEYFILE" ]; then
+    { cp -f "$BR_KEYFILE" "$BR_BACKUP" && chmod 600 "$BR_BACKUP"; } || return 1
+  fi
+  return 0
+}
+
+# Kart adressiz bir profille "park" edilir (internet kartı kapatılınca): Raspberry Pi'nin NM yaması netplan profillerini
+# karta bağlamadan (match: {}) yeniden yazar — eski otomatik adresli profil açılışta boştaki bu kartı DHCP ile bağlayıp
+# ikinci bir varsayılan rota açmasın. Öncelik 200 > netplan profilleri (0). Kart çıkarılırsa profil bekler.
+wan_park_port() {
+  local u
+  [ -n "$S_wan_port" ] || return 1
+  u=$(new_uuid) || return 1
+  delete_named "$WAN_IDLE_PROFILE"
+  home_put_keyfile "$WAN_IDLE_KEYFILE" "[connection]
+id=$WAN_IDLE_PROFILE
+uuid=$u
+type=ethernet
+interface-name=$S_wan_port
+autoconnect-priority=200
+
+[ethernet]
+
+[ipv4]
+method=disabled
+
+[ipv6]
+method=disabled" || return 1
+  nmcli connection load "$WAN_IDLE_KEYFILE" >/dev/null 2>&1 || return 1
+  if [ -e "/sys/class/net/$S_wan_port" ]; then nmcli -w 10 connection up id "$WAN_IDLE_PROFILE" >/dev/null 2>&1 || true; fi
+  return 0
+}
+wan_unpark() { delete_named "$WAN_IDLE_PROFILE"; rm -f "$WAN_IDLE_KEYFILE" "$(dirname "$WAN_IDLE_KEYFILE")/.$(basename "$WAN_IDLE_KEYFILE").tmp"; }
+# İnternet kartını kaldırıp eski (tek kollu) düzene döner (deneme geri alma, kapatma, başarısız açma): önce ev ağı
+# profillerine modem tarafı adres ve ağ geçidi geri verilir (varsayılan rota hazır olur), sonra internet kartı iner;
+# kart NM'nin otomatik DHCP'sine düşmesin diye bağlantısı kesilir.
+wan_unwind() {
+  local lan
+  if [ "$S_wan_lan" = 1 ]; then
+    if lan_profiles_set onearm; then S_wan_lan=0
+    else echo "warning=ev ağı profili eski düzene çevrilemedi: $LAN_SET_OUT — koruma onarıyor"; S_wan_lan=0; fi
+    write_state
+  fi
+  nmcli connection down id "$WAN_PPP_PROFILE" >/dev/null 2>&1 || true
+  nmcli connection down id "$WAN_VLAN_PROFILE" >/dev/null 2>&1 || true
+  nmcli connection down id "$WAN_PROFILE" >/dev/null 2>&1 || true
+  wan_delete_all
+  if [ -n "$S_wan_vlan" ] && [ -e "/sys/class/net/wan.$S_wan_vlan" ]; then ip link delete "wan.$S_wan_vlan" 2>/dev/null || true; fi
+  if ! wan_park_port && [ -n "$S_wan_port" ] && [ -e "/sys/class/net/$S_wan_port" ]; then
+    nmcli device disconnect "$S_wan_port" >/dev/null 2>&1 || true
+  fi
+  wan_nft_remove
+  wan_fw_unit_remove
+  lan=$(lan_dev)
+  if [ -n "$lan" ] && ! wait_lan "$lan" 15; then
+    echo "warning=ev ağı adresleri ($lan) eski düzende görünmüyor — koruma onarıyor"
+    if [ "$lan" = "$BR_IF" ]; then home_guard_routine 0 >/dev/null; else guard_routine 0 >/dev/null; fi
+  fi
+  return 0
+}
+# Yedekleri ve koruma sonucunu kaldırır, wan_stage=none yazar.
+wan_finish_none() {
+  rm -rf "$WAN_BACKUP_DIR"
+  rm -f "$WAN_GUARD_STATUS"
+  wan_reset
+  write_state
+}
+# Deneme sürerken geri alma (zamanlayıcı / ensure / panel / terminal): yalnız .timer durdurulur (bkz. stop_timer).
+wan_rollback_trial() {
+  systemctl stop "$WAN_TIMER_UNIT.timer" "$WAN_RETRY_PREFIX-*.timer" >/dev/null 2>&1 || true
+  wan_unwind
+  lan_backups_refresh onearm >/dev/null 2>&1 || true
+  wan_finish_none
+  log "internet kartı denemesi geri alındı"
+  echo "rolled_back=1"
+}
+# Süresi geçen ya da zamanlayıcısı olmayan (Pi yeniden başladı) deneme geri alınır.
+wan_trial_check() {
+  if [ "$S_wan_trial_ends" -le "$(date +%s)" ] || ! wan_timer_active; then wan_rollback_trial; fi
+}
+write_wan_guard() {
+  mkdir -p "$DIR" && chmod 700 "$DIR"
+  printf 'result=%s\nat=%s\ndetail=%s\n' "$1" "$(date +%s)" "$2" > "$WAN_GUARD_STATUS.tmp" \
+    && mv -f "$WAN_GUARD_STATUS.tmp" "$WAN_GUARD_STATUS"
+  logger -t pi5-net-guard "internet kartı: sonuç=$1${2:+ — $2}" 2>/dev/null || true
+  echo "wan_guard_result=$1"
+  if [ -n "$2" ]; then echo "wan_guard_detail=$2"; fi
+}
+# Yedekleri profil dosyalarının yerine koyar (eksik ya da farklıysa; mezar taşı kaldırılır) ve yalnız onları yükler.
+wan_restore_backups() {
+  local p kf bk tmp n=0 bad=""
+  WAN_RESTORE_DETAIL=""
+  for p in $(wan_profiles); do
+    kf=$(wan_keyfile_of "$p"); bk="$WAN_BACKUP_DIR/$(basename "$kf")"
+    [ -s "$bk" ] || { bad="$bad $(basename "$bk") (yedek yok)"; continue; }
+    if [ -s "$kf" ] && cmp -s "$bk" "$kf" && [ "$(file_of_name "$p")" = "$kf" ]; then continue; fi
+    tmp="$(dirname "$kf")/.$(basename "$kf").tmp"
+    if ! { cp -f "$bk" "$tmp" && chown root:root "$tmp" && chmod 600 "$tmp" && mv -f "$tmp" "$kf"; }; then
+      rm -f "$tmp"; bad="$bad $(basename "$kf")"; continue
+    fi
+    drop_tombstone "$kf"
+    if nmcli connection load "$kf" >/dev/null 2>&1 && [ "$(file_of_name "$p")" = "$kf" ]; then n=$((n + 1))
+    else bad="$bad $(basename "$kf")"; fi
+  done
+  [ "$n" -gt 0 ] && WAN_RESTORE_DETAIL="$n profil dosyası yedekten geri yüklendi"
+  [ -n "$bad" ] && WAN_RESTORE_DETAIL="${WAN_RESTORE_DETAIL:+$WAN_RESTORE_DETAIL; }geri yüklenemeyen:$bad"
+  return 0
+}
+# Kalıcı internet kartını denetler / onarır (guard: açılış + NM yeniden başlatması; ensure: panel açılışı, güncelleme).
+# Ev ağı buna bağlı değildir (acil mod yok). $1 = NM'nin kendiliğinden bağlaması için beklenecek süre (sn), $2 = işin
+# bitmesi gereken son an (betiğin başından sn — SECONDS; 0 = sınır yok). Güvenlik duvarı yüklenemezse internet kartı
+# güvenlik için indirilir (panel, SSH ve DNS internete açık kalmasın).
+wan_guard_routine() {
+  local wait=$1 limit=${2:-0} end detail="" w
+  if [ -z "$S_wan_port" ] || [ -z "$S_wan_dev" ] || [ -z "$S_wan_type" ]; then
+    write_wan_guard failed "durum kaydı eksik ($STATE_FILE)"; return 0
+  fi
+  if ! wan_nft_load; then
+    nmcli connection down id "$WAN_PPP_PROFILE" >/dev/null 2>&1; nmcli connection down id "$WAN_VLAN_PROFILE" >/dev/null 2>&1
+    nmcli connection down id "$WAN_PROFILE" >/dev/null 2>&1
+    write_wan_guard failed "güvenlik duvarı (pi5_wan) yüklenemedi: $WAN_NFT_OUT — internet kartı güvenlik için kapatıldı"
+    return 0
+  fi
+  [ -e "/etc/systemd/system/$WAN_FW_UNIT.service" ] || wan_fw_unit_install || true
+  nm_running || { write_wan_guard failed "NetworkManager çalışmıyor"; return 0; }
+  if [ ! -e "/sys/class/net/$S_wan_port" ]; then
+    write_wan_guard missing_port "internet kartı ($S_wan_port) takılı değil — ev ağı çalışıyor, internet yok"; return 0
+  fi
+  # 1. Açılışta NM profilleri kendisi etkinleştirir: beklenir.
+  end=$((SECONDS + wait))
+  while ! wan_up_ok; do
+    [ "$SECONDS" -ge "$end" ] && break
+    sleep 1
+  done
+  if wan_up_ok; then write_wan_guard ok ""; return 0; fi
+  # 2. Kablo yok: kablo gelince NM kendisi bağlar.
+  if [ "$(carrier "$S_wan_port")" != 1 ]; then
+    write_wan_guard no_carrier "internet kartında kablo bağlantısı yok ($S_wan_port)"; return 0
+  fi
+  # 3. Profil dosyaları yedekten; profiller sırayla etkinleştirilir.
+  wan_restore_backups; detail=$WAN_RESTORE_DETAIL
+  if [ "$limit" -gt 0 ]; then
+    w=$((limit - SECONDS))
+    if [ "$w" -lt 20 ]; then
+      write_wan_guard failed "${detail:+$detail; }bağlantı yok; onarıma süre kalmadı — NetworkManager yeniden başlatılınca ya da panel açılınca yeniden denenir"
+      return 0
+    fi
+  fi
+  if wan_up && wait_wan_ip 45; then
+    write_wan_guard repaired "${detail:+$detail; }internet kartı yeniden bağlandı"; return 0
+  fi
+  write_wan_guard failed "${detail:+$detail; }internet kartı bağlanamadı: ${WAN_UP_OUT:-adres ya da varsayılan rota gelmedi ($S_wan_dev)}"
+  return 0
+}
+
 cmd_status() {
   local now dr pifc pgw ptr="" ifc nm=0 ac="" au="" method="" wifi="" gr="" ga="" gd="" k v pok=0
   local wifc apc=0 apa=0 agr="" agd="" lifc hifc hc=0 ha=0 bra=0 sa=0 sb=0
@@ -1320,6 +1906,40 @@ cmd_status() {
   echo "sat_br=$sb"
   echo "sat_ip=$( [ "$S_sat_stage" != none ] && iface_addrs "$BR_IF" | head -1)"
   echo "sat_gw=$( [ "$S_sat_stage" != none ] && sat_gw)"
+  # İnternet kartı (WAN router): kayıtlı ayar + canlı durum. wan_static_*: sabit adres ayarı (canlı adres wan_ip).
+  local wgr="" wgd="" wup=0 wfw=0 pppok=0
+  if [ -f "$WAN_GUARD_STATUS" ]; then
+    while IFS='=' read -r k v; do
+      case "$k" in result) wgr=$v ;; detail) wgd=$v ;; esac
+    done < "$WAN_GUARD_STATUS"
+  fi
+  if [ "$S_wan_stage" != none ]; then
+    wan_up_ok && wup=1
+    wan_nft_loaded && wfw=1
+  fi
+  if command -v pppd >/dev/null 2>&1 && compgen -G '/usr/lib/*/NetworkManager/*/libnm-ppp-plugin.so' >/dev/null; then pppok=1; fi
+  echo "wan_stage=$S_wan_stage"
+  echo "wan_trial_ends=$S_wan_trial_ends"
+  echo "wan_port=$S_wan_port"
+  echo "wan_dev=$S_wan_dev"
+  echo "wan_type=$S_wan_type"
+  echo "wan_vlan=$S_wan_vlan"
+  echo "wan_prio=$S_wan_prio"
+  echo "wan_mac=$S_wan_mac"
+  echo "wan_mtu=$S_wan_mtu"
+  echo "wan_user=$S_wan_user"
+  echo "wan_static_addr=$S_wan_addr"
+  echo "wan_static_gw=$S_wan_gw"
+  echo "wan_static_dns=$S_wan_dns"
+  echo "wan_lan=$S_wan_lan"
+  echo "wan_ip=$( [ "$S_wan_stage" != none ] && wan_ip)"
+  echo "wan_gateway=$( [ "$S_wan_stage" != none ] && wan_gateway)"
+  echo "wan_carrier=$( if [ -n "$S_wan_port" ]; then carrier "$S_wan_port"; else echo 0; fi )"
+  echo "wan_up=$wup"
+  echo "wan_fw=$wfw"
+  echo "wan_guard_result=$wgr"
+  echo "wan_guard_detail=$wgd"
+  echo "ppp_ok=$pppok"
 }
 
 cmd_static() {
@@ -1339,6 +1959,7 @@ cmd_static() {
   read_state
   [ "$S_stage" = static ] && die "zaten sabit adres var"
   [ "$S_sat_stage" = none ] || die "bu cihaz uydu olarak çalışıyor — sabit adres ana cihaz içindir"
+  [ "$S_wan_stage" = none ] || die "internet kartı (WAN router) kaydı var — önce 'wan off' ile kapatın"
   [ "$S_stage" = trial ] && die "deneme sürüyor"
   command -v nmcli >/dev/null 2>&1 || die "nmcli bulunamadı (NetworkManager kurulu değil)"
   nm_running || die "NetworkManager çalışmıyor"
@@ -1492,6 +2113,7 @@ cmd_dhcp() {
   [ "$S_stage" = trial ] && die "deneme sürüyor — 'Geri al' ile dönün"
   [ "$S_stage" = static ] || die "sabit adres yok — Pi zaten otomatik adreste"
   [ "$S_home_stage" = none ] || die "ev Wi-Fi'ı (köprü) açık — önce Cihaz Rolleri'nden ev Wi-Fi'ını kapatın"
+  [ "$S_wan_stage" = none ] || die "internet kartı (WAN router) açık — önce Cihaz Rolleri → WAN router'dan kapatın"
   pi_dhcp_active && die "Pi DHCP sunucusu açıkken otomatik adrese dönülemez — önce modemin DHCP'sini açıp Pi DHCP'sini kapatın"
   # Pi'nin dağıttığı kiralar sürerken cihaz tarafı adresi kaldırılırsa o cihazların ağ geçidi ve DNS'i kaybolur.
   lu=$(pi_lease_until)
@@ -1750,7 +2372,8 @@ cmd_home_on() {
   [ "$S_sat_stage" = none ] || die "bu cihaz uydu olarak çalışıyor — ev Wi-Fi'ı ana cihazdan yönetilir"
   [ "$S_stage" = static ] || die "önce Pi'ye sabit adres verin ve kalıcı yapın (DHCP Ayarları, 1. adım)"
   [ "$S_ap_stage" = none ] || die "kurulum Wi-Fi'ı açık — ev Wi-Fi'ı aynı kartı kullanır; önce kurulum Wi-Fi'ını kapatın"
-  { [ "$(active_conn "$S_iface")" = "$PROFILE" ] && both_addrs "$S_iface" "$S_transit" "$S_client"; } \
+  [ "$S_wan_stage" = trial ] && die "internet kartı (WAN router) denemesi sürüyor — önce kalıcı yapın ya da geri alın"
+  { [ "$(active_conn "$S_iface")" = "$PROFILE" ] && lan_addrs_ok "$S_iface"; } \
     || die "sabit adres profili ($PROFILE) $S_iface üzerinde etkin değil — önce DHCP Ayarları'ndaki uyarıyı giderin"
   [ -e "/sys/class/net/$BR_IF" ] && die "$BR_IF arayüzü zaten var (başka bir araç köprü kurmuş olabilir) — önce onu kaldırın"
   # Pi DHCP'si açıksa kablosuz cihazlara adresi ve DNS'i Pi-hole verir: köprüyü de dinlemesi için yerel (LOCAL) ya da
@@ -1775,7 +2398,8 @@ cmd_home_on() {
   [[ $mac =~ ^([0-9a-f]{2}:){5}[0-9a-f]{2}$ ]] || die "$S_iface MAC adresi okunamadı"
   v6=$(nmcli -g ipv6.method connection show id "$PROFILE" 2>/dev/null)
   case "$v6" in auto|dhcp|ignore|link-local|disabled) ;; *) v6=auto ;; esac
-  ping -c2 -W2 "$S_gw" >/dev/null 2>&1 && base_ping=1
+  # İnternet kartı modunda modem eth0 tarafında değildir: modem / rota denetimi köprüye uygulanmaz.
+  [ "$S_wan_lan" = 1 ] || { ping -c2 -W2 "$S_gw" >/dev/null 2>&1 && base_ping=1; }
   [ "$(nmcli radio wifi 2>/dev/null)" = disabled ] && radio_off=1
   # 2. Profiller (önceki denemeden kalmış kopyalar silinir; yalnız bu üç dosya yüklenir).
   home_delete_all
@@ -1807,7 +2431,7 @@ cmd_home_on() {
     why="köprü portu ($S_iface) etkinleştirilemedi: $(printf '%s' "$out" | oneline)"
   elif ! wait_br 15 && ! { nmcli -w 20 connection up id "$BR_PROFILE" >/dev/null 2>&1 && wait_br 10; }; then
     why="köprü kurulamadı ($BR_IF adresleri: $(iface_addrs "$BR_IF" | csv); $S_iface profili: $(active_conn "$S_iface"))"
-  elif ! route_ok "$BR_IF" "${S_transit%/*}"; then
+  elif [ "$S_wan_lan" != 1 ] && ! route_ok "$BR_IF" "${S_transit%/*}"; then
     why="internet rotası $BR_IF üzerinden değil: $(ip -4 route get 1.1.1.1 2>&1 | head -1 | oneline)"
   elif [ "$base_ping" = 1 ] && ! ping -c3 -W2 "$S_gw" >/dev/null 2>&1; then
     why="modem ($S_gw) köprüden ping'e yanıt vermiyor"
@@ -2119,6 +2743,300 @@ cmd_sat() {
   esac
 }
 
+# İnternet kartı denemesi. PPPoE parolası STDIN'in ilk satırından okunur; argv'ye, günlüğe, durum dosyasına ve
+# çıktıya girmez (yalnız 0600 profil dosyasına).
+cmd_wan_on() {
+  local trial="" port="" type="" vlan="" prio="" mac="" mtu="" addr="" gw="" dns="" user="" pw="" d
+  local ip pfx n m net bc lan end out why="" wait_ip i dev a
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --trial) trial=${2:-}; shift ;;
+      --port) port=${2:-}; shift ;;
+      --type) type=${2:-}; shift ;;
+      --vlan) vlan=${2:-}; shift ;;
+      --prio) prio=${2:-}; shift ;;
+      --mac) mac=${2:-}; shift ;;
+      --mtu) mtu=${2:-}; shift ;;
+      --addr) addr=${2:-}; shift ;;
+      --gw) gw=${2:-}; shift ;;
+      --dns) dns=${2:-}; shift ;;
+      --user) user=${2:-}; shift ;;
+      *) die "bilinmeyen seçenek: $1" ;;
+    esac
+    shift
+  done
+  if [ "$type" = pppoe ]; then
+    if [ -t 0 ]; then
+      printf "PPPoE parolası: " >&2
+      IFS= read -r -s -t 120 pw || true
+      echo >&2
+    else
+      IFS= read -r -t 30 pw || true
+    fi
+  fi
+  # 1. Girdiler
+  { [[ $trial =~ ^[0-9]{1,5}$ ]] && [ "$((10#$trial))" -ge 30 ] && [ "$((10#$trial))" -le 3600 ]; } \
+    || die "geçersiz deneme süresi (--trial 30-3600 sn)"
+  trial=$((10#$trial))
+  [[ $port =~ ^[A-Za-z0-9_.-]{1,15}$ ]] || die "geçersiz kart adı: ${port:-yok}"
+  case "$type" in dhcp|static|pppoe) ;; *) die "geçersiz bağlantı türü: ${type:-yok} (dhcp | static | pppoe)" ;; esac
+  if [ -n "$vlan" ]; then
+    { [[ $vlan =~ ^[0-9]{1,4}$ ]] && [ "$((10#$vlan))" -ge 1 ] && [ "$((10#$vlan))" -le 4094 ]; } \
+      || die "geçersiz VLAN numarası: $vlan (1-4094)"
+    vlan=$((10#$vlan))
+  fi
+  if [ -n "$prio" ]; then
+    [ -n "$vlan" ] || die "VLAN önceliği yalnız VLAN numarasıyla birlikte verilir"
+    [[ $prio =~ ^[0-7]$ ]] || die "geçersiz VLAN önceliği: $prio (0-7)"
+  fi
+  if [ -n "$mac" ]; then
+    mac=${mac,,}; mac=${mac//-/:}
+    [[ $mac =~ ^([0-9a-f]{2}:){5}[0-9a-f]{2}$ ]] || die "geçersiz MAC adresi: $mac (ör. 00:11:22:33:44:55)"
+    [ $(( 0x${mac:0:2} & 1 )) = 0 ] || die "MAC adresi tekil (unicast) olmalı: $mac"
+    [ "$mac" != 00:00:00:00:00:00 ] || die "MAC adresi 00:00:00:00:00:00 olamaz"
+  fi
+  if [ -n "$mtu" ]; then
+    [[ $mtu =~ ^[0-9]{3,4}$ ]] || die "geçersiz MTU: $mtu"
+    mtu=$((10#$mtu))
+    if [ "$type" = pppoe ]; then { [ "$mtu" -ge 576 ] && [ "$mtu" -le 1492 ]; } || die "PPPoE MTU 576-1492 arasında olmalı ($mtu)"
+    else { [ "$mtu" -ge 576 ] && [ "$mtu" -le 9000 ]; } || die "MTU 576-9000 arasında olmalı ($mtu)"; fi
+  fi
+  if [ "$type" = static ]; then
+    [[ $addr =~ ^([0-9.]+)/([0-9]{1,2})$ ]] || die "geçersiz sabit adres: ${addr:-yok} (ör. 203.0.113.10/24)"
+    ip=${BASH_REMATCH[1]}; pfx=$((10#${BASH_REMATCH[2]}))
+    valid_ip "$ip" || die "geçersiz sabit adres: $addr"
+    { [ "$pfx" -ge 8 ] && [ "$pfx" -le 30 ]; } || die "sabit adresin öneki 8-30 arasında olmalı (/$pfx)"
+    n=$(ip2int "$ip"); m=$(pmask "$pfx"); net=$(( n & m )); bc=$(( net | (~m & 0xFFFFFFFF) ))
+    { [ "$n" -ne "$net" ] && [ "$n" -ne "$bc" ]; } || die "sabit adres ağ ya da yayın adresi olamaz: $addr"
+    addr="$ip/$pfx"
+    valid_ip "$gw" || die "geçersiz ağ geçidi: ${gw:-yok}"
+    in_net "$gw" "$addr" || die "ağ geçidi ($gw) sabit adresin ağında ($addr) değil"
+    [ "$gw" != "$ip" ] || die "ağ geçidi sabit adresle aynı olamaz"
+    if [ -n "$dns" ]; then
+      i=0
+      for d in ${dns//,/ }; do valid_ip "$d" || die "geçersiz DNS adresi: $d"; i=$((i + 1)); done
+      [ "$i" -le 3 ] || die "en çok 3 DNS adresi verilebilir"
+    fi
+  else
+    addr=""; gw=""; dns=""
+  fi
+  if [ "$type" = pppoe ]; then
+    { [[ $user =~ ^[!-~]{1,64}$ ]] && [[ $user != *\\* ]]; } \
+      || die "geçersiz PPPoE kullanıcı adı: 1-64 karakter, boşluk ve ters bölü (\\) olmaz"
+    { [[ $pw =~ ^[!-~]([\ -~]{0,126}[!-~])?$ ]] && [[ $pw != *\\* ]]; } \
+      || die "geçersiz PPPoE parolası: 1-128 karakter; Türkçe harf ve ters bölü (\\) olmaz, başta / sonda boşluk olmaz"
+  else
+    user=""; pw=""
+  fi
+  # 2. Ön koşullar
+  read_state
+  command -v nmcli >/dev/null 2>&1 || die "nmcli bulunamadı (NetworkManager kurulu değil)"
+  nm_running || die "NetworkManager çalışmıyor"
+  command -v nft >/dev/null 2>&1 || die "nft bulunamadı (nftables kurulu değil) — internet kartı korumasız açılmaz"
+  [ "$S_wan_stage" = on ] && die "internet kartı (WAN router) zaten açık"
+  [ "$S_wan_stage" = trial ] && die "internet kartı denemesi sürüyor"
+  [ "$S_sat_stage" = none ] || die "bu cihaz uydu olarak çalışıyor — internet kartı ana cihaz içindir"
+  [ "$S_stage" = static ] || die "önce DHCP Ayarları sihirbazında Pi'ye sabit adres verip kalıcı yapın"
+  [ "$S_home_stage" = trial ] && die "ev Wi-Fi'ı denemesi sürüyor — önce kalıcı yapın ya da geri alın"
+  pi_dhcp_active || die "önce Pi DHCP sunucusunu açın (DHCP Ayarları) — internet kartına geçince ev ağındaki cihazlara adresi yalnız Pi verir"
+  # Pi DHCP denemesi geri alınırsa ev ağı adressiz kalırdı: deneme bitmiş (kalıcı) olmalı.
+  [ "$(sed -n 's/^stage=//p' /etc/pi5-gateway/dhcp/state 2>/dev/null)" = trial ] \
+    && die "Pi DHCP denemesi sürüyor — önce DHCP Ayarları'nda kalıcı yapın"
+  lan=$(lan_dev)
+  lan_addrs_ok "$lan" || die "ev ağı adresleri ($lan) beklenen düzende değil — önce DHCP Ayarları'ndaki uyarıyı giderin"
+  [ -e "/sys/class/net/$port" ] || die "$port adlı kart yok"
+  [ "$port" != "$S_iface" ] || die "$port zaten ev ağı kartı — internet için ikinci bir kart seçin"
+  [ "$(dev_type "$port")" = ethernet ] || die "$port bir Ethernet kartı değil"
+  [ -e "/sys/class/net/$port/master" ] && die "$port bir köprünün ($(basename "$(readlink "/sys/class/net/$port/master")")) portu"
+  [ "$(carrier "$port")" = 1 ] || die "$port kartında kablo bağlantısı yok — modemi / ONT'yi bu karta bağlayın"
+  if [ "$type" = pppoe ]; then
+    { command -v pppd >/dev/null 2>&1 && compgen -G '/usr/lib/*/NetworkManager/*/libnm-ppp-plugin.so' >/dev/null; } \
+      || die "PPPoE bileşeni (ppp) kurulu değil — panelden güncelleyin ya da: sudo apt install ppp"
+  fi
+  if [ -n "$vlan" ] && [ ! -d /sys/module/8021q ]; then
+    modprobe 8021q >/dev/null 2>&1 || die "VLAN desteği (8021q çekirdek modülü) yüklenemedi"
+  fi
+  # 3. Profiller (önceki denemeden kalmış kopyalar silinir; yalnız bu dosyalar yüklenir). Durum alanları profil
+  #    yazımından önce doldurulur (yazıcılar onları okur); durum dosyası zamanlayıcıyla birlikte yazılır.
+  S_wan_port=$port; S_wan_type=$type; S_wan_vlan=$vlan; S_wan_prio=$prio; S_wan_mac=$mac; S_wan_mtu=$mtu
+  S_wan_user=$user; S_wan_addr=$addr; S_wan_gw=$gw; S_wan_dns=$dns; S_wan_lan=0
+  S_wan_dev=$(wan_l3_of "$port" "$type" "$vlan")
+  # Aynı kart daha önce park edildiyse park profili kalkar (ikisi de öncelik 200: NM hangisini seçeceğini bilemez).
+  [ "$(nmcli -g connection.interface-name connection show id "$WAN_IDLE_PROFILE" 2>/dev/null)" = "$port" ] && wan_unpark
+  wan_delete_all
+  wan_write_keyfiles "$pw" || { wan_delete_all; die "internet kartı profil dosyaları yazılamadı — değişiklik yapılmadı"; }
+  pw=""
+  if ! wan_load_all; then
+    wan_delete_all
+    die "internet kartı profilleri NetworkManager'a yüklenemedi: $WAN_LOAD_OUT — değişiklik yapılmadı"
+  fi
+  # 4. Durum + geri alma zamanlayıcısı DEĞİŞİKLİKTEN ÖNCE (bkz. static). Kilit tanımlayıcısı (9) devredilmez.
+  end=$(( $(date +%s) + trial ))
+  S_wan_stage=trial; S_wan_trial_ends=$end
+  if ! write_state; then
+    wan_delete_all
+    die "durum dosyası yazılamadı ($STATE_FILE) — değişiklik yapılmadı"
+  fi
+  wan_stop_timer
+  if ! systemd-run --quiet --collect --unit="$WAN_TIMER_UNIT" --on-active="$trial" --timer-property=AccuracySec=1s \
+       /bin/bash "$SELF" wan rollback >/dev/null 2>&1 9>&-; then
+    wan_delete_all; wan_reset; write_state
+    die "geri alma zamanlayıcısı kurulamadı — internet kartı açılmadı"
+  fi
+  log "internet kartı denemesi: $port ($type${vlan:+, VLAN $vlan}${S_wan_dev:+ → $S_wan_dev}, $trial sn)"
+  # 5. Güvenlik duvarı bağlantıdan ÖNCE: yüklenemezse kart hiç bağlanmaz.
+  if ! wan_nft_load; then
+    why="güvenlik duvarı (pi5_wan) yüklenemedi: $WAN_NFT_OUT"
+  else
+    wan_fw_unit_install || echo "warning=açılış birimi ($WAN_FW_UNIT) kurulamadı — güvenlik duvarını açılışta ağ koruması yükler"
+  fi
+  # 6. Bağlan ve adresi bekle (PPPoE oturumu ve DHCP yavaş olabilir).
+  if [ -z "$why" ] && ! wan_up; then why=$WAN_UP_OUT; fi
+  if [ -z "$why" ]; then
+    wait_ip=30; [ "$type" = pppoe ] && wait_ip=45; [ "$type" = static ] && wait_ip=10
+    wait_wan_ip "$wait_ip" || why="internet kartı adres ya da varsayılan rota almadı ($S_wan_dev: $(wan_ip | csv))"
+  fi
+  # 7. Adres çakışmaları: ev ağı (cihaz adresi), kurulum Wi-Fi'ı, diğer arayüzler (VPN tünelleri dahil). Modem tarafı
+  #    ağ (transit) ile çakışma beklenir (modem kablosu eth0'dan internet kartına taşındıysa): o adres 8. adımda kalkar.
+  if [ -z "$why" ]; then
+    ip=$(wan_ip)
+    if nets_overlap "$ip" "$S_client"; then
+      why="internet kartının adresi ($ip) ev ağıyla ($S_client) çakışıyor — modemin ağını değiştirin ya da modemi köprü kipine alın"
+    elif [ "$S_ap_stage" != none ] && nets_overlap "$ip" "$AP_NET"; then
+      why="internet kartının adresi ($ip) kurulum Wi-Fi'ı ağıyla ($AP_NET) çakışıyor"
+    else
+      while read -r dev a; do
+        case "$dev" in lo|"$S_wan_port"|"$S_wan_dev"|"wan.$vlan"|"$S_iface"|"$BR_IF") continue ;; esac
+        if nets_overlap "$ip" "$a"; then why="internet kartının adresi ($ip) $dev arayüzündeki $a ile çakışıyor"; break; fi
+      done < <(ip -4 -o addr show 2>/dev/null | awk '{ print $2, $4 }')
+    fi
+  fi
+  # 8. Ev ağı profilleri yalnız ev ağına: modem tarafı adres ve ağ geçidi kalkar (cihaz adresi kalır).
+  if [ -z "$why" ]; then
+    if lan_profiles_set lanonly; then
+      S_wan_lan=1
+      write_state
+      wait_lan "$lan" 15 || why="ev ağı adresi ($S_client) $lan üzerinde görünmüyor"
+    else
+      why="ev ağı profili çevrilemedi: $LAN_SET_OUT"
+      S_wan_lan=1   # yarım kalmış olabilir: geri dönüş iki profili de eski düzene çevirir
+    fi
+  fi
+  # 9. İnternet rotası ve erişim (en çok ~20 sn).
+  if [ -z "$why" ]; then
+    for i in 1 2 3 4 5 6 7 8 9 10; do
+      [[ " $(ip -4 route get 1.1.1.1 2>/dev/null | head -1) " == *" dev $S_wan_dev "* ]] && break
+      sleep 1
+    done
+    if [[ " $(ip -4 route get 1.1.1.1 2>/dev/null | head -1) " != *" dev $S_wan_dev "* ]]; then
+      why="internet rotası $S_wan_dev üzerinden değil: $(ip -4 route get 1.1.1.1 2>&1 | head -1 | oneline)"
+    fi
+  fi
+  if [ -z "$why" ]; then
+    for i in 1 2 3; do wan_internet_ok && break; sleep 2; done
+    wan_internet_ok || why="internet kartından internete ulaşılamıyor (adres $(wan_ip), ağ geçidi $(wan_gateway))"
+  fi
+  if [ -n "$why" ]; then
+    echo "detail=$why"
+    wan_unwind
+    lan_backups_refresh onearm >/dev/null 2>&1 || true
+    wan_finish_none; wan_stop_timer
+    echo "rolled_back=1"
+    log "internet kartı denemesi başarısız, geri alındı: $why"
+    die "internet kartı açılamadı — eski ayara dönüldü"
+  fi
+  echo "wan_trial_ends=$end"
+  echo "wan_ip=$(wan_ip)"
+  echo "wan_gateway=$(wan_gateway)"
+  echo "ok=1"
+}
+
+cmd_wan_confirm() {
+  local p f out
+  read_state
+  [ "$S_wan_stage" = trial ] || die "internet kartı denemesi sürmüyor (süre dolduysa geri alınmıştır)"
+  nm_running || die "NetworkManager çalışmıyor"
+  [ "$S_wan_lan" = 1 ] || die "ev ağı profili henüz çevrilmedi — 'Geri al' ile başa dönün"
+  wan_up_ok || die "internet kartı bağlı değil ($S_wan_dev: adres ya da varsayılan rota yok) — deneme sürüyor"
+  wan_internet_ok || die "internet kartından internete ulaşılamıyor — deneme sürüyor, süre dolunca geri alınır"
+  for p in $(wan_profiles); do
+    out=$(nmcli connection modify id "$p" connection.autoconnect yes 2>&1) \
+      || die "$p kalıcı yapılamadı: $(printf '%s' "$out" | oneline) — deneme sürüyor"
+  done
+  wan_loaded || die "internet kartı profil dosyaları doğrulanamadı — deneme sürüyor, süre dolunca geri alınır"
+  for p in $(wan_profiles); do
+    f=$(wan_keyfile_of "$p")
+    grep -q '^autoconnect=false' "$f" && die "$p kendiliğinden bağlanmaya ayarlanamadı — deneme sürüyor"
+  done
+  if [ "$S_wan_type" = pppoe ]; then
+    grep -q '^password=.' "$WAN_PPP_KEYFILE" || die "PPPoE profilinde parola yok — deneme sürüyor"
+  fi
+  verify_lan_only "$KEYFILE" || die "ev ağı profil dosyası ($KEYFILE) beklenen düzende değil — deneme sürüyor"
+  if [ "$S_home_stage" = on ]; then
+    verify_lan_only "$BR_KEYFILE" || die "köprü profil dosyası ($BR_KEYFILE) beklenen düzende değil — deneme sürüyor"
+  fi
+  sync
+  mkdir -p "$WAN_BACKUP_DIR" && chmod 700 "$WAN_BACKUP_DIR" || die "yedek dizini oluşturulamadı — deneme sürüyor"
+  for p in $(wan_profiles); do
+    f=$(wan_keyfile_of "$p")
+    { cp -f "$f" "$WAN_BACKUP_DIR/$(basename "$f")" && chmod 600 "$WAN_BACKUP_DIR/$(basename "$f")"; } \
+      || die "profil yedeği yazılamadı — deneme sürüyor"
+  done
+  lan_backups_refresh lanonly || die "ev ağı profil yedekleri yazılamadı — deneme sürüyor"
+  [ -e "/etc/systemd/system/$WAN_FW_UNIT.service" ] || wan_fw_unit_install \
+    || echo "warning=açılış birimi ($WAN_FW_UNIT) kurulamadı — güvenlik duvarını açılışta ağ koruması yükler"
+  wan_stop_timer
+  S_wan_stage=on; S_wan_trial_ends=0
+  write_state || die "durum dosyası yazılamadı ($STATE_FILE)"
+  rm -f "$WAN_GUARD_STATUS"
+  log "internet kartı kalıcı: $S_wan_port ($S_wan_type → $S_wan_dev)"
+  echo "ok=1"
+}
+
+cmd_wan_rollback() {
+  read_state
+  [ "$S_wan_stage" = trial ] && wan_rollback_trial
+  echo "ok=1"
+}
+
+# Bilinçli kapatma (kalıcıdan ya da denemeden): internet kartı kalkar, ev ağı profilleri eski (tek kollu) düzene döner.
+# Modem kablosu eth0'dan internet kartına taşındıysa Pi'nin interneti kablo geri takılana kadar yoktur; ev ağı çalışır.
+cmd_wan_off() {
+  read_state
+  [ "$S_wan_stage" = none ] && die "internet kartı (WAN router) açık değil"
+  nm_running || die "NetworkManager çalışmıyor"
+  wan_stop_timer
+  wan_unwind
+  lan_backups_refresh onearm || echo "warning=ev ağı profil yedekleri yenilenemedi — açılış koruması onarır"
+  wan_finish_none || die "durum dosyası yazılamadı ($STATE_FILE)"
+  log "internet kartı kapatıldı; eski (tek kollu) düzene dönüldü"
+  echo "ok=1"
+}
+
+# Güvenlik duvarını yeniden yükler (Ev VPN'i açıldı / kapandı / portu değişti, nftables yeniden başlatıldı).
+cmd_wan_fw() {
+  read_state
+  if [ "$S_wan_stage" != none ]; then
+    wan_nft_load || die "güvenlik duvarı (pi5_wan) yüklenemedi: $WAN_NFT_OUT"
+  elif [ -e "$WAN_NFT" ]; then
+    wan_nft_remove
+  fi
+  echo "ok=1"
+}
+
+cmd_wan() {
+  local sub=${1:-}
+  shift || true
+  case "$sub" in
+    on) cmd_wan_on "$@" ;;
+    confirm) cmd_wan_confirm ;;
+    rollback) cmd_wan_rollback ;;
+    off) cmd_wan_off ;;
+    fw) cmd_wan_fw ;;
+    *) die "kullanım: wan on --trial SN --port KART --type dhcp|static|pppoe [...] | wan confirm | wan rollback | wan off | wan fw" ;;
+  esac
+}
+
 cmd_ensure() {
   mkdir -p "$DIR" && chmod 700 "$DIR"
   read_state
@@ -2126,15 +3044,20 @@ cmd_ensure() {
     trial) trial_check ;;
     static)
       [ "$S_home_stage" = trial ] && home_trial_check
+      [ "$S_wan_stage" = trial ] && wan_trial_check
       # Kurulum Wi-Fi'ı ya da ev Wi-Fi'ı açıkken Wi-Fi kapatılmaz (yayın Wi-Fi kartından yapılır).
       if [ "$S_wifi_off" = 1 ] && [ "$S_ap_stage" = none ] && [ "$S_home_stage" = none ] && nm_running; then
         nmcli radio wifi off >/dev/null 2>&1
       fi
-      # Ev Wi-Fi'ı denemesi sürerken eth0 bilerek köprüdedir: sabit profil denetimi onu "onarıp" denemeyi bozmasın.
-      case "$S_home_stage" in
-        on) home_guard_routine 5 passive ;;
-        none) guard_routine 5 passive ;;
-      esac ;;
+      # Ev Wi-Fi'ı denemesi sürerken eth0 bilerek köprüdedir, internet kartı denemesi sürerken ev ağı profilleri bilerek
+      # değişir: sabit profil denetimi onları "onarıp" denemeyi bozmasın.
+      if [ "$S_wan_stage" != trial ]; then
+        case "$S_home_stage" in
+          on) home_guard_routine 5 passive ;;
+          none) guard_routine 5 passive ;;
+        esac
+      fi
+      [ "$S_wan_stage" = on ] && wan_guard_routine 5 0 ;;
     none)
       case "$S_sat_stage" in
         trial) sat_trial_check ;;
@@ -2150,13 +3073,19 @@ cmd_guard() {
   case "$S_stage" in
     trial) trial_check ;;
     static)
-      # Açılışta geçici zamanlayıcı yoktur: ev Wi-Fi'ı denemesi burada geri alınır (profilleri kendiliğinden bağlanmaz).
+      # Açılışta geçici zamanlayıcı yoktur: ev Wi-Fi'ı / internet kartı denemesi burada geri alınır (profilleri
+      # kendiliğinden bağlanmaz). NetworkManager yeniden başlatıldıysa zamanlayıcı yerindedir: deneme sürer.
       [ "$S_home_stage" = trial ] && home_trial_check
+      [ "$S_wan_stage" = trial ] && wan_trial_check
       if [ "$S_wifi_off" = 1 ] && [ "$S_ap_stage" = none ] && [ "$S_home_stage" = none ]; then nmcli radio wifi off >/dev/null 2>&1; fi
-      case "$S_home_stage" in
-        on) home_guard_routine 40 ;;
-        none) guard_routine 45 ;;
-      esac ;;
+      if [ "$S_wan_stage" != trial ]; then
+        case "$S_home_stage" in
+          on) home_guard_routine 40 ;;
+          none) guard_routine 45 ;;
+        esac
+      fi
+      # pi5-net-guard.service TimeoutStartSec=150: internet kartı onarımı betiğin başından 130. sn'de biter.
+      [ "$S_wan_stage" = on ] && wan_guard_routine 30 130 ;;
     none)
       # Açılışta geçici zamanlayıcı yoktur: uydu denemesi geri alınır (profilleri kendiliğinden bağlanmaz).
       case "$S_sat_stage" in
@@ -2175,8 +3104,8 @@ if [ "$cmd" = status ]; then cmd_status; exit 0; fi
 # Salt okunur, kilitsiz: ana cihazın ev Wi-Fi'ı ayarları (backend uydulara aktarır).
 if [ "$cmd" = home ] && [ "${1:-}" = secret ]; then cmd_home_secret; exit 0; fi
 case "$cmd" in
-  ensure|guard|static|confirm|rollback|dhcp|wifi|ap|home|sat) ;;
-  *) die "bilinmeyen komut: $cmd (status|static|confirm|rollback|dhcp|wifi|ap|home|sat|ensure|guard)" ;;
+  ensure|guard|static|confirm|rollback|dhcp|wifi|ap|home|sat|wan) ;;
+  *) die "bilinmeyen komut: $cmd (status|static|confirm|rollback|dhcp|wifi|ap|home|sat|wan|ensure|guard)" ;;
 esac
 exec 9>"$LOCK"
 if ! flock -w 60 9; then
@@ -2186,12 +3115,13 @@ if ! flock -w 60 9; then
   if [ "$cmd" = ap ] && [ "${1:-}" = rollback ]; then arm_ap_retry 30 || true; fi
   if [ "$cmd" = home ] && [ "${1:-}" = rollback ]; then arm_home_retry 30 || true; fi
   if [ "$cmd" = sat ] && [ "${1:-}" = rollback ]; then arm_sat_retry 30 || true; fi
+  if [ "$cmd" = wan ] && [ "${1:-}" = rollback ]; then arm_wan_retry 30 || true; fi
   die "başka bir ağ işlemi sürüyor"
 fi
 # Kullanıcının başlattığı değişiklikler kilit alındıktan sonra SIGTERM/SIGHUP ile yarıda kesilmez (panelin istek zaman
 # aşımı ya da kapanan SSH oturumu Pi'yi adressiz bırakmasın). Kilit beklerken öldürülebilir: onay, kilidi bekleyen
 # geri alma servisini durdurabilsin. guard/ensure idempotenttir, systemd'nin durdurmasına engel olmaz.
-case "$cmd" in static|confirm|rollback|dhcp|wifi|ap|home|sat) trap '' TERM HUP ;; esac
+case "$cmd" in static|confirm|rollback|dhcp|wifi|ap|home|sat|wan) trap '' TERM HUP ;; esac
 case "$cmd" in
   ensure) cmd_ensure ;;
   guard) cmd_guard; exit 0 ;;
@@ -2203,4 +3133,5 @@ case "$cmd" in
   ap) cmd_ap "$@" ;;
   home) cmd_home "$@" ;;
   sat) cmd_sat "$@" ;;
+  wan) cmd_wan "$@" ;;
 esac

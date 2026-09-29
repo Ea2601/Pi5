@@ -31,6 +31,8 @@ export type Hardware = {
     homeStage?: string; homeIface?: string | null;
     // R2: cihaz rolü, eşleşmiş uydu sayısı (ana cihaz), uydunun eşleşmesi, kablosuz mesh yapılandırıldı mı.
     role?: 'main' | 'satellite'; satellites?: number; paired?: boolean; meshConfigured?: boolean;
+    // R3: internet kartı (WAN router) aşaması, kartı ve adres/rota arayüzü (kart / VLAN / PPPoE).
+    wanStage?: string; wanPort?: string | null; wanDev?: string | null;
   };
 };
 
@@ -161,18 +163,29 @@ export function evaluateRoles(hw: Hardware): RoleEval[] {
     notes: satRole ? [satNote] : lanActive ? [] : [{ kind: 'info', text: 'DHCP Ayarları sayfasındaki sihirbazla açılır.' }],
   });
 
-  // WAN router: internet bir porttan, ev ağı ayrı porttan (ya da tek port + VLAN destekli yönetilebilir anahtar).
+  // WAN router (R3): internet bir porttan (DHCP / sabit / PPPoE, isteğe bağlı VLAN), ev ağı ayrı porttan. Cihaz Rolleri →
+  // WAN router panelinden açılır (net-mode.sh wan); ön koşul kalıcı sabit adres + Pi DHCP (ev ağına adresi Pi verir).
   const usb2Eth = eth.filter(e => e.bus === 'usb' && e.usbSpeedMbps !== null && e.usbSpeedMbps < 5000);
+  const wanStage = hw.net.wanStage || 'none';
+  const wanOn = wanStage === 'on';
   const wanNotes: Note[] = usb2Eth.map(e => ({ kind: 'warn', text: `${e.name} USB 2 portunda: hız ~300 Mbps ile sınırlı. Adaptörü mavi USB 3 portuna takın.` }));
-  wanNotes.push({ kind: 'info', text: 'Alternatif: tek port + VLAN destekli yönetilebilir anahtar (daha karmaşık kurulum).' });
+  if (wanStage === 'trial') wanNotes.push({ kind: 'info', text: "Deneme sürüyor: internet çalışıyorsa WAN router panelinden 'Kalıcı yap'a basın; basılmazsa Pi eski ayara döner." });
+  if (!satRole && wanStage === 'none' && eth.length >= 2) {
+    if (hw.net.netStage !== 'static') wanNotes.push({ kind: 'info', text: "Önce DHCP Ayarları sihirbazında Pi'ye sabit adres verip Pi DHCP'sini açın (ev ağına adresi Pi verecek)." });
+    else if (!hw.net.piDhcp) wanNotes.push({ kind: 'info', text: "Önce Pi DHCP'sini açın (DHCP Ayarları): internet kartına geçince ev ağına adresi yalnız Pi verir." });
+  }
+  if (!wanOn) wanNotes.push({ kind: 'info', text: 'Alternatif: tek port + VLAN destekli yönetilebilir anahtar (daha karmaşık kurulum).' });
   out.push({
-    id: 'wan-router', group: 'routing', phase: 'R3',
-    status: eth.length >= 2 ? 'hw-ready' : 'needs-hw',
+    id: 'wan-router', group: 'routing', phase: null,
+    status: wanOn ? 'active' : eth.length >= 2 ? 'available' : 'needs-hw',
     checks: [
       { ok: eth.length >= 2, label: 'İki Ethernet portu', value: `${eth.length} port${eth.length ? ` (${names(eth)})` : ''}` },
       ...(eth.some(e => e.bus === 'usb') ? [{ ok: usb2Eth.length === 0, label: 'USB 3 bağlantısı', value: usb2Eth.length ? `${names(usb2Eth)}: USB 2` : 'evet' }] : []),
+      ...(wanStage !== 'none' && hw.net.wanPort
+        ? [{ ok: wanOn, label: 'İnternet kartı', value: `${hw.net.wanPort}${hw.net.wanDev && hw.net.wanDev !== hw.net.wanPort ? ` → ${hw.net.wanDev}` : ''}${wanOn ? '' : ' (deneme)'}` }]
+        : []),
       { ok: hw.modules['8021q'] ?? null, label: 'VLAN (operatör isterse)', value: hw.modules['8021q'] ? 'hazır' : 'modül yok' },
-      { ok: hw.tools.pppd ? !!hw.modules.pppoe : null, label: 'PPPoE (operatör isterse)', value: hw.tools.pppd ? (hw.modules.pppoe ? 'hazır' : 'modül yok') : "R3'te kurulur" },
+      { ok: hw.tools.pppd ? !!hw.modules.pppoe : null, label: 'PPPoE (operatör isterse)', value: hw.tools.pppd ? (hw.modules.pppoe ? 'hazır' : 'modül yok') : 'panel güncellemesiyle kurulur' },
     ],
     need: eth.length >= 2 ? [] : [HW_SUGGEST.usbEth],
     notes: satRole ? [satNote, ...wanNotes.filter(n => n.kind === 'warn')] : wanNotes,
@@ -319,7 +332,10 @@ export async function readHardware(net: Omit<Hardware['net'], 'uplinkIface'>, op
       name, driver: driverOf(`${base}/device`), ...busInfo(`${base}/device`),
       speedMbps: Number.isFinite(speed) && speed > 0 ? speed : null,
       carrier: carrier === '1' ? true : carrier === '0' ? false : null,
-      mac: readText(`${base}/address`), uplink: !!uplinkIface && (name === uplinkIface || master === uplinkIface),
+      // İnternet kartı VLAN / PPPoE ile bağlıysa varsayılan rota o arayüzdedir (wan.35 / pppwan): kartın kendisi çıkıştır.
+      mac: readText(`${base}/address`),
+      uplink: !!uplinkIface && (name === uplinkIface || master === uplinkIface
+        || (!!net.wanDev && uplinkIface === net.wanDev && name === net.wanPort)),
     });
   }
 

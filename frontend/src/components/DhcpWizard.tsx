@@ -39,6 +39,8 @@ export interface NetModeStatus {
   // Ev Wi-Fi'ı (Cihaz Rolleri → erişim noktası): eth0 + Wi-Fi kartı tek köprüde (lan_if = br0), adresler köprüde.
   lan_if?: string; home_stage?: 'none' | 'trial' | 'on'; home_trial_ends?: number; home_ssid?: string; home_iface?: string;
   home_band?: 'bg' | 'a'; home_channel?: number; home_capable?: boolean; home_active?: boolean; br_active?: boolean;
+  // İnternet kartı (Cihaz Rolleri → WAN router): açıkken sabit adres ve Pi DHCP'si bu sihirbazdan değiştirilemez.
+  wan_stage?: 'none' | 'trial' | 'on'; wan_port?: string;
 }
 interface ProbeResult { servers: string[]; own: string[] }
 
@@ -361,6 +363,9 @@ export function DhcpWizard({ dhcp, net, netErr, reload }: Props) {
   };
 
   const guardEmergency = net.guard_result === 'emergency';
+  // İnternet kartı açıkken Pi evin router'ıdır: ev ağında başka DHCP sunucusu yok, eth0'da modem tarafı adres yok.
+  const wanOn = !!net.wan_stage && net.wan_stage !== 'none';
+  const wanLock = "İnternet kartı (WAN router) açık — önce Cihaz Rolleri → İnternet bağlantısı'ndan kapatın";
   const step1: StepState = isStatic ? 'done' : 'active';
   const step3: StepState = wifiReady ? 'done' : isStatic || apTrial ? 'active' : 'todo';
   const step4: StepState = piOn || (probe && !probe.servers.length) ? 'done' : isStatic && wifiReady ? 'active' : 'todo';
@@ -382,6 +387,12 @@ export function DhcpWizard({ dhcp, net, netErr, reload }: Props) {
         </div>
       )}
       {netErr && <span className="dhcp-muted">Sabit adres durumu yenilenemedi: {netErr}</span>}
+      {wanOn && (
+        <Alert kind="ok">
+          İnternet kartı (<span className="rl-mono">{net.wan_port || 'WAN'}</span>) açık: Pi evin router'ı. Sabit adres ve Pi DHCP'si bu
+          modda değiştirilemez; önce Cihaz Rolleri → İnternet bağlantısı'ndan kapatın.
+        </Alert>
+      )}
 
       <Step n={1} title="Pi'ye sabit adres ver" state={step1}>
         {guardEmergency && (
@@ -443,8 +454,8 @@ export function DhcpWizard({ dhcp, net, netErr, reload }: Props) {
               </span>
             )}
             <div className="panel-auth-actions">
-              <button className="btn-outline btn-sm" onClick={backToAuto} disabled={!!busy || piOn || leaseUntil > 0}
-                title={piOn ? 'Pi DHCP sunucusu açıkken otomatik adrese dönülemez — önce modeme geri dönün'
+              <button className="btn-outline btn-sm" onClick={backToAuto} disabled={!!busy || piOn || leaseUntil > 0 || wanOn}
+                title={wanOn ? wanLock : piOn ? 'Pi DHCP sunucusu açıkken otomatik adrese dönülemez — önce modeme geri dönün'
                   : leaseUntil > 0 ? `Pi'nin dağıttığı kiralar ${leaseUntilText} saatine kadar sürüyor` : undefined}>
                 {busy === 'static-dhcp' ? 'Uygulanıyor…' : 'Otomatik adrese dön'}
               </button>
@@ -647,7 +658,7 @@ export function DhcpWizard({ dhcp, net, netErr, reload }: Props) {
               kalmış olabilir). Modeme dönmek için önce modemin DHCP'sini açın, sonra "Modeme geri dön"e basın.
             </Alert>
             <div className="panel-auth-actions">
-              <button className="btn-outline btn-sm" onClick={disablePi} disabled={!!busy}>
+              <button className="btn-outline btn-sm" onClick={disablePi} disabled={!!busy || wanOn} title={wanOn ? wanLock : undefined}>
                 {busy === 'pi-disable' ? 'Kapatılıyor…' : 'Modeme geri dön'}
               </button>
             </div>
@@ -702,7 +713,7 @@ export function DhcpWizard({ dhcp, net, netErr, reload }: Props) {
               Modeme geri dönmek için önce modemin DHCP'sini açın, sonra "Modeme geri dön"e basın.{reserveHint ? ` ${reserveHint}` : ''}
             </span>
             <div className="panel-auth-actions">
-              <button className="btn-outline btn-sm" onClick={disablePi} disabled={!!busy}>
+              <button className="btn-outline btn-sm" onClick={disablePi} disabled={!!busy || wanOn} title={wanOn ? wanLock : undefined}>
                 {busy === 'pi-disable' ? 'Kapatılıyor…' : 'Modeme geri dön'}
               </button>
             </div>

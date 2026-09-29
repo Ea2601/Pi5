@@ -4,6 +4,7 @@ import fs from 'fs';
 import {
   isLinux, systemctlAction, detectInterfaces, MANAGED_SERVICE_UNITS, isManagedService, TOGGLEABLE_SERVICES,
   listWireguardTunnels, runResult, FTL_SYSTEMCTL_TIMEOUT, getLanIdentity, readNetModeState, HOME_BRIDGE,
+  wanActive, wanIfaces,
 } from './system';
 import { shq, isValidDomain } from './util';
 
@@ -62,9 +63,13 @@ export const systemServices = {
         // (böylece hem eth0=WAN hem wlan0=WAN topolojileri doğru çalışır).
         const detected = await detectInterfaces();
         const exists = (n?: string) => !!n && fs.existsSync(`/sys/class/net/${n}`);
+        const ns = readNetModeState();
+        // İnternet kartı modu (WAN router, R3): iki kart net-mode durumundan gelir (ev ağı eth0 / br0; internet kart +
+        // VLAN + PPPoE). DB'deki eski iki kartlı tohumlar (lan=eth0, wan=wlan0) yok sayılır.
+        const wanMode = wanActive(ns) && ns.wanLan;
         // Tek bacaklı ağ geçidi (lan = wan: istemciler ve modem aynı arayüzde) canlıdan tespit edildiyse DB'deki eski
         // iki kartlı tohumlar (lan=eth0, wan=wlan0) yok sayılır — aksi halde NAT yanlış arayüze yazılır.
-        const oneArm = detected.lan === detected.wan;
+        const oneArm = !wanMode && detected.lan === detected.wan;
         const wan = !oneArm && exists(ifaces?.wan) ? ifaces!.wan! : detected.wan;
         const lan = !oneArm && exists(ifaces?.lan) ? ifaces!.lan! : detected.lan;
         // Tek bacakta kurallar yalnız o anki varsayılan rotanın kartına yazılmaz: aynı LAN'daki tüm kartlar (ikinci bacak,
@@ -72,14 +77,17 @@ export const systemServices = {
         // düşmesin (/etc/nftables.conf her açılışta yüklenir). Sabit adres modunda ev Wi-Fi köprüsü (br0) ve kart da
         // eklenir: ev Wi-Fi'ı açılınca / kapanınca (ya da köprü açılışta kurulamayıp eth0'a dönülünce) istemci trafiği
         // arayüz değiştirir, kurallar yeniden uygulanmadan da eşleşsin.
-        const ns = readNetModeState();
         const netModeIfs = ns && (ns.stage === 'trial' || ns.stage === 'static') ? [ns.iface, HOME_BRIDGE].filter(Boolean) : [];
-        const lanIfs = oneArm
+        const lanIfs = wanMode
+            ? [...new Set(netModeIfs)]
+            : oneArm
             ? [...new Set([detected.wan, ...((await getLanIdentity())?.secondary || []).map(s => s.iface),
                 ...[ifaces?.lan, ifaces?.wan].filter((n): n is string => exists(n)), ...netModeIfs])]
             : [lan];
-        const wanIfs = oneArm ? lanIfs : [wan];
+        const wanIfs = wanMode ? wanIfaces(ns) : oneArm ? lanIfs : [wan];
         const nftIfs = (xs: string[]) => (xs.length === 1 ? `"${xs[0]}"` : `{ ${xs.map(x => `"${x}"`).join(', ')} }`);
+        // Port yönlendirme (yalnız internet kartı modunda): DNAT'lanan yeni bağlantılar ev ağına iletilir.
+        const dnatLine = wanMode ? `\n        iifname ${nftIfs(wanIfs)} oifname ${nftIfs(lanIfs)} ct status dnat accept` : '';
 
         // Özel kullanıcı kuralları (index.ts'te doğrulanmış nft satırları olarak gelir).
         const customLines = (customInputRules && customInputRules.length)
@@ -117,7 +125,7 @@ table inet pi5_filter {
         iifname "wg_vps*" accept
         oifname "wg_vps*" accept
         iifname ${nftIfs(lanIfs)} accept
-        iifname ${nftIfs(wanIfs)} oifname ${nftIfs(lanIfs)} ct state related,established accept
+        iifname ${nftIfs(wanIfs)} oifname ${nftIfs(lanIfs)} ct state related,established accept${dnatLine}
     }
 }
 table ip pi5_nat {}
@@ -138,7 +146,7 @@ include "/etc/nftables.d/*.conf"`;
         fs.writeFileSync('/etc/nftables.conf', nftablesConfig + '\n');
         await execAsync('nft -f /etc/nftables.conf');
         await execAsync('systemctl enable nftables 2>/dev/null || true');
-        return { stdout: `nftables yapılandırıldı (WAN=${wanIfs.join('+')}, LAN=${lanIfs.join('+')}${oneArm ? ', tek bacak' : ''}).`, stderr: '' };
+        return { stdout: `nftables yapılandırıldı (WAN=${wanIfs.join('+')}, LAN=${lanIfs.join('+')}${oneArm ? ', tek bacak' : wanMode ? ', internet kartı' : ''}).`, stderr: '' };
     },
 
     // Kalıcı aç/kapa (enable --now / disable --now): eskiden yalnız start/stop — kapatılan servis açılışta geri geliyordu.

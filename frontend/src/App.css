@@ -1139,6 +1139,22 @@ body.nav-open { overflow: hidden; }
   .hw-form .hw-field:not(.hw-field-sm) { grid-column: 1 / -1; }
 }
 
+/* İnternet bağlantısı paneli (WanPanel — WAN router rolü), "Yönlendirme" grubunun altında */
+.wn-adv { display: flex; flex-direction: column; gap: 8px; }
+.wn-adv > summary { cursor: pointer; color: var(--text-secondary); font-size: 12.5px; }
+.wn-adv[open] > summary { margin-bottom: 4px; }
+.wn-fwd { display: flex; flex-direction: column; gap: 8px; padding-top: 10px; border-top: 1px solid rgba(255, 255, 255, 0.06); }
+.wn-fwd .rl-sub { margin: 0; }
+.wn-fwd .toggle-btn { transform: scale(0.85); transform-origin: left center; }
+.wn-fwd td .icon-btn { width: 28px; height: 28px; }
+/* Paylaşılan .config-input'un min-width'i (180px) dar sütunlarda (VLAN, MTU, iç port) girdiyi paneldan taşırıyordu */
+.wn-panel .hw-field .config-input { min-width: 0; }
+/* Port yönlendirme formu: alan sırasına göre sütunlar (ad | protokol | dış port | hedef | iç port) */
+.wn-fwd-form { grid-template-columns: minmax(0, 1.2fr) minmax(0, 0.9fr) minmax(0, 1.1fr) minmax(0, 1.2fr) minmax(0, 0.7fr); }
+@media (max-width: 900px) {
+  .wn-fwd-form { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
 /* Uydular paneli (MeshPanel — R2 mesh) ve uyduda ağ geçidi sayfası notu */
 .ms-pair { display: flex; gap: 18px; align-items: center; flex-wrap: wrap; padding: 12px 14px; border-radius: 12px;
   border: 1px solid var(--accent-color); background: rgba(255, 255, 255, 0.02); }

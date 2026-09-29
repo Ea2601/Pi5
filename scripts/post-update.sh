@@ -118,7 +118,8 @@ fi
 #     eksikleri tek işlemde kurar. iputils-arping: sabit adres (net-mode.sh) cihaz tarafı adresinin ağda boş olduğunu
 #     arping -D ile doğrular (ping, modemin rotası olmayan 192.168.0.x'te dolu adresi göremez).
 #     iw: Cihaz Rolleri sayfası Wi-Fi radyolarının yeteneklerini (AP / mesh / eşzamanlı çalışma) bununla okur.
-if ! pkg_ensure wireguard-tools ipset iptables iputils-arping iw; then
+#     ppp: WAN router rolünde PPPoE bağlantısı (NetworkManager'ın PPP eklentisi pppd'yi çalıştırır; hizmet başlatmaz).
+if ! pkg_ensure wireguard-tools ipset iptables iputils-arping iw ppp; then
   echo "  [pkg] UYARI: sistem paketleri kurulamadı (ayrıntı yukarıda)" >> "$LOG"
 fi
 

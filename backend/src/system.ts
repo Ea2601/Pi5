@@ -525,8 +525,12 @@ export async function getNetworkDevices(): Promise<{ ip: string; mac: string }[]
   if (!isLinux) return [];
   const out = await run('ip neigh show') || await run('arp -an');
   if (!out) return [];
+  // İnternet kartı tarafındaki komşular (operatörün modemi / ağ geçidi) ev ağının cihazı değildir.
+  const wanIfs = wanIfaces(readNetModeState());
   const devices: { ip: string; mac: string }[] = [];
   for (const line of out.split('\n')) {
+    const dev = /\bdev\s+(\S+)/.exec(line)?.[1];
+    if (dev && wanIfs.includes(dev)) continue;
     const m = line.match(/(\d+\.\d+\.\d+\.\d+).*?([0-9a-f]{2}:[0-9a-f]{2}:[0-9a-f]{2}:[0-9a-f]{2}:[0-9a-f]{2}:[0-9a-f]{2})/i);
     if (m) devices.push({ ip: m[1], mac: m[2].toLowerCase() });
   }
@@ -815,10 +819,15 @@ function parseCidr(s: string): { ip: string; prefix: number; network: string } |
 // noktası yayar (internet yok). eth0 aşamasından bağımsızdır; biçim dışı değer 'none' / '' sayılır.
 // Ev Wi-Fi'ı (net-mode.sh `home`, aynı dosyada home_stage/home_iface/lan_if): eth0 ve Wi-Fi kartı tek köprüde (br0)
 // birleşir, iki sabit adres köprüye taşınır; lanIf = cihaz ağının arayüzü (köprü açıkken br0, değilse boş).
+// İnternet kartı (WAN router, R3; aynı dosyada wan_*): ikinci Ethernet kartı internete bağlanır. wanPort = kartın
+// kendisi, wanDev = adresin ve varsayılan rotanın olduğu arayüz (kart / VLAN wan.<ID> / PPPoE pppwan). wanLan = ev ağı
+// profilleri yalnız ev ağına çevrildi (eth0 / br0'da yalnız client adresi; transit ve gw eski düzen için saklanır).
 export interface NetModeState {
   stage: 'none' | 'trial' | 'static'; iface: string; transit: string; client: string; gw: string;
   apStage: 'none' | 'trial' | 'on'; apIface: string;
   homeStage: 'none' | 'trial' | 'on'; homeIface: string; lanIf: string;
+  wanStage: 'none' | 'trial' | 'on'; wanPort: string; wanDev: string; wanType: '' | 'dhcp' | 'static' | 'pppoe';
+  wanVlan: string; wanLan: boolean;
 }
 // Kurulum Wi-Fi'ının Pi adresi ve ağı (net-mode.sh AP_ADDR/AP_NET ile aynı; istemciler 192.168.50.20–200 alır).
 export const AP_ADDR = '192.168.50.1';
@@ -851,9 +860,34 @@ export function readNetModeState(): NetModeState | null {
     homeStage,
     homeIface: ifName(kv.home_iface),
     lanIf: ifName(kv.lan_if),
+    wanStage: kv.wan_stage === 'trial' || kv.wan_stage === 'on' ? kv.wan_stage : 'none',
+    wanPort: ifName(kv.wan_port),
+    wanDev: ifName(kv.wan_dev),
+    wanType: kv.wan_type === 'dhcp' || kv.wan_type === 'static' || kv.wan_type === 'pppoe' ? kv.wan_type : '',
+    wanVlan: /^\d{1,4}$/.test(kv.wan_vlan || '') ? kv.wan_vlan : '',
+    wanLan: kv.wan_lan === '1',
   };
 }
 const netModeActive = (s: NetModeState | null): s is NetModeState => !!s && (s.stage === 'trial' || s.stage === 'static');
+// İnternet kartı deneme ya da kalıcı (kart adı geçerli).
+export const wanActive = (s: NetModeState | null): s is NetModeState =>
+  !!s && (s.wanStage === 'trial' || s.wanStage === 'on') && !!s.wanPort && !!s.wanDev;
+// İnternet tarafı arayüzleri: kart + (varsa) VLAN + (varsa) PPPoE — net-mode.sh wan_ifset ile aynı küme.
+export function wanIfaces(s: NetModeState | null): string[] {
+  if (!wanActive(s)) return [];
+  return [...new Set([s.wanPort, ...(s.wanVlan ? [`wan.${s.wanVlan}`] : []), s.wanDev])];
+}
+// Ev ağının arayüzü (internet kartı modunda): köprü açıkken br0, değilse sabit adresin kartı.
+function lanIfaceOf(s: NetModeState): string {
+  return s.lanIf && fs.existsSync(`/sys/class/net/${s.lanIf}`) ? s.lanIf : s.iface;
+}
+// Özel (NAT arkası) adres: RFC1918, CGNAT (100.64/10), link-local.
+export function isPrivateIpv4(ip: string): boolean {
+  const o = ip.split('.').map(Number);
+  if (o.length !== 4 || o.some(n => !Number.isInteger(n) || n < 0 || n > 255)) return false;
+  return o[0] === 10 || (o[0] === 172 && o[1] >= 16 && o[1] <= 31) || (o[0] === 192 && o[1] === 168)
+    || (o[0] === 100 && o[1] >= 64 && o[1] <= 127) || (o[0] === 169 && o[1] === 254);
+}
 // Kurulum Wi-Fi'ı deneme ya da kalıcı. Arayüz adı geçersizse apIface '' kalır: arayüze bağlı kurallar (giriş izni,
 // 07 DHCP dosyası) yazılmaz, AP_NET yine de ağ geçidi listelerinden çıkarılır.
 const apActive = (s: NetModeState | null): s is NetModeState => !!s && (s.apStage === 'trial' || s.apStage === 'on');
@@ -864,12 +898,16 @@ const apActive = (s: NetModeState | null): s is NetModeState => !!s && (s.apStag
 // Sabit adres modunda aynı kartta iki ağ olur: `transit` modem tarafı (varsayılan rotanın adresi), `client` Pi DHCP'sinin
 // ağı. ip/prefix/network her zaman CLIENT tarafıdır (arayüzde gösterilen, DHCP router/DNS); tek ağda client = transit.
 // DNS redirect hedefi ve panel adresi örneği buradan değil getPi5LanIp'ten (transit) gelir.
+// İnternet kartı modunda (wan): iface = EV AĞI arayüzü (eth0 / br0), transit = client (eth0'da modem tarafı adres
+// yoktur), gateway = internet kartının ağ geçidi (PPPoE'de karşı uç); `wan` internet kartını anlatır. `wan.public`:
+// internet kartının adresi açık IP (modem / CGNAT arkasında değil — ör. PPPoE).
 export interface LanIdentity {
   iface: string; ip: string; prefix: number; gateway: string; network: string;
   secondary: { iface: string; ip: string; net?: 'transit' | 'client' }[];
   transit: { ip: string; prefix: number; network: string };
   client: { ip: string; prefix: number; network: string; source: 'config' | 'transit' };
   dualSubnet: boolean;
+  wan?: { dev: string; port: string; type: string; ip: string; prefix: number; gateway: string; public: boolean };
 }
 export async function getLanIdentity(): Promise<LanIdentity | null> {
   if (!isLinux) return null;
@@ -877,12 +915,35 @@ export async function getLanIdentity(): Promise<LanIdentity | null> {
   let addrs: any[] = [];
   try { routes = JSON.parse((await run('ip -j -4 route show default 2>/dev/null')) || '[]'); } catch { routes = []; }
   try { addrs = JSON.parse((await run('ip -j -4 addr show 2>/dev/null')) || '[]'); } catch { addrs = []; }
+  const v4 = (ifname: string) => (addrs.find(a => a.ifname === ifname)?.addr_info || [])
+    .filter((x: any) => x.family === 'inet' && x.local) as { local: string; prefixlen: number; address?: string }[];
+  const ns = readNetModeState();
+  // İnternet kartı modu: ev ağı eth0 / br0'da yalnız client adresidir; varsayılan rota (internet kartı) LAN değildir.
+  // İnternet kartı düşse de (varsayılan rota yok) ev ağı kimliği döner.
+  if (wanActive(ns) && ns.wanLan) {
+    const cfg = parseCidr(ns.client);
+    const lanIf = lanIfaceOf(ns);
+    const live = cfg ? v4(lanIf).find(x => x.local === cfg.ip) : undefined;
+    if (live) {
+      const net = { ip: live.local, prefix: live.prefixlen, network: networkOf(live.local, live.prefixlen) };
+      const wa = v4(ns.wanDev)[0];
+      const wr = routes.find(r => r && r.dev === ns.wanDev);
+      // PPPoE: varsayılan rotada "via" yoktur; karşı uç adres kaydında (address) durur.
+      const wgw = wr?.gateway || (wa?.address && wa.address !== wa.local ? wa.address : '');
+      return {
+        iface: lanIf, ip: net.ip, prefix: net.prefix, gateway: wgw, network: net.network, secondary: [],
+        transit: net, client: { ...net, source: 'config' }, dualSubnet: false,
+        wan: {
+          dev: ns.wanDev, port: ns.wanPort, type: ns.wanType, ip: wa?.local || '', prefix: wa?.prefixlen || 0,
+          gateway: wgw, public: !!wa?.local && !isPrivateIpv4(wa.local),
+        },
+      };
+    }
+  }
   const route = routes
     .filter(r => r && r.dev && !/^(wg|lo|docker|veth)/.test(r.dev))
     .sort((a, b) => (a.metric || 0) - (b.metric || 0))[0];
   if (!route) return null;
-  const v4 = (ifname: string) => (addrs.find(a => a.ifname === ifname)?.addr_info || [])
-    .filter((x: any) => x.family === 'inet' && x.local) as { local: string; prefixlen: number }[];
   const own = v4(route.dev);
   // Statik profilin varsayılan rotasında `src` yoktur → modemi içeren alt ağın adresi transit sayılır.
   const main = own.find(x => x.local === route.prefsrc)
@@ -892,7 +953,6 @@ export async function getLanIdentity(): Promise<LanIdentity | null> {
   const transit = { ip: main.local, prefix: main.prefixlen, network: networkOf(main.local, main.prefixlen) };
   // CLIENT: sabit adres modunda (deneme/kalıcı) durum dosyasındaki adres bu kartta gerçekten varsa; yoksa transit.
   let client: LanIdentity['client'] = { ...transit, source: 'transit' };
-  const ns = readNetModeState();
   const cfg = netModeActive(ns) ? parseCidr(ns.client) : null;
   const live = cfg ? own.find(x => x.local === cfg.ip) : undefined;
   if (live) client = { ip: live.local, prefix: live.prefixlen, network: networkOf(live.local, live.prefixlen), source: 'config' };
@@ -920,9 +980,11 @@ export async function getLanIdentity(): Promise<LanIdentity | null> {
 // kart ancak ikisinin de dışında bir adresi varsa ayrı LAN sayılır. Kurulum Wi-Fi'ı (yalnız panel, iletim yok) LAN
 // sayılmaz: yoksa firewall kurulumu iki kartlı yola sapıp NAT'ı yanlış karta yazardı.
 export async function detectInterfaces(): Promise<{ wan: string; lan: string }> {
+  const ns = readNetModeState();
+  // İnternet kartı modu: iki ayrı kart — internet tarafı adres/rota arayüzü (kart / VLAN / PPPoE), ev ağı eth0 / br0.
+  if (wanActive(ns) && ns.wanLan) return { wan: ns.wanDev, lan: lanIfaceOf(ns) };
   const id = await getLanIdentity();
   const wan = id?.iface || (await run(`ip -o -4 route show to default | awk '{print $5}' | head -1`)).trim() || 'eth0';
-  const ns = readNetModeState();
   const apIface = apActive(ns) ? ns.apIface : '';
   let other = '';
   try {
@@ -1578,7 +1640,10 @@ async function waitLocalDns(maxMs: number = 15000): Promise<boolean> {
 // `iifname "br0"` hiçbir pakete uymaz.
 const GW_NFT = '/opt/pi5-gateway/core/pi5-gw.nft';
 const IN_NFT = '/opt/pi5-gateway/core/pi5-in.nft';
-async function detectGatewayLan(ns: NetModeState | null = readNetModeState()): Promise<{ nets: string[]; ifaces: string[]; selfIps: string[] }> {
+// İnternet kartı modunda (R3) kart / VLAN / PPPoE arayüzleri ve ağları LAN sayılmaz (wanIfs ayrı döner): internet
+// tarafından gelen trafik ev ağı gibi iletilmez, maskelemesi ve korumasını net-mode.sh'nin pi5_wan tabloları yapar.
+// Modem tarafı ağ (transit) o modda ev ağında değildir: LAN ağlarına eklenmez.
+async function detectGatewayLan(ns: NetModeState | null = readNetModeState()): Promise<{ nets: string[]; ifaces: string[]; selfIps: string[]; wanIfs: string[] }> {
   const ipNum = (ip: string) => ip.split('.').reduce((a, o) => a * 256 + Number(o), 0);
   const within = (net: string, outer: string) => {
     const [a, pa] = net.split('/');
@@ -1590,12 +1655,14 @@ async function detectGatewayLan(ns: NetModeState | null = readNetModeState()): P
   const apIf = apActive(ns) ? ns.apIface : '';
   const isApIface = (dev: string) => !!apIf && dev === apIf;
   const inApNet = (net: string) => apOn && within(net, AP_NET);
+  const wanIfs = wanIfaces(ns);
+  const wanLan = wanActive(ns) && ns.wanLan;
   const nets = new Set<string>();
   const ifaces = new Set<string>();
   const selfIps = new Set<string>();
   for (const line of (await run('ip -4 -o route show proto kernel scope link 2>/dev/null')).split('\n')) {
     const m = line.match(/^(\d+\.\d+\.\d+\.\d+\/\d+)\s+dev\s+([A-Za-z0-9_.-]{1,15})\s/);
-    if (!m || /^(wg|lo)/.test(m[2]) || isApIface(m[2]) || inApNet(m[1])) continue;
+    if (!m || /^(wg|lo)/.test(m[2]) || isApIface(m[2]) || inApNet(m[1]) || wanIfs.includes(m[2])) continue;
     nets.add(m[1]);
     ifaces.add(m[2]);
   }
@@ -1604,14 +1671,14 @@ async function detectGatewayLan(ns: NetModeState | null = readNetModeState()): P
   if (netModeActive(ns)) {
     if (ns.iface && !/^(wg|lo)/.test(ns.iface) && !isApIface(ns.iface)) ifaces.add(ns.iface);
     ifaces.add(HOME_BRIDGE);
-    for (const c of [parseCidr(ns.transit), parseCidr(ns.client)]) {
+    for (const c of [wanLan ? null : parseCidr(ns.transit), parseCidr(ns.client)]) {
       if (!c) continue;
       if (!inApNet(c.network)) nets.add(c.network);
       selfIps.add(c.ip);
     }
   }
   const all = [...nets];
-  return { nets: all.filter(n => !all.some(o => o !== n && within(n, o))), ifaces: [...ifaces], selfIps: [...selfIps] };
+  return { nets: all.filter(n => !all.some(o => o !== n && within(n, o))), ifaces: [...ifaces], selfIps: [...selfIps], wanIfs };
 }
 
 export async function applyDomainRouting(domains?: DomainRoute[], ranges: RangeRoute[] = []): Promise<void> {
@@ -1886,6 +1953,13 @@ export async function applyDomainRouting(domains?: DomainRoute[], ranges: RangeR
       // LAN → modem (tek bacak): ct state'e bakılmaz — SNAT kurulamazsa akış asimetrik kalır, sonraki paketler 'invalid' olur.
       // Ağ başına (NAT kuralıyla aynı): 192.168.0.x → modem tarafı da iletilir.
       ...gw.nets.map(n => `add rule inet filter pi5_gw iifname ${lanIfs} ${leavesNet(n)} oifname ${lanIfs} accept`),
+      // İnternet kartı modu: ev ağı → internet kartı; internetten yalnız panelde açılan port yönlendirmeleri (DNAT).
+      ...(gw.wanIfs.length
+        ? [
+          `add rule inet filter pi5_gw iifname ${lanIfs} ${lanClient} oifname ${nftSet(gw.wanIfs, true)} accept`,
+          `add rule inet filter pi5_gw iifname ${nftSet(gw.wanIfs, true)} ct status dnat accept`,
+        ]
+        : []),
       ...(/jump pi5_gw/.test(fwdChain) ? [] : ['insert rule inet filter forward jump pi5_gw']),
     ];
     try {

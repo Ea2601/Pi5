@@ -504,8 +504,12 @@ cmd_enable() {
   foreign=$(port67_foreign)
   [ -z "$foreign" ] || die "DHCP portunu (UDP 67) başka bir program tutuyor ($foreign) — önce onu durdurun"
 
-  # 2. Pi'nin sabit adresi onaylanmış olmalı (net-mode.sh).
+  # 2. Pi'nin sabit adresi onaylanmış olmalı (net-mode.sh). İnternet kartı (WAN router) modunda eth0 / br0'da modem
+  #    tarafı adres yoktur: aşağıdaki tek kollu denetimler geçerli değil (Pi DHCP'si WAN açılmadan önce açılır).
   [ "$(kv_get "$NET_STATE" stage)" = static ] || die "önce Pi'ye sabit adres verin ve onaylayın"
+  case "$(kv_get "$NET_STATE" wan_stage)" in
+    trial|on) die "internet kartı (WAN router) açık — Pi DHCP'si WAN kapalıyken açılır (Cihaz Rolleri → WAN router → Kapat)" ;;
+  esac
   iface=$(lan_iface); transit=$(kv_get "$NET_STATE" transit)
   client=$(kv_get "$NET_STATE" client); gw=$(kv_get "$NET_STATE" gw)
   tip=${transit%/*}; tpfx=${transit#*/}; cip=${client%/*}; cpfx=${client#*/}
@@ -682,6 +686,10 @@ cmd_disable() {
     # Durum kaydı kapalı ama DHCP açık (kayıt kaybı / Pi-hole arayüzünden açılmış): yalnız dhcp.active kapatılır —
     # eski anlık görüntü kullanıcının ayarlarının üstüne yazılmaz.
     *) [ "$(ftl_get dhcp.active)" = true ] || die "Pi DHCP sunucusu zaten kapalı"; mode=active ;;
+  esac
+  # İnternet kartı (WAN router) modunda ev ağında başka DHCP sunucusu yoktur: kapatmak cihazları adressiz bırakır.
+  case "$(kv_get "$NET_STATE" wan_stage)" in
+    trial|on) die "internet kartı (WAN router) açıkken Pi DHCP'si kapatılamaz — ev ağındaki cihazlar adresini yalnız Pi'den alır; önce Cihaz Rolleri → WAN router'ı kapatın" ;;
   esac
   if [ "$force" = 0 ]; then
     run_probe "$(probe_iface)" || die "DHCP taraması çalışmadı ($PROBE_DETAIL) — modemin DHCP'sinin açık olduğu doğrulanamadı"

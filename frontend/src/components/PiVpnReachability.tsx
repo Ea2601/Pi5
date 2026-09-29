@@ -10,13 +10,14 @@ import { toast } from '../toast';
 //  - ulaşıyor → telefonu bağlama adımları ve telefon tarafı sorun giderme
 //  - tek modem → modemde tek kural;  arka arkaya iki (ya da daha çok) cihaz → her cihazda bir içeridekine kural
 //  - CGNAT → modem ayarı işe yaramaz, operatörden genel IP istenir
+//  - doğrudan (R3: internet kartında açık IP, ör. PPPoE) → modem yok; telefonu bağlama adımları
 interface ReachHop { ttl: number; ip: string; kind: 'private' | 'cgnat' | 'public' | 'none' }
 interface ReachResult {
   at: string; running: boolean; port: number; piLanIp: string; gateway: string; publicIp: string;
   endpoint: { host: string; source: 'ddns' | 'ip' | 'none' }; ddnsIps: string[]; ddnsOk: boolean | null;
   hops: ReachHop[]; routers: string[]; cgnatHop: string;
   external: { status: 'reachable' | 'unreachable' | 'untested'; via: string; reason: string; sent: number; received: number };
-  scenario: 'reachable' | 'cgnat' | 'nat' | 'unknown';
+  scenario: 'reachable' | 'cgnat' | 'nat' | 'unknown' | 'direct';
 }
 
 // Otomatik denetim (backend wgWatch.ts): Ev VPN'i açıkken birkaç saatte bir; bozulunca zile uyarı düşer.
@@ -165,7 +166,7 @@ function ReachView({ r, running }: { r: ReachResult; running: boolean }) {
         </div>
       )}
 
-      {r.scenario === 'reachable' ? <GuideReady r={r} running={running} />
+      {r.scenario === 'reachable' || r.scenario === 'direct' ? <GuideReady r={r} running={running} />
         : r.scenario === 'cgnat' ? <GuideCgnat r={r} />
           : <GuideForward r={r} />}
     </>
@@ -176,6 +177,12 @@ function GuideReady({ r, running }: { r: ReachResult; running: boolean }) {
   return (
     <div className="pivpn-guide pivpn-guide-ok">
       <h4>Hazır: ev dışından bağlanılabilir</h4>
+      {r.scenario === 'direct' && (
+        <p>
+          Pi doğrudan internete bağlı (internet kartında açık IP <code>{r.piLanIp}</code>): arada modem olmadığı için port
+          yönlendirmesi gerekmez. Ev VPN'i açıkken UDP {r.port} internet kartının güvenlik duvarında açıktır.
+        </p>
+      )}
       <ol>
         {!running && <li>Yukarıdaki anahtarla <strong>Ev VPN'ini açın</strong>.</li>}
         <li>Aşağıdan cihaz ekleyin; açılan QR'ı telefondaki WireGuard uygulamasında <strong>+ → QR koddan oluştur</strong> ile tarayın.</li>

@@ -15,8 +15,10 @@ import {
   executeCommand, applyDomainRouting, applyBlockedDevices,
   sampleMetrics, detectInterfaces, recoverInterruptedFtlRestart, VALID_DNSMASQ_DOMAIN, getRoutingApplyStatus,
   getLanIdentity, protectedMacs, getPi5LanIp, readNetModeState, runExclusiveDnsTask, AP_ADDR, AP_NET, HOME_BRIDGE,
+  wanActive, wanIfaces,
 } from './system';
 import type { RangeRoute } from './system';
+import { listForwards, addForward, setForwardEnabled, deleteForward, applyPortForwards } from './wan';
 import { runSpeedTest, SpeedtestUnavailable, type SpeedResult } from './speedtest';
 import { ASN_TOKEN, getAsnPrefixes, normalizeCidr, refreshAsnIfStale } from './ipRanges';
 import { getRoutingSuggestions, MAX_HOURS as SUGGEST_MAX_HOURS } from './domainSuggest';
@@ -664,6 +666,8 @@ app.post('/api/services/:name/restart', async (req, res) => {
     // nftables restart `flush ruleset` ile cihaz engeli tablosunu da siler → yeniden uygula.
     if (name === 'nftables') await reapplyBlockedDevices();
     if (name === 'nftables') await reapplyWgServer();
+    // İnternet kartı güvenlik duvarı ve port yönlendirmeleri de silindi (flush ruleset) → hemen geri yüklenir.
+    if (name === 'nftables') { await wanFirewallReload(); await applyPortForwards(); }
     const st = await waitServiceSettled(name, 'running', actionError ? 3000 : name === 'pihole' ? FTL_SETTLE_TIMEOUT : 15000);
     await dbRun('UPDATE service_status SET enabled = ?, status = ?, last_check = CURRENT_TIMESTAMP WHERE name = ?',
       [st.status === 'running' ? 1 : 0, st.status, name]);
@@ -1235,7 +1239,9 @@ const roleLabel = (r: string) => (r === 'admin' ? 'yönetici' : 'misafir');
 app.get('/api/wg-server', async (_req, res) => {
   try {
     const st = await wgServerStatus();
-    res.json({ ...st, piLanIp: isLinux ? await getPi5LanIp().catch(() => '') : '' });
+    // piLanIp: modemde yönlendirmenin hedefi. İnternet kartı modunda Pi'nin modeme bakan adresi internet kartınınkidir.
+    const wanIp = isLinux ? (await getLanIdentity().catch(() => null))?.wan?.ip || '' : '';
+    res.json({ ...st, piLanIp: wanIp || (isLinux ? await getPi5LanIp().catch(() => '') : '') });
   } catch (e: any) {
     res.status(500).json({ error: e.message });
   }
@@ -1251,6 +1257,7 @@ app.post('/api/wg-server/enable', async (req, res) => {
       return res.status(500).json({ error: r.error || 'Uygulanamadı', result: r });
     }
     await recordEvent('vpn', enabled ? `Ev VPN'i açıldı (UDP ${WG_PORT})` : "Ev VPN'i kapatıldı");
+    await wanFirewallReload(); // internet kartı açıksa Ev VPN'i portu güvenlik duvarında açılır / kapanır
     res.json({ success: true, result: r });
   } catch (e: any) {
     res.status(500).json({ error: e.message });
@@ -1915,6 +1922,7 @@ app.get('/api/system/hardware', async (_req, res) => {
       homeStage: ns?.homeStage || 'none', homeIface: ns?.homeIface || null,
       role: STARTUP_ROLE, satellites: isSatellite() ? 0 : (await listSatellites().catch(() => [])).length,
       paired: isSatellite() && !!readSatState(), meshConfigured: (await mainMeshState().catch(() => null))?.configured || false,
+      wanStage: ns?.wanStage || 'none', wanPort: ns?.wanPort || null, wanDev: ns?.wanDev || null,
     });
     res.json({ supported: true, ...hw, roles: evaluateRoles(hw) });
   } catch (e: any) {
@@ -2254,7 +2262,7 @@ if (isLinux) {
         // Kurulum Wi-Fi'ı kalıcıyken yayın düşmüşse uyarı (ev için kritik değil; Pi açılışta ve NetworkManager yeniden
         // başlayınca yayını yeniden açmayı dener).
         const ns = readNetModeState();
-        if (fs.existsSync(NET_MODE_SCRIPT) && (ns?.stage === 'static' || ns?.apStage === 'on')) {
+        if (fs.existsSync(NET_MODE_SCRIPT) && (ns?.stage === 'static' || ns?.apStage === 'on' || ns?.wanStage === 'on')) {
           const n = await runKvScript(NET_MODE_SCRIPT, ['status'], 30000);
           if (n.code === 0 && ns?.stage === 'static' && n.kv.guard_result === 'emergency') {
             await addAlert('health', 'critical', 'Sabit IP profili yüklenemedi — Pi adresini acil modda tutuyor (menü → DHCP Ayarları)', 'netmode');
@@ -2267,6 +2275,12 @@ if (isLinux) {
             await addAlert('health', 'warning', n.kv.br_active !== '1'
               ? "Ev Wi-Fi köprüsü kurulamadı — Pi köprüsüz çalışıyor, ev Wi-Fi'ı yayında değil (Cihaz Rolleri)"
               : "Ev Wi-Fi yayını kapalı — Pi bir sonraki açılışta ya da NetworkManager yeniden başlayınca yeniden açmayı dener", 'netmode-home');
+          }
+          // İnternet kartı kalıcıyken bağlantı yok ya da güvenlik duvarı yüklü değil (ev ağı çalışır, internet yok).
+          if (n.code === 0 && n.kv.wan_stage === 'on' && (n.kv.wan_up !== '1' || n.kv.wan_fw !== '1')) {
+            const why = n.kv.wan_fw !== '1' ? 'güvenlik duvarı yüklü değil'
+              : n.kv.wan_carrier !== '1' ? `kartta (${n.kv.wan_port}) kablo yok` : 'bağlantı kurulamadı';
+            await addAlert('health', 'critical', `İnternet kartı çalışmıyor: ${why} — ev ağı çalışıyor, internet yok (Cihaz Rolleri → WAN router)`, 'netmode-wan');
           }
         }
       } catch (e: any) {
@@ -2889,6 +2903,161 @@ app.post('/api/netmode/home/off', async (_req, res) => {
   await kvEvent('netmode', r, `Ev Wi-Fi'ı kapatıldı${r.kv.warning ? ` — ${r.kv.warning}` : ''}`, 'Ev Wi-Fi\'ı kapatılamadı');
   if (r.code !== 0) return res.status(409).json({ error: kvError(r, 'ev Wi-Fi\'ı kapatılamadı') });
   res.json({ success: true, warning: r.kv.warning || undefined });
+});
+
+// ─── İnternet kartı: WAN router rolü (R3, net-mode.sh wan …) ───
+// İkinci Ethernet kartı internete bağlanır (DHCP / sabit / PPPoE, isteğe bağlı VLAN, MAC kopyalama, MTU); eth0 / br0
+// yalnız ev ağı olur. Açma her zaman 5 dk'lık denemedir; "Kalıcı yap" Pi'nin kendi ekranından kabul edilmez. Ev ağı
+// adresi hiç kalkmadığı için panel geçiş boyunca açıktır. Her değişiklikten sonra ağ geçidi kuralları (internet kartı
+// artık LAN sayılmaz), port yönlendirmeleri ve — panelin güvenlik duvarı kuruluysa — o da güncel kartlarla yazılır.
+const WAN_TRIAL_S = 300;
+const WAN_NUMS = ['wan_trial_ends', 'now'];
+const WAN_BOOLS = ['wan_lan', 'wan_carrier', 'wan_up', 'wan_fw', 'ppp_ok', 'pi_dhcp'];
+app.use('/api/wan', netAdminGuard);
+// Panelin güvenlik duvarı (pi5_filter, politika drop) kuruluysa internet kartı arayüzleriyle yeniden yazılır: DB'deki eski
+// iki kartlı tohumlar yerine net-mode durumu kullanılır (services.ts), port yönlendirmesine iletim izni eklenir.
+async function firewallFollowsWan(): Promise<void> {
+  const fwd = await execFileP('nft', ['list', 'chain', 'inet', 'pi5_filter', 'forward'], { timeout: 10000 }).then(r => r.stdout, () => '');
+  if (!/policy drop/.test(fwd)) return;
+  try {
+    const cfg = await dbAll("SELECT key, value FROM service_config WHERE service = 'nftables' AND key IN ('lan_iface', 'wan_iface')");
+    const m: Record<string, string> = {};
+    (cfg as any[]).forEach(r => { m[r.key] = r.value; });
+    const custom = buildCustomFwRules(await dbAll('SELECT type, target, action FROM routing_rules'));
+    await systemServices.configureNftables({ lan: m.lan_iface, wan: m.wan_iface }, custom);
+    await reapplyWgServer(); // pi5_filter yeniden kuruldu: Ev VPN'i izin zincirleri (politika drop) geri eklensin
+  } catch (e: any) {
+    console.error('[wan] güvenlik duvarı internet kartına göre yeniden yazılamadı:', String(e?.stderr || e?.message || e).trim());
+  }
+}
+const wanAfterChange = async (r: KvResult) => {
+  const apply = async () => {
+    await applyAllRoutingRules().catch((e: any) => console.error('Routing yeniden uygulanamadı:', e.message));
+    await applyPortForwards();
+    await firewallFollowsWan();
+    await reapplyWgServer(); // Ev VPN'i açıksa: PPPoE'ye geçişte / çıkışta tünel MTU'su (wgServer.ts)
+  };
+  if (r.code === null && r.exited) { void r.exited.then(apply); return; }
+  await apply();
+};
+// Ev VPN'i açıldı / kapandı: internet kartı güvenlik duvarı portunu buna göre açar / kapar.
+async function wanFirewallReload(): Promise<void> {
+  if (!isLinux || !wanActive(readNetModeState()) || !require('fs').existsSync(NET_MODE_SCRIPT)) return;
+  const r = await runKvScript(NET_MODE_SCRIPT, ['wan', 'fw'], 60000);
+  if (r.code !== 0) console.error('[wan] güvenlik duvarı yeniden yüklenemedi:', kvError(r, 'bilinmeyen hata'));
+}
+const IFNAME_RE = /^[A-Za-z0-9_.-]{1,15}$/;
+const IPV4_RE = /^(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}$/;
+
+app.get('/api/wan', async (_req, res) => {
+  if (!isLinux || !require('fs').existsSync(NET_MODE_SCRIPT)) return res.json({ supported: false });
+  const r = await runKvScript(NET_MODE_SCRIPT, ['status'], 30000);
+  if (r.code !== 0) return res.json({ supported: true, error: kvError(r, 'internet kartı durumu okunamadı') });
+  const keep = Object.fromEntries(Object.entries(r.kv).filter(([k]) =>
+    k.startsWith('wan_') || ['ppp_ok', 'now', 'stage', 'home_stage', 'sat_stage', 'pi_dhcp', 'iface', 'lan_if', 'client'].includes(k)));
+  const id = await getLanIdentity().catch(() => null);
+  const forwards = await listForwards().catch(() => []);
+  res.json({ ...kvTyped(keep, WAN_NUMS, WAN_BOOLS), supported: true, satellite: isSatellite(), wan_public: !!id?.wan?.public, forwards });
+});
+
+app.post('/api/wan', async (req, res) => {
+  if (scriptMissing(NET_MODE_SCRIPT, res)) return;
+  if (isSatellite()) return res.status(409).json({ error: 'Bu cihaz uydu — internet kartı ana cihaz içindir' });
+  const b = req.body || {};
+  const str = (v: unknown) => (typeof v === 'string' ? v.trim() : typeof v === 'number' ? String(v) : '');
+  const port = str(b.port), type = str(b.type);
+  if (!IFNAME_RE.test(port)) return res.status(400).json({ error: 'İnternet kartını seçin' });
+  if (!['dhcp', 'static', 'pppoe'].includes(type)) return res.status(400).json({ error: 'Bağlantı türü DHCP, sabit adres ya da PPPoE olmalı' });
+  const args = ['wan', 'on', '--trial', String(WAN_TRIAL_S), '--port', port, '--type', type];
+  const opt = (flag: string, v: string, re: RegExp, msg: string): string | null => {
+    if (!v) return null;
+    if (!re.test(v)) return msg;
+    args.push(flag, v);
+    return null;
+  };
+  const errs = [
+    opt('--vlan', str(b.vlan), /^\d{1,4}$/, 'VLAN numarası 1-4094 olmalı'),
+    opt('--prio', str(b.prio), /^[0-7]$/, 'VLAN önceliği 0-7 olmalı'),
+    opt('--mac', str(b.mac), /^([0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}$/, 'MAC adresi 00:11:22:33:44:55 biçiminde olmalı'),
+    opt('--mtu', str(b.mtu), /^\d{3,4}$/, 'MTU 576-9000 arasında olmalı'),
+    ...(type === 'static' ? [
+      opt('--addr', str(b.addr), /^\d{1,3}(\.\d{1,3}){3}\/\d{1,2}$/, 'Sabit adres 203.0.113.10/24 biçiminde olmalı'),
+      opt('--gw', str(b.gw), IPV4_RE, 'Ağ geçidi geçersiz'),
+      opt('--dns', str(b.dns).replace(/\s+/g, ''), /^(\d{1,3}(\.\d{1,3}){3})(,\d{1,3}(\.\d{1,3}){3}){0,2}$/, 'DNS en çok 3 adres, virgülle'),
+    ] : []),
+    ...(type === 'pppoe' ? [opt('--user', str(b.user), /^[!-~]{1,64}$/, 'PPPoE kullanıcı adı 1-64 karakter, boşluksuz olmalı')] : []),
+  ].filter(Boolean);
+  if (errs.length) return res.status(400).json({ error: errs[0] });
+  if (type === 'static' && (!b.addr || !b.gw)) return res.status(400).json({ error: 'Sabit adres ve ağ geçidi gerekli' });
+  const password = typeof b.password === 'string' ? b.password : '';
+  if (type === 'pppoe' && (!b.user || !password)) return res.status(400).json({ error: 'PPPoE kullanıcı adı ve şifresi gerekli' });
+  if (type === 'pppoe' && (/[\r\n\\]/.test(password) || password.length > 128 || password !== password.trim())) {
+    return res.status(400).json({ error: 'PPPoE şifresi 1-128 karakter olmalı: ters bölü (\\) olmadan, başta/sonda boşluk olmadan' });
+  }
+  const r = await runKvScript(NET_MODE_SCRIPT, args, 240000, type === 'pppoe' ? `${password}\n` : '');
+  await wanAfterChange(r);
+  await kvEvent('netmode', r, `İnternet kartı denemesi başladı: ${port} (${type === 'pppoe' ? 'PPPoE' : type === 'static' ? 'sabit adres' : 'DHCP'}${b.vlan ? `, VLAN ${b.vlan}` : ''}) — ${WAN_TRIAL_S / 60} dk içinde "Kalıcı yap" gelmezse geri alınır`, 'İnternet kartı açılamadı', password);
+  if (r.code !== 0) return res.status(500).json({ error: maskSecret(kvError(r, 'internet kartı açılamadı'), password), rolled_back: r.kv.rolled_back === '1' });
+  res.json({ success: true, wan_trial_ends: Number(r.kv.wan_trial_ends) || 0, wan_ip: r.kv.wan_ip || '', wan_gateway: r.kv.wan_gateway || '' });
+});
+
+app.post('/api/wan/confirm', async (req, res) => {
+  if (scriptMissing(NET_MODE_SCRIPT, res)) return;
+  if (isLoopbackClient(req.ip)) {
+    return res.status(403).json({ error: 'Onayı ev ağındaki bir cihazdan (PC/telefon) verin — Pi\'nin kendi ekranı ev ağının çalıştığını kanıtlamaz' });
+  }
+  const r = await runKvScript(NET_MODE_SCRIPT, ['wan', 'confirm'], 90000);
+  await kvEvent('netmode', r, 'İnternet kartı kalıcı yapıldı', 'İnternet kartı onaylanamadı');
+  if (r.code !== 0) return res.status(409).json({ error: kvError(r, 'onaylanamadı') });
+  await wanAfterChange(r);
+  void ddnsAutoUpdate();
+  res.json({ success: true });
+});
+
+app.post('/api/wan/rollback', async (_req, res) => {
+  if (scriptMissing(NET_MODE_SCRIPT, res)) return;
+  const r = await runKvScript(NET_MODE_SCRIPT, ['wan', 'rollback'], 150000);
+  await wanAfterChange(r);
+  await kvEvent('netmode', r, r.kv.rolled_back === '1' ? 'İnternet kartı denemesi geri alındı' : '', 'İnternet kartı geri alınamadı');
+  if (r.code !== 0) return res.status(500).json({ error: kvError(r, 'geri alınamadı') });
+  res.json({ success: true, rolled_back: r.kv.rolled_back === '1' });
+});
+
+// Bilinçli kapatma: internet kartı kalkar, eth0 / br0 eski (tek kablolu) düzene döner. Modem kablosu eth0'dan internet
+// kartına taşındıysa Pi'nin interneti kablo geri takılana kadar yoktur; ev ağı ve panel çalışır.
+app.post('/api/wan/off', async (_req, res) => {
+  if (scriptMissing(NET_MODE_SCRIPT, res)) return;
+  const r = await runKvScript(NET_MODE_SCRIPT, ['wan', 'off'], 150000);
+  await wanAfterChange(r);
+  await kvEvent('netmode', r, `İnternet kartı kapatıldı; tek kablolu düzene dönüldü${r.kv.warning ? ` — ${r.kv.warning}` : ''}`, 'İnternet kartı kapatılamadı');
+  if (r.code !== 0) return res.status(409).json({ error: kvError(r, 'internet kartı kapatılamadı') });
+  res.json({ success: true, warning: r.kv.warning || undefined });
+});
+
+// Port yönlendirme (wan.ts): kayıtlar her zaman düzenlenebilir, yalnız internet kartı açıkken uygulanır.
+app.get('/api/wan/forwards', async (_req, res) => {
+  try { res.json({ forwards: await listForwards() }); } catch (e: any) { res.status(500).json({ error: e.message }); }
+});
+app.post('/api/wan/forwards', async (req, res) => {
+  try {
+    const f = await addForward(req.body || {});
+    await recordEvent('netmode', `Port yönlendirme eklendi: ${f.proto.toUpperCase()} ${f.ext_from}${f.ext_to !== f.ext_from ? `-${f.ext_to}` : ''} → ${f.dest_ip}${f.dest_port ? `:${f.dest_port}` : ''}${f.name ? ` (${f.name})` : ''}`);
+    res.json({ success: true, forward: f });
+  } catch (e: any) { res.status(e.status || 500).json({ error: e.message }); }
+});
+app.put('/api/wan/forwards/:id', async (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id) || typeof req.body?.enabled !== 'boolean') return res.status(400).json({ error: 'Geçersiz istek' });
+  try { await setForwardEnabled(id, req.body.enabled); res.json({ success: true }); } catch (e: any) { res.status(e.status || 500).json({ error: e.message }); }
+});
+app.delete('/api/wan/forwards/:id', async (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id)) return res.status(400).json({ error: 'Geçersiz kayıt' });
+  try {
+    await deleteForward(id);
+    await recordEvent('netmode', `Port yönlendirme silindi (#${id})`);
+    res.json({ success: true });
+  } catch (e: any) { res.status(e.status || 500).json({ error: e.message }); }
 });
 
 // ─── Cihaz rolü (R2): ana cihaz ↔ uydu ───
@@ -4500,7 +4669,10 @@ const server = app.listen(Number(port), bindHost, () => {
         else if (r.kv.warning) console.error(`[${tag}] uyarı:`, r.kv.warning);
       }
     }
-    if (!isSatellite()) await restoreTunnelsAndRouting();
+    if (!isSatellite()) {
+      await restoreTunnelsAndRouting();
+      await applyPortForwards(); // internet kartı açıksa port yönlendirmeleri (nft tablosu açılışta yoktur)
+    }
   })();
   // Uydu (R2): ağ geçidi işleri (yönlendirme kuralları, tüneller, cihaz engelleri, AS aralıkları, ağ haritası ölçümü,
   // trafik kaydı, Pi-hole listeleri, Ev VPN'i) çalışmaz — onlar ana cihazındır. Uydu ana cihazla senkron kalır.
@@ -4510,6 +4682,18 @@ const server = app.listen(Number(port), bindHost, () => {
   } else {
   // Uydular: çevrimdışı uyarısı 5 dk'da bir.
   setInterval(() => { void checkOfflineSatellites(); }, 5 * 60 * 1000);
+  // İnternet kartı: kartın adresi değişince (PPPoE yeniden bağlandı, operatör yeni adres verdi) DDNS 5 dk beklemeden
+  // güncellenir (Ev VPN'i istemcileri yeni adrese hemen ulaşsın).
+  let lastWanIp = '';
+  setInterval(() => {
+    void (async () => {
+      const ns = readNetModeState();
+      if (!wanActive(ns) || ns.wanStage !== 'on') { lastWanIp = ''; return; }
+      const ip = (await getLanIdentity().catch(() => null))?.wan?.ip || '';
+      if (ip && lastWanIp && ip !== lastWanIp) void ddnsAutoUpdate();
+      if (ip) lastWanIp = ip;
+    })();
+  }, 60000);
   // AS aralıkları (ör. WhatsApp aramaları için Meta) 6 saatte bir denetlenir; ilk denetim açılıştan 2 dk sonra.
   setTimeout(() => { void refreshAsnRanges(); }, 120000);
   setInterval(() => { void refreshAsnRanges(); }, 6 * 3600 * 1000);
@@ -4522,14 +4706,17 @@ const server = app.listen(Number(port), bindHost, () => {
     startLinkProbe(async () => {
       const fs = require('fs');
       const [neighbors, modem, own] = await Promise.all([readNeighbors(), readDefaultRoute(), readLocalIps()]);
+      // İnternet kartı modu: kart tarafındaki komşular (operatörün modemi) ev ağı cihazı değildir; modem ayrı kartta
+      // olduğundan ev ağı ölçümü için taban çizgisi olamaz.
+      const wanIfs = wanIfaces(readNetModeState());
       const targets: ProbeTarget[] = [];
       for (const [ip, n] of neighbors) {
         if (['FAILED', 'INCOMPLETE'].includes(n.state) || !n.dev || /^(wg|lo|docker|veth)/.test(n.dev)) continue;
-        if (own.has(ip) || ip === modem?.ip || inCidr(ip, AP_NET)) continue;
+        if (own.has(ip) || ip === modem?.ip || inCidr(ip, AP_NET) || wanIfs.includes(n.dev)) continue;
         targets.push({ ip, mac: n.mac, dev: n.dev });
       }
       const gwN = modem ? neighbors.get(modem.ip) : undefined;
-      const wiredUplink = !!modem?.dev && !fs.existsSync(`/sys/class/net/${modem.dev}/wireless`);
+      const wiredUplink = !!modem?.dev && !fs.existsSync(`/sys/class/net/${modem.dev}/wireless`) && !wanIfs.includes(modem.dev);
       return { targets, gateway: modem && gwN && wiredUplink ? { ip: modem.ip, mac: gwN.mac, dev: modem.dev } : null };
     });
     // Trafik analizi: cihaz × yol bayt kayıtları, 5 dk'da bir (saat sınırlarına hizalı).

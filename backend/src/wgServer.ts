@@ -20,7 +20,7 @@ import crypto from 'crypto';
 import { execFile, spawn } from 'child_process';
 import { promisify } from 'util';
 import { dbAll, dbGet, dbRun, dbInsert } from './db';
-import { isLinux, getCurrentExternalIp, getLanIdentity, listWireguardTunnels } from './system';
+import { isLinux, getCurrentExternalIp, getLanIdentity, listWireguardTunnels, readNetModeState, wanActive } from './system';
 
 const execFileP = promisify(execFile);
 export const WG_IFACE = 'wg_pi';
@@ -119,12 +119,22 @@ export async function serverEndpoint(): Promise<{ host: string; source: 'ddns' |
   return ipCache?.ip ? { host: ipCache.ip, source: 'ip' } : { host: '', source: 'none' };
 }
 
+// İnternet kartı PPPoE ise (MTU 1492) tünel MTU'su 1412: WireGuard başlığı (80) eklenince 1492'yi aşmasın. wg-quick'in
+// kendi hesabı açılışta PPPoE henüz bağlanmamışsa 1420 bulurdu.
+const PPPOE_WG_MTU = 1412;
+const DEFAULT_WG_MTU = 1420;
+function pppoeWan(): boolean {
+  const ns = readNetModeState();
+  return wanActive(ns) && ns.wanType === 'pppoe';
+}
+
 export function renderServerConf(s: ServerRow, peers: PeerRow[]): string {
   return [
     "# Klyrix Gate paneli yönetir (VPS WireGuard → Ev VPN'i); elle düzenlemeyin.",
     '[Interface]',
     `Address = ${WG_SERVER_IP}/24`,
     `ListenPort = ${WG_PORT}`,
+    ...(pppoeWan() ? [`MTU = ${PPPOE_WG_MTU}`] : []),
     `PrivateKey = ${s.private_key}`,
     // Tünel yanıtları işaretsiz dönebilir: katı rp_filter düşürmesin (wg_vps tünelleriyle aynı). Kurallar arayüzle gelir.
     'PostUp = sysctl -q -w net.ipv4.conf.%i.rp_filter=2 || true',
@@ -234,6 +244,10 @@ async function doApply(): Promise<WgApplyResult> {
     writeFile(CONF, renderServerConf(s, peers), 0o600);
     if (up()) {
       await execFileP('bash', ['-c', `wg syncconf ${WG_IFACE} <(wg-quick strip ${WG_IFACE})`], { timeout: 15000 });
+      // MTU syncconf ile uygulanmaz (wg-quick yönergesi): internet kartı PPPoE'ye geçtiyse / çıktıysa arayüzde ayarlanır.
+      const mtu = Number(fs.readFileSync(`/sys/class/net/${WG_IFACE}/mtu`, 'utf8').trim()) || 0;
+      const want = pppoeWan() ? PPPOE_WG_MTU : mtu === PPPOE_WG_MTU ? DEFAULT_WG_MTU : mtu;
+      if (want && want !== mtu) await execFileP('ip', ['link', 'set', 'dev', WG_IFACE, 'mtu', String(want)], { timeout: 5000 }).catch(() => {});
       await execFileP('nft', ['-f', NFT_FILE], { timeout: 10000 });
       await execFileP('systemctl', ['enable', UNIT], { timeout: 15000 }).catch(() => {});
     } else {
@@ -378,7 +392,8 @@ export interface ReachResult {
   routers: string[];
   cgnatHop: string;
   external: ReachExternal;
-  scenario: 'reachable' | 'cgnat' | 'nat' | 'unknown';
+  // direct: Pi doğrudan internette (internet kartında açık IP, ör. PPPoE) — modem / NAT yok, yönlendirme gerekmez.
+  scenario: 'reachable' | 'cgnat' | 'nat' | 'unknown' | 'direct';
 }
 
 const HOP_TARGET = '9.9.9.9';
@@ -459,7 +474,8 @@ async function externalProbe(publicIp: string): Promise<ReachExternal> {
     await runInput('nft', ['-f', '-'], [
       'table inet pi5_wgprobe {',
       '  chain in {',
-      '    type filter hook input priority filter - 2; policy accept;',
+      // İnternet kartı güvenlik duvarından (inet pi5_wan, filter - 10) da önce: Ev VPN'i kapalıyken port orada düşer.
+      '    type filter hook input priority filter - 20; policy accept;',
       `    iifname != "lo" udp dport ${WG_PORT} udp length ${PROBE_LEN + 8} counter`,
       '  }',
       '}',
@@ -500,7 +516,8 @@ export function reachabilityTest(): Promise<ReachResult> {
 async function doReach(): Promise<ReachResult> {
   if (!isLinux) throw new Error('Test yalnız Pi üzerinde çalışır');
   const id = await getLanIdentity().catch(() => null);
-  const iface = id?.iface || '';
+  // İnternet kartı modunda (R3) duraklar ve dış adres internet kartından okunur; gateway zaten onun ağ geçididir.
+  const iface = id?.wan?.dev || id?.iface || '';
   const gateway = id?.gateway || '';
   const endpoint = await serverEndpoint();
   const [publicIp, hops] = await Promise.all([wanPublicIp(iface), traceHops(iface)]);
@@ -515,13 +532,20 @@ async function doReach(): Promise<ReachResult> {
   if (routers[0] !== gateway) routers = ipKind(gateway) === 'private' ? [gateway] : [];
   const firstPublic = hops.findIndex(h => h.kind === 'public');
   const cgnatHop = hops.slice(0, firstPublic < 0 ? undefined : firstPublic).find(h => h.kind === 'cgnat')?.ip || '';
-  const external = await externalProbe(publicIp || ddnsIps[0] || '');
-  const scenario: ReachResult['scenario'] = external.status === 'reachable' ? 'reachable' : cgnatHop ? 'cgnat' : routers.length ? 'nat' : 'unknown';
+  // Açık IP Pi'nin kendi kartındaysa deneme paketi Pi'nin yerel adresine gider (yerel tablo, tünelden çıkmaz):
+  // VPS'ten ölçülemez. Modem / NAT yoktur; port internet kartı güvenlik duvarında Ev VPN'i açıkken açıktır.
+  const direct = !!id?.wan?.public && !!id.wan.ip && (!publicIp || publicIp === id.wan.ip);
+  const external = direct
+    ? { status: 'untested' as const, via: '', reason: "Pi doğrudan internette (açık IP internet kartında) — modemde yönlendirme gerekmez", sent: 0, received: 0 }
+    : await externalProbe(publicIp || ddnsIps[0] || '');
+  const scenario: ReachResult['scenario'] = direct ? 'direct'
+    : external.status === 'reachable' ? 'reachable' : cgnatHop ? 'cgnat' : routers.length ? 'nat' : 'unknown';
   return {
     at: new Date().toISOString(),
     running: fs.existsSync(`/sys/class/net/${WG_IFACE}`),
     port: WG_PORT,
-    piLanIp: id?.transit.ip || '',
+    // Modemde yönlendirmenin hedefi: internet kartı modunda Pi'nin modeme bakan adresi internet kartınınkidir.
+    piLanIp: id?.wan?.ip || id?.transit.ip || '',
     gateway,
     publicIp,
     endpoint,
