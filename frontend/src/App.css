@@ -1317,6 +1317,51 @@ body.nav-open { overflow: hidden; }
   color: var(--text-secondary);
 }
 
+/* Pi-hole Genel Bakış kartları: her satır aynı kolonlar (ad | çubuk | sorgu | pay) → iki kartta da sayılar alt alta hizalı */
+.ph-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
+.ph-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(56px, 30%) 9ch 6ch;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 8px;
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+}
+.ph-list > .ph-row:hover { background: var(--input-bg-soft); }
+.ph-row-rank { grid-template-columns: 1.4em minmax(0, 1fr) 9ch 6ch; }
+.ph-row-type { grid-template-columns: 8ch minmax(0, 1fr) 9ch 6ch; }
+/* Başlık satırı: satırın yazı boyutu değişmez (ch birimli kolonlar veri satırlarıyla aynı kalsın), yalnız hücreler küçülür */
+.ph-head { padding-top: 0; padding-bottom: 4px; }
+.ph-row.ph-head > * { font: 600 11px/1.4 var(--font-family); letter-spacing: 0.04em; text-transform: uppercase; color: var(--text-muted); }
+.ph-head-title { grid-column: span 2; margin: 0; }
+.ph-row.ph-head > .ph-head-title { color: var(--text-secondary); }
+.ph-row-rank > .ph-head-title { grid-column: span 1; }
+.ph-list + .ph-head { margin-top: 14px; }
+.ph-rank { text-align: right; color: var(--text-muted); font-weight: 600; font-variant-numeric: tabular-nums; }
+.ph-name { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
+.ph-domain {
+  font-family: var(--font-mono); font-size: 12px; color: var(--text-primary); overflow-wrap: anywhere;
+  display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; overflow: hidden;
+}
+.ph-label { display: flex; align-items: center; gap: 8px; min-width: 0; color: var(--text-primary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ph-span2 { grid-column: span 2; }
+.ph-mono { font-family: var(--font-mono); font-size: 12px; font-weight: 600; }
+.ph-num, .ph-pct { text-align: right; white-space: nowrap; font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+.ph-num { font-size: 12.5px; font-weight: 600; color: var(--text-primary); }
+.ph-pct { font-size: 11.5px; color: var(--text-secondary); }
+.ph-bar { display: block; height: 4px; border-radius: 2px; background: var(--input-bg); overflow: hidden; }
+.ph-bar-fill { display: block; height: 100%; border-radius: 2px; transition: width 0.5s ease; }
+.ph-dot { flex: none; width: 8px; height: 8px; border-radius: 50%; }
+.ph-stack { display: flex; gap: 2px; height: 8px; margin: 2px 8px 6px; border-radius: 4px; overflow: hidden; background: var(--input-bg); }
+.ph-stack-seg { min-width: 3px; height: 100%; transition: width 0.5s ease; }
+.ph-fill-blocked { background: var(--danger-color); }
+.ph-fill-cached { background: var(--purple-color); }
+.ph-fill-forwarded { background: var(--cyan-color); }
+.ph-fill-other { background: var(--text-muted); }
+.ph-fill-type { background: var(--accent-color); }
+.ph-empty { margin: 0; padding: 18px 8px; text-align: center; font-size: 13px; color: var(--text-muted); }
+
 /* ═══════════════════ ZAPRET ═══════════════════ */
 .zapret-modes {
   display: grid;

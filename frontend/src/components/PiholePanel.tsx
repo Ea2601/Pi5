@@ -1,4 +1,4 @@
-import { ShieldBan, Search, BarChart3, Globe, Users, ArrowRight, Settings, List, Plus, Trash2, Check, X, Server, Lock, Gauge, Radio, RefreshCw, AlertTriangle } from 'lucide-react';
+import { ShieldBan, Search, BarChart3, Globe, Users, Settings, List, Plus, Trash2, Check, X, Server, Lock, Gauge, Radio, RefreshCw, AlertTriangle } from 'lucide-react';
 import { useApi, postApi, putApi, deleteApi } from '../hooks/useApi';
 import { useState } from 'react';
 import { Panel, StatCard, Badge } from './ui';
@@ -99,33 +99,8 @@ export function PiholePanel() {
             <StatCard icon={<Users size={20} />} label="İstemciler" value={stats.uniqueClients} color="purple" />
           </div>
           <div className="panel-row" style={{ marginTop: 14 }}>
-            <Panel title="En Çok Engellenen Domainler" size="medium">
-              <div className="blocked-list">
-                {stats.topBlockedDomains.map((item, i) => (
-                  <div key={item.domain} className="blocked-item">
-                    <span className="blocked-rank">#{i + 1}</span>
-                    <span className="blocked-domain">{item.domain}</span>
-                    <span className="blocked-count">{item.count.toLocaleString('tr-TR')}</span>
-                  </div>
-                ))}
-              </div>
-            </Panel>
-            <Panel title="Sorgu Dağılımı" icon={<BarChart3 size={16} style={{ marginRight: 6 }} />} size="medium">
-              <div className="query-types">
-                {Object.entries(stats.queryTypes).map(([type, pct]) => (
-                  <div key={type} className="query-type-row">
-                    <span className="qt-label">{type}</span>
-                    <div className="progress-bar"><div className="progress-fill progress-cpu" style={{ width: `${pct}%` }} /></div>
-                    <span className="qt-val">{pct}%</span>
-                  </div>
-                ))}
-              </div>
-              <div className="pihole-flow">
-                <span>Forwarded: <strong>{stats.queriesForwarded.toLocaleString('tr-TR')}</strong></span>
-                <ArrowRight size={14} />
-                <span>Cached: <strong>{stats.queriesCached.toLocaleString('tr-TR')}</strong></span>
-              </div>
-            </Panel>
+            <TopBlockedCard stats={stats} />
+            <QueryBreakdownCard stats={stats} />
           </div>
         </>
       )}
@@ -143,6 +118,122 @@ export function PiholePanel() {
         </div>
       )}
     </div>
+  );
+}
+
+// ─── Genel Bakış kartları ───
+// İki kart aynı kolonları kullanır (ad | çubuk | sorgu | pay): sayılar sağa yaslı ve eşit genişlikte, satırlar hizalı.
+// "Pay", kartın alt başlığındaki toplamın yüzdesidir.
+const fmtN = (n: number) => n.toLocaleString('tr-TR');
+const pctOf = (n: number, total: number) => (total > 0 ? (n / total) * 100 : 0);
+const fmtPct = (p: number) => (p > 0 && p < 0.1 ? '<%0,1' : `%${p.toLocaleString('tr-TR', { maximumFractionDigits: p < 10 ? 1 : 0 })}`);
+// Uzun alan adları noktalardan bölünür (telefonda iki satıra sığar)
+const breakAtDots = (d: string) => d.split('.').flatMap((part, i, all) => (i < all.length - 1 ? [part, '.', <wbr key={i} />] : [part]));
+
+function ColumnHead({ title, rank }: { title: string; rank?: boolean }) {
+  return (
+    <div className={`ph-row ph-head${rank ? ' ph-row-rank' : ''}`}>
+      {rank && <span aria-hidden="true" />}
+      <h4 className="ph-head-title">{title}</h4>
+      <span className="ph-num" aria-hidden="true">Sorgu</span>
+      <span className="ph-pct" aria-hidden="true">Pay</span>
+    </div>
+  );
+}
+
+function TopBlockedCard({ stats }: { stats: PiholeStats }) {
+  const blocked = stats.adsBlockedToday;
+  const top = stats.topBlockedDomains;
+  return (
+    <Panel title="En Çok Engellenen Domainler" icon={<ShieldBan size={16} style={{ marginRight: 6 }} />} size="medium"
+      subtitle={`Bugün · ${fmtN(blocked)} engellenen sorgu`}>
+      {top.length === 0 ? (
+        <p className="ph-empty">Bugün engellenen sorgu yok.</p>
+      ) : (
+        <>
+          <ColumnHead title="Alan adı" rank />
+          <ol className="ph-list">
+            {top.map((item, i) => {
+              const p = pctOf(item.count, blocked);
+              return (
+                <li key={item.domain} className="ph-row ph-row-rank">
+                  <span className="ph-rank">{i + 1}</span>
+                  <span className="ph-name">
+                    <span className="ph-domain" title={item.domain}>{breakAtDots(item.domain)}</span>
+                    <span className="ph-bar" aria-hidden="true"><span className="ph-bar-fill ph-fill-blocked" style={{ width: `${Math.min(100, p)}%` }} /></span>
+                  </span>
+                  <span className="ph-num">{fmtN(item.count)}</span>
+                  <span className="ph-pct">{fmtPct(p)}</span>
+                </li>
+              );
+            })}
+          </ol>
+        </>
+      )}
+    </Panel>
+  );
+}
+
+// Kayıt türleri: en çok TYPE_ROWS satır; fazlası son satırda "Diğer" olarak toplanır.
+const TYPE_ROWS = 6;
+const REST = 'Diğer';
+function QueryBreakdownCard({ stats }: { stats: PiholeStats }) {
+  const total = stats.dnsQueriesToday;
+  const other = Math.max(0, total - stats.adsBlockedToday - stats.queriesCached - stats.queriesForwarded);
+  const sources = [
+    { key: 'blocked', label: 'Engellenen', n: stats.adsBlockedToday },
+    { key: 'cached', label: 'Önbellekten', n: stats.queriesCached },
+    { key: 'forwarded', label: 'Yönlendirilen', n: stats.queriesForwarded },
+    ...(other > 0 ? [{ key: 'other', label: 'Diğer', n: other }] : []),
+  ];
+  const types = Object.entries(stats.queryTypes).filter(([, n]) => n > 0).sort((a, b) => b[1] - a[1]);
+  const typeTotal = types.reduce((s, [, n]) => s + n, 0);
+  const typeRows: [string, number][] = types.length > TYPE_ROWS
+    ? [...types.slice(0, TYPE_ROWS - 1), [REST, types.slice(TYPE_ROWS - 1).reduce((s, [, n]) => s + n, 0)]]
+    : types;
+  return (
+    <Panel title="Sorgu Dağılımı" icon={<BarChart3 size={16} style={{ marginRight: 6 }} />} size="medium"
+      subtitle={`Bugün · ${fmtN(total)} sorgu`}>
+      {total === 0 ? (
+        <p className="ph-empty">Bugün sorgu yok.</p>
+      ) : (
+        <>
+          <ColumnHead title="Yanıt kaynağı" />
+          <div className="ph-stack" role="img" aria-label={sources.map(s => `${s.label} ${fmtPct(pctOf(s.n, total))}`).join(', ')}>
+            {sources.filter(s => s.n > 0).map(s => (
+              <span key={s.key} className={`ph-stack-seg ph-fill-${s.key}`} style={{ width: `${pctOf(s.n, total)}%` }} />
+            ))}
+          </div>
+          <ul className="ph-list">
+            {sources.map(s => (
+              <li key={s.key} className="ph-row">
+                <span className="ph-label ph-span2"><span className={`ph-dot ph-fill-${s.key}`} aria-hidden="true" />{s.label}</span>
+                <span className="ph-num">{fmtN(s.n)}</span>
+                <span className="ph-pct">{fmtPct(pctOf(s.n, total))}</span>
+              </li>
+            ))}
+          </ul>
+          {typeRows.length > 0 && (
+            <>
+              <ColumnHead title="Kayıt türü" />
+              <ul className="ph-list">
+                {typeRows.map(([type, n]) => {
+                  const p = pctOf(n, typeTotal);
+                  return (
+                    <li key={type} className="ph-row ph-row-type">
+                      <span className={`ph-label${type === REST ? '' : ' ph-mono'}`}>{type}</span>
+                      <span className="ph-bar" aria-hidden="true"><span className="ph-bar-fill ph-fill-type" style={{ width: `${Math.min(100, p)}%` }} /></span>
+                      <span className="ph-num">{fmtN(n)}</span>
+                      <span className="ph-pct">{fmtPct(p)}</span>
+                    </li>
+                  );
+                })}
+              </ul>
+            </>
+          )}
+        </>
+      )}
+    </Panel>
   );
 }
 

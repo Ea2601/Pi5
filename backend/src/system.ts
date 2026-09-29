@@ -423,6 +423,7 @@ export async function waitServiceSettled(name: ServiceName, expect: 'running' | 
 
 // ─── 3. Pi-hole Stats ───
 // Returns null if Pi-hole is not installed/accessible.
+// queryTypes: kayıt türü → bugünkü sorgu ADEDİ (yüzde değil; arayüz yüzdeyi toplamdan hesaplar).
 export interface PiholeStats {
   domainsBlocked: number; dnsQueriesToday: number; adsBlockedToday: number;
   adsPercentageToday: number; uniqueClients: number; queriesForwarded: number;
@@ -495,12 +496,14 @@ async function getPiholeStatsViaLegacyApi(): Promise<PiholeStats | null> {
     }
   } catch { /* */ }
 
-  let queryTypes: Record<string, number> = {};
+  // v5 API'si yüzde verir: v6 yoluyla aynı birim (adet) olsun diye bugünkü sorgu sayısıyla adete çevrilir.
+  const queryTypes: Record<string, number> = {};
+  const totalToday = Number(summary.dns_queries_today) || 0;
   try {
     const r = await fetch('http://127.0.0.1/admin/api.php?getQueryTypes');
     if (r.ok) {
       const d = await r.json();
-      if (d.querytypes) for (const [k, v] of Object.entries(d.querytypes)) queryTypes[k.replace(/\s*\(.*\)/, '')] = Math.round(v as number);
+      if (d.querytypes) for (const [k, v] of Object.entries(d.querytypes)) queryTypes[k.replace(/\s*\(.*\)/, '')] = Math.round((Number(v) || 0) * totalToday / 100);
     }
   } catch { /* */ }
 
