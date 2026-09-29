@@ -112,7 +112,7 @@ export function Fail2banPanel() {
           <div className="stats-grid stats-grid-4" style={{ marginTop: 14 }}>
             <StatCard icon={<Ban size={20} />} label="Aktif Ban" value={loading ? '...' : String(totalBanned)} color="orange" />
             <StatCard icon={<ShieldAlert size={20} />} label="Toplam Ban" value={loading ? '...' : String(totalAllTime)} color="blue" />
-            <StatCard icon={<Lock size={20} />} label="Aktif Jail" value={loading ? '...' : String(activeJails)} color="green" />
+            <StatCard icon={<Lock size={20} />} label={<>Aktif <span lang="en">Jail</span></>} value={loading ? '...' : String(activeJails)} color="green" />
             <StatCard icon={<Users size={20} />} label="Son Engelleme" value={loading ? '...' : String(recentBans.length)} color="purple" />
           </div>
 
@@ -159,7 +159,7 @@ export function Fail2banPanel() {
                   {recentBans.map((ban, i) => (
                     <div key={i} className="ban-row">
                       <span className="ban-ip">{ban.ip}</span>
-                      <Badge variant={ban.jail === 'recidive' ? 'error' : 'info'}>{ban.jail}</Badge>
+                      <Badge variant={ban.jail === 'recidive' ? 'error' : 'info'}><span lang="en">{ban.jail}</span></Badge>
                       <span className="ban-time">{ban.time}</span>
                     </div>
                   ))}

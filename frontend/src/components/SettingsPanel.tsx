@@ -355,7 +355,7 @@ function UpdateSection() {
           <span className="config-item-desc">{BRAND.name} Panel</span>
         </div>
         <div className="config-item-control">
-          <Badge variant="info">v{versionData.version} (build {versionData.build})</Badge>
+          <Badge variant="info"><span lang="en">v{versionData.version} (build {versionData.build})</span></Badge>
         </div>
       </div>
       <div className="config-item">
@@ -395,7 +395,7 @@ function AboutSection() {
         </div>
         <div className="config-item-control">
           <Badge variant="info">v{data.version}</Badge>
-          <Badge variant="neutral" >Build {data.build}</Badge>
+          <Badge variant="neutral"><span lang="en">Build {data.build}</span></Badge>
         </div>
       </div>
       <div className="config-item">
@@ -404,7 +404,7 @@ function AboutSection() {
           <span className="config-item-desc">Raspberry Pi 5 — React 19 + Vite 8 + Express 5</span>
         </div>
         <div className="config-item-control">
-          <Badge variant="neutral">Pi 5</Badge>
+          <Badge variant="neutral"><span lang="en">Pi 5</span></Badge>
         </div>
       </div>
       {data.date && (

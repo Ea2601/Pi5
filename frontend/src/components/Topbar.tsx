@@ -193,7 +193,7 @@ export function Topbar({ onShowAlerts, onMenu, menuOpen = false, title = '', onL
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
             <Badge variant="info">{updateInfo?.currentVersion}</Badge>
             <span style={{ color: 'var(--text-muted)', fontSize: 12 }}>→</span>
-            <Badge variant="success">{updateInfo?.commitCount} yeni commit</Badge>
+            <Badge variant="success">{updateInfo?.commitCount} yeni <span lang="en">commit</span></Badge>
           </div>
         </div>
 

@@ -426,7 +426,7 @@ function Fail2banDoc() {
 
       <DocBlock title="Jail Türleri">
         <table className="doc-table">
-          <thead><tr><th>Jail</th><th>Koruduğu Servis</th><th>Açıklama</th></tr></thead>
+          <thead><tr><th lang="en">Jail</th><th>Koruduğu Servis</th><th>Açıklama</th></tr></thead>
           <tbody>
             <tr><td><strong>sshd</strong></td><td>SSH</td><td>Başarısız SSH giriş denemelerini izler</td></tr>
             <tr><td><strong>nginx-http-auth</strong></td><td>Web sunucu</td><td>HTTP Basic Auth denemelerini izler</td></tr>
@@ -457,7 +457,7 @@ function RoutingDoc() {
         <table className="doc-table">
           <thead><tr><th>Bileşen</th><th>Durum</th><th>Açıklama</th></tr></thead>
           <tbody>
-            <tr><td><Badge variant="success">Pi-hole</Badge></td><td>Her zaman aktif (global)</td><td>DNS seviyesinde reklam ve izleyici engelleme — tüm trafiğe uygulanır</td></tr>
+            <tr><td><Badge variant="success"><span lang="en">Pi-hole</span></Badge></td><td>Her zaman aktif (global)</td><td>DNS seviyesinde reklam ve izleyici engelleme — tüm trafiğe uygulanır</td></tr>
             <tr><td><Badge variant="neutral">Çıkış Noktası</Badge></td><td>ISP veya VPS</td><td>Trafiğin internete hangi yoldan çıkacağı. Birden fazla VPS sunucusu desteklenir</td></tr>
             <tr><td><Badge variant="warning">DPI Bypass</Badge></td><td>Bağımsız açılıp kapatılabilir</td><td>Zapret ile DPI atlatma — herhangi bir çıkış noktasıyla birlikte kullanılabilir</td></tr>
           </tbody>

@@ -2,7 +2,8 @@ import type { ReactNode } from 'react';
 
 interface StatCardProps {
   icon: ReactNode;
-  label: string;
+  // Metin ya da öğe: büyük harfle gösterilir; İngilizce terim <span lang="en"> ile sarılır (Türkçe kural i → İ yapar)
+  label: ReactNode;
   value: string | number;
   color: 'blue' | 'green' | 'emerald' | 'purple' | 'orange' | 'cyan';
   valueClass?: string;

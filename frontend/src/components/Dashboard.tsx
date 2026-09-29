@@ -77,7 +77,7 @@ export function Dashboard() {
         </div>
         <div className="dash-meta-row">
           <div className="dash-meta">
-            <span className="dash-meta-label"><Clock size={11} /> Uptime</span>
+            <span className="dash-meta-label" lang="en"><Clock size={11} /> Uptime</span>
             <span className="dash-meta-value">{formatUptime(stats.uptime)}</span>
           </div>
           <div className="dash-meta">

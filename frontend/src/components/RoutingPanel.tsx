@@ -519,7 +519,7 @@ function DomainRoutingView({ onApplied }: { onApplied: () => void }) {
         <div className="widget-header">
           <h3><Link size={18} style={{ marginRight: 8 }} />Özel Domain Yönlendirme</h3>
           <div style={{ display: 'flex', gap: 8 }}>
-            <Badge variant="info">{domains.length} domain</Badge>
+            <Badge variant="info">{domains.length} <span lang="en">domain</span></Badge>
             <button className="btn-primary btn-sm" onClick={() => setShowAdd(!showAdd)}>
               <Plus size={14} /> Domain Ekle
             </button>
@@ -639,10 +639,10 @@ function DomainRoutingView({ onApplied }: { onApplied: () => void }) {
                     <span style={{ marginLeft: 6 }}><Badge variant="warning">kelime</Badge></span>
                   )}
                   {d.domain.startsWith('*.') && (
-                    <span style={{ marginLeft: 6 }}><Badge variant="info">wildcard</Badge></span>
+                    <span style={{ marginLeft: 6 }}><Badge variant="info"><span lang="en">wildcard</span></Badge></span>
                   )}
                   {d.redirect_url && (
-                    <span style={{ marginLeft: 6 }}><Badge variant="warning">redirect</Badge></span>
+                    <span style={{ marginLeft: 6 }}><Badge variant="warning"><span lang="en">redirect</span></Badge></span>
                   )}
                   {d.redirect_url ? (
                     <span style={{ fontSize: 10, color: 'var(--accent-color)', marginLeft: 8, fontFamily: 'var(--font-mono)' }}>→ {d.redirect_url}</span>

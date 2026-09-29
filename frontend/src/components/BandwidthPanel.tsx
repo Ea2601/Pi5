@@ -99,10 +99,10 @@ export function BandwidthPanel() {
       {activeTab === 'live' && (
         <>
           <div className="stats-grid stats-grid-4" style={{ marginTop: 14 }}>
-            <StatCard icon={<ArrowDown size={20} />} label="Toplam Indirme" value={formatSpeed(totalIn)} color="blue" />
+            <StatCard icon={<ArrowDown size={20} />} label="Toplam İndirme" value={formatSpeed(totalIn)} color="blue" />
             <StatCard icon={<ArrowUp size={20} />} label="Toplam Yukleme" value={formatSpeed(totalOut)} color="green" />
             <StatCard icon={<Wifi size={20} />} label="Aktif Cihaz" value={activeDevices} color="purple" />
-            <StatCard icon={<Activity size={20} />} label="Izlenen Cihaz" value={liveData.live.length} color="orange" />
+            <StatCard icon={<Activity size={20} />} label="İzlenen Cihaz" value={liveData.live.length} color="orange" />
           </div>
 
           <div style={{ marginTop: 14 }}>

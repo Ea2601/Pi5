@@ -146,7 +146,7 @@ export function DdnsPanel() {
           <div className="stats-grid stats-grid-4" style={{ marginTop: 14 }}>
             <StatCard icon={<Globe size={20} />} label="Mevcut IP" value={ipData.ip || '---'} color="blue" />
             <StatCard icon={<Shield size={20} />} label="Aktif DDNS" value={configsData.configs.filter(c => c.status === 'active').length} color="green" />
-            <StatCard icon={<RefreshCw size={20} />} label="Toplam Config" value={configsData.configs.length} color="purple" />
+            <StatCard icon={<RefreshCw size={20} />} label={<>Toplam <span lang="en">Config</span></>} value={configsData.configs.length} color="purple" />
             <StatCard icon={<Clock size={20} />} label="Son Kontrol" value={ipData.checked_at ? new Date(ipData.checked_at).toLocaleTimeString('tr-TR') : '---'} color="orange" />
           </div>
 
@@ -330,7 +330,7 @@ export function DdnsPanel() {
                     <span className="list-item-comment">{new Date(entry.detected_at).toLocaleString('tr-TR')}</span>
                   </div>
                   {idx === 0 && <Badge variant="success">Mevcut</Badge>}
-                  <Badge variant="neutral">{entry.source}</Badge>
+                  <Badge variant="neutral"><span lang="en">{entry.source}</span></Badge>
                 </div>
               ))}
               {historyData.history.length === 0 && (

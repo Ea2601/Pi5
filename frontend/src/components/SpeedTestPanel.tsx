@@ -87,8 +87,8 @@ export function SpeedTestPanel() {
         <div className="stats-grid stats-grid-4" style={{ marginTop: 14, gap: 10 }}>
           <StatCard icon={<ArrowDown size={20} />} label="İndirme" value={`${latest.download_mbps.toFixed(1)} Mbps`} color="blue" />
           <StatCard icon={<ArrowUp size={20} />} label="Yükleme" value={`${latest.upload_mbps.toFixed(1)} Mbps`} color="green" />
-          <StatCard icon={<Clock size={20} />} label="Ping" value={`${latest.ping_ms.toFixed(1)} ms`} color="orange" />
-          <StatCard icon={<Zap size={20} />} label="Jitter" value={fmtOpt(latest.jitter_ms, 1, ' ms')} color="purple" />
+          <StatCard icon={<Clock size={20} />} label={<span lang="en">Ping</span>} value={`${latest.ping_ms.toFixed(1)} ms`} color="orange" />
+          <StatCard icon={<Zap size={20} />} label={<span lang="en">Jitter</span>} value={fmtOpt(latest.jitter_ms, 1, ' ms')} color="purple" />
         </div>
       )}
 
