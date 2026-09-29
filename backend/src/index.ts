@@ -41,7 +41,7 @@ import type { ZapretApplyResult } from './zapret';
 import { unboundStatus, applyUnboundSettings, validateUnboundSettings } from './unbound';
 import { recordEvent, recordEventOnce, recordVersionChange, serviceLabel } from './events';
 import { wgServerStatus, setServerEnabled, addPeer, updatePeerRole, deletePeer, peerConfig, reapplyWgServer,
-  validatePeerName, validRole, WG_PORT } from './wgServer';
+  validatePeerName, validRole, WG_PORT, reachabilityTest } from './wgServer';
 import type { ListSyncResult } from './piholeLists';
 import {
   shq, sedEscape, isValidMac, isValidDomain, isValidTimezone,
@@ -1307,6 +1307,21 @@ app.get('/api/wg-server/peers/:id/config', async (req, res) => {
     const c = await peerConfig(Number(req.params.id));
     if (!c) return res.status(404).json({ error: 'İstemci bulunamadı' });
     res.json(c);
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Dışarıdan erişim testi (wgServer.ts reachabilityTest): dış IP + DDNS, evden çıkış durakları (kaç cihaz / CGNAT) ve bağlı
+// VPS tüneli üzerinden evin adresine gönderilen deneme paketleri. Arayüz sonuca göre adım adım rehberi gösterir. ~10-15 sn.
+app.post('/api/wg-server/reachability', async (_req, res) => {
+  try {
+    const r = await reachabilityTest();
+    const ext = r.external.status === 'reachable' ? 'dışarıdan ulaşılıyor'
+      : r.external.status === 'unreachable' ? 'dışarıdan ulaşılamıyor' : `dış deneme yapılamadı (${r.external.reason})`;
+    await recordEvent('vpn', `Ev VPN'i erişim testi: ${ext}; evdeki cihazlar: ${r.routers.join(' → ') || 'bilinmiyor'}`,
+      r.external.status === 'unreachable' ? 'warning' : 'info');
+    res.json(r);
   } catch (e: any) {
     res.status(500).json({ error: e.message });
   }

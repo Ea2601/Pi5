@@ -14,10 +14,13 @@
 //  - Ekleme/silme/rol değişikliği bağlı istemcileri koparmadan `wg syncconf` ile uygulanır.
 import fs from 'fs';
 import path from 'path';
+import dgram from 'dgram';
+import dns from 'dns';
+import crypto from 'crypto';
 import { execFile, spawn } from 'child_process';
 import { promisify } from 'util';
 import { dbAll, dbGet, dbRun, dbInsert } from './db';
-import { isLinux, getCurrentExternalIp } from './system';
+import { isLinux, getCurrentExternalIp, getLanIdentity, listWireguardTunnels } from './system';
 
 const execFileP = promisify(execFile);
 export const WG_IFACE = 'wg_pi';
@@ -343,5 +346,191 @@ export async function wgServerStatus() {
       id: p.id, name: p.name, ip: p.ip, role: p.role, created_at: p.created_at,
       ...(live.get(p.public_key) || { handshake: 0, rx: 0, tx: 0, endpoint: '' }),
     })),
+  };
+}
+
+// ─── Dışarıdan erişim testi ───
+// Ev dışındaki bir cihazın Pi'ye ulaşıp ulaşamayacağını ölçer; arayüz sonuca göre doğru senaryoyu (tek modem, arka arkaya
+// iki cihaz / çift NAT, operatörün paylaşımlı IP'si / CGNAT) adım adım gösterir.
+//  1. Dış IP (Pi'nin WAN kartından, VPS yönlendirmesine takılmadan) ve DDNS adının bu adresi gösterip göstermediği.
+//  2. Evden çıkış durakları: TTL'i 1..5 ping'lerin "Time to live exceeded" yanıtları. Baştan art arda gelen özel adresler
+//     evdeki cihazlardır (ilk durak Pi'nin ağ geçidi); 100.64/10 operatörün CGNAT'ıdır.
+//  3. Gerçek dış deneme: bağlı bir VPS tüneli varsa Pi, evin dış IP'sine UDP 51820'ye 5 deneme paketini TÜNELDEN yollar
+//     (geçici `ip rule to <dış IP> iif lo` — yalnız Pi'nin kendi paketleri, ~3 sn). Paketler internete VPS'ten çıkıp
+//     modem(ler)den geçerek geri gelirse geçici nft tablosundaki sayaç artar. Deneme paketinin boyu (UDP uzunluğu 45)
+//     hiçbir WireGuard mesajıyla (148/92/64/32+16k) çakışmaz. Kaynak adrese bakılmaz: bazı modemler yönlendirdiği
+//     trafiğin kaynağını kendi adresine çevirir; paketin tünelden çıktığı gönderimden önce `ip route get` ile doğrulanır
+//     (modemin içeriden geri döndürmesi — hairpin — olamaz). Sayaç giriş kancasında güvenlik duvarından önce çalışır →
+//     Ev VPN'i kapalıyken de yönlendirme sınanır.
+export interface ReachHop { ttl: number; ip: string; kind: 'private' | 'cgnat' | 'public' | 'none' }
+export interface ReachExternal { status: 'reachable' | 'unreachable' | 'untested'; via: string; reason: string; sent: number; received: number }
+export interface ReachResult {
+  at: string;
+  running: boolean;
+  port: number;
+  piLanIp: string;
+  gateway: string;
+  publicIp: string;
+  endpoint: { host: string; source: 'ddns' | 'ip' | 'none' };
+  ddnsIps: string[];
+  ddnsOk: boolean | null;
+  hops: ReachHop[];
+  routers: string[];
+  cgnatHop: string;
+  external: ReachExternal;
+  scenario: 'reachable' | 'cgnat' | 'nat' | 'unknown';
+}
+
+const HOP_TARGET = '9.9.9.9';
+const PROBE_TABLE = '51820'; // geçici rota tablosu (panelin yönlendirme tabloları 100–999)
+const PROBE_PREF = '50';
+const PROBE_LEN = 37; // 'klyrix-reach-' + 24 onaltılık → UDP uzunluğu 45
+const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
+// Sıfır olmayan çıkışta da çıktı gerekir (TTL aşımında ping 1 ile çıkar).
+const execOut = (cmd: string, args: string[], timeout = 5000) =>
+  execFileP(cmd, args, { timeout }).then(r => r.stdout, (e: any) => String(e?.stdout || ''));
+
+export function ipKind(ip: string): ReachHop['kind'] {
+  const m = /^(\d+)\.(\d+)\.\d+\.\d+$/.exec(ip);
+  if (!m) return 'none';
+  const a = Number(m[1]);
+  const b = Number(m[2]);
+  if (a === 10 || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168)) return 'private';
+  if (a === 100 && b >= 64 && b <= 127) return 'cgnat';
+  return 'public';
+}
+
+// -I: yönlendirme kuralları (VPS işaretleri) ping'i tünele sokmasın, duraklar ev tarafından okunsun.
+async function traceHops(iface: string): Promise<ReachHop[]> {
+  const hops: ReachHop[] = [];
+  for (let ttl = 1; ttl <= 5; ttl++) {
+    const out = await execOut('ping', ['-n', '-c1', '-W2', '-t', String(ttl), ...(iface ? ['-I', iface] : []), HOP_TARGET], 4000);
+    const from = /From (\d+\.\d+\.\d+\.\d+)/.exec(out)?.[1];
+    const reached = /bytes from (\d+\.\d+\.\d+\.\d+)/.exec(out)?.[1];
+    const ip = from || reached || '';
+    const kind = ip ? ipKind(ip) : 'none';
+    hops.push({ ttl, ip, kind });
+    if (reached || kind === 'public') break;
+  }
+  return hops;
+}
+
+async function wanPublicIp(iface: string): Promise<string> {
+  for (const url of ['https://api.ipify.org', 'https://ifconfig.me']) {
+    const ip = (await execOut('curl', ['-s', '--max-time', '5', ...(iface ? ['--interface', iface] : []), url], 7000)).trim();
+    if (/^\d+\.\d+\.\d+\.\d+$/.test(ip)) return ip;
+  }
+  return (await getCurrentExternalIp().catch(() => ({ ip: '' }))).ip;
+}
+
+// Sistem çözücüsü (telefonların gördüğü adres Pi-hole'dan gelir; /etc/hosts da okunur).
+function resolveHost(host: string): Promise<string[]> {
+  return Promise.race([
+    dns.promises.lookup(host, { all: true, family: 4 }).then(a => [...new Set(a.map(x => x.address))], () => [] as string[]),
+    new Promise<string[]>(r => setTimeout(() => r([]), 5000)),
+  ]);
+}
+
+async function probeCleanup(): Promise<void> {
+  for (let i = 0; i < 5; i++) {
+    const removed = await execFileP('ip', ['rule', 'del', 'table', PROBE_TABLE], { timeout: 5000 }).then(() => true, () => false);
+    if (!removed) break;
+  }
+  await execFileP('ip', ['route', 'flush', 'table', PROBE_TABLE], { timeout: 5000 }).catch(() => {});
+  await runInput('nft', ['-f', '-'], 'table inet pi5_wgprobe\ndelete table inet pi5_wgprobe\n').catch(() => {});
+}
+
+async function externalProbe(publicIp: string): Promise<ReachExternal> {
+  const untested = (reason: string, via = ''): ReachExternal => ({ status: 'untested', via, reason, sent: 0, received: 0 });
+  if (!publicIp) return untested('Evin dış IP adresi alınamadı');
+  // Son el sıkışması 3 dk içinde olan ilk VPS tüneli (deneme paketlerini internete o çıkarır)
+  const tunnels = (await listWireguardTunnels().catch(() => [])).filter(t => t.up);
+  let iface = '';
+  for (const t of tunnels) {
+    const hs = await execOut('wg', ['show', t.iface, 'latest-handshakes']);
+    const last = Math.max(0, ...hs.trim().split('\n').map(l => Number(l.split('\t')[1]) || 0));
+    if (last && Date.now() / 1000 - last < 180) { iface = t.iface; break; }
+  }
+  if (!iface) return untested(tunnels.length ? 'VPS tüneli şu an bağlı değil' : 'Bağlı bir VPS tüneli yok');
+  const vps = await dbGet('SELECT ip, location FROM vps_servers WHERE id = ?', [Number(iface.replace('wg_vps', ''))]).catch(() => null);
+  const via = vps ? `${vps.location ? `${vps.location} VPS` : 'VPS'} (${vps.ip})` : iface;
+  await probeCleanup();
+  try {
+    await runInput('nft', ['-f', '-'], [
+      'table inet pi5_wgprobe {',
+      '  chain in {',
+      '    type filter hook input priority filter - 2; policy accept;',
+      `    iifname != "lo" udp dport ${WG_PORT} udp length ${PROBE_LEN + 8} counter`,
+      '  }',
+      '}',
+      '',
+    ].join('\n'));
+    await execFileP('ip', ['route', 'replace', 'default', 'dev', iface, 'table', PROBE_TABLE], { timeout: 5000 });
+    await execFileP('ip', ['rule', 'add', 'pref', PROBE_PREF, 'to', `${publicIp}/32`, 'iif', 'lo', 'lookup', PROBE_TABLE], { timeout: 5000 });
+    if (!(await execOut('ip', ['route', 'get', publicIp])).includes(`dev ${iface}`)) return untested('Deneme paketi VPS tüneline yönlendirilemedi', via);
+    const payload = Buffer.from(`klyrix-reach-${crypto.randomBytes(12).toString('hex')}`);
+    const sock = dgram.createSocket('udp4');
+    sock.on('error', () => {});
+    let sent = 0;
+    try {
+      for (let i = 0; i < 5; i++) {
+        await new Promise<void>(r => sock.send(payload, WG_PORT, publicIp, err => { if (!err) sent++; r(); }));
+        await sleep(300);
+      }
+    } finally {
+      sock.close();
+    }
+    if (!sent) return untested('Deneme paketleri gönderilemedi', via);
+    await sleep(1500);
+    const received = Number(/counter packets (\d+)/.exec(await execOut('nft', ['list', 'chain', 'inet', 'pi5_wgprobe', 'in']))?.[1] || 0);
+    return { status: received > 0 ? 'reachable' : 'unreachable', via, reason: '', sent, received };
+  } catch (e: any) {
+    return untested(`Test kurulamadı: ${String(e?.stderr || e?.message || e).trim().slice(0, 200)}`, via);
+  } finally {
+    await probeCleanup();
+  }
+}
+
+let reachRun: Promise<ReachResult> | null = null;
+export function reachabilityTest(): Promise<ReachResult> {
+  reachRun ??= doReach().finally(() => { reachRun = null; });
+  return reachRun;
+}
+
+async function doReach(): Promise<ReachResult> {
+  if (!isLinux) throw new Error('Test yalnız Pi üzerinde çalışır');
+  const id = await getLanIdentity().catch(() => null);
+  const iface = id?.iface || '';
+  const gateway = id?.gateway || '';
+  const endpoint = await serverEndpoint();
+  const [publicIp, hops] = await Promise.all([wanPublicIp(iface), traceHops(iface)]);
+  const ddnsIps = endpoint.source === 'ddns' ? await resolveHost(endpoint.host) : [];
+  const ddnsOk = endpoint.source === 'ddns' ? !!publicIp && ddnsIps.includes(publicIp) : null;
+  // Evdeki cihazlar: baştan art arda özel adresli duraklar. İlk durak ağ geçidi değilse (yanıt vermedi) yalnız o bilinir.
+  let routers: string[] = [];
+  for (const h of hops) {
+    if (h.kind !== 'private') break;
+    routers.push(h.ip);
+  }
+  if (routers[0] !== gateway) routers = ipKind(gateway) === 'private' ? [gateway] : [];
+  const firstPublic = hops.findIndex(h => h.kind === 'public');
+  const cgnatHop = hops.slice(0, firstPublic < 0 ? undefined : firstPublic).find(h => h.kind === 'cgnat')?.ip || '';
+  const external = await externalProbe(publicIp || ddnsIps[0] || '');
+  const scenario: ReachResult['scenario'] = external.status === 'reachable' ? 'reachable' : cgnatHop ? 'cgnat' : routers.length ? 'nat' : 'unknown';
+  return {
+    at: new Date().toISOString(),
+    running: fs.existsSync(`/sys/class/net/${WG_IFACE}`),
+    port: WG_PORT,
+    piLanIp: id?.transit.ip || '',
+    gateway,
+    publicIp,
+    endpoint,
+    ddnsIps,
+    ddnsOk,
+    hops,
+    routers,
+    cgnatHop,
+    external,
+    scenario,
   };
 }

@@ -1,7 +1,8 @@
-import { Home, QrCode, Trash2, Plus, Loader2, AlertTriangle, Download, Copy, CheckCircle, ShieldCheck, User, Globe, Router } from 'lucide-react';
+import { Home, QrCode, Trash2, Plus, Loader2, AlertTriangle, Download, Copy, CheckCircle, ShieldCheck, User, Globe } from 'lucide-react';
 import { useState } from 'react';
 import { useApi, postApi, putApi, deleteApi, getApi } from '../hooks/useApi';
 import { Badge, Modal, Select } from './ui';
+import { PiVpnReachability } from './PiVpnReachability';
 import { toast } from '../toast';
 import { relativeTime } from '../alerts';
 
@@ -158,15 +159,8 @@ export function PiVpnServer() {
           </div>
         </div>
 
-        <details className="pivpn-howto">
-          <summary><Router size={14} /> İlk kurulum: modemde port yönlendirmesi (bir kez)</summary>
-          <ol>
-            <li>Bilgisayar ya da telefondan modemin arayüzünü aç (genelde <code>http://192.168.1.1</code>) ve giriş yap.</li>
-            <li><strong>Port Forwarding</strong> / <strong>NAT</strong> / <strong>Port Yönlendirme</strong> bölümünde yeni kural ekle.</li>
-            <li>Protokol <strong>UDP</strong>, dış port <strong>{st?.port || 51820}</strong>, iç IP <strong>{st?.piLanIp || "Pi'nin modem tarafı adresi"}</strong>, iç port <strong>{st?.port || 51820}</strong>; kaydet.</li>
-            <li>Bir istemciyi mobil veride (Wi-Fi kapalı) bağla. Aşağıdaki listede "bağlı" görünüyorsa yönlendirme çalışıyor.</li>
-          </ol>
-        </details>
+        {/* İlk kurulum rehberi: sabit adımlar yerine test sonucuna göre (tek modem / çift NAT / CGNAT) adım adım */}
+        {st?.supported !== false && <PiVpnReachability running={!!st?.running} />}
       </div>
 
       <div className="glass-panel widget-large" style={{ marginTop: 14 }}>

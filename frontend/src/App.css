@@ -3499,3 +3499,36 @@ button.notif-item { cursor: pointer; }
   .pivpn-peer .svc-dot { margin-top: 0; }
   .pivpn-peer-actions { width: auto; padding-left: 0; flex-shrink: 0; }
 }
+/* Dışarıdan bağlantı testi + senaryo rehberi (PiVpnReachability) */
+.pivpn-reach { margin-top: 14px; padding: 12px; border: 1px solid var(--panel-border); border-radius: var(--radius); }
+.pivpn-reach-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; }
+.pivpn-reach-title { display: flex; align-items: center; gap: 6px; font-weight: 600; font-size: 14px; }
+.pivpn-reach > .subtitle { margin-top: 8px; }
+.pivpn-reach .routing-apply { margin-top: 10px; }
+.pivpn-checks { list-style: none; margin: 12px 0 0; padding: 0; display: flex; flex-direction: column; gap: 10px; }
+.pivpn-check { display: flex; align-items: flex-start; gap: 10px; }
+.pivpn-check > svg { flex-shrink: 0; margin-top: 2px; }
+.pivpn-check-ok > svg { color: var(--success-color); }
+.pivpn-check-bad > svg { color: var(--danger-color); }
+.pivpn-check-warn > svg { color: var(--warning-color); }
+.pivpn-check-muted > svg { color: var(--text-muted); }
+.pivpn-check > div { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.pivpn-check strong { font-size: 13px; }
+.pivpn-check > div > span { font-size: 12px; line-height: 1.5; color: var(--text-secondary); overflow-wrap: anywhere; }
+.pivpn-path { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 4px; margin: 2px 0; font-family: var(--font-mono); font-size: 12px; color: var(--text-primary); }
+.pivpn-path > span { display: inline-flex; align-items: center; gap: 4px; }
+.pivpn-guide {
+  margin-top: 12px; padding: 12px; font-size: 13px; line-height: 1.55; color: var(--text-secondary);
+  border: 1px solid var(--panel-border); border-left: 3px solid var(--warning-color); border-radius: var(--radius-sm);
+}
+.pivpn-guide-ok { border-left-color: var(--success-color); }
+.pivpn-guide-bad { border-left-color: var(--danger-color); }
+.pivpn-guide h4 { margin: 0 0 6px; font-size: 14px; color: var(--text-primary); }
+.pivpn-guide h5 { margin: 0 0 4px; font-size: 13px; color: var(--text-primary); }
+.pivpn-guide p { margin: 0 0 6px; }
+.pivpn-guide ol { margin: 4px 0 0 18px; padding: 0; display: flex; flex-direction: column; gap: 5px; }
+.pivpn-guide code { overflow-wrap: anywhere; }
+.pivpn-device { margin-top: 12px; }
+.pivpn-device + .pivpn-device { padding-top: 12px; border-top: 1px dashed var(--panel-border); }
+.pivpn-guide .pivpn-guide-final { margin: 12px 0 0; color: var(--text-primary); }
+.pivpn-guide .pivpn-guide-note { margin: 10px 0 0; font-size: 12px; color: var(--text-muted); }
