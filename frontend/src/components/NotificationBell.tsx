@@ -3,12 +3,14 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState, type RefObje
 import { createPortal } from 'react-dom';
 import { useApi, postApi } from '../hooks/useApi';
 import { toast } from '../toast';
-import { type AlertsPage, parseAlertTime, relativeTime, severityMeta, sourceLabel, notifyAlertsChanged, onAlertsChanged } from '../alerts';
+import { type AlertItem, type AlertsPage, parseAlertTime, relativeTime, severityMeta, sourceLabel, notifyAlertsChanged, onAlertsChanged } from '../alerts';
+import { AlertDetailModal, DETAIL_HOST_CLASS } from './AlertDetailModal';
 
 // Üst çubuktaki zil: tıklanınca son bildirimler zilin altında açılır (telefonda ekran genişliğinde). Güncelleme varsa en
 // üstte o durur (güncelleme penceresini açar). Açıkken 10 sn'de bir yenilenir; okundu bilgisi Bildirimler sayfasıyla
 // anında paylaşılır (alerts.ts). Panel body'ye taşınır: üst çubuğun cam efekti (backdrop-filter) sabit konumlu çocukları
-// kendine göre konumlandırıp keserdi.
+// kendine göre konumlandırıp keserdi. Bildirimin tamamı tıklanır ve ayrıntı penceresini açar (AlertDetailModal); pencere
+// panelin üstünde açılır, kapanınca panel yerinde kalır.
 const PANEL_ID = 'notif-panel';
 const LIMIT = 15;
 
@@ -61,6 +63,9 @@ function NotificationPanel({ anchor, unreadCount, updateCount, onClose, onOpenUp
   const { data, loading, refetch } = useApi<AlertsPage>(`/alerts?limit=${LIMIT}`, { alerts: [] }, 10000);
   const panelRef = useRef<HTMLDivElement>(null);
   const [acking, setAcking] = useState<number | 'all' | null>(null);
+  const [detail, setDetail] = useState<AlertItem | null>(null);
+  const detailOpen = useRef(false);
+  useEffect(() => { detailOpen.current = !!detail; }, [detail]);
   useEffect(() => onAlertsChanged(() => { void refetch(); }), [refetch]);
 
   // Konum: zilin altı, sağ kenarına hizalı; dar ekranda iki yanda 8 px boşlukla tam genişlik (stil doğrudan yazılır).
@@ -80,15 +85,21 @@ function NotificationPanel({ anchor, unreadCount, updateCount, onClose, onOpenUp
     return () => window.removeEventListener('resize', place);
   }, [anchor]);
 
-  // Dışarı tıklama ya da Esc kapatır (Esc'te odak zile döner); açılınca odak panele.
+  // Dışarı tıklama ya da Esc kapatır (Esc'te odak zile döner); açılınca odak panele. Ayrıntı penceresi panelin parçası
+  // sayılır: içine tıklamak paneli kapatmaz, açıkken Esc yalnız pencereyi kapatır (Modal kendi dinleyicisiyle).
   useEffect(() => {
     panelRef.current?.focus();
     const onDown = (e: PointerEvent) => {
       const t = e.target as Node;
       if (panelRef.current?.contains(t) || anchor.current?.contains(t)) return;
+      if (t instanceof Element && t.closest(`.${DETAIL_HOST_CLASS}`)) return;
       onClose();
     };
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') { e.preventDefault(); onClose(true); } };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape' || detailOpen.current) return;
+      e.preventDefault();
+      onClose(true);
+    };
     document.addEventListener('pointerdown', onDown);
     document.addEventListener('keydown', onKey);
     return () => { document.removeEventListener('pointerdown', onDown); document.removeEventListener('keydown', onKey); };
@@ -140,11 +151,14 @@ function NotificationPanel({ anchor, unreadCount, updateCount, onClose, onOpenUp
           const read = !!a.acknowledged;
           return (
             <div key={a.id} className={`notif-item notif-${a.severity} ${read ? 'notif-read' : ''}`}>
-              <sev.Icon size={15} className="notif-icon" aria-label={sev.label} />
-              <span className="notif-body">
-                <span className="notif-msg">{a.message}</span>
-                <span className="notif-meta">{sourceLabel(a.source)} · {a.created_at ? relativeTime(parseAlertTime(a.created_at)) : '—'}</span>
-              </span>
+              {/* Satırın tamamını kaplayan düğme (CSS ::after): nereye tıklansa ayrıntı açılır; "Okundu say" üstünde kalır. */}
+              <button className="notif-open" onClick={() => setDetail(a)} title="Ayrıntıyı aç">
+                <sev.Icon size={15} className="notif-icon" aria-label={sev.label} />
+                <span className="notif-body">
+                  <span className="notif-msg">{a.message}</span>
+                  <span className="notif-meta">{sourceLabel(a.source)} · {a.created_at ? relativeTime(parseAlertTime(a.created_at)) : '—'}</span>
+                </span>
+              </button>
               {!read && (
                 <button className="icon-btn icon-btn-sm notif-ack" onClick={() => ack(a.id)} disabled={acking === a.id}
                   title="Okundu say" aria-label="Okundu say">
@@ -159,6 +173,7 @@ function NotificationPanel({ anchor, unreadCount, updateCount, onClose, onOpenUp
       <button className="notif-foot" onClick={() => { onClose(); onShowAll?.(); }}>
         Tümünü gör <ChevronRight size={14} />
       </button>
+      {detail && <AlertDetailModal alert={detail} onClose={() => setDetail(null)} onNavigate={() => onClose()} />}
     </div>
   );
 }

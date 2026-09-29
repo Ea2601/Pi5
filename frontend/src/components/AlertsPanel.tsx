@@ -4,6 +4,7 @@ import { useState, useMemo, useEffect } from 'react';
 import { Panel, Badge } from './ui';
 import { toast } from '../toast';
 import { type AlertItem, type AlertsPage, sourceLabel, parseAlertTime, dayLabel, severityMeta, notifyAlertsChanged, onAlertsChanged, markRead } from '../alerts';
+import { AlertDetailModal } from './AlertDetailModal';
 
 // Uyarılar + olay geçmişi (backend events.ts): sağlık denetiminin uyarıları (type=health) ve panelde yapılan işlemler
 // (type=event: güncelleme, Unbound/Zapret/Pi-hole ayarları, VPS, cihaz engeli, Cron hatası, servis, DHCP / ağ modu).
@@ -76,12 +77,14 @@ export function AlertsPanel() {
 }
 
 // Süzgeç değişince (key) baştan kurulur: ilk sayfa 10 sn'de bir yenilenir, "Daha fazla göster" daha eskileri ekler.
+// Satırın tamamı tıklanır ve ayrıntı penceresini açar (AlertDetailModal); "Okundu" düğmesi ayrı çalışır.
 function AlertList({ query, unreadOnly }: { query: string; unreadOnly: boolean }) {
   const { data, refetch } = useApi<AlertsPage>(query, { alerts: [] }, 10000);
   const [older, setOlder] = useState<AlertItem[]>([]);
   const [olderHasMore, setOlderHasMore] = useState<boolean | null>(null);
   const [loadingMore, setLoadingMore] = useState(false);
   const [acking, setAcking] = useState<number | null>(null);
+  const [detail, setDetail] = useState<AlertItem | null>(null);
   // Zilden (ya da bu sayfadan) okundu yapılınca: ilk sayfa yenilenir, eklenmiş eski kayıtlar yerinde işaretlenir.
   useEffect(() => onAlertsChanged(read => {
     setOlder(prev => markRead(prev, read));
@@ -135,19 +138,22 @@ function AlertList({ query, unreadOnly }: { query: string; unreadOnly: boolean }
     const read = !!a.acknowledged;
     rows.push(
       <div key={a.id} className={`list-item alert-row alert-${a.severity} ${read ? 'alert-read' : ''}`}>
-        <span className="alert-icon"><sev.Icon size={16} /></span>
-        <div className="list-item-content">
-          <span className="alert-message">{a.message}</span>
-          <span className="alert-meta">
-            <Badge variant={sev.badge}>{sev.label}</Badge>
-            <span>{sourceLabel(a.source)}</span>
-            <span>· {t ? t.toLocaleTimeString('tr-TR', { hour: '2-digit', minute: '2-digit' }) : '—'}</span>
+        {/* Satırın tamamını kaplayan düğme (CSS ::after); "Okundu" düğmesi üstünde kalır. */}
+        <button className="alert-open" onClick={() => setDetail(a)} title="Ayrıntıyı aç">
+          <span className="alert-icon"><sev.Icon size={16} /></span>
+          <span className="list-item-content">
+            <span className="alert-message">{a.message}</span>
+            <span className="alert-meta">
+              <Badge variant={sev.badge}>{sev.label}</Badge>
+              <span>{sourceLabel(a.source)}</span>
+              <span>· {t ? t.toLocaleTimeString('tr-TR', { hour: '2-digit', minute: '2-digit' }) : '—'}</span>
+            </span>
           </span>
-        </div>
+        </button>
         {read ? (
           a.severity !== 'info' && <span className="alert-meta" title="Okundu"><CheckCircle size={13} /></span>
         ) : (
-          <button className="btn-outline btn-sm" onClick={() => acknowledge(a.id)} disabled={acking === a.id}>
+          <button className="btn-outline btn-sm alert-ack" onClick={() => acknowledge(a.id)} disabled={acking === a.id}>
             {acking === a.id ? <Loader2 size={12} className="spin" /> : <CheckCircle size={12} />} Okundu
           </button>
         )}
@@ -170,6 +176,7 @@ function AlertList({ query, unreadOnly }: { query: string; unreadOnly: boolean }
           {loadingMore ? <Loader2 size={13} className="spin" /> : null} Daha fazla göster
         </button>
       )}
+      {detail && <AlertDetailModal alert={detail} onClose={() => setDetail(null)} />}
     </Panel>
   );
 }

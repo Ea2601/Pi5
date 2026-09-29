@@ -3476,6 +3476,33 @@ button.user-profile { cursor: pointer; font-family: var(--font-family); transiti
 .alert-message { font-size: 13px; line-height: 1.45; overflow-wrap: anywhere; }
 .alert-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; font-size: 11px; color: var(--text-muted); }
 .alert-row .btn-sm { flex-shrink: 0; }
+/* Satırın tamamı tıklanır: içteki düğmenin ::after'ı satırı kaplar (ayrıntı penceresi); "Okundu" düğmesi üstünde kalır. */
+.alert-row { position: relative; }
+.alert-open {
+  display: flex; align-items: flex-start; gap: 10px; flex: 1; min-width: 0; padding: 0; border: 0; background: none;
+  color: inherit; font: inherit; text-align: left; cursor: pointer;
+}
+.alert-open::after { content: ''; position: absolute; inset: 0; border-radius: inherit; }
+.alert-open:focus-visible { outline: none; }
+.alert-open:focus-visible::after { outline: 2px solid var(--accent-ring); outline-offset: -2px; }
+.alert-row .alert-ack { position: relative; z-index: 1; }
+/* Ayrıntı penceresi (AlertDetailModal) */
+.alert-detail { display: flex; flex-direction: column; gap: 12px; }
+.alert-detail-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; font-size: 13px; color: var(--text-secondary); }
+.alert-detail-head > svg { color: var(--text-muted); }
+.alert-detail-critical .alert-detail-head > svg { color: var(--danger-color); }
+.alert-detail-warning .alert-detail-head > svg { color: var(--warning-color); }
+.alert-detail-msg { margin: 0; font-size: 14px; line-height: 1.55; white-space: pre-wrap; overflow-wrap: anywhere; }
+.alert-detail-meta {
+  margin: 0; padding-top: 10px; border-top: 1px solid var(--panel-border); display: flex; flex-direction: column; gap: 6px;
+  font-size: 12px;
+}
+.alert-detail-meta > div { display: flex; gap: 10px; }
+.alert-detail-meta dt { flex: 0 0 52px; color: var(--text-muted); }
+.alert-detail-meta dd { margin: 0; min-width: 0; color: var(--text-secondary); overflow-wrap: anywhere; }
+/* Dar ekranda düğme yazısı bölünmesin: düğmeler gerekirse alt alta dizilir. */
+.notif-detail-host .modal-actions { flex-wrap: wrap; }
+.notif-detail-host .modal-actions .btn-sm { white-space: nowrap; }
 
 /* ═══════════════════ BİLDİRİM ZİLİ (açılır panel; konumu NotificationBell yazar) ═══════════════════ */
 /* Opak yüzey (açılır listelerle aynı): cam saydamlığında arkadaki sayfanın yazıları bildirimlerin arasından okunuyordu.
@@ -3519,6 +3546,16 @@ button.notif-item { cursor: pointer; }
 }
 .notif-meta { font-size: 11px; color: var(--text-muted); }
 .notif-ack { flex-shrink: 0; width: 34px; height: 34px; }
+/* Bildirimin tamamı tıklanır: içteki düğmenin ::after'ı satırı kaplar (ayrıntı penceresi); "Okundu say" üstünde kalır. */
+.notif-item { position: relative; }
+.notif-open {
+  display: flex; align-items: flex-start; gap: 10px; flex: 1; min-width: 0; padding: 0; border: 0; background: none;
+  color: inherit; font: inherit; text-align: left; cursor: pointer;
+}
+.notif-open::after { content: ''; position: absolute; inset: 0; border-radius: inherit; }
+.notif-open:focus-visible { outline: none; }
+.notif-open:focus-visible::after { outline: 2px solid var(--accent-ring); outline-offset: -2px; }
+.notif-item .notif-ack { position: relative; z-index: 1; }
 .notif-empty { display: flex; justify-content: center; padding: 24px 12px; font-size: 13px; color: var(--text-muted); }
 .notif-foot {
   display: flex; align-items: center; justify-content: center; gap: 4px; padding: 12px; border: none;

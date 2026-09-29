@@ -2,6 +2,7 @@
 // yardımcılar. Backend: /api/alerts (events.ts). Bir yerde "okundu" yapılınca diğeri beklemeden yenilensin diye küçük bir
 // olay yayını (pencere olayı) da buradadır.
 import { AlertCircle, AlertTriangle, Info, type LucideIcon } from 'lucide-react';
+import type { TabId } from './types';
 
 export interface AlertItem {
   id: number;
@@ -18,10 +19,30 @@ const SOURCE_LABEL: Record<string, string> = {
   cpu: 'İşlemci', memory: 'Bellek', disk: 'Disk', dns: 'DNS', network: 'İnternet', dhcp: 'DHCP', 'dhcp-rogue': 'DHCP',
   'dhcp-probe': 'DHCP', netmode: 'Ağ modu', 'netmode-ap': 'Ağ modu', service: 'Servis', update: 'Güncelleme',
   unbound: 'Unbound', zapret: 'Zapret', pihole: 'Pi-hole', vps: 'VPS', device: 'Cihaz', cron: 'Cron', vpn: 'Ev VPN',
+  mesh: 'Mesh',
 };
 export const sourceLabel = (s: string) => SOURCE_LABEL[(s || '').split(':')[0]] || s || 'Sistem';
 
+// Bildirimin ilgili sayfası (ayrıntı penceresindeki "git" düğmesi). Kaynak backend'deki recordEvent / sağlık denetimi
+// adıdır; servis uyarıları "service:<ad>[:<arayüz>]". Ağ modu (netmode) olayları birden çok sayfayı ilgilendirir: bağlantı yok.
+const SOURCE_TAB: Record<string, TabId> = {
+  cpu: 'dashboard', memory: 'dashboard', disk: 'dashboard', network: 'dashboard', dns: 'unbound',
+  dhcp: 'dhcp', 'dhcp-rogue': 'dhcp', 'dhcp-probe': 'dhcp', unbound: 'unbound', zapret: 'zapret', pihole: 'pihole',
+  vps: 'vps', vpn: 'vps', device: 'devicecontrol', update: 'maintenance', cron: 'maintenance', mesh: 'roles',
+};
+const SERVICE_TAB: Record<string, TabId> = {
+  pihole: 'pihole', unbound: 'unbound', zapret: 'zapret', fail2ban: 'fail2ban', nftables: 'firewall', wireguard: 'vps',
+};
+export function alertTab(source: string): TabId | null {
+  const [head, name] = (source || '').split(':');
+  return (head === 'service' ? SERVICE_TAB[name] : SOURCE_TAB[head]) || null;
+}
+
 export const parseAlertTime = (s: string) => new Date(s.replace(' ', 'T') + 'Z'); // SQLite CURRENT_TIMESTAMP = UTC
+
+// "29 Eylül 2026 Pazartesi 07:12"
+export const fullTime = (d: Date) =>
+  `${d.toLocaleDateString('tr-TR', { day: 'numeric', month: 'long', year: 'numeric', weekday: 'long' })} ${d.toLocaleTimeString('tr-TR', { hour: '2-digit', minute: '2-digit' })}`;
 
 export function dayLabel(d: Date): string {
   const start = (x: Date) => new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime();
