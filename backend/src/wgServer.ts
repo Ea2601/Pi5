@@ -119,13 +119,31 @@ export async function serverEndpoint(): Promise<{ host: string; source: 'ddns' |
   return ipCache?.ip ? { host: ipCache.ip, source: 'ip' } : { host: '', source: 'none' };
 }
 
-// İnternet kartı PPPoE ise (MTU 1492) tünel MTU'su 1412: WireGuard başlığı (80) eklenince 1492'yi aşmasın. wg-quick'in
-// kendi hesabı açılışta PPPoE henüz bağlanmamışsa 1420 bulurdu.
-const PPPOE_WG_MTU = 1412;
+// İnternet kartı PPPoE ise tünel MTU'su PPPoE MTU'su − 80 (WireGuard başlığı): 1492'de 1412, RFC 4638 ile 1500'de 1420.
+// wg-quick'in kendi hesabı açılışta PPPoE henüz bağlanmamışsa 1420 bulurdu. PPPoE değilse 0.
 const DEFAULT_WG_MTU = 1420;
-function pppoeWan(): boolean {
+function pppoeWgMtu(): number {
   const ns = readNetModeState();
-  return wanActive(ns) && ns.wanType === 'pppoe';
+  if (!wanActive(ns) || ns.wanType !== 'pppoe') return 0;
+  return Math.min(DEFAULT_WG_MTU, (ns.wanMtu || 1492) - 80);
+}
+// PPPoE değilken wg-quick'in açılışta bulacağı değer: varsayılan rotanın kartının MTU'su − 80 (en çok 1420). PPPoE'den
+// çıkınca arayüz buna döner; okunamazsa 0 (dokunulmaz).
+function routeWgMtu(): number {
+  try {
+    let best: { dev: string; metric: number } | null = null;
+    for (const line of fs.readFileSync('/proc/net/route', 'utf8').split('\n').slice(1)) {
+      const f = line.trim().split(/\s+/);
+      if (f.length < 8 || f[1] !== '00000000' || f[7] !== '00000000') continue;
+      const metric = Number(f[6]) || 0;
+      if (!best || metric < best.metric) best = { dev: f[0], metric };
+    }
+    if (!best || !/^[A-Za-z0-9_.-]{1,15}$/.test(best.dev)) return 0;
+    const dev = Number(fs.readFileSync(`/sys/class/net/${best.dev}/mtu`, 'utf8').trim()) || 0;
+    return dev > 80 ? Math.min(DEFAULT_WG_MTU, dev - 80) : 0;
+  } catch {
+    return 0;
+  }
 }
 
 export function renderServerConf(s: ServerRow, peers: PeerRow[]): string {
@@ -134,7 +152,7 @@ export function renderServerConf(s: ServerRow, peers: PeerRow[]): string {
     '[Interface]',
     `Address = ${WG_SERVER_IP}/24`,
     `ListenPort = ${WG_PORT}`,
-    ...(pppoeWan() ? [`MTU = ${PPPOE_WG_MTU}`] : []),
+    ...(pppoeWgMtu() ? [`MTU = ${pppoeWgMtu()}`] : []),
     `PrivateKey = ${s.private_key}`,
     // Tünel yanıtları işaretsiz dönebilir: katı rp_filter düşürmesin (wg_vps tünelleriyle aynı). Kurallar arayüzle gelir.
     'PostUp = sysctl -q -w net.ipv4.conf.%i.rp_filter=2 || true',
@@ -246,7 +264,7 @@ async function doApply(): Promise<WgApplyResult> {
       await execFileP('bash', ['-c', `wg syncconf ${WG_IFACE} <(wg-quick strip ${WG_IFACE})`], { timeout: 15000 });
       // MTU syncconf ile uygulanmaz (wg-quick yönergesi): internet kartı PPPoE'ye geçtiyse / çıktıysa arayüzde ayarlanır.
       const mtu = Number(fs.readFileSync(`/sys/class/net/${WG_IFACE}/mtu`, 'utf8').trim()) || 0;
-      const want = pppoeWan() ? PPPOE_WG_MTU : mtu === PPPOE_WG_MTU ? DEFAULT_WG_MTU : mtu;
+      const want = pppoeWgMtu() || routeWgMtu() || mtu;
       if (want && want !== mtu) await execFileP('ip', ['link', 'set', 'dev', WG_IFACE, 'mtu', String(want)], { timeout: 5000 }).catch(() => {});
       await execFileP('nft', ['-f', NFT_FILE], { timeout: 10000 });
       await execFileP('systemctl', ['enable', UNIT], { timeout: 15000 }).catch(() => {});

@@ -31,7 +31,9 @@
 #   sat confirm | rollback | off         uyduyu kalıcı yapar | yalnız deneme sürüyorsa geri alır | kapatır
 #   sat apply --ssid AD [--band] [--channel]  uydunun yayın ayarını değiştirir (parola STDIN'den; köprü kesilmez)
 #   wan on --trial SN --port KART --type dhcp|static|pppoe [--vlan ID [--prio 0-7]] [--mac MAC] [--mtu N]
-#          [--addr IP/ÖNEK --gw IP [--dns IP,IP]] [--user AD]
+#          [--addr IP/ÖNEK --gw IP [--dns IP,IP]] [--user AD] [--dhcp-vendor S] [--dhcp-client-id S] [--dhcp-hostname AD]
+#                                        KART ev ağı kartıysa (tek port) --vlan zorunlu: internet, VLAN destekli
+#                                        anahtardan etiketli gelir, ev ağı aynı porttan etiketsiz akar
 #                                        internet kartı (WAN router rolü, R3): ikinci Ethernet kartı internete bağlanır,
 #                                        eth0 / br0 yalnız ev ağı olur (cihaz adresi kalır, modem tarafı adres ve ağ
 #                                        geçidi kalkar). PPPoE parolası STDIN'in ilk satırından. SN saniye içinde
@@ -118,7 +120,7 @@ WAN_TIMER_UNIT=pi5-wan-rollback
 WAN_RETRY_PREFIX=$WAN_TIMER_UNIT-retry
 WAN_METRIC=50
 SELF=$(readlink -f "$0")
-STATE_KEYS="stage trial_ends iface transit client gw dns old_uuid old_name old_ipv6 wifi_off ap_stage ap_trial_ends ap_iface ap_ssid ap_old_uuid ap_radio_was_off home_stage home_trial_ends home_iface home_ssid home_band home_channel home_radio_was_off lan_if sat_stage sat_trial_ends sat_iface sat_old_uuid sat_old_name sat_wifi sat_ssid sat_band sat_channel sat_radio_was_off sat_backhaul wan_stage wan_trial_ends wan_port wan_dev wan_type wan_vlan wan_prio wan_mac wan_mtu wan_user wan_addr wan_gw wan_dns wan_lan"
+STATE_KEYS="stage trial_ends iface transit client gw dns old_uuid old_name old_ipv6 wifi_off ap_stage ap_trial_ends ap_iface ap_ssid ap_old_uuid ap_radio_was_off home_stage home_trial_ends home_iface home_ssid home_band home_channel home_radio_was_off lan_if sat_stage sat_trial_ends sat_iface sat_old_uuid sat_old_name sat_wifi sat_ssid sat_band sat_channel sat_radio_was_off sat_backhaul wan_stage wan_trial_ends wan_port wan_dev wan_type wan_vlan wan_prio wan_mac wan_mtu wan_user wan_addr wan_gw wan_dns wan_lan wan_dhcp_vendor wan_dhcp_cid wan_dhcp_host"
 
 die() { echo "error=$*"; exit 1; }
 log() { logger -t pi5-net-mode "$*" 2>/dev/null || true; }
@@ -170,6 +172,10 @@ read_state() {
   [[ $S_wan_mac =~ ^([0-9a-f]{2}:){5}[0-9a-f]{2}$ ]] || S_wan_mac=""
   [[ $S_wan_mtu =~ ^[0-9]{3,4}$ ]] || S_wan_mtu=""
   [ "$S_wan_lan" = 1 ] || S_wan_lan=0
+  # DHCP kimlik seçenekleri profil dosyasına yazılır: biçim dışıysa boş sayılır.
+  { [[ $S_wan_dhcp_vendor =~ ^[\ -~]{1,64}$ ]] && [[ $S_wan_dhcp_vendor != *\\* ]]; } || S_wan_dhcp_vendor=""
+  { [[ $S_wan_dhcp_cid =~ ^[\ -~]{1,64}$ ]] && [[ $S_wan_dhcp_cid != *\\* ]]; } || S_wan_dhcp_cid=""
+  [[ $S_wan_dhcp_host =~ ^[A-Za-z0-9]([A-Za-z0-9.-]{0,62})$ ]] || S_wan_dhcp_host=""
 }
 write_state() {
   local k v
@@ -200,6 +206,7 @@ sat_reset() {
 wan_reset() {
   S_wan_stage=none; S_wan_trial_ends=0; S_wan_port=""; S_wan_dev=""; S_wan_type=""; S_wan_vlan=""; S_wan_prio=""
   S_wan_mac=""; S_wan_mtu=""; S_wan_user=""; S_wan_addr=""; S_wan_gw=""; S_wan_dns=""; S_wan_lan=0
+  S_wan_dhcp_vendor=""; S_wan_dhcp_cid=""; S_wan_dhcp_host=""
 }
 
 # static/confirm/dhcp: zamanlayıcıyı ve (varsa) biten geri alma servisini temizler. Geri alma işi KENDİ servisinde
@@ -1316,9 +1323,13 @@ sat_guard_routine() {
 
 # Katman-3 arayüzü (adresin ve varsayılan rotanın olduğu arayüz): PPPoE → pppwan, VLAN → wan.<ID>, değilse kartın kendisi.
 wan_l3_of() { if [ "$2" = pppoe ]; then echo "$WAN_PPP_IF"; elif [ -n "$3" ]; then echo "wan.$3"; else echo "$1"; fi; }
-# Bu kurulumun profilleri (etkinleştirme sırası): kart → VLAN → PPPoE.
+# Tek port (router on a stick): internet ev ağı kartının üzerindeki VLAN'dan gelir (VLAN destekli yönetilebilir anahtar
+# internet trafiğini etiketli getirir, ev ağı aynı porttan etiketsiz akar). Kartın kendisi EV AĞIDIR: ona profil
+# yazılmaz, güvenlik duvarına / maskelemeye girmez, park edilmez; MAC kopyalama ve MTU VLAN arayüzüne uygulanır.
+wan_single() { [ -n "$S_wan_port" ] && [ "$S_wan_port" = "$S_iface" ]; }
+# Bu kurulumun profilleri (etkinleştirme sırası): kart → VLAN → PPPoE (tek portta kart profili yok).
 wan_profiles() {
-  echo "$WAN_PROFILE"
+  if ! wan_single; then echo "$WAN_PROFILE"; fi
   if [ -n "$S_wan_vlan" ]; then echo "$WAN_VLAN_PROFILE"; fi
   if [ "$S_wan_type" = pppoe ]; then echo "$WAN_PPP_PROFILE"; fi
 }
@@ -1330,9 +1341,11 @@ wan_keyfile_of() {
   esac
 }
 # nft arayüz kümesi: kart + (varsa) VLAN + (varsa) PPPoE — internetten gelen trafik bunların hangisinden gelirse gelsin.
+# Tek portta kart ev ağıdır: kümede yalnız VLAN (+ PPPoE).
 wan_ifset() {
-  local s="\"$S_wan_port\""
-  if [ -n "$S_wan_vlan" ]; then s="$s, \"wan.$S_wan_vlan\""; fi
+  local s=""
+  if ! wan_single; then s="\"$S_wan_port\""; fi
+  if [ -n "$S_wan_vlan" ]; then s="${s:+$s, }\"wan.$S_wan_vlan\""; fi
   if [ "$S_wan_type" = pppoe ]; then s="$s, \"$WAN_PPP_IF\""; fi
   echo "{ $s }"
 }
@@ -1352,20 +1365,38 @@ wan_ipv4_section() {
     if [ -n "$S_wan_dns" ]; then printf 'dns=%s;\n' "${S_wan_dns//,/;}"; fi
   else
     printf 'method=auto\n'
+    # Operatör adres vermek için kimlik istiyorsa (DHCP seçenek 60 / 61 / 12); PPPoE'de kullanılmaz.
+    if [ "$S_wan_type" = dhcp ]; then
+      if [ -n "$S_wan_dhcp_vendor" ]; then printf 'dhcp-vendor-class-identifier=%s\n' "$S_wan_dhcp_vendor"; fi
+      if [ -n "$S_wan_dhcp_cid" ]; then printf 'dhcp-client-id=%s\n' "$S_wan_dhcp_cid"; fi
+      if [ -n "$S_wan_dhcp_host" ]; then printf 'dhcp-hostname=%s\ndhcp-send-hostname=true\n' "$S_wan_dhcp_host"; fi
+    fi
   fi
   # Operatörün DNS'i Pi'nin kendi DNS'inden (127.0.0.1, Pi-hole) SONRA gelsin: daha yüksek değer = daha düşük öncelik.
   printf 'route-metric=%s\ndns-priority=200\nmay-fail=false' "$WAN_METRIC"
 }
 # Profil dosyaları (kendiliğinden bağlanma deneme boyunca KAPALI; "wan confirm" açar). $1 = PPPoE parolası.
+# PPPoE MTU'su 1492'den büyükse (RFC 4638, "baby jumbo": operatör destekliyorsa 1500) altındaki kart / VLAN arayüzü
+# MTU + 8 (PPPoE başlığı) taşımalı.
 wan_write_keyfiles() {
-  local u1 u2 u3 l3port=1 l3vlan=0 eth="" vlan_eth="" prio="" ppp="" parent i
+  local u1 u2 u3 l3port=1 l3vlan=0 eth="" vlan_eth="" prio="" ppp="" parent i base_mtu=""
   u1=$(new_uuid) && u2=$(new_uuid) && u3=$(new_uuid) || return 1
   if [ -n "$S_wan_vlan" ]; then l3port=0; l3vlan=1; fi
   if [ "$S_wan_type" = pppoe ]; then l3port=0; l3vlan=0; fi
+  if [ "$S_wan_type" = pppoe ] && [ -n "$S_wan_mtu" ] && [ "$S_wan_mtu" -gt 1492 ]; then base_mtu=$((S_wan_mtu + 8)); fi
+  # Kart: MAC kopyalama + (adres kartta ise) MTU ya da PPPoE için MTU + 8. Tek portta kart ev ağıdır: bunlar VLAN'a gider.
   if [ -n "$S_wan_mac" ]; then eth="cloned-mac-address=$S_wan_mac"; fi
   if [ -n "$S_wan_mtu" ] && [ "$l3port" = 1 ]; then eth="${eth:+$eth
+}mtu=$S_wan_mtu"
+  elif [ -n "$base_mtu" ]; then eth="${eth:+$eth
+}mtu=$base_mtu"; fi
+  if wan_single; then
+    # Kart ev ağı: MAC kopyalama ve MTU (adres VLAN'da; PPPoE + 1492 üstü MTU tek portta reddedilir) VLAN arayüzüne.
+    if [ -n "$S_wan_mac" ]; then vlan_eth="cloned-mac-address=$S_wan_mac"; fi
+    if [ -n "$S_wan_mtu" ] && [ "$l3vlan" = 1 ]; then vlan_eth="${vlan_eth:+$vlan_eth
 }mtu=$S_wan_mtu"; fi
-  home_put_keyfile "$WAN_KEYFILE" "[connection]
+  else
+    home_put_keyfile "$WAN_KEYFILE" "[connection]
 id=$WAN_PROFILE
 uuid=$u1
 type=ethernet
@@ -1382,6 +1413,10 @@ $(wan_ipv4_section "$l3port")
 
 [ipv6]
 method=disabled" || return 1
+    # VLAN arayüzü: adres VLAN'daysa MTU, PPPoE MTU + 8 ise o (kartınki ayrı yazıldı).
+    if [ -n "$S_wan_mtu" ] && [ "$l3vlan" = 1 ]; then vlan_eth="mtu=$S_wan_mtu"
+    elif [ -n "$base_mtu" ]; then vlan_eth="mtu=$base_mtu"; fi
+  fi
   if [ -n "$S_wan_vlan" ]; then
     # 802.1p: tüm çıkış trafiği (çekirdek önceliği 0-7) operatörün istediği önceliğe eşlenir.
     if [ -n "$S_wan_prio" ]; then
@@ -1389,7 +1424,6 @@ method=disabled" || return 1
       prio="egress-priority-map="
       for i in 0 1 2 3 4 5 6 7; do prio="$prio$i:$S_wan_prio;"; done
     fi
-    if [ -n "$S_wan_mtu" ] && [ "$l3vlan" = 1 ]; then vlan_eth="mtu=$S_wan_mtu"; fi
     home_put_keyfile "$WAN_VLAN_KEYFILE" "[connection]
 id=$WAN_VLAN_PROFILE
 uuid=$u2
@@ -1473,7 +1507,14 @@ wan_up() {
   for p in $(wan_profiles); do
     w=30; [ "$p" = "$WAN_PPP_PROFILE" ] && w=60
     if ! out=$(nmcli -w "$w" connection up id "$p" 2>&1); then
-      WAN_UP_OUT="$p etkinleştirilemedi: $(printf '%s' "$out" | oneline)"; return 1
+      WAN_UP_OUT="$p etkinleştirilemedi: $(printf '%s' "$out" | oneline)"
+      # Senaryoya göre anlaşılır neden: adres profili DHCP yanıtı alamadı / PPPoE oturumu açılamadı.
+      if [ "$p" = "$WAN_PPP_PROFILE" ]; then
+        WAN_UP_OUT="PPPoE oturumu açılamadı — kullanıcı adı / şifre, VLAN numarası ya da operatörün PPPoE sunucusu ($WAN_UP_OUT)"
+      elif [ "$S_wan_type" = dhcp ] && [[ $out == *Timeout* || $out == *"IP configuration"* ]]; then
+        WAN_UP_OUT="operatörden adres gelmedi (DHCP yanıtı yok) — VLAN numarasını, DHCP kimlik seçeneklerini ve kabloyu kontrol edin ($WAN_UP_OUT)"
+      fi
+      return 1
     fi
   done
 }
@@ -1493,8 +1534,13 @@ wan_gateway() {
 # Bağlı: kartta bu kurulumun profili etkin, adres var ve varsayılan rota bu arayüzde. Kartı başka bir profil almışsa
 # (ör. karta bağlı olmayan eski netplan profili, pi5-wan silindiğinde) bağlı sayılmaz — koruma yedekten onarır.
 wan_up_ok() {
-  [ "$(active_conn "$S_wan_port")" = "$WAN_PROFILE" ] && [ -n "$(wan_ip)" ] \
-    && ip -4 route show default dev "$S_wan_dev" 2>/dev/null | grep -q .
+  if wan_single; then
+    # Tek port: kart ev ağı profilindedir; bu kurulumun temel profili VLAN'dır.
+    [ "$(active_conn "wan.$S_wan_vlan")" = "$WAN_VLAN_PROFILE" ] || return 1
+  else
+    [ "$(active_conn "$S_wan_port")" = "$WAN_PROFILE" ] || return 1
+  fi
+  [ -n "$(wan_ip)" ] && ip -4 route show default dev "$S_wan_dev" 2>/dev/null | grep -q .
 }
 wait_wan_ip() {
   local end=$((SECONDS + $1))
@@ -1656,6 +1702,8 @@ lan_backups_refresh() {
 wan_park_port() {
   local u
   [ -n "$S_wan_port" ] || return 1
+  # Tek portta kart ev ağıdır: park edilirse (adressiz, öncelik 200) açılışta ev ağı profilinin yerini alırdı.
+  wan_single && return 0
   u=$(new_uuid) || return 1
   delete_named "$WAN_IDLE_PROFILE"
   home_put_keyfile "$WAN_IDLE_KEYFILE" "[connection]
@@ -1692,7 +1740,8 @@ wan_unwind() {
   nmcli connection down id "$WAN_PROFILE" >/dev/null 2>&1 || true
   wan_delete_all
   if [ -n "$S_wan_vlan" ] && [ -e "/sys/class/net/wan.$S_wan_vlan" ]; then ip link delete "wan.$S_wan_vlan" 2>/dev/null || true; fi
-  if ! wan_park_port && [ -n "$S_wan_port" ] && [ -e "/sys/class/net/$S_wan_port" ]; then
+  # Tek portta kart ev ağıdır: park edilmez, bağlantısı kesilmez (wan_park_port hemen döner).
+  if ! wan_park_port && ! wan_single && [ -n "$S_wan_port" ] && [ -e "/sys/class/net/$S_wan_port" ]; then
     nmcli device disconnect "$S_wan_port" >/dev/null 2>&1 || true
   fi
   wan_nft_remove
@@ -1932,6 +1981,10 @@ cmd_status() {
   echo "wan_static_gw=$S_wan_gw"
   echo "wan_static_dns=$S_wan_dns"
   echo "wan_lan=$S_wan_lan"
+  echo "wan_single=$( wan_single && echo 1 || echo 0 )"
+  echo "wan_dhcp_vendor=$S_wan_dhcp_vendor"
+  echo "wan_dhcp_client_id=$S_wan_dhcp_cid"
+  echo "wan_dhcp_hostname=$S_wan_dhcp_host"
   echo "wan_ip=$( [ "$S_wan_stage" != none ] && wan_ip)"
   echo "wan_gateway=$( [ "$S_wan_stage" != none ] && wan_gateway)"
   echo "wan_carrier=$( if [ -n "$S_wan_port" ]; then carrier "$S_wan_port"; else echo 0; fi )"
@@ -2747,6 +2800,7 @@ cmd_sat() {
 # çıktıya girmez (yalnız 0600 profil dosyasına).
 cmd_wan_on() {
   local trial="" port="" type="" vlan="" prio="" mac="" mtu="" addr="" gw="" dns="" user="" pw="" d
+  local dvendor="" dcid="" dhost="" single=0
   local ip pfx n m net bc lan end out why="" wait_ip i dev a
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -2761,6 +2815,9 @@ cmd_wan_on() {
       --gw) gw=${2:-}; shift ;;
       --dns) dns=${2:-}; shift ;;
       --user) user=${2:-}; shift ;;
+      --dhcp-vendor) dvendor=${2:-}; shift ;;
+      --dhcp-client-id) dcid=${2:-}; shift ;;
+      --dhcp-hostname) dhost=${2:-}; shift ;;
       *) die "bilinmeyen seçenek: $1" ;;
     esac
     shift
@@ -2798,7 +2855,8 @@ cmd_wan_on() {
   if [ -n "$mtu" ]; then
     [[ $mtu =~ ^[0-9]{3,4}$ ]] || die "geçersiz MTU: $mtu"
     mtu=$((10#$mtu))
-    if [ "$type" = pppoe ]; then { [ "$mtu" -ge 576 ] && [ "$mtu" -le 1492 ]; } || die "PPPoE MTU 576-1492 arasında olmalı ($mtu)"
+    # PPPoE 1492 üstü (en çok 1500): RFC 4638 — operatör destekliyorsa; altındaki arayüz MTU + 8 alır.
+    if [ "$type" = pppoe ]; then { [ "$mtu" -ge 576 ] && [ "$mtu" -le 1500 ]; } || die "PPPoE MTU 576-1500 arasında olmalı ($mtu)"
     else { [ "$mtu" -ge 576 ] && [ "$mtu" -le 9000 ]; } || die "MTU 576-9000 arasında olmalı ($mtu)"; fi
   fi
   if [ "$type" = static ]; then
@@ -2819,6 +2877,19 @@ cmd_wan_on() {
     fi
   else
     addr=""; gw=""; dns=""
+  fi
+  # DHCP kimlik seçenekleri (yalnız otomatik adreste): yazdırılabilir ASCII, ters bölü yok, başta / sonda boşluk yok.
+  if [ "$type" = dhcp ]; then
+    for d in "$dvendor" "$dcid"; do
+      [ -z "$d" ] && continue
+      { [[ $d =~ ^[!-~]([\ -~]{0,62}[!-~])?$ ]] && [[ $d != *\\* ]]; } \
+        || die "geçersiz DHCP kimlik değeri: 1-64 karakter; Türkçe harf ve ters bölü (\\) olmaz, başta / sonda boşluk olmaz"
+    done
+    if [ -n "$dhost" ]; then
+      [[ $dhost =~ ^[A-Za-z0-9]([A-Za-z0-9.-]{0,62})$ ]] || die "geçersiz cihaz adı: $dhost (harf, rakam, . -; en çok 63)"
+    fi
+  else
+    dvendor=""; dcid=""; dhost=""
   fi
   if [ "$type" = pppoe ]; then
     { [[ $user =~ ^[!-~]{1,64}$ ]] && [[ $user != *\\* ]]; } \
@@ -2845,9 +2916,19 @@ cmd_wan_on() {
   lan=$(lan_dev)
   lan_addrs_ok "$lan" || die "ev ağı adresleri ($lan) beklenen düzende değil — önce DHCP Ayarları'ndaki uyarıyı giderin"
   [ -e "/sys/class/net/$port" ] || die "$port adlı kart yok"
-  [ "$port" != "$S_iface" ] || die "$port zaten ev ağı kartı — internet için ikinci bir kart seçin"
+  # Tek port: ev ağı kartı internete de bağlanır — yalnız VLAN ile (anahtar internet trafiğini etiketli getirir).
+  if [ "$port" = "$S_iface" ]; then
+    [ -n "$vlan" ] || die "$port ev ağı kartı — aynı porttan internet için VLAN numarası girin (VLAN destekli anahtar internet trafiğini etiketli getirir) ya da ikinci bir Ethernet kartı seçin"
+    if [ -n "$mtu" ]; then
+      if [ "$type" = pppoe ] && [ "$mtu" -gt 1492 ]; then die "tek portta PPPoE MTU en çok 1492 olabilir (ev ağı kartının MTU'su değiştirilmez)"; fi
+      [ "$mtu" -le 1500 ] || die "tek portta MTU en çok 1500 olabilir (ev ağı kartının MTU'su değiştirilmez)"
+    fi
+    single=1
+  fi
   [ "$(dev_type "$port")" = ethernet ] || die "$port bir Ethernet kartı değil"
-  [ -e "/sys/class/net/$port/master" ] && die "$port bir köprünün ($(basename "$(readlink "/sys/class/net/$port/master")")) portu"
+  if [ "$single" = 0 ] && [ -e "/sys/class/net/$port/master" ]; then
+    die "$port bir köprünün ($(basename "$(readlink "/sys/class/net/$port/master")")) portu"
+  fi
   [ "$(carrier "$port")" = 1 ] || die "$port kartında kablo bağlantısı yok — modemi / ONT'yi bu karta bağlayın"
   if [ "$type" = pppoe ]; then
     { command -v pppd >/dev/null 2>&1 && compgen -G '/usr/lib/*/NetworkManager/*/libnm-ppp-plugin.so' >/dev/null; } \
@@ -2860,6 +2941,7 @@ cmd_wan_on() {
   #    yazımından önce doldurulur (yazıcılar onları okur); durum dosyası zamanlayıcıyla birlikte yazılır.
   S_wan_port=$port; S_wan_type=$type; S_wan_vlan=$vlan; S_wan_prio=$prio; S_wan_mac=$mac; S_wan_mtu=$mtu
   S_wan_user=$user; S_wan_addr=$addr; S_wan_gw=$gw; S_wan_dns=$dns; S_wan_lan=0
+  S_wan_dhcp_vendor=$dvendor; S_wan_dhcp_cid=$dcid; S_wan_dhcp_host=$dhost
   S_wan_dev=$(wan_l3_of "$port" "$type" "$vlan")
   # Aynı kart daha önce park edildiyse park profili kalkar (ikisi de öncelik 200: NM hangisini seçeceğini bilemez).
   [ "$(nmcli -g connection.interface-name connection show id "$WAN_IDLE_PROFILE" 2>/dev/null)" = "$port" ] && wan_unpark

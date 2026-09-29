@@ -1922,7 +1922,7 @@ app.get('/api/system/hardware', async (_req, res) => {
       homeStage: ns?.homeStage || 'none', homeIface: ns?.homeIface || null,
       role: STARTUP_ROLE, satellites: isSatellite() ? 0 : (await listSatellites().catch(() => [])).length,
       paired: isSatellite() && !!readSatState(), meshConfigured: (await mainMeshState().catch(() => null))?.configured || false,
-      wanStage: ns?.wanStage || 'none', wanPort: ns?.wanPort || null, wanDev: ns?.wanDev || null,
+      wanStage: ns?.wanStage || 'none', wanPort: ns?.wanPort || null, wanDev: ns?.wanDev || null, wanSingle: !!ns?.wanSingle,
     });
     res.json({ supported: true, ...hw, roles: evaluateRoles(hw) });
   } catch (e: any) {
@@ -2912,7 +2912,7 @@ app.post('/api/netmode/home/off', async (_req, res) => {
 // artık LAN sayılmaz), port yönlendirmeleri ve — panelin güvenlik duvarı kuruluysa — o da güncel kartlarla yazılır.
 const WAN_TRIAL_S = 300;
 const WAN_NUMS = ['wan_trial_ends', 'now'];
-const WAN_BOOLS = ['wan_lan', 'wan_carrier', 'wan_up', 'wan_fw', 'ppp_ok', 'pi_dhcp'];
+const WAN_BOOLS = ['wan_lan', 'wan_carrier', 'wan_up', 'wan_fw', 'ppp_ok', 'pi_dhcp', 'wan_single'];
 app.use('/api/wan', netAdminGuard);
 // Panelin güvenlik duvarı (pi5_filter, politika drop) kuruluysa internet kartı arayüzleriyle yeniden yazılır: DB'deki eski
 // iki kartlı tohumlar yerine net-mode durumu kullanılır (services.ts), port yönlendirmesine iletim izni eklenir.
@@ -2986,6 +2986,12 @@ app.post('/api/wan', async (req, res) => {
       opt('--dns', str(b.dns).replace(/\s+/g, ''), /^(\d{1,3}(\.\d{1,3}){3})(,\d{1,3}(\.\d{1,3}){3}){0,2}$/, 'DNS en çok 3 adres, virgülle'),
     ] : []),
     ...(type === 'pppoe' ? [opt('--user', str(b.user), /^[!-~]{1,64}$/, 'PPPoE kullanıcı adı 1-64 karakter, boşluksuz olmalı')] : []),
+    // Operatörün beklediği DHCP kimlikleri (üretici sınıfı / istemci kimliği / cihaz adı) — yalnız DHCP'de anlamlı.
+    ...(type === 'dhcp' ? [
+      opt('--dhcp-vendor', str(b.dhcp_vendor), /^(?!.*\\)[ -~]{1,64}$/, 'Üretici sınıfı 1-64 karakter olmalı (Türkçe harf ve ters bölü olmadan)'),
+      opt('--dhcp-client-id', str(b.dhcp_client_id), /^(?!.*\\)[ -~]{1,64}$/, 'İstemci kimliği 1-64 karakter olmalı (Türkçe harf ve ters bölü olmadan)'),
+      opt('--dhcp-hostname', str(b.dhcp_hostname), /^[A-Za-z0-9][A-Za-z0-9.-]{0,62}$/, 'Cihaz adı harf / rakamla başlamalı; yalnız harf, rakam, nokta, tire'),
+    ] : []),
   ].filter(Boolean);
   if (errs.length) return res.status(400).json({ error: errs[0] });
   if (type === 'static' && (!b.addr || !b.gw)) return res.status(400).json({ error: 'Sabit adres ve ağ geçidi gerekli' });
@@ -2994,9 +3000,10 @@ app.post('/api/wan', async (req, res) => {
   if (type === 'pppoe' && (/[\r\n\\]/.test(password) || password.length > 128 || password !== password.trim())) {
     return res.status(400).json({ error: 'PPPoE şifresi 1-128 karakter olmalı: ters bölü (\\) olmadan, başta/sonda boşluk olmadan' });
   }
+  const single = readNetModeState()?.iface === port; // ev ağı kartı: aynı porttan VLAN ile internet (tek port)
   const r = await runKvScript(NET_MODE_SCRIPT, args, 240000, type === 'pppoe' ? `${password}\n` : '');
   await wanAfterChange(r);
-  await kvEvent('netmode', r, `İnternet kartı denemesi başladı: ${port} (${type === 'pppoe' ? 'PPPoE' : type === 'static' ? 'sabit adres' : 'DHCP'}${b.vlan ? `, VLAN ${b.vlan}` : ''}) — ${WAN_TRIAL_S / 60} dk içinde "Kalıcı yap" gelmezse geri alınır`, 'İnternet kartı açılamadı', password);
+  await kvEvent('netmode', r, `İnternet kartı denemesi başladı: ${port}${single ? ' — tek port' : ''} (${type === 'pppoe' ? 'PPPoE' : type === 'static' ? 'sabit adres' : 'DHCP'}${b.vlan ? `, VLAN ${b.vlan}` : ''}) — ${WAN_TRIAL_S / 60} dk içinde "Kalıcı yap" gelmezse geri alınır`, 'İnternet kartı açılamadı', password);
   if (r.code !== 0) return res.status(500).json({ error: maskSecret(kvError(r, 'internet kartı açılamadı'), password), rolled_back: r.kv.rolled_back === '1' });
   res.json({ success: true, wan_trial_ends: Number(r.kv.wan_trial_ends) || 0, wan_ip: r.kv.wan_ip || '', wan_gateway: r.kv.wan_gateway || '' });
 });

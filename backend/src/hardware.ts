@@ -33,6 +33,7 @@ export type Hardware = {
     role?: 'main' | 'satellite'; satellites?: number; paired?: boolean; meshConfigured?: boolean;
     // R3: internet kartı (WAN router) aşaması, kartı ve adres/rota arayüzü (kart / VLAN / PPPoE).
     wanStage?: string; wanPort?: string | null; wanDev?: string | null;
+    wanSingle?: boolean; // R3b: tek port (internet ev ağı kartının üzerindeki VLAN'dan)
   };
 };
 
@@ -165,29 +166,32 @@ export function evaluateRoles(hw: Hardware): RoleEval[] {
 
   // WAN router (R3): internet bir porttan (DHCP / sabit / PPPoE, isteğe bağlı VLAN), ev ağı ayrı porttan. Cihaz Rolleri →
   // WAN router panelinden açılır (net-mode.sh wan); ön koşul kalıcı sabit adres + Pi DHCP (ev ağına adresi Pi verir).
+  // Tek port (R3b): ev ağı kartı + VLAN destekli yönetilebilir anahtar — internet VLAN'ı etiketli, ev ağı etiketsiz.
   const usb2Eth = eth.filter(e => e.bus === 'usb' && e.usbSpeedMbps !== null && e.usbSpeedMbps < 5000);
   const wanStage = hw.net.wanStage || 'none';
   const wanOn = wanStage === 'on';
   const wanNotes: Note[] = usb2Eth.map(e => ({ kind: 'warn', text: `${e.name} USB 2 portunda: hız ~300 Mbps ile sınırlı. Adaptörü mavi USB 3 portuna takın.` }));
   if (wanStage === 'trial') wanNotes.push({ kind: 'info', text: "Deneme sürüyor: internet çalışıyorsa WAN router panelinden 'Kalıcı yap'a basın; basılmazsa Pi eski ayara döner." });
-  if (!satRole && wanStage === 'none' && eth.length >= 2) {
+  if (!satRole && wanStage === 'none' && eth.length >= 1) {
     if (hw.net.netStage !== 'static') wanNotes.push({ kind: 'info', text: "Önce DHCP Ayarları sihirbazında Pi'ye sabit adres verip Pi DHCP'sini açın (ev ağına adresi Pi verecek)." });
     else if (!hw.net.piDhcp) wanNotes.push({ kind: 'info', text: "Önce Pi DHCP'sini açın (DHCP Ayarları): internet kartına geçince ev ağına adresi yalnız Pi verir." });
   }
-  if (!wanOn) wanNotes.push({ kind: 'info', text: 'Alternatif: tek port + VLAN destekli yönetilebilir anahtar (daha karmaşık kurulum).' });
+  if (!wanOn && eth.length === 1) {
+    wanNotes.push({ kind: 'info', text: "Tek port: modem / ONT ve ev ağı VLAN destekli yönetilebilir anahtara takılır; Pi'nin portu internet VLAN'ını etiketli, ev ağını etiketsiz taşır. İkinci Ethernet portu (USB) daha basittir." });
+  }
   out.push({
     id: 'wan-router', group: 'routing', phase: null,
-    status: wanOn ? 'active' : eth.length >= 2 ? 'available' : 'needs-hw',
+    status: wanOn ? 'active' : eth.length ? 'available' : 'needs-hw',
     checks: [
-      { ok: eth.length >= 2, label: 'İki Ethernet portu', value: `${eth.length} port${eth.length ? ` (${names(eth)})` : ''}` },
+      { ok: eth.length > 0, label: 'Ethernet portu', value: eth.length >= 2 ? `${eth.length} port (${names(eth)})` : eth.length ? `1 port (${names(eth)}) · tek port + VLAN` : 'yok' },
       ...(eth.some(e => e.bus === 'usb') ? [{ ok: usb2Eth.length === 0, label: 'USB 3 bağlantısı', value: usb2Eth.length ? `${names(usb2Eth)}: USB 2` : 'evet' }] : []),
       ...(wanStage !== 'none' && hw.net.wanPort
-        ? [{ ok: wanOn, label: 'İnternet kartı', value: `${hw.net.wanPort}${hw.net.wanDev && hw.net.wanDev !== hw.net.wanPort ? ` → ${hw.net.wanDev}` : ''}${wanOn ? '' : ' (deneme)'}` }]
+        ? [{ ok: wanOn, label: 'İnternet kartı', value: `${hw.net.wanPort}${hw.net.wanDev && hw.net.wanDev !== hw.net.wanPort ? ` → ${hw.net.wanDev}` : ''}${hw.net.wanSingle ? ' · tek port' : ''}${wanOn ? '' : ' (deneme)'}` }]
         : []),
       { ok: hw.modules['8021q'] ?? null, label: 'VLAN (operatör isterse)', value: hw.modules['8021q'] ? 'hazır' : 'modül yok' },
       { ok: hw.tools.pppd ? !!hw.modules.pppoe : null, label: 'PPPoE (operatör isterse)', value: hw.tools.pppd ? (hw.modules.pppoe ? 'hazır' : 'modül yok') : 'panel güncellemesiyle kurulur' },
     ],
-    need: eth.length >= 2 ? [] : [HW_SUGGEST.usbEth],
+    need: eth.length >= 2 || (wanOn && hw.net.wanSingle) ? [] : [HW_SUGGEST.usbEth], // tek portta öneri (daha basit kurulum)
     notes: satRole ? [satNote, ...wanNotes.filter(n => n.kind === 'warn')] : wanNotes,
   });
 

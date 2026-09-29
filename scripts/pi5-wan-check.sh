@@ -4,6 +4,7 @@
 #   1) USB Ethernet adaptörü gelmeden: ön koşullar (sabit adres, Pi DHCP, bileşenler, güvenlik duvarı)
 #   2) Adaptör takılıp modeme / ONT'ye bağlanınca: kart tanındı mı (sürücü, USB 3, hız, kablo), modemden adres aldı mı
 #   3) Cihaz Rolleri → İnternet bağlantısı açıldıktan sonra: rota, internet, DNS, güvenlik duvarı, ev ağı, tüneller
+# Tek port (ev ağı kartı + VLAN destekli anahtar) da denetlenir: VLAN arayüzü, ev ağı kartının internet tarafı sayılmaması.
 # Çalıştırma: sudo bash /opt/pi5-gateway/scripts/pi5-wan-check.sh 2>&1 | tee /tmp/wan-check.txt
 # PPPoE parolası okunmaz; kullanıcı adı maskelenir (çıktı paylaşılabilir).
 set +e
@@ -44,6 +45,8 @@ SAT_STAGE=$(kv "$NET_STATE" sat_stage); SAT_STAGE=${SAT_STAGE:-none}
 AP_STAGE=$(kv "$NET_STATE" ap_stage); AP_STAGE=${AP_STAGE:-none}
 WAN_STAGE=$(kv "$NET_STATE" wan_stage); WAN_STAGE=${WAN_STAGE:-none}
 WAN_DEV=$(kv "$NET_STATE" wan_dev); WAN_TYPE=$(kv "$NET_STATE" wan_type)
+WAN_PORT=$(kv "$NET_STATE" wan_port); WAN_VLAN=$(kv "$NET_STATE" wan_vlan)
+WAN_SINGLE=0; [ -n "$WAN_PORT" ] && [ "$WAN_PORT" = "$LAN_IF" ] && WAN_SINGLE=1
 LAN_DEV=$LAN_IF
 if [ "$HOME_STAGE" != none ] && [ -e /sys/class/net/br0 ]; then LAN_DEV=br0; fi
 
@@ -73,7 +76,7 @@ else miss "net-mode.sh internet kartını desteklemiyor — panelden güncelleyi
 if have nft; then ok "nftables (güvenlik duvarı)"; else miss "nft yok — internet kartı korumasız açılmaz"; fi
 if have pppd && compgen -G '/usr/lib/*/NetworkManager/*/libnm-ppp-plugin.so' >/dev/null; then ok "PPPoE bileşeni (pppd + NetworkManager eklentisi)"
 else warn "PPPoE bileşeni yok (yalnız PPPoE için gerekir) — panel güncellemesi kurar ya da: sudo apt install ppp"; fi
-if [ -d /sys/module/8021q ] || modinfo -n 8021q >/dev/null 2>&1; then ok "VLAN desteği (8021q)"; else warn "VLAN çekirdek modülü (8021q) bulunamadı (yalnız VLAN isteyen operatörde gerekir)"; fi
+if [ -d /sys/module/8021q ] || modinfo -n 8021q >/dev/null 2>&1; then ok "VLAN desteği (8021q)"; else warn "VLAN çekirdek modülü (8021q) bulunamadı (yalnız VLAN isteyen operatörde ve tek portta gerekir)"; fi
 if [ -d /sys/module/pppoe ] || modinfo -n pppoe >/dev/null 2>&1; then ok "PPPoE çekirdek modülü"; else warn "PPPoE çekirdek modülü bulunamadı (yalnız PPPoE için)"; fi
 if [ "$(systemctl is-enabled pi5-net-guard.service 2>/dev/null)" = enabled ]; then ok "Açılış ağ koruması (pi5-net-guard) etkin"
 else warn "pi5-net-guard etkin değil — açılışta internet kartı onarımı çalışmaz (panel güncellemesi kurar)"; fi
@@ -122,6 +125,7 @@ for p in /sys/class/net/*; do
 done
 CANDS=${CANDS# }
 if [ -z "$CANDS" ] && [ "$WAN_STAGE" = none ]; then info "İkinci bir Ethernet kartı yok — adaptör gelince takıp modeme bağlayın, bu betiği yeniden çalıştırın"
+  [ -n "$LAN_IF" ] && info "Ya da tek port: $LAN_IF + VLAN destekli yönetilebilir anahtar (panelde kart olarak '$LAN_IF · tek port' seçilir, internet VLAN numarası girilir)"
 elif [ -n "$CANDS" ]; then info "İnternet kartı adayı: $CANDS"; fi
 echo "Varsayılan rotalar:"; ip -4 route show default | sed 's/^/  /'
 [ "$(ip -4 route show default | grep -c .)" -gt 1 ] && [ "$WAN_STAGE" = none ] && info "Birden çok varsayılan rota var: adaptörü eski otomatik profil aldı (en düşük metrik geçerli; internet kartı açılınca tek rota kalır)"
@@ -150,8 +154,9 @@ if [ "$WAN_STAGE" != none ]; then
   h "6. İnternet kartı ($WAN_STAGE)"
   st=$(bash "$NET_MODE" status 2>/dev/null)
   user=$(printf '%s\n' "$st" | sed -n 's/^wan_user=//p'); [ -n "$user" ] && user="${user:0:3}***"
-  printf '%s\n' "$st" | grep -E '^wan_(port|dev|type|vlan|prio|mtu|ip|gateway|carrier|up|fw|guard_result|guard_detail)=' | sed 's/^/  /'
+  printf '%s\n' "$st" | grep -E '^wan_(port|dev|type|vlan|prio|mtu|single|dhcp_vendor|dhcp_hostname|ip|gateway|carrier|up|fw|guard_result|guard_detail)=' | sed 's/^/  /'
   [ -n "$user" ] && echo "  wan_user=$user"
+  cid=$(printf '%s\n' "$st" | sed -n 's/^wan_dhcp_client_id=//p'); [ -n "$cid" ] && echo "  wan_dhcp_client_id=${cid:0:3}***"
   wip=$(printf '%s\n' "$st" | sed -n 's/^wan_ip=//p')
   if [ "$(ip -4 route show default | grep -c .)" = 1 ] && ip -4 route show default | grep -q " dev $WAN_DEV "; then ok "Tek varsayılan rota, $WAN_DEV üzerinde"
   else warn "Varsayılan rotalar beklenenden farklı: $(ip -4 route show default | paste -sd'|' -)"; fi
@@ -161,6 +166,14 @@ if [ "$WAN_STAGE" != none ]; then
   if [ -n "$LAN_DEV" ] && [ -n "$TRANSIT" ] && ip -4 -o addr show dev "$LAN_DEV" | awk '{print $4}' | grep -qxF "$TRANSIT"; then
     [ "$(kv "$NET_STATE" wan_lan)" = 1 ] && warn "Ev ağı kartında ($LAN_DEV) modem tarafı adres ($TRANSIT) hâlâ duruyor"
   else ok "Ev ağı kartı ($LAN_DEV) yalnız ev ağında ($(addrs "$LAN_DEV"))"; fi
+  if [ "$WAN_SINGLE" = 1 ]; then
+    info "Tek port: internet $WAN_PORT üzerindeki VLAN ${WAN_VLAN:-?} ile, ev ağı aynı kartta etiketsiz"
+    if [ -n "$WAN_VLAN" ] && ip -o link show "wan.$WAN_VLAN" 2>/dev/null | grep -qF "wan.$WAN_VLAN@$WAN_PORT:"; then ok "VLAN arayüzü wan.$WAN_VLAN ($WAN_PORT üzerinde)"
+    else miss "VLAN arayüzü wan.${WAN_VLAN:-?} $WAN_PORT üzerinde yok"; fi
+    if nft list table inet pi5_wan 2>/dev/null | grep -qF "\"$WAN_PORT\""; then miss "Ev ağı kartı ($WAN_PORT) internet güvenlik duvarı kümesinde — ev ağı internet tarafı sayılıyor"
+    else ok "Ev ağı kartı ($WAN_PORT) internet güvenlik duvarı kümesinde değil"; fi
+    [ "$(cat "/sys/class/net/$WAN_PORT/carrier" 2>/dev/null)" = 1 ] || warn "$WAN_PORT kablosu takılı değil (anahtar bağlantısı)"
+  fi
   if have dig; then
     if dig +short +time=3 +tries=1 @127.0.0.1 example.com 2>/dev/null | grep -qE '^[0-9.]+$'; then ok "DNS (Pi-hole) çözüyor"; else warn "Pi-hole example.com'u çözemedi"; fi
     if dig +short +time=3 +tries=1 @127.0.0.1 -p 5335 example.com 2>/dev/null | grep -qE '^[0-9.]+$'; then ok "Unbound (5335) internetten çözüyor"; else warn "Unbound (5335) çözemedi — Pi-hole'un üst DNS'ini kontrol edin"; fi
@@ -178,7 +191,7 @@ if [ "$WAN_STAGE" != none ]; then
     fi
   fi
   mtu=$(cat "/sys/class/net/$WAN_DEV/mtu" 2>/dev/null); echo "  $WAN_DEV MTU: ${mtu:-—}"
-  [ -e /sys/class/net/wg_pi ] && echo "  wg_pi (Ev VPN'i) MTU: $(cat /sys/class/net/wg_pi/mtu)$( [ "$WAN_TYPE" = pppoe ] && echo ' (PPPoE için 1412 beklenir)')"
+  [ -e /sys/class/net/wg_pi ] && echo "  wg_pi (Ev VPN'i) MTU: $(cat /sys/class/net/wg_pi/mtu)$( [ "$WAN_TYPE" = pppoe ] && [ -n "$mtu" ] && echo " (PPPoE için $(( mtu - 80 > 1420 ? 1420 : mtu - 80 )) beklenir)")"
   if have wg; then
     wg show all latest-handshakes 2>/dev/null | awk -v now="$(date +%s)" '$1 ~ /^wg_vps/ { age = ($3 == 0 ? -1 : now - $3); printf "  %s el sıkışma: %s\n", $1, (age < 0 ? "HİÇ" : age " sn önce") }'
   fi
@@ -191,7 +204,7 @@ h "Özet"
 echo "OK: $N_OK · UYARI: $N_WARN · EKSİK: $N_MISS"
 if [ "$WAN_STAGE" = none ]; then
   if [ "$N_MISS" -gt 0 ]; then echo "Önce [EKSİK] satırlarını giderin."
-  elif [ -z "$CANDS" ]; then echo "Ön koşullar tamam. Adaptör gelince: mavi USB 3 portuna takın, modemin / ONT'nin boş LAN portuna bağlayın ve bu betiği yeniden çalıştırın."
+  elif [ -z "$CANDS" ]; then echo "Ön koşullar tamam. Adaptör gelince: mavi USB 3 portuna takın, modemin / ONT'nin boş LAN portuna bağlayın ve bu betiği yeniden çalıştırın. (Ya da tek port: VLAN anahtarı hazırsa panelden '${LAN_IF:-eth0} · tek port'.)"
   else echo "Hazır: Cihaz Rolleri → İnternet bağlantısı → kart ($CANDS), bağlantı türü seçip 'İnternet kartına geç (5 dk deneme)'. Sonra bu betiği yeniden çalıştırın."; fi
 elif [ "$WAN_STAGE" = trial ]; then
   echo "Deneme sürüyor: [EKSİK] yoksa bir web sitesi açıp panelden 'Çalışıyor, kalıcı yap'a basın."

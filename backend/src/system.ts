@@ -828,6 +828,9 @@ export interface NetModeState {
   homeStage: 'none' | 'trial' | 'on'; homeIface: string; lanIf: string;
   wanStage: 'none' | 'trial' | 'on'; wanPort: string; wanDev: string; wanType: '' | 'dhcp' | 'static' | 'pppoe';
   wanVlan: string; wanLan: boolean;
+  // Tek port (R3b): internet ev ağı kartının üzerindeki VLAN'dan (wanPort = iface) — kartın kendisi EV AĞIDIR.
+  wanSingle: boolean;
+  wanMtu: number; // kayıtlı MTU (0 = varsayılan); PPPoE'de Ev VPN'i tünel MTU'su buna göre
 }
 // Kurulum Wi-Fi'ının Pi adresi ve ağı (net-mode.sh AP_ADDR/AP_NET ile aynı; istemciler 192.168.50.20–200 alır).
 export const AP_ADDR = '192.168.50.1';
@@ -866,16 +869,19 @@ export function readNetModeState(): NetModeState | null {
     wanType: kv.wan_type === 'dhcp' || kv.wan_type === 'static' || kv.wan_type === 'pppoe' ? kv.wan_type : '',
     wanVlan: /^\d{1,4}$/.test(kv.wan_vlan || '') ? kv.wan_vlan : '',
     wanLan: kv.wan_lan === '1',
+    wanSingle: !!kv.wan_port && kv.wan_port === kv.iface && ifName(kv.wan_port) !== '',
+    wanMtu: /^\d{3,4}$/.test(kv.wan_mtu || '') ? Number(kv.wan_mtu) : 0,
   };
 }
 const netModeActive = (s: NetModeState | null): s is NetModeState => !!s && (s.stage === 'trial' || s.stage === 'static');
 // İnternet kartı deneme ya da kalıcı (kart adı geçerli).
 export const wanActive = (s: NetModeState | null): s is NetModeState =>
   !!s && (s.wanStage === 'trial' || s.wanStage === 'on') && !!s.wanPort && !!s.wanDev;
-// İnternet tarafı arayüzleri: kart + (varsa) VLAN + (varsa) PPPoE — net-mode.sh wan_ifset ile aynı küme.
+// İnternet tarafı arayüzleri: kart + (varsa) VLAN + (varsa) PPPoE — net-mode.sh wan_ifset ile aynı küme. Tek portta
+// kart ev ağıdır: listeye girmez (yoksa ev ağı cihazları, NAT'ı ve güvenlik duvarı "internet tarafı" sayılırdı).
 export function wanIfaces(s: NetModeState | null): string[] {
   if (!wanActive(s)) return [];
-  return [...new Set([s.wanPort, ...(s.wanVlan ? [`wan.${s.wanVlan}`] : []), s.wanDev])];
+  return [...new Set([...(s.wanSingle ? [] : [s.wanPort]), ...(s.wanVlan ? [`wan.${s.wanVlan}`] : []), s.wanDev])];
 }
 // Ev ağının arayüzü (internet kartı modunda): köprü açıkken br0, değilse sabit adresin kartı.
 function lanIfaceOf(s: NetModeState): string {
