@@ -1,13 +1,17 @@
 // Pi-hole → Bloklisteleri / Beyaz Liste / Kara Liste / Yerel DNS: paneldeki kayıtlar Pi-hole'a gerçekten uygulanır.
 // Eskiden yalnız veritabanındaydı (panelde beyaz listeye eklenen site Pi-hole'da engelli kalıyordu).
 //  - Pi-hole v6'nın kendi API'si kullanılır (pihole allow/deny CLI'sinin yaptığı gibi): veritabanı dosyasına doğrudan
-//    yazılmaz, FTL kaydı kendisi yapar ve listeleri yeniden yükler. Adres FTL'e DNS (CHAOS local.api.ftl) ile sorulur;
-//    oturum /etc/pihole/cli_pw ile açılır (Pi-hole'un CLI'si de böyle yapar; parolasız API'de gerekmez).
+//    yazılmaz, FTL kaydı kendisi yapar ve listeleri yeniden yükler. Adres FTL'e DNS (CHAOS local.api.ftl) ile sorulur ve
+//    Pi-hole'un CLI'si (advanced/Scripts/api.sh) gibi verilen adresler sırayla denenir — https dahil: panel nginx'i 80'i
+//    tuttuğunda FTL yalnız 443'te (https) dinler ve local.api.ftl yalnız onu verir. Oturum /etc/pihole/cli_pw ile açılır
+//    (Pi-hole'un CLI'si de böyle yapar; parolasız API'de gerekmez).
 //  - Panelin eklediği kayıtlar açıklamada "klyrix" ile işaretlenir; eşitleme YALNIZ bunları ekler/siler. Pi-hole'a kendi
 //    arayüzünden eklenmiş kayıtlara dokunulmaz (panelde "Pi-hole'da ayrıca" olarak gösterilir).
 //  - Yerel DNS (dns.hosts) kayıtlarında açıklama alanı yok: panelin son yazdığı kayıtlar app_settings'te tutulur.
 //  - Bloklistesi değişince gravity (liste indirme) arka planda başlatılır.
 import fs from 'fs';
+import http from 'http';
+import https from 'https';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
 import { dbAll, dbGet, dbRun } from './db';
@@ -66,43 +70,80 @@ const isManaged = (c: unknown) => typeof c === 'string' && (c === MARK || c.star
 // ─── FTL API istemcisi ───
 interface Ftl { call: (method: string, path: string, body?: unknown) => Promise<{ status: number; json: any }>; close: () => Promise<void> }
 
-async function apiBase(): Promise<string> {
+// FTL'in API adresleri (local.api.ftl: dinlediği her port, FTL'in verdiği sırayla; http ve https) + eski varsayılan 8080.
+export async function apiCandidates(): Promise<string[]> {
+  let urls: string[] = [];
   try {
     const port = (await execFileP('pihole-FTL', ['--config', 'dns.port'], { timeout: 5000 })).stdout.trim() || '53';
     const out = (await execFileP('dig', ['+short', '-p', port, 'chaos', 'txt', 'local.api.ftl', '@127.0.0.1'], { timeout: 5000 })).stdout;
-    const urls = [...out.matchAll(/"([^"]+)"/g)].map(m => m[1]);
-    return urls.find(u => u.startsWith('http://')) || FALLBACK_API;
-  } catch {
-    return FALLBACK_API;
-  }
+    urls = [...out.matchAll(/"([^"]+)"/g)].map(m => m[1]).filter(u => /^https?:\/\/[^\s/]+\/.*api\/$/i.test(u));
+  } catch { /* dig yok ya da FTL yanıt vermiyor */ }
+  return [...new Set([...urls, FALLBACK_API])];
 }
 
-async function openFtl(): Promise<Ftl> {
-  const base = await apiBase();
-  let sid: string | null = null;
-  const req = async (method: string, path: string, body?: unknown) => {
-    const res = await fetch(base + path, {
-      method,
-      headers: { Accept: 'application/json', 'Content-Type': 'application/json', ...(sid ? { sid } : {}) },
-      body: body === undefined ? undefined : JSON.stringify(body),
-      signal: AbortSignal.timeout(15000),
+// Tek istek. https'te FTL'in kendi (öz imzalı) sertifikası doğrulanmaz — Pi-hole'un CLI'si de "curl -k" ile bağlanır;
+// adresler FTL'in bu cihazda dinlediği adreslerdir (local.api.ftl). Bağlantı hatası (FTL kapalı / port yok) fırlatılır.
+function ftlRequest(url: string, method: string, headers: Record<string, string>, body?: string): Promise<{ status: number; text: string }> {
+  return new Promise((resolve, reject) => {
+    const u = new URL(url);
+    const secure = u.protocol === 'https:';
+    const opts: https.RequestOptions = {
+      method, timeout: 15000,
+      headers: { ...headers, ...(body !== undefined ? { 'Content-Length': String(Buffer.byteLength(body)) } : {}) },
+      ...(secure ? { rejectUnauthorized: false } : {}),
+    };
+    const req = (secure ? https : http).request(u, opts, res => {
+      let text = '';
+      res.setEncoding('utf8');
+      res.on('data', d => { if (text.length < 8 * 1024 * 1024) text += d; });
+      res.on('end', () => resolve({ status: res.statusCode || 0, text }));
     });
-    const text = await res.text();
-    let json: any = null;
-    try { json = text ? JSON.parse(text) : null; } catch { json = null; }
-    return { status: res.status, json };
-  };
+    req.on('timeout', () => req.destroy(Object.assign(new Error('zaman aşımı'), { code: 'ETIMEDOUT' })));
+    req.on('error', reject);
+    req.end(body);
+  });
+}
+
+async function ftlCall(base: string, sid: string | null, method: string, path: string, body?: unknown) {
+  const res = await ftlRequest(base + path, method,
+    { Accept: 'application/json', 'Content-Type': 'application/json', ...(sid ? { sid } : {}) },
+    body === undefined ? undefined : JSON.stringify(body));
+  let json: any = null;
+  try { json = res.text ? JSON.parse(res.text) : null; } catch { json = null; }
+  return { status: res.status, json };
+}
+
+// Oturum açar: adaylar sırayla denenir, bağlanılamayan atlanır (Pi-hole CLI'si gibi). waitMs > 0 ise (açılış: FTL henüz
+// kalkmamış ya da yeniden başlıyor) hiçbirine bağlanılamadığında 5 sn arayla bu süre boyunca yeniden denenir.
+async function openFtl(waitMs = 0): Promise<Ftl> {
   let password = '';
   try { password = fs.readFileSync('/etc/pihole/cli_pw', 'utf8').trim(); } catch { /* parolasız API ya da CLI parolası kapalı */ }
-  const auth = await req('POST', 'auth', { password });
-  if (auth.status >= 400 || !auth.json?.session?.valid) {
-    throw new Error(`Pi-hole API oturumu açılamadı (HTTP ${auth.status})`);
+  const deadline = Date.now() + waitMs;
+  let tried: string[] = [];
+  let lastErr = '';
+  for (;;) {
+    tried = await apiCandidates();
+    for (const base of tried) {
+      let auth: { status: number; json: any };
+      try {
+        auth = await ftlCall(base, null, 'POST', 'auth', { password });
+      } catch (e: any) {
+        lastErr = e?.code || e?.message || String(e);
+        continue;
+      }
+      if (auth.status >= 400 || !auth.json?.session?.valid) {
+        throw new Error(`Pi-hole API oturumu açılamadı (HTTP ${auth.status}, ${base})`);
+      }
+      const sid: string | null = auth.json.session.sid || null;
+      return {
+        call: (method, path, body) => ftlCall(base, sid, method, path, body),
+        close: async () => { if (sid) await ftlCall(base, sid, 'DELETE', 'auth').catch(() => undefined); },
+      };
+    }
+    if (Date.now() >= deadline) break;
+    await new Promise(r => setTimeout(r, 5000));
   }
-  sid = auth.json.session.sid || null;
-  return {
-    call: req,
-    close: async () => { if (sid) await req('DELETE', 'auth').catch(() => undefined); },
-  };
+  throw new Error(`Pi-hole API'sine bağlanılamadı (${tried.join(', ')}: ${lastErr}) — Pi-hole (pihole-FTL) çalışıyor mu?`);
 }
 
 const apiError = (r: { status: number; json: any }, what: string) =>
@@ -116,20 +157,21 @@ let lastSync: ListSyncResult | null = null;
 export const lastListSync = () => lastSync;
 let running: Promise<ListSyncResult> | null = null;
 
-// Paneldeki durum → Pi-hole. Aynı anda tek eşitleme (üst üste gelen istekler bekleyen sonucu paylaşır).
-export function syncPiholeLists(): Promise<ListSyncResult> {
+// Paneldeki durum → Pi-hole. Aynı anda tek eşitleme (üst üste gelen istekler bekleyen sonucu paylaşır). waitMs: FTL'e
+// bağlanılamazsa bu süre boyunca yeniden dene (açılış; panel işlemleri beklemez).
+export function syncPiholeLists(opts: { waitMs?: number } = {}): Promise<ListSyncResult> {
   if (!isLinux) return Promise.resolve({ ok: true, added: 0, removed: 0, gravity: false, errors: [], at: Date.now() });
-  if (running) return running.then(() => syncPiholeLists());
-  running = doSync().finally(() => { running = null; });
+  if (running) return running.then(() => syncPiholeLists(opts));
+  running = doSync(opts.waitMs || 0).finally(() => { running = null; });
   return running;
 }
 
-async function doSync(): Promise<ListSyncResult> {
+async function doSync(waitMs: number): Promise<ListSyncResult> {
   const result: ListSyncResult = { ok: false, added: 0, removed: 0, gravity: false, errors: [], at: Date.now() };
   const items = (await dbAll('SELECT * FROM pihole_lists') as PanelItem[]).filter(i => !validateListValue(i.list_type, i.value));
   let ftl: Ftl | null = null;
   try {
-    ftl = await openFtl();
+    ftl = await openFtl(waitMs);
 
     // 1) Beyaz / kara liste (exact + regex)
     const want = new Map<string, { entry: ReturnType<typeof domainEntry>; comment: string }>();

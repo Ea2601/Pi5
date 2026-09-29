@@ -4535,9 +4535,10 @@ const server = app.listen(Number(port), bindHost, () => {
       catch (e: any) { console.error('[cron] zamanlayıcı eşitlenemedi:', e?.message || e); }
     })();
   }, 5000);
-  // Pi-hole listeleri: panel kayıtları Pi-hole'a uygulanır (FTL açılışta geç hazır olabilir → 30 sn sonra). Uyduda yok.
+  // Pi-hole listeleri: panel kayıtları Pi-hole'a uygulanır (FTL açılışta geç hazır olabilir → 30 sn sonra; açılıştaki DNS
+  // yeniden başlatmasına denk gelirse 2 dk'ya kadar yeniden denenir). Uyduda yok.
   if (!isSatellite()) setTimeout(() => {
-    void syncPiholeLists().then(r => {
+    void syncPiholeLists({ waitMs: 120000 }).then(r => {
       if (r.ok) return;
       console.error('[pihole-lists] eşitleme:', r.errors.join('; '));
       void recordEventOnce('pihole', `Pi-hole listeleri açılışta uygulanamadı: ${r.errors.join('; ')}`, 'warning', 60);
