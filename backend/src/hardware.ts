@@ -26,7 +26,10 @@ export type Hardware = {
   board: string; kernel: string; iwMissing: boolean;
   eth: EthPort[]; radios: Radio[];
   tools: Record<string, boolean>; modules: Record<string, boolean>;
-  net: { uplinkIface: string | null; netStage: string; apStage: string; apIface: string | null; piDhcp: boolean };
+  net: {
+    uplinkIface: string | null; netStage: string; apStage: string; apIface: string | null; piDhcp: boolean;
+    homeStage?: string; homeIface?: string | null;
+  };
 };
 
 // ─── iw list ayrıştırma ───
@@ -170,21 +173,26 @@ export function evaluateRoles(hw: Hardware): RoleEval[] {
     notes: wanNotes,
   });
 
-  // Erişim noktası: ev Wi-Fi'ı Pi'den, ev ağına köprülü.
-  const setupRadio = hw.net.apStage !== 'none' && hw.net.apIface ? radios.find(r => r.ifaces.includes(hw.net.apIface!)) : undefined;
+  // Erişim noktası: ev Wi-Fi'ı Pi'den, ev ağına köprülü (net-mode.sh home: eth0 + Wi-Fi kartı tek köprüde, R1).
+  // Betik ilk Wi-Fi kartını kullanır; kurulum Wi-Fi'ı da aynı kartta olduğundan ikisi birlikte açılamaz.
+  const homeStage = hw.net.homeStage || 'none';
+  const isStatic = hw.net.netStage === 'static';
   const apNotes: Note[] = [];
-  if (setupRadio && apRadios.length === 1 && apRadios[0] === setupRadio && !setupRadio.apAp) {
-    apNotes.push({ kind: 'warn', text: "Kurulum Wi-Fi'ı bu radyoyu kullanıyor ve radyo aynı anda iki yayın yapamıyor: ev Wi-Fi'ı açılırsa kurulum Wi-Fi'ı ya kapanır ya da ikinci radyoya taşınır." });
+  if (homeStage === 'trial') apNotes.push({ kind: 'info', text: "Deneme sürüyor: ev Wi-Fi'ına bağlı bir telefondan 'Kalıcı yap'a basın; basılmazsa Pi eski ayara döner." });
+  if (homeStage === 'none' && hw.net.apStage !== 'none') {
+    apNotes.push({ kind: 'warn', text: "Kurulum Wi-Fi'ı açık: ev Wi-Fi'ı aynı Wi-Fi kartını kullanır — önce kurulum Wi-Fi'ını kapatın." });
   }
+  if (homeStage === 'none' && !isStatic) apNotes.push({ kind: 'info', text: "Önce DHCP Ayarları sihirbazında Pi'ye sabit adres verip kalıcı yapın." });
   if (apRadios.some(r => r.driver === 'brcmfmac') && !apRadios.some(r => r.bus === 'usb')) {
     apNotes.push({ kind: 'info', text: 'Dahili radyo tek antenli Wi-Fi 5: küçük alan ve az cihaz için uygun; geniş ev için USB adaptör önerilir.' });
   }
   out.push({
-    id: 'ap', group: 'wireless', phase: 'R1',
-    status: unknownRadios ? 'unknown' : apRadios.length ? 'hw-ready' : 'needs-hw',
+    id: 'ap', group: 'wireless', phase: null,
+    status: unknownRadios ? 'unknown' : homeStage === 'on' ? 'active' : apRadios.length ? 'available' : 'needs-hw',
     checks: [
       { ok: unknownRadios ? null : apRadios.length > 0, label: 'AP modu', value: unknownRadios ? unk : apRadios.map(radioLabel).join(', ') || 'yok' },
       { ok: unknownRadios ? null : apRadios.some(r => r.bands.includes('5')), label: '5 GHz bant', value: unknownRadios ? unk : apRadios.some(r => r.bands.includes('5')) ? 'var' : 'yalnız 2.4 GHz' },
+      { ok: isStatic, label: 'Sabit adres', value: isStatic ? 'kalıcı' : hw.net.netStage === 'trial' ? 'deneme sürüyor' : 'yok' },
     ],
     need: !unknownRadios && !apRadios.length ? [HW_SUGGEST.wifiMesh] : [],
     notes: apNotes,
@@ -278,11 +286,14 @@ export async function readHardware(net: Omit<Hardware['net'], 'uplinkIface'>, op
       || fs.existsSync(`${base}/bridge`) || !fs.existsSync(`${base}/device`)) continue;
     const speed = Number(readText(`${base}/speed`));
     const carrier = readText(`${base}/carrier`);
+    // Ev Wi-Fi'ı açıkken varsayılan rota köprüdedir (br0): köprünün portu olan kart da bağlantı kartıdır.
+    let master = '';
+    try { master = path.basename(fs.readlinkSync(`${base}/master`)); } catch { /* köprüde değil */ }
     eth.push({
       name, driver: driverOf(`${base}/device`), ...busInfo(`${base}/device`),
       speedMbps: Number.isFinite(speed) && speed > 0 ? speed : null,
       carrier: carrier === '1' ? true : carrier === '0' ? false : null,
-      mac: readText(`${base}/address`), uplink: name === uplinkIface,
+      mac: readText(`${base}/address`), uplink: !!uplinkIface && (name === uplinkIface || master === uplinkIface),
     });
   }
 

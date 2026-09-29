@@ -36,6 +36,9 @@ export interface NetModeStatus {
   // Kurulum Wi-Fi'ı: Pi'nin kendi Wi-Fi kartından yayınladığı yönetim ağı (Pi 192.168.50.1, internet yok).
   ap_stage?: 'none' | 'trial' | 'on'; ap_trial_ends?: number; ap_ssid?: string; ap_iface?: string; ap_capable?: boolean;
   ap_active?: boolean; ap_addr?: string; ap_guard_result?: string; ap_guard_detail?: string;
+  // Ev Wi-Fi'ı (Cihaz Rolleri → erişim noktası): eth0 + Wi-Fi kartı tek köprüde (lan_if = br0), adresler köprüde.
+  lan_if?: string; home_stage?: 'none' | 'trial' | 'on'; home_trial_ends?: number; home_ssid?: string; home_iface?: string;
+  home_band?: 'bg' | 'a'; home_channel?: number; home_capable?: boolean; home_active?: boolean; br_active?: boolean;
 }
 interface ProbeResult { servers: string[]; own: string[] }
 
@@ -158,7 +161,9 @@ export function DhcpWizard({ dhcp, net, netErr, reload }: Props) {
   // Wi-Fi'ı kalıcı. Adresi olmayan ama açık Wi-Fi'yi NetworkManager modeme kendiliğinden yeniden bağlayabilir (Pi aynı ağa
   // iki yoldan bağlanır); kurulum Wi-Fi'ının profili ev ağı bağlantısından önceliklidir.
   const wifiOff = net.wifi === 'disabled';
-  const wifiReady = wifiOff || apOn;
+  // Ev Wi-Fi'ı açıkken kart yayındadır (köprünün portu, modem ağına istemci olarak bağlanmaz).
+  const homeStage = net.home_stage || 'none';
+  const wifiReady = wifiOff || apOn || homeStage === 'on';
   const viaWifi = wlanAddrs.some(a => ipOf(a) === window.location.hostname);
   // Panel şu an kurulum Wi-Fi'ından açılmış (yayın kapanınca bu tarayıcının bağlantısı kopar).
   const viaAp = apStage !== 'none' && window.location.hostname === apIp;
@@ -425,7 +430,8 @@ export function DhcpWizard({ dhcp, net, netErr, reload }: Props) {
             <span>
               <Badge variant="success">Sabit</Badge>{' '}
               Cihazlar için <code>{net.client}</code>, modem tarafı <code>{net.transit}</code> → modem <code>{net.gw}</code>
-              {net.active_conn && net.active_conn !== 'pi5-eth0' ? ` — etkin profil: ${net.active_conn}` : ''}.
+              {net.active_conn === 'pi5-br0' ? ` — adresler ev Wi-Fi köprüsünde (${net.lan_if || 'br0'})`
+                : net.active_conn && net.active_conn !== 'pi5-eth0' ? ` — etkin profil: ${net.active_conn}` : ''}.
             </span>
             {net.profile_ok === false && !guardEmergency && (
               <Alert kind="err">Sabit IP profil dosyası eksik — Pi açılışta yedekten geri yükler; sorun sürerse otomatik adrese dönün.</Alert>
@@ -462,7 +468,17 @@ export function DhcpWizard({ dhcp, net, netErr, reload }: Props) {
       </Step>
 
       <Step n={3} title="Pi'nin Wi-Fi'si" state={step3}>
-        {apStage === 'none' && (
+        {homeStage !== 'none' && (
+          <span>
+            {/* Rozet büyük harfle yazılır: lang="tr"de "Wi-Fi" → "Wİ-Fİ" olmasın. Tek span: rozet inline-flex, parçalar
+                ayrı öğe olunca aradaki boşluk düşer. */}
+            {homeStage === 'on' ? <><Badge variant="success"><span>Ev <span lang="en">Wi-Fi</span>'ı</span></Badge>{' '}</> : null}
+            Pi'nin Wi-Fi'si ev Wi-Fi'ını yayınlıyor{net.home_ssid ? ` (${net.home_ssid})` : ''}
+            {homeStage === 'trial' ? ' — deneme sürüyor' : ''}: kart kablolu ağla aynı köprüde, modem ağına istemci olarak
+            bağlanmaz. Ayarlar: menü → Cihaz Rolleri.
+          </span>
+        )}
+        {apStage === 'none' && homeStage === 'none' && (
           <>
             <span>
               {wifiOff

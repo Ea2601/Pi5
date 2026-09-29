@@ -2,8 +2,10 @@ import type { ReactNode } from 'react';
 import { Layers, Router, Globe, Wifi, Repeat2, Cable, Share2, Check, X, CircleHelp, Cpu, Info, TriangleAlert, RefreshCw, Package } from 'lucide-react';
 import { useApi } from '../hooks/useApi';
 import { Panel, Badge } from './ui';
+import { HomeWifiPanel } from './HomeWifiPanel';
 
-// Cihaz Rolleri: Pi'nin takılı donanımına göre hangi ağ rollerini üstlenebileceği (R0, salt okunur). Roller üç grupta
+// Cihaz Rolleri: Pi'nin takılı donanımına göre hangi ağ rollerini üstlenebileceği (R0). Erişim noktası (R1) "Kablosuz
+// yayın" grubunun altındaki Ev Wi-Fi'ı panelinden açılır (HomeWifiPanel); diğer roller salt okunur. Roller üç grupta
 // (yönlendirme / kablosuz yayın / mesh), her kart aynı iskelette: başlık + durum, açıklama, gereksinim tablosu, tipli
 // notlar, altta eksik donanım ve faz. Donanım üç tabloda: kablolu arayüzler, radyo yetenekleri, yazılım bileşenleri.
 // Veri /api/system/hardware (backend/src/hardware.ts).
@@ -130,7 +132,7 @@ export function RolesPanel() {
   return (
     <div className="fade-in page-stack rl-page">
       <Panel title="Cihaz Rolleri" icon={<Layers size={20} style={{ marginRight: 8 }} />}
-        subtitle="Klyrix Gate'in takılı donanıma göre üstlenebileceği ağ rolleri. Bu sayfa yalnız okur; rol değiştirme ilgili fazlarda eklenecek."
+        subtitle="Klyrix Gate'in takılı donanıma göre üstlenebileceği ağ rolleri. Erişim noktası bu sayfadan açılır; diğer roller ilgili fazlarda eklenecek."
         actions={<button className="icon-btn" onClick={refetch} title="Yeniden tara" aria-label="Donanımı yeniden tara"><RefreshCw size={14} className={loading ? 'spin' : ''} /></button>}>
         {!data && <div className="rl-state">{error ? `Donanım bilgisi alınamadı (${error})` : 'Donanım taranıyor…'}</div>}
         {data && !data.supported && <div className="rl-state">Donanım taraması yalnız Pi üzerinde çalışır.</div>}
@@ -160,6 +162,9 @@ export function RolesPanel() {
           <section key={g.id} className="rl-group" aria-labelledby={`rl-g-${g.id}`}>
             <h2 id={`rl-g-${g.id}`} className="rl-group-title">{g.title}</h2>
             <div className="rl-grid">{items.map(r => <RoleCard key={r.id} r={r} />)}</div>
+            {g.id === 'wireless' && items.some(r => r.id === 'ap' && (r.status === 'available' || r.status === 'active')) && (
+              <HomeWifiPanel onChange={refetch} />
+            )}
           </section>
         );
       })}

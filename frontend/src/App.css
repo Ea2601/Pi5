@@ -1114,6 +1114,30 @@ body.nav-open { overflow: hidden; }
 .rl-have .rl-mark { top: 0; }
 .rl-foot-note { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; margin: 14px 0 0; color: var(--text-muted); font-size: 11.5px; }
 .rl-foot-note .rl-mark { top: 0; }
+
+/* Ev Wi-Fi'ı paneli (HomeWifiPanel — erişim noktası rolü), "Kablosuz yayın" grubunun altında */
+.rl-group > .glass-panel { margin-top: 10px; }
+.hw-body { display: flex; flex-direction: column; gap: 10px; }
+.hw-body .routing-apply { margin-top: 0; }
+.hw-facts { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 8px 16px; margin: 0; }
+.hw-facts > div { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.hw-facts dt { color: var(--text-muted); font-size: 11px; }
+.hw-facts dd { margin: 0; color: var(--text-primary); font-size: 12.5px; overflow-wrap: anywhere; }
+.hw-form { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)) repeat(2, minmax(90px, 0.5fr)); gap: 8px; align-items: end; }
+.hw-field { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.hw-field > span { color: var(--text-muted); font-size: 11px; }
+.hw-field .config-input, .hw-field select { width: 100%; max-width: none; }
+.hw-form-err { color: var(--danger-color); font-size: 12px; }
+.hw-steps { margin: 0; padding-left: 20px; display: flex; flex-direction: column; gap: 4px; font-size: 12.5px; color: var(--text-secondary); }
+.hw-steps code { font-size: 11.5px; background: rgba(255, 255, 255, 0.08); padding: 1px 5px; border-radius: 6px; overflow-wrap: anywhere; }
+@media (max-width: 900px) {
+  .hw-form { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .hw-form .hw-field:first-child { grid-column: 1 / -1; }
+}
+@media (max-width: 480px) {
+  .hw-form { grid-template-columns: 1fr 1fr; }
+  .hw-form .hw-field:not(.hw-field-sm) { grid-column: 1 / -1; }
+}
 @media (max-width: 760px) {
   .rl-table thead { display: none; }
   .rl-table, .rl-table tbody, .rl-table tr, .rl-table td { display: block; width: 100%; }

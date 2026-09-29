@@ -810,13 +810,18 @@ function parseCidr(s: string): { ip: string; prefix: number; network: string } |
 // değerler nft kurallarına girdiği için biçim dışı olan alan boş sayılır. Dosya yoksa null.
 // Kurulum Wi-Fi'ı (net-mode.sh `ap`, aynı dosyada ap_stage/ap_iface): Pi'nin dahili Wi-Fi'ı yalnız yönetim için bir erişim
 // noktası yayar (internet yok). eth0 aşamasından bağımsızdır; biçim dışı değer 'none' / '' sayılır.
+// Ev Wi-Fi'ı (net-mode.sh `home`, aynı dosyada home_stage/home_iface/lan_if): eth0 ve Wi-Fi kartı tek köprüde (br0)
+// birleşir, iki sabit adres köprüye taşınır; lanIf = cihaz ağının arayüzü (köprü açıkken br0, değilse boş).
 export interface NetModeState {
   stage: 'none' | 'trial' | 'static'; iface: string; transit: string; client: string; gw: string;
   apStage: 'none' | 'trial' | 'on'; apIface: string;
+  homeStage: 'none' | 'trial' | 'on'; homeIface: string; lanIf: string;
 }
 // Kurulum Wi-Fi'ının Pi adresi ve ağı (net-mode.sh AP_ADDR/AP_NET ile aynı; istemciler 192.168.50.20–200 alır).
 export const AP_ADDR = '192.168.50.1';
 export const AP_NET = '192.168.50.0/24';
+// Ev Wi-Fi'ı köprüsünün adı (net-mode.sh BR_IF ile aynı).
+export const HOME_BRIDGE = 'br0';
 const NET_MODE_STATE = '/etc/pi5-gateway/net/state';
 export function readNetModeState(): NetModeState | null {
   let text: string;
@@ -828,6 +833,8 @@ export function readNetModeState(): NetModeState | null {
   }
   const stage = kv.stage === 'trial' || kv.stage === 'static' ? kv.stage : 'none';
   const apStage = kv.ap_stage === 'trial' || kv.ap_stage === 'on' ? kv.ap_stage : 'none';
+  const homeStage = kv.home_stage === 'trial' || kv.home_stage === 'on' ? kv.home_stage : 'none';
+  const ifName = (s: string | undefined) => (/^[A-Za-z0-9_.-]{1,15}$/.test(s || '') ? s! : '');
   // /8'den geniş bir ağ (bozuk dosya, ör. /0) iç içe ağ elemesinde diğer tüm LAN ağlarını silerdi.
   const cidrOk = (s: string) => (parseCidr(s)?.prefix ?? 0) >= 8;
   return {
@@ -838,6 +845,9 @@ export function readNetModeState(): NetModeState | null {
     gw: isIpv4(kv.gw || '') ? kv.gw : '',
     apStage,
     apIface: /^[A-Za-z0-9_.-]{1,15}$/.test(kv.ap_iface || '') ? kv.ap_iface : '',
+    homeStage,
+    homeIface: ifName(kv.home_iface),
+    lanIf: ifName(kv.lan_if),
   };
 }
 const netModeActive = (s: NetModeState | null): s is NetModeState => !!s && (s.stage === 'trial' || s.stage === 'static');
@@ -1560,6 +1570,9 @@ async function waitLocalDns(maxMs: number = 15000): Promise<boolean> {
 // Kurulum Wi-Fi'ı açıkken (deneme/kalıcı) AP kartı ve AP_NET listelere girmez: o ağın istemcileri NAT/iletim izni almaz,
 // yalnız Pi'nin kendisine (panel, DNS, DHCP) ulaşır — iletimi ayrıca net-mode.sh'nin pi5_ap tablosu düşürür.
 // 192.168.50.1 Pi'nin kendi adresi olarak selfIps'te kalır (AP o an kalkmamış olsa da eklenir).
+// Sabit adres modunda ev Wi-Fi köprüsü (br0) de listeye önceden girer: ev Wi-Fi'ı açılınca adresler ve istemci trafiği
+// eth0'dan br0'a geçer; kurallar geçişten önce ve sonra (köprü kurulamayıp eth0'a dönülse de) eşleşsin. Köprü yokken
+// `iifname "br0"` hiçbir pakete uymaz.
 const GW_NFT = '/opt/pi5-gateway/core/pi5-gw.nft';
 const IN_NFT = '/opt/pi5-gateway/core/pi5-in.nft';
 async function detectGatewayLan(ns: NetModeState | null = readNetModeState()): Promise<{ nets: string[]; ifaces: string[]; selfIps: string[] }> {
@@ -1587,6 +1600,7 @@ async function detectGatewayLan(ns: NetModeState | null = readNetModeState()): P
   if (apOn) selfIps.add(AP_ADDR);
   if (netModeActive(ns)) {
     if (ns.iface && !/^(wg|lo)/.test(ns.iface) && !isApIface(ns.iface)) ifaces.add(ns.iface);
+    ifaces.add(HOME_BRIDGE);
     for (const c of [parseCidr(ns.transit), parseCidr(ns.client)]) {
       if (!c) continue;
       if (!inApNet(c.network)) nets.add(c.network);

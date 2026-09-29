@@ -259,9 +259,15 @@ default_dev() {
     if (dev != "" && dev !~ /^(wg|lo|docker|veth)/) print m, dev
   }' | sort -n | awk 'NR == 1 { print $2 }'
 }
+# Cihaz ağının arayüzü: ev Wi-Fi'ı açıkken (net-mode.sh home) iki adres köprüdedir (lan_if=br0); köprü yoksa kart.
+lan_iface() {
+  local b
+  b=$(kv_get "$NET_STATE" lan_if)
+  if [ -n "$b" ] && [ -e "/sys/class/net/$b" ]; then echo "$b"; else kv_get "$NET_STATE" iface; fi
+}
 probe_iface() {
   local i
-  i=$(kv_get "$NET_STATE" iface)
+  i=$(lan_iface)
   [ -n "$i" ] && [ -e "/sys/class/net/$i" ] && { echo "$i"; return; }
   default_dev
 }
@@ -500,7 +506,7 @@ cmd_enable() {
 
   # 2. Pi'nin sabit adresi onaylanmış olmalı (net-mode.sh).
   [ "$(kv_get "$NET_STATE" stage)" = static ] || die "önce Pi'ye sabit adres verin ve onaylayın"
-  iface=$(kv_get "$NET_STATE" iface); transit=$(kv_get "$NET_STATE" transit)
+  iface=$(lan_iface); transit=$(kv_get "$NET_STATE" transit)
   client=$(kv_get "$NET_STATE" client); gw=$(kv_get "$NET_STATE" gw)
   tip=${transit%/*}; tpfx=${transit#*/}; cip=${client%/*}; cpfx=${client#*/}
   if [ -z "$iface" ] || ! valid_ip "$tip" || ! valid_ip "$cip" || ! valid_ip "$gw" \

@@ -13,7 +13,7 @@ import { promisify } from 'util';
 const execFileP = promisify(execFile);
 
 export type LinkKind = 'wired' | 'wifi' | 'setup' | 'unknown';
-export type LinkBasis = 'latency' | 'random-mac' | 'device-type' | 'setup-wifi' | 'none';
+export type LinkBasis = 'latency' | 'random-mac' | 'device-type' | 'setup-wifi' | 'pi-wifi' | 'none';
 export type LinkInfo = {
   kind: LinkKind; basis: LinkBasis; certain: boolean;
   medMs: number | null; p90Ms: number | null; baseMs: number | null; samples: number;
@@ -46,8 +46,9 @@ export const wirelessHint = (hostname: string | null, type: string | null) =>
 
 // Eşikler taban çizgisinin ÜSTÜNDEKİ fark (ms) üzerinden. Kablolu: ortanca ≤ +0.5, %90'lık ≤ +1.0.
 // Wi-Fi: ortanca ≥ +1.0 ya da %90'lık ≥ +2.5 (güç tasarrufundaki cihazda yüzlerce ms). Arası belirsiz → ipuçlarına bakılır.
+// onPiWifi: cihaz Pi'nin kendi ev Wi-Fi yayınına bağlı (homeWifi.ts, istasyon listesi) — kesin Wi-Fi.
 export function classifyLink(inp: {
-  samples: number[]; baseMs: number | null; randomMac: boolean; wirelessHint: boolean; onSetupWifi: boolean;
+  samples: number[]; baseMs: number | null; randomMac: boolean; wirelessHint: boolean; onSetupWifi: boolean; onPiWifi?: boolean;
 }): LinkInfo {
   const n = inp.samples.length;
   const s = [...inp.samples].sort((a, b) => a - b);
@@ -55,6 +56,7 @@ export function classifyLink(inp: {
   const out = (kind: LinkKind, basis: LinkBasis, certain: boolean): LinkInfo =>
     ({ kind, basis, certain, medMs: med, p90Ms: p90, baseMs: inp.baseMs, samples: n });
   if (inp.onSetupWifi) return out('setup', 'setup-wifi', true);
+  if (inp.onPiWifi) return out('wifi', 'pi-wifi', true);
   if (n >= 3 && med !== null && p90 !== null) {
     const base = inp.baseMs ?? 0.5;
     const me = med - base, pe = p90 - base;

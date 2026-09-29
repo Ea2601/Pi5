@@ -101,6 +101,8 @@ export type TopoInput = {
   probe?: (mac: string) => number[];
   probeBaseMs?: number | null;
   onSetupWifi?: (ip: string) => boolean;
+  // Pi'nin ev Wi-Fi yayınına bağlı MAC (homeWifi.ts).
+  onPiWifi?: (mac: string) => boolean;
 };
 
 const byExitOrder = (a: ExitId) => (a === 'local' ? 0 : a === 'dpi' ? 1 : 2 + Number(a.slice(4)));
@@ -197,6 +199,7 @@ export function buildTopology(inp: TopoInput): Topology {
       samples: hasMac && inp.probe ? inp.probe(d.mac) : [], baseMs: inp.probeBaseMs ?? null,
       randomMac: hasMac && isRandomMac(d.mac), wirelessHint: wirelessHint(d.hostname, d.type),
       onSetupWifi: !!d.ip && !!inp.onSetupWifi?.(d.ip),
+      onPiWifi: hasMac && !!inp.onPiWifi?.(d.mac),
     });
     d.online = isOnline(inp.neighbors.get(d.ip), d.downBps + d.upBps > 0 || inp.recentIps.has(d.ip));
     devices.push(d);

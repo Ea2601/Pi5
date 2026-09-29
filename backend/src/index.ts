@@ -14,7 +14,7 @@ import {
   getFail2banStatus, getDnsQueries, getCurrentExternalIp,
   executeCommand, applyDomainRouting, applyBlockedDevices,
   sampleMetrics, detectInterfaces, recoverInterruptedFtlRestart, VALID_DNSMASQ_DOMAIN, getRoutingApplyStatus,
-  getLanIdentity, protectedMacs, getPi5LanIp, readNetModeState, runExclusiveDnsTask, AP_ADDR, AP_NET,
+  getLanIdentity, protectedMacs, getPi5LanIp, readNetModeState, runExclusiveDnsTask, AP_ADDR, AP_NET, HOME_BRIDGE,
 } from './system';
 import type { RangeRoute } from './system';
 import { runSpeedTest, SpeedtestUnavailable, type SpeedResult } from './speedtest';
@@ -26,6 +26,7 @@ import { buildTopology, readNeighbors, readHandshakes, readDefaultRoute, readIfa
 import { startLinkProbe, probeSamples, probeBaseline, noteTopologyView, type ProbeTarget } from './linkProbe';
 import { startTrafficRecorder, usageSummary, appActivity, appDefsFrom } from './trafficHistory';
 import { readHardware, evaluateRoles } from './hardware';
+import { readHomeStations } from './homeWifi';
 import { authGate, registerAuthRoutes } from './auth';
 import { validateSchedule, validateCommand, syncCronJobs, readJobStatuses, readSystemCron, syncCronOnStartup } from './cronSync';
 import { validateListValue, normalizeListValue, syncPiholeLists, lastListSync, externalPiholeEntries } from './piholeLists';
@@ -1735,6 +1736,9 @@ app.get('/api/topology/live', async (_req, res) => {
       ? await Promise.all([readNeighbors(), readHandshakes(), readDefaultRoute(), readLocalIps(), getLanIdentity()])
       : [new Map(), new Map(), null, new Set<string>(), null];
     const lanIp = lan?.client.ip || lan?.transit.ip || '';
+    // Ev Wi-Fi'ı açıkken Pi'nin kendi yayınına bağlı cihazlar kesin bilinir (istasyon listesi).
+    const ns = isLinux ? readNetModeState() : null;
+    const piWifi = ns && ns.homeStage !== 'none' && ns.homeIface ? await readHomeStations(ns.homeIface, HOME_BRIDGE) : new Set<string>();
     const now = Date.now();
     noteTopologyView(); // harita açıkken bağlantı türü ölçümü sıklaşır
     res.json(buildTopology({
@@ -1742,6 +1746,7 @@ app.get('/api/topology/live', async (_req, res) => {
       recentIps: noteActivity(markRates, now), handshakes, ifacesUp: isLinux ? readIfaces() : new Set(),
       lanIp, hostname: require('os').hostname(), modem, localIps, accounting, nowS: Math.floor(now / 1000),
       probe: probeSamples, probeBaseMs: probeBaseline(), onSetupWifi: ip => inCidr(ip, AP_NET),
+      onPiWifi: mac => piWifi.has(mac),
     }));
   } catch (e: any) {
     res.status(500).json({ error: e.message });
@@ -1784,7 +1789,10 @@ app.get('/api/system/hardware', async (_req, res) => {
     let piDhcp = false;
     try { piDhcp = (await execFileP('pihole-FTL', ['--config', 'dhcp.active'], { timeout: 5000 })).stdout.trim() === 'true'; } catch { /* FTL yok */ }
     const ns = readNetModeState();
-    const hw = await readHardware({ netStage: ns?.stage || 'none', apStage: ns?.apStage || 'none', apIface: ns?.apIface || null, piDhcp });
+    const hw = await readHardware({
+      netStage: ns?.stage || 'none', apStage: ns?.apStage || 'none', apIface: ns?.apIface || null, piDhcp,
+      homeStage: ns?.homeStage || 'none', homeIface: ns?.homeIface || null,
+    });
     res.json({ supported: true, ...hw, roles: evaluateRoles(hw) });
   } catch (e: any) {
     res.status(500).json({ error: e.message });
@@ -2131,6 +2139,12 @@ if (isLinux) {
           if (n.code === 0 && n.kv.ap_stage === 'on' && n.kv.ap_active !== '1') {
             await addAlert('health', 'warning', 'Kurulum Wi-Fi yayını kapalı — Pi bir sonraki açılışta ya da NetworkManager yeniden başlayınca yeniden açmayı dener', 'netmode-ap');
           }
+          // Ev Wi-Fi'ı kalıcıyken köprü ya da yayın düşmüşse (köprü kurulamadıysa Pi köprüsüz çalışır, ev ağı kablodan sürer).
+          if (n.code === 0 && n.kv.home_stage === 'on' && (n.kv.home_active !== '1' || n.kv.br_active !== '1')) {
+            await addAlert('health', 'warning', n.kv.br_active !== '1'
+              ? "Ev Wi-Fi köprüsü kurulamadı — Pi köprüsüz çalışıyor, ev Wi-Fi'ı yayında değil (Cihaz Rolleri)"
+              : "Ev Wi-Fi yayını kapalı — Pi bir sonraki açılışta ya da NetworkManager yeniden başlayınca yeniden açmayı dener", 'netmode-home');
+          }
         }
       } catch (e: any) {
         console.error('[health] DHCP/sabit adres kontrolü başarısız:', e?.message || e);
@@ -2456,8 +2470,8 @@ const kvTyped = (kv: Record<string, string>, nums: string[], bools: string[]) =>
   if ('now' in out && !out.now) out.now = Math.floor(Date.now() / 1000);
   return out;
 };
-const NET_NUMS = ['trial_ends', 'now', 'guard_at', 'lease_until', 'ap_trial_ends'];
-const NET_BOOLS = ['nm', 'carrier', 'profile_ok', 'pi_dhcp', 'wifi_off', 'ap_capable', 'ap_active'];
+const NET_NUMS = ['trial_ends', 'now', 'guard_at', 'lease_until', 'ap_trial_ends', 'home_trial_ends', 'home_channel'];
+const NET_BOOLS = ['nm', 'carrier', 'profile_ok', 'pi_dhcp', 'wifi_off', 'ap_capable', 'ap_active', 'home_capable', 'home_active', 'br_active'];
 const PI_DHCP_NUMS = ['trial_ends', 'now', 'leases', 'modem_warn'];
 const PI_DHCP_BOOLS = ['active', 'ipv6', 'port67', 'input_ok'];
 const splitList = (s?: string) => String(s || '').split(',').map(x => x.trim()).filter(Boolean);
@@ -2657,6 +2671,99 @@ app.post('/api/netmode/ap/off', async (_req, res) => {
   await kvEvent('netmode', r, `Kurulum Wi-Fi'ı kapatıldı${r.kv.warning ? ` — ${r.kv.warning}` : ''}`, 'Kurulum Wi-Fi\'ı kapatılamadı');
   if (r.code !== 0) return res.status(409).json({ error: kvError(r, 'kurulum Wi-Fi\'ı kapatılamadı') });
   // Yayın kalktı ama Wi-Fi kapatılamadıysa (warning=…) arayüz bunu gösterir: Pi'nin Wi-Fi'si ev ağına dönebilir.
+  res.json({ success: true, warning: r.kv.warning || undefined });
+});
+
+// ─── Ev Wi-Fi'ı: erişim noktası rolü (net-mode.sh home …) ───
+// eth0 ve Pi'nin Wi-Fi kartı tek köprüde (br0) birleşir; kablosuz cihazlar kablolularla aynı ağa katılır (adresi evin
+// DHCP sunucusu — modem ya da Pi — verir; ayrı ağ / NAT yok). Açma her zaman 5 dk'lık denemedir; "Kalıcı yap" yalnız bu
+// yayına bağlı bir cihazdan kabul edilir. Ağ geçidi kuralları br0'ı sabit adres modunda önceden içerir (detectGatewayLan);
+// her değişiklikten sonra yine güncel duruma göre yazılır.
+const HOME_TRIAL_S = 300;
+const HOME_CHANNELS: Record<'bg' | 'a', number[]> = { bg: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13], a: [36, 40, 44, 48] };
+// Güvenlik duvarı (Kurulum → firewall eylemiyle aynı: DB'deki arayüzler + özel kurallar) uygulanmış ve forward politikası
+// drop ise kuralları köprüyü (br0) içermeli; önceki sürümle uygulanmışsa aynı ayarlarla yeniden uygulanır. Hata → mesaj.
+async function firewallCoversBridge(): Promise<string | null> {
+  const fwd = await execFileP('nft', ['list', 'chain', 'inet', 'pi5_filter', 'forward'], { timeout: 10000 }).then(r => r.stdout, () => '');
+  if (!/policy drop/.test(fwd) || fwd.includes(`"${HOME_BRIDGE}"`)) return null;
+  try {
+    const cfg = await dbAll("SELECT key, value FROM service_config WHERE service = 'nftables' AND key IN ('lan_iface', 'wan_iface')");
+    const m: Record<string, string> = {};
+    (cfg as any[]).forEach(r => { m[r.key] = r.value; });
+    const custom = buildCustomFwRules(await dbAll('SELECT type, target, action FROM routing_rules'));
+    await systemServices.configureNftables({ lan: m.lan_iface, wan: m.wan_iface }, custom);
+  } catch (e: any) {
+    return `Güvenlik duvarı köprüyü kapsayacak şekilde yeniden uygulanamadı: ${String(e?.stderr || e?.message || e).trim().slice(0, 200)}`;
+  }
+  const after = await execFileP('nft', ['list', 'chain', 'inet', 'pi5_filter', 'forward'], { timeout: 10000 }).then(r => r.stdout, () => '');
+  return /policy drop/.test(after) && !after.includes(`"${HOME_BRIDGE}"`) ? 'Güvenlik duvarı kuralları köprüyü (br0) kapsamıyor' : null;
+}
+
+app.post('/api/netmode/home', async (req, res) => {
+  if (scriptMissing(NET_MODE_SCRIPT, res)) return;
+  const { ssid, password } = req.body || {};
+  const band = req.body?.band === undefined || req.body?.band === 'bg' ? 'bg' : req.body?.band === 'a' ? 'a' : null;
+  const rawCh = req.body?.channel;
+  const channel = rawCh === undefined || rawCh === null || rawCh === '' ? (band === 'a' ? 36 : 6) : Number(rawCh);
+  if (typeof ssid !== 'string' || !validApSsid(ssid)) {
+    return res.status(400).json({ error: 'Ağ adı 1-32 karakter olmalı: harf (Türkçe harf olmadan), rakam, boşluk, _ . - ; başta/sonda boşluk olmadan' });
+  }
+  if (typeof password !== 'string' || !validApPassword(password)) {
+    return res.status(400).json({ error: 'Wi-Fi şifresi 8-63 karakter olmalı: Türkçe harf (ç ğ ı ö ş ü) ve ters bölü (\\) olmadan, başta/sonda boşluk olmadan' });
+  }
+  if (!band) return res.status(400).json({ error: 'Bant 2,4 GHz (bg) ya da 5 GHz (a) olmalı' });
+  if (!HOME_CHANNELS[band].includes(channel)) {
+    return res.status(400).json({ error: band === 'a' ? '5 GHz kanalı 36, 40, 44 ya da 48 olmalı' : '2,4 GHz kanalı 1-13 arasında olmalı' });
+  }
+  const fwErr = await firewallCoversBridge();
+  if (fwErr) return res.status(409).json({ error: fwErr });
+  // Ağ geçidi / giriş / NAT kuralları köprüyü geçişten ÖNCE içersin (önceki sürümle yazılmışsa br0 yoktur).
+  await applyAllRoutingRules().catch((e: any) => console.error('Routing yeniden uygulanamadı:', e.message));
+  const r = await runKvScript(NET_MODE_SCRIPT,
+    ['home', 'on', '--trial', String(HOME_TRIAL_S), '--ssid', ssid, '--band', band, '--channel', String(channel)], 180000, `${password}\n`);
+  await routingAfterNetChange(r);
+  await kvEvent('netmode', r, `Ev Wi-Fi'ı denemesi başladı: ${ssid} (${band === 'a' ? '5 GHz' : '2,4 GHz'}, kanal ${channel})`, 'Ev Wi-Fi\'ı açılamadı', password);
+  if (r.code !== 0) return res.status(500).json({ error: maskSecret(kvError(r, 'ev Wi-Fi\'ı açılamadı'), password) });
+  res.json({ success: true, home_trial_ends: Number(r.kv.home_trial_ends) || 0 });
+});
+
+// "Kalıcı yap" yalnız Pi'nin ev Wi-Fi yayınına bağlı bir cihazdan kabul edilir (istasyon listesi): yayının, köprünün ve
+// adres dağıtımının gerçekten çalıştığının kanıtı. Kablolu bilgisayar ya da Pi'nin kendi ekranı bunu kanıtlamaz.
+app.post('/api/netmode/home/confirm', async (req, res) => {
+  if (scriptMissing(NET_MODE_SCRIPT, res)) return;
+  const ns = readNetModeState();
+  if (!ns || ns.homeStage !== 'trial') return res.status(409).json({ error: 'Ev Wi-Fi\'ı denemesi sürmüyor (süre dolduysa geri alınmıştır)' });
+  const ip = String(req.ip || '').replace(/^::ffff:/, '');
+  const mac = isLoopbackClient(req.ip) ? '' : (await readNeighbors()).get(ip)?.mac || '';
+  const stations = ns.homeIface ? await readHomeStations(ns.homeIface, HOME_BRIDGE) : new Set<string>();
+  if (!mac || !stations.has(mac)) {
+    const st = await runKvScript(NET_MODE_SCRIPT, ['status'], 30000);
+    const ssid = (st.code === 0 && st.kv.home_ssid) || 'ev Wi-Fi\'ı';
+    return res.status(403).json({ error: `Onayı ev Wi-Fi'ına bağlı bir telefondan verin: telefonu '${ssid}' ağına bağlayın, panelde Cihaz Rolleri → Erişim noktası kartından 'Kalıcı yap'a basın` });
+  }
+  const r = await runKvScript(NET_MODE_SCRIPT, ['home', 'confirm'], 90000);
+  await routingAfterNetChange(r);
+  await kvEvent('netmode', r, 'Ev Wi-Fi\'ı kalıcı yapıldı', 'Ev Wi-Fi\'ı onaylanamadı');
+  if (r.code !== 0) return res.status(409).json({ error: kvError(r, 'onaylanamadı') });
+  res.json({ success: true });
+});
+
+app.post('/api/netmode/home/rollback', async (_req, res) => {
+  if (scriptMissing(NET_MODE_SCRIPT, res)) return;
+  const r = await runKvScript(NET_MODE_SCRIPT, ['home', 'rollback'], 150000);
+  await routingAfterNetChange(r);
+  await kvEvent('netmode', r, r.kv.rolled_back === '1' ? 'Ev Wi-Fi\'ı denemesi geri alındı' : '', 'Ev Wi-Fi\'ı geri alınamadı');
+  if (r.code !== 0) return res.status(500).json({ error: kvError(r, 'geri alınamadı') });
+  res.json({ success: true, rolled_back: r.kv.rolled_back === '1' });
+});
+
+// Bilinçli kapatma (kalıcı ya da deneme): köprü ve yayın kalkar, Pi köprüsüz sabit adrese döner.
+app.post('/api/netmode/home/off', async (_req, res) => {
+  if (scriptMissing(NET_MODE_SCRIPT, res)) return;
+  const r = await runKvScript(NET_MODE_SCRIPT, ['home', 'off'], 150000);
+  await routingAfterNetChange(r);
+  await kvEvent('netmode', r, `Ev Wi-Fi'ı kapatıldı${r.kv.warning ? ` — ${r.kv.warning}` : ''}`, 'Ev Wi-Fi\'ı kapatılamadı');
+  if (r.code !== 0) return res.status(409).json({ error: kvError(r, 'ev Wi-Fi\'ı kapatılamadı') });
   res.json({ success: true, warning: r.kv.warning || undefined });
 });
 

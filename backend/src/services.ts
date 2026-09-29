@@ -3,7 +3,7 @@ import util from 'util';
 import fs from 'fs';
 import {
   isLinux, systemctlAction, detectInterfaces, MANAGED_SERVICE_UNITS, isManagedService, TOGGLEABLE_SERVICES,
-  listWireguardTunnels, runResult, FTL_SYSTEMCTL_TIMEOUT, getLanIdentity,
+  listWireguardTunnels, runResult, FTL_SYSTEMCTL_TIMEOUT, getLanIdentity, readNetModeState, HOME_BRIDGE,
 } from './system';
 import { shq, isValidDomain } from './util';
 
@@ -69,10 +69,14 @@ export const systemServices = {
         const lan = !oneArm && exists(ifaces?.lan) ? ifaces!.lan! : detected.lan;
         // Tek bacakta kurallar yalnız o anki varsayılan rotanın kartına yazılmaz: aynı LAN'daki tüm kartlar (ikinci bacak,
         // DB tohumları) dahil edilir — kablo o an takılı değilken Uygula'ya basılırsa kablo geri gelince istemciler
-        // düşmesin (/etc/nftables.conf her açılışta yüklenir).
+        // düşmesin (/etc/nftables.conf her açılışta yüklenir). Sabit adres modunda ev Wi-Fi köprüsü (br0) ve kart da
+        // eklenir: ev Wi-Fi'ı açılınca / kapanınca (ya da köprü açılışta kurulamayıp eth0'a dönülünce) istemci trafiği
+        // arayüz değiştirir, kurallar yeniden uygulanmadan da eşleşsin.
+        const ns = readNetModeState();
+        const netModeIfs = ns && (ns.stage === 'trial' || ns.stage === 'static') ? [ns.iface, HOME_BRIDGE].filter(Boolean) : [];
         const lanIfs = oneArm
             ? [...new Set([detected.wan, ...((await getLanIdentity())?.secondary || []).map(s => s.iface),
-                ...[ifaces?.lan, ifaces?.wan].filter((n): n is string => exists(n))])]
+                ...[ifaces?.lan, ifaces?.wan].filter((n): n is string => exists(n)), ...netModeIfs])]
             : [lan];
         const wanIfs = oneArm ? lanIfs : [wan];
         const nftIfs = (xs: string[]) => (xs.length === 1 ? `"${xs[0]}"` : `{ ${xs.map(x => `"${x}"`).join(', ')} }`);

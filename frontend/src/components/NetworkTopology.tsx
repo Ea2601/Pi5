@@ -12,7 +12,7 @@ import { computeLayout, joinPaths, pointAt, level, type ExitId, type AccessId, t
 type Flow = { exit: ExitId; dpiRequested: boolean; downBps: number; upBps: number; bytesDown: number; bytesUp: number };
 // Bağlantı türü (arka uç linkProbe.ts): ARP yanıt süresi + gizli MAC / cihaz türü ipuçları; Kurulum Wi-Fi'ı kesin.
 type LinkInfo = {
-  kind: 'wired' | 'wifi' | 'setup' | 'unknown'; basis: 'latency' | 'random-mac' | 'device-type' | 'setup-wifi' | 'none';
+  kind: 'wired' | 'wifi' | 'setup' | 'unknown'; basis: 'latency' | 'random-mac' | 'device-type' | 'setup-wifi' | 'pi-wifi' | 'none';
   certain: boolean; medMs: number | null; p90Ms: number | null; baseMs: number | null; samples: number;
 };
 type TopoDevice = {
@@ -115,6 +115,7 @@ function linkText(l?: LinkInfo): string {
   if (!l) return 'Bağlantı türü bilinmiyor';
   if (l.kind === 'setup') return "Kurulum Wi-Fi'ı (Pi'nin kendi yayını)";
   if (l.kind === 'unknown') return l.samples >= 3 ? `Belirsiz — yanıt ${fmtMs(l.medMs)}, kablo ile Wi-Fi arasında` : 'Belirsiz — yanıt süresi ölçülüyor';
+  if (l.basis === 'pi-wifi') return "Wi-Fi — Pi'nin ev Wi-Fi'ına bağlı";
   const why = l.basis === 'latency' ? `yanıt ${fmtMs(l.medMs)}${l.baseMs != null ? `, modem ${fmtMs(l.baseMs)}` : ''}`
     : l.basis === 'random-mac' ? 'gizli MAC adresi' : 'cihaz türü';
   return `${l.kind === 'wired' ? 'Kablolu' : 'Wi-Fi'} — ${l.certain ? '' : 'tahmini, '}${why}`;
