@@ -34,6 +34,8 @@ import { applyZapret, zapretStatus, startBlockcheck, blockcheckRunning, zapretIn
 import type { ZapretApplyResult } from './zapret';
 import { unboundStatus, applyUnboundSettings, validateUnboundSettings } from './unbound';
 import { recordEvent, recordEventOnce, recordVersionChange, serviceLabel } from './events';
+import { wgServerStatus, setServerEnabled, addPeer, updatePeerRole, deletePeer, peerConfig, reapplyWgServer,
+  validatePeerName, validRole, WG_PORT } from './wgServer';
 import type { ListSyncResult } from './piholeLists';
 import {
   shq, sedEscape, isValidMac, isValidDomain, isValidTimezone,
@@ -311,6 +313,7 @@ app.post('/api/services/setup', async (req, res) => {
       const customRows = await dbAll('SELECT type, target, action FROM routing_rules');
       const custom = buildCustomFwRules(customRows);
       result = await systemServices.configureNftables({ lan: m.lan_iface, wan: m.wan_iface }, custom);
+      await reapplyWgServer(); // pi5_filter yeniden kuruldu: Ev VPN'i izin zincirleri (politika drop) geri eklensin
       status = await recordState('nftables');
     }
     res.json({ success: true, message: `Action ${action} executed.`, log: result, status });
@@ -653,6 +656,7 @@ app.post('/api/services/:name/restart', async (req, res) => {
     }
     // nftables restart `flush ruleset` ile cihaz engeli tablosunu da siler → yeniden uygula.
     if (name === 'nftables') await reapplyBlockedDevices();
+    if (name === 'nftables') await reapplyWgServer();
     const st = await waitServiceSettled(name, 'running', actionError ? 3000 : name === 'pihole' ? FTL_SETTLE_TIMEOUT : 15000);
     await dbRun('UPDATE service_status SET enabled = ?, status = ?, last_check = CURRENT_TIMESTAMP WHERE name = ?',
       [st.status === 'running' ? 1 : 0, st.status, name]);
@@ -1212,6 +1216,91 @@ app.delete('/api/vps/:id/clients/:clientId', async (req, res) => {
     // Delete from DB
     await dbRun('DELETE FROM wg_clients WHERE id = ?', [req.params.clientId]);
     res.json({ success: true });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ─── Ev VPN'i: Pi üzerinde WireGuard sunucusu (wgServer.ts) ───
+// Dışarıdaki cihazlar QR ile Pi'ye bağlanır; trafikleri Pi'den çıkar ve yönlendirme kurallarına tabi olur. Roller: yönetici
+// (ev ağı + panel) / misafir (yalnız internet). Yapılandırma ve QR her istendiğinde güncel DDNS adıyla üretilir.
+const roleLabel = (r: string) => (r === 'admin' ? 'yönetici' : 'misafir');
+app.get('/api/wg-server', async (_req, res) => {
+  try {
+    const st = await wgServerStatus();
+    res.json({ ...st, piLanIp: isLinux ? await getPi5LanIp().catch(() => '') : '' });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post('/api/wg-server/enable', async (req, res) => {
+  try {
+    const enabled = req.body?.enabled;
+    if (typeof enabled !== 'boolean') return res.status(400).json({ error: 'enabled alanı true/false olmalı' });
+    const r = await setServerEnabled(enabled);
+    if (!r.ok) {
+      await recordEvent('vpn', `Ev VPN'i ${enabled ? 'açılamadı' : 'kapatılamadı'}: ${r.error || 'bilinmeyen hata'}`, 'warning');
+      return res.status(500).json({ error: r.error || 'Uygulanamadı', result: r });
+    }
+    await recordEvent('vpn', enabled ? `Ev VPN'i açıldı (UDP ${WG_PORT})` : "Ev VPN'i kapatıldı");
+    res.json({ success: true, result: r });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post('/api/wg-server/peers', async (req, res) => {
+  try {
+    const name = validatePeerName(req.body?.name);
+    if (!name) return res.status(400).json({ error: 'Ad 1-40 karakter olmalı: harf, rakam, boşluk, . _ -' });
+    const role = req.body?.role ?? 'guest';
+    if (!validRole(role)) return res.status(400).json({ error: 'Rol yönetici ya da misafir olmalı' });
+    const r = await addPeer(name, role);
+    if (r.apply && !r.apply.ok) {
+      await recordEvent('vpn', `Ev VPN'i istemcisi eklendi ama Pi'ye uygulanamadı: ${name} — ${r.apply.error}`, 'warning');
+      return res.status(500).json({ error: `İstemci kaydedildi ama Pi'ye uygulanamadı: ${r.apply.error}`, id: r.id });
+    }
+    await recordEvent('vpn', `Ev VPN'i istemcisi eklendi: ${name} (${roleLabel(role)}, ${r.ip})`);
+    res.json({ success: true, id: r.id, ip: r.ip });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.put('/api/wg-server/peers/:id', async (req, res) => {
+  try {
+    const role = req.body?.role;
+    if (!validRole(role)) return res.status(400).json({ error: 'Rol yönetici ya da misafir olmalı' });
+    const r = await updatePeerRole(Number(req.params.id), role);
+    if (!r) return res.status(404).json({ error: 'İstemci bulunamadı' });
+    if (r.apply && !r.apply.ok) return res.status(500).json({ error: `Kaydedildi ama Pi'ye uygulanamadı: ${r.apply.error}` });
+    await recordEvent('vpn', `Ev VPN'i istemcisinin rolü değişti: ${r.name} → ${roleLabel(role)}`);
+    res.json({ success: true });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.delete('/api/wg-server/peers/:id', async (req, res) => {
+  try {
+    const r = await deletePeer(Number(req.params.id));
+    if (!r) return res.status(404).json({ error: 'İstemci bulunamadı' });
+    if (r.apply && !r.apply.ok) return res.status(500).json({ error: `Silindi ama Pi'ye uygulanamadı: ${r.apply.error}` });
+    await recordEvent('vpn', `Ev VPN'i istemcisi silindi: ${r.name}`);
+    res.json({ success: true });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// İstemcinin gizli anahtarını içerir: önbelleğe alınmaz.
+app.get('/api/wg-server/peers/:id/config', async (req, res) => {
+  res.set('Cache-Control', 'no-store');
+  try {
+    const c = await peerConfig(Number(req.params.id));
+    if (!c) return res.status(404).json({ error: 'İstemci bulunamadı' });
+    res.json(c);
   } catch (e: any) {
     res.status(500).json({ error: e.message });
   }
@@ -2692,6 +2781,7 @@ async function firewallCoversBridge(): Promise<string | null> {
     (cfg as any[]).forEach(r => { m[r.key] = r.value; });
     const custom = buildCustomFwRules(await dbAll('SELECT type, target, action FROM routing_rules'));
     await systemServices.configureNftables({ lan: m.lan_iface, wan: m.wan_iface }, custom);
+    await reapplyWgServer(); // pi5_filter yeniden kuruldu: Ev VPN'i izin zincirleri (politika drop) geri eklensin
   } catch (e: any) {
     return `Güvenlik duvarı köprüyü kapsayacak şekilde yeniden uygulanamadı: ${String(e?.stderr || e?.message || e).trim().slice(0, 200)}`;
   }
@@ -4317,6 +4407,8 @@ const server = app.listen(Number(port), bindHost, () => {
   }, 30000);
   // Olay geçmişi: sürüm değiştiyse (elle ya da gece otomatik güncellemesiyle) "Panel güncellendi" bir kez yazılır.
   void recordVersionChange();
+  // Ev VPN'i: açıksa yapılandırma ve kurallar güncel hâle getirilir (arayüz açılışta kendi PostUp'ıyla kuralları yükler).
+  setTimeout(() => { void reapplyWgServer(); }, 15000);
   // Panel koruması: deneme sırasında Pi yeniden başladıysa (zamanlayıcı kalıcı değil) süresi geçen deneme geri alınır.
   if (isLinux && require('fs').existsSync(PANEL_AUTH_SCRIPT)) {
     void runPanelAuth(['ensure']).then(r => { if (r.code !== 0 || r.kv.warning) console.error('[panel-auth]', r.kv.error || r.kv.warning); });

@@ -3448,3 +3448,33 @@ button.notif-item { cursor: pointer; }
   .glass-panel.notif-panel { width: 380px; }
   .notif-ack { width: 28px; height: 28px; }
 }
+
+/* ═══════════════════ EV VPN'İ (Pi WireGuard sunucusu; VPS WireGuard sayfası sekmesi) ═══════════════════ */
+.pivpn-facts { display: grid; grid-template-columns: 1fr; gap: 8px; margin-top: 12px; }
+.pivpn-fact {
+  display: flex; flex-direction: column; gap: 2px; padding: 10px 12px; min-width: 0;
+  border: 1px solid var(--panel-border); border-radius: var(--radius-sm);
+}
+.pivpn-fact span { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--text-muted); }
+.pivpn-fact strong { font-size: 14px; font-family: var(--font-mono); overflow-wrap: anywhere; }
+.pivpn-fact em { font-style: normal; font-size: 11px; color: var(--text-muted); }
+.pivpn-howto { margin-top: 12px; font-size: 13px; }
+.pivpn-howto summary { display: flex; align-items: center; gap: 6px; cursor: pointer; color: var(--text-secondary); font-weight: 600; }
+.pivpn-howto ol { margin: 10px 0 0 18px; display: flex; flex-direction: column; gap: 6px; line-height: 1.5; color: var(--text-secondary); }
+.pivpn-add { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+.pivpn-add .config-input { flex: 1 1 180px; min-width: 0; }
+.pivpn-add .ui-select-trigger { flex: 1 1 200px; }
+.pivpn-list { display: flex; flex-direction: column; gap: 6px; margin-top: 12px; }
+.pivpn-peer { flex-wrap: wrap; align-items: flex-start; }
+.pivpn-peer .svc-dot { margin-top: 6px; flex-shrink: 0; }
+.pivpn-peer-name { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; font-weight: 600; font-size: 14px; }
+.pivpn-peer-meta { font-size: 12px; color: var(--text-muted); overflow-wrap: anywhere; }
+.pivpn-peer-actions { display: flex; flex-wrap: wrap; gap: 6px; width: 100%; padding-left: 18px; }
+.pivpn-qr { display: flex; justify-content: center; padding: 16px; border-radius: var(--radius); background: #ffffff; }
+.pivpn-qr img { width: 100%; max-width: 240px; image-rendering: pixelated; }
+@media (min-width: 640px) {
+  .pivpn-facts { grid-template-columns: repeat(3, 1fr); }
+  .pivpn-peer { flex-wrap: nowrap; align-items: center; }
+  .pivpn-peer .svc-dot { margin-top: 0; }
+  .pivpn-peer-actions { width: auto; padding-left: 0; flex-shrink: 0; }
+}

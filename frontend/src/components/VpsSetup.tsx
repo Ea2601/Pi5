@@ -1,7 +1,7 @@
 import {
   Server, Lock, Globe, Loader2, CheckCircle, AlertTriangle, Trash2, Plus,
   Wifi, Settings, Activity, Network, Eye, EyeOff, Copy, X, QrCode, Users,
-  Signal, ShieldCheck
+  Signal, ShieldCheck, Home
 } from 'lucide-react';
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { useApi, postApi, deleteApi } from '../hooks/useApi';
@@ -9,9 +9,11 @@ import { ServiceSettings } from './ui/ServiceSettings';
 import { Select } from './ui';
 import { toast } from '../toast';
 import type { VpsServer } from '../types';
+import { PiVpnServer } from './PiVpnServer';
 
 type SetupState = 'idle' | 'deploying' | 'success' | 'error';
-type VpsTab = 'overview' | 'clients' | 'settings';
+// 'pivpn': Pi üzerindeki WireGuard sunucusu (Ev VPN'i) — dış VPS'lerden ve onların istemcilerinden ayrı alan.
+type VpsTab = 'overview' | 'clients' | 'pivpn' | 'settings';
 type StepStatus = 'pending' | 'running' | 'success' | 'error';
 
 interface SetupStep {
@@ -620,6 +622,7 @@ export function VpsSetup() {
   const tabs: { id: VpsTab; label: string; icon: React.ReactNode }[] = [
     { id: 'overview', label: 'Sunucular', icon: <Activity size={14} /> },
     { id: 'clients', label: 'Client Yonetimi', icon: <Users size={14} /> },
+    { id: 'pivpn', label: "Ev VPN'i (Pi)", icon: <Home size={14} /> },
     { id: 'settings', label: 'WireGuard Ayarlari', icon: <Settings size={14} /> },
   ];
 
@@ -808,6 +811,8 @@ export function VpsSetup() {
           )}
         </div>
       )}
+
+      {activeTab === 'pivpn' && <PiVpnServer />}
 
       {activeTab === 'settings' && (
         <div style={{ marginTop: 14 }}>
