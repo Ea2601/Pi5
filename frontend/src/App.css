@@ -1005,50 +1005,132 @@ body.nav-open { overflow: hidden; }
 .ta-foot { margin-top: 12px; color: var(--text-muted); font-size: 11px; line-height: 1.5; }
 
 /* ═══════════════════ CİHAZ ROLLERİ (RolesPanel) ═══════════════════ */
-.roles-note { display: flex; align-items: center; gap: 8px; margin-top: 10px; color: var(--text-secondary); font-size: 12.5px; }
-.roles-note-warn { color: var(--warning-color); }
-.roles-grid { display: grid; grid-template-columns: 1fr; gap: 10px; }
-@media (min-width: 900px) { .roles-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
-@media (min-width: 1500px) { .roles-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
-.roles-card { padding: 14px; display: flex; flex-direction: column; gap: 8px; min-width: 0; }
-.roles-card-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-.roles-card-head h3 { margin: 0; font-size: 15px; flex: 1 1 auto; }
-.roles-card-icon {
-  display: inline-flex; align-items: center; justify-content: center; width: 30px; height: 30px; flex: none;
-  border-radius: 8px; background: var(--accent-glow); color: var(--accent-color);
-}
-.roles-st-active .roles-card-icon { background: var(--success-glow); color: var(--success-color); }
-.roles-st-needs-hw .roles-card-icon { background: color-mix(in srgb, var(--warning-color) 14%, transparent); color: var(--warning-color); }
-.roles-desc { margin: 0; color: var(--text-secondary); font-size: 12.5px; line-height: 1.5; }
-.roles-checks { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 5px; }
-.roles-checks li { display: grid; grid-template-columns: 16px auto 1fr; align-items: baseline; gap: 6px; font-size: 12.5px; }
-.roles-ck { position: relative; top: 2px; }
-.roles-ck-ok { color: var(--success-color); }
-.roles-ck-no { color: var(--danger-color); }
-.roles-ck-unk { color: var(--text-muted); }
-.roles-ck-label { color: var(--text-primary); white-space: nowrap; }
-.roles-ck-detail { color: var(--text-muted); font-size: 11.5px; overflow-wrap: anywhere; }
-.roles-need {
-  padding: 8px 10px; border-radius: var(--radius-sm); font-size: 12px; color: var(--text-secondary);
+/* Tek iskelet: özet şeridi → gruplanmış rol kartları (eşit yükseklik, alt bilgi dipte) → donanım tabloları.
+   Telefonda tablolar satır kartlarına dönüşür (td::before = sütun adı). */
+.rl-sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+.rl-mono { font-family: var(--font-mono); font-size: 0.95em; }
+.rl-muted { color: var(--text-muted); }
+.rl-strong { color: var(--text-primary); font-weight: 600; }
+.rl-state { margin-top: 10px; color: var(--text-secondary); font-size: 12.5px; }
+.rl-banner {
+  display: flex; align-items: flex-start; gap: 8px; margin-top: 12px; padding: 9px 12px;
+  border-radius: var(--radius-sm); font-size: 12.5px; color: var(--warning-color);
   background: color-mix(in srgb, var(--warning-color) 8%, transparent);
   border: 1px solid color-mix(in srgb, var(--warning-color) 28%, transparent);
 }
-.roles-need strong { color: var(--warning-color); font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; }
-.roles-need ul { margin: 4px 0 0; padding-left: 16px; }
-.roles-hint { margin: 0; color: var(--text-muted); font-size: 11.5px; line-height: 1.5; }
-.roles-sub { margin: 14px 0 8px; font-size: 12px; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.08em; }
-.roles-hw { display: grid; grid-template-columns: 1fr; gap: 8px; }
-@media (min-width: 900px) { .roles-hw { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
-.roles-hw-item { padding: 10px 12px; border-radius: var(--radius-sm); border: 1px solid var(--panel-border); min-width: 0; }
-.roles-hw-title { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
-.roles-hw-title code { font-size: 13px; color: var(--text-primary); }
-.roles-muted { color: var(--text-muted); font-size: 11px; }
-.roles-hw-item dl { display: grid; grid-template-columns: max-content 1fr; gap: 3px 12px; margin: 0; font-size: 12px; }
-.roles-hw-item dt { color: var(--text-muted); }
-.roles-hw-item dd { margin: 0; color: var(--text-primary); overflow-wrap: anywhere; }
-.roles-modes { display: flex; flex-wrap: wrap; gap: 4px 6px; }
-.roles-mode { padding: 1px 7px; border-radius: 999px; font-size: 11px; color: var(--text-muted); border: 1px solid var(--panel-border); }
-.roles-mode.is-on { color: var(--text-primary); border-color: color-mix(in srgb, var(--success-color) 40%, transparent); }
+.rl-banner svg { flex: none; margin-top: 2px; }
+
+/* Özet şeridi: cihaz kimliği (sol) + durum sayıları (sağ) */
+.rl-summary {
+  display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: 12px 24px;
+  margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--panel-border);
+}
+.rl-ident { display: flex; flex-wrap: wrap; gap: 10px 28px; margin: 0; }
+.rl-ident dt { font-size: 10.5px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: var(--text-muted); }
+.rl-ident dd { margin: 3px 0 0; font-size: 13px; color: var(--text-primary); }
+.rl-counts { display: flex; flex-wrap: wrap; gap: 6px; list-style: none; margin: 0; padding: 0; }
+.rl-count {
+  --c: var(--text-muted);
+  display: inline-flex; align-items: center; gap: 7px; padding: 4px 10px 4px 5px; border-radius: 999px;
+  border: 1px solid var(--panel-border); font-size: 12px; color: var(--text-secondary);
+}
+.rl-count-n {
+  display: inline-flex; align-items: center; justify-content: center; min-width: 20px; height: 20px; padding: 0 5px;
+  border-radius: 999px; font-weight: 700; font-size: 11.5px; color: var(--c);
+  background: color-mix(in srgb, var(--c) 16%, transparent); font-variant-numeric: tabular-nums;
+}
+.rl-count-active { --c: var(--success-color); }
+.rl-count-available { --c: var(--info-color, #3b82f6); }
+.rl-count-hw-ready { --c: var(--text-secondary); }
+.rl-count-needs-hw { --c: var(--warning-color); }
+
+/* Gruplar ve kartlar */
+.rl-group { display: flex; flex-direction: column; gap: 8px; }
+.rl-group-title {
+  margin: 6px 2px 0; font-size: 11px; font-weight: 600; letter-spacing: 0.1em; text-transform: uppercase; color: var(--text-muted);
+}
+.rl-grid { display: grid; grid-template-columns: 1fr; gap: 10px; }
+@media (min-width: 900px) { .rl-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+/* Kart bölümleri (başlık, açıklama, gereksinimler, notlar, alt bilgi) subgrid ile yan karttakilerle satır satır hizalanır. */
+.rl-card { display: grid; grid-template-rows: subgrid; grid-row: span 5; row-gap: 0; padding: 16px; min-width: 0; }
+.rl-card > * { margin-bottom: 10px; }
+.rl-card > .rl-foot { margin-bottom: 0; }
+.rl-card > .rl-notes:empty { margin-bottom: 0; }
+.rl-card-head { display: flex; align-items: center; gap: 10px; }
+.rl-card-head h3 { margin: 0; font-size: 15px; font-weight: 600; flex: 1 1 auto; min-width: 0; }
+.rl-icon {
+  --c: var(--accent-color);
+  display: inline-flex; align-items: center; justify-content: center; width: 32px; height: 32px; flex: none;
+  border-radius: 9px; color: var(--c); background: color-mix(in srgb, var(--c) 14%, transparent);
+}
+.rl-st-active .rl-icon { --c: var(--success-color); }
+.rl-st-needs-hw .rl-icon { --c: var(--warning-color); }
+.rl-desc { margin-top: 0; color: var(--text-secondary); font-size: 12.5px; line-height: 1.5; }
+.rl-checks { width: 100%; border-collapse: collapse; font-size: 12.5px; align-self: start; }
+.rl-checks tr + tr > * { border-top: 1px solid color-mix(in srgb, var(--panel-border) 70%, transparent); }
+.rl-checks th, .rl-checks td { padding: 6px 0; vertical-align: top; text-align: left; }
+.rl-checks th { font-weight: 500; color: var(--text-primary); padding-right: 12px; }
+.rl-c-mark { width: 22px; }
+.rl-c-val { width: 46%; color: var(--text-secondary); overflow-wrap: anywhere; }
+.rl-mark { position: relative; top: 2px; flex: none; }
+.rl-mark-ok { color: var(--success-color); }
+.rl-mark-no { color: var(--danger-color); }
+.rl-mark-unk { color: var(--text-muted); }
+.rl-notes { list-style: none; margin-top: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; align-self: start; }
+.rl-note { display: flex; align-items: flex-start; gap: 7px; font-size: 11.5px; line-height: 1.5; }
+.rl-note svg { flex: none; margin-top: 2px; }
+.rl-note-warn { color: var(--warning-color); }
+.rl-note-info { color: var(--text-muted); }
+.rl-foot {
+  padding-top: 10px; border-top: 1px solid var(--panel-border);
+  display: flex; align-items: flex-start; justify-content: space-between; gap: 12px;
+}
+.rl-need { display: flex; flex-direction: column; gap: 6px; min-width: 0; font-size: 12px; }
+.rl-need-item { display: flex; flex-direction: column; gap: 1px; }
+.rl-need-name { color: var(--text-primary); font-weight: 500; }
+.rl-need-model { color: var(--text-muted); font-size: 11.5px; }
+.rl-need-model strong { color: var(--text-secondary); font-weight: 600; }
+.rl-phase {
+  flex: none; padding: 2px 9px; border-radius: 999px; font-size: 11px; font-weight: 600; font-variant-numeric: tabular-nums;
+  color: var(--text-secondary); border: 1px solid var(--panel-border); white-space: nowrap;
+}
+.rl-phase.is-now { color: var(--success-color); border-color: color-mix(in srgb, var(--success-color) 40%, transparent); }
+
+/* Donanım tabloları */
+.rl-sub { margin: 16px 0 8px; font-size: 11px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: var(--text-muted); }
+.rl-sub:first-of-type { margin-top: 6px; }
+.rl-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+.rl-table th {
+  padding: 7px 10px; text-align: left; font-size: 10.5px; font-weight: 600; letter-spacing: 0.05em; text-transform: uppercase;
+  color: var(--text-muted); border-bottom: 1px solid var(--panel-border); white-space: nowrap;
+}
+.rl-table td { padding: 9px 10px; color: var(--text-secondary); border-bottom: 1px solid color-mix(in srgb, var(--panel-border) 70%, transparent); vertical-align: middle; }
+.rl-table tr:last-child td { border-bottom: 0; }
+.rl-table .rl-c { text-align: center; }
+.rl-table .rl-num { text-align: right; font-variant-numeric: tabular-nums; }
+.rl-pkg { position: relative; top: 1px; margin-right: 6px; color: var(--text-muted); }
+.rl-have { display: inline-flex; align-items: center; gap: 5px; color: var(--text-muted); font-size: 12px; }
+.rl-have.is-on { color: var(--text-primary); }
+.rl-have .rl-mark { top: 0; }
+.rl-foot-note { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; margin: 14px 0 0; color: var(--text-muted); font-size: 11.5px; }
+.rl-foot-note .rl-mark { top: 0; }
+@media (max-width: 760px) {
+  .rl-table thead { display: none; }
+  .rl-table, .rl-table tbody, .rl-table tr, .rl-table td { display: block; width: 100%; }
+  .rl-table tr { padding: 8px 12px; margin-bottom: 8px; border: 1px solid var(--panel-border); border-radius: var(--radius-sm); }
+  .rl-table td { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 4px 0; border: 0; text-align: right; }
+  .rl-table td::before { content: attr(data-label); color: var(--text-muted); font-family: var(--font-family); font-size: 11px; text-align: left; flex: none; }
+  .rl-table .rl-c, .rl-table .rl-num { text-align: right; }
+  .rl-c-val { width: 50%; }
+  /* Yazılım bileşenleri telefonda sıkı liste: ad + durum, altında amaç ve rol (tür gizli) */
+  .rl-sw tr { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 2px 12px; }
+  .rl-sw td { display: block; padding: 0; text-align: left; }
+  .rl-sw td::before { display: none; }
+  .rl-sw td[data-label="Tür"] { display: none; }
+  .rl-sw td[data-label="Amaç"], .rl-sw td[data-label="Gerektiren rol"] { grid-column: 1 / -1; font-size: 11.5px; }
+  .rl-sw td[data-label="Gerektiren rol"] { color: var(--text-muted); }
+  .rl-sw td[data-label="Durum"] { grid-row: 1; grid-column: 2; }
+}
 
 /* Legacy compat */
 .device-card-header {

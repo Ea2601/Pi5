@@ -109,16 +109,22 @@ export function toRadio(p: IwPhy, extra: { ifaces: string[]; driver: string; bus
 // ─── Rol değerlendirmesi (saf) ───
 
 export type RoleId = 'lan-router' | 'wan-router' | 'ap' | 'repeater' | 'mesh-wired' | 'mesh-wireless';
+export type RoleGroup = 'routing' | 'wireless' | 'mesh';
 // active: şu an bu rolde · available: yazılımı hazır, etkin değil · hw-ready: donanım uygun, yazılımı sonraki fazda
 // needs-hw: donanım eksik · unknown: yetenek okunamadı
 export type RoleStatus = 'active' | 'available' | 'hw-ready' | 'needs-hw' | 'unknown';
-export type Check = { ok: boolean | null; label: string; detail?: string };
-export type RoleEval = { id: RoleId; status: RoleStatus; phase: string | null; checks: Check[]; need: string[]; notes: string[] };
+// Kontrol satırı: etiket + kısa değer (ayrıntılı açıklama nota gider). ok=null: bilinmiyor / ilgili fazda kurulur.
+export type Check = { ok: boolean | null; label: string; value: string };
+export type Note = { kind: 'warn' | 'info'; text: string };
+export type Need = { item: string; model?: string; chip?: string };
+export type RoleEval = {
+  id: RoleId; group: RoleGroup; status: RoleStatus; phase: string | null; checks: Check[]; need: Need[]; notes: Note[];
+};
 
-export const HW_SUGGEST = {
-  usbEth: 'USB 3.0 Gigabit Ethernet adaptörü — önerilen: TP-Link UE300 (RTL8153; sürücüsü çekirdekte hazır)',
-  wifiMesh: 'Mesh destekli USB Wi-Fi adaptörü — önerilen: ALFA AWUS036ACM (MediaTek MT7612U; AP + 802.11s mesh + 4 adres)',
-  secondDevice: 'İkinci bir Klyrix cihazı (Raspberry Pi 5)',
+export const HW_SUGGEST: Record<'usbEth' | 'wifiMesh' | 'secondDevice', Need> = {
+  usbEth: { item: 'USB 3.0 Gigabit Ethernet adaptörü', model: 'TP-Link UE300', chip: 'RTL8153 · sürücü çekirdekte' },
+  wifiMesh: { item: 'Mesh destekli USB Wi-Fi adaptörü', model: 'ALFA AWUS036ACM', chip: 'MediaTek MT7612U · AP + 802.11s + 4 adres' },
+  secondDevice: { item: 'İkinci Klyrix cihazı', model: 'Raspberry Pi 5' },
 };
 
 export function evaluateRoles(hw: Hardware): RoleEval[] {
@@ -127,53 +133,58 @@ export function evaluateRoles(hw: Hardware): RoleEval[] {
   const apRadios = radios.filter(r => r.ap);
   const meshRadios = radios.filter(r => r.mesh);
   const unknownRadios = hw.iwMissing && radios.length > 0;
-  const radioLabel = (r: Radio) => `${r.ifaces.join(', ') || r.phy} (${r.driver || 'bilinmeyen sürücü'}${r.bus === 'usb' ? ', USB' : ', dahili'})`;
+  // Kısa değer: arayüz + bağlantı (sürücü ve yetenekler Donanım tablosunda).
+  const radioLabel = (r: Radio) => `${r.ifaces.join(', ') || r.phy} (${r.bus === 'usb' ? 'USB' : 'dahili'})`;
+  const names = (xs: { name: string }[]) => xs.map(e => e.name).join(', ');
+  const unk = 'okunamadı';
   const out: RoleEval[] = [];
 
   // LAN router: mevcut ağın arkasında DHCP + DNS + NAT (DHCP Ayarları sihirbazı).
   const lanActive = hw.net.piDhcp && hw.net.netStage === 'static';
   out.push({
-    id: 'lan-router', phase: null,
+    id: 'lan-router', group: 'routing', phase: null,
     status: lanActive ? 'active' : eth.length ? 'available' : 'needs-hw',
     checks: [
-      { ok: eth.length > 0, label: 'Ethernet portu', detail: eth.map(e => e.name).join(', ') || 'yok' },
-      { ok: hw.net.netStage === 'static', label: 'Sabit adres', detail: hw.net.netStage === 'static' ? 'kalıcı' : hw.net.netStage === 'trial' ? 'deneme sürüyor' : 'yok' },
-      { ok: hw.net.piDhcp, label: 'Pi DHCP sunucusu', detail: hw.net.piDhcp ? 'açık' : 'kapalı' },
+      { ok: eth.length > 0, label: 'Ethernet portu', value: names(eth) || 'yok' },
+      { ok: hw.net.netStage === 'static', label: 'Sabit adres', value: hw.net.netStage === 'static' ? 'kalıcı' : hw.net.netStage === 'trial' ? 'deneme sürüyor' : 'yok' },
+      { ok: hw.net.piDhcp, label: 'Pi DHCP sunucusu', value: hw.net.piDhcp ? 'açık' : 'kapalı' },
     ],
     need: eth.length ? [] : [HW_SUGGEST.usbEth],
-    notes: lanActive ? [] : ['DHCP Ayarları sayfasındaki sihirbazla açılır.'],
+    notes: lanActive ? [] : [{ kind: 'info', text: 'DHCP Ayarları sayfasındaki sihirbazla açılır.' }],
   });
 
   // WAN router: internet bir porttan, ev ağı ayrı porttan (ya da tek port + VLAN destekli yönetilebilir anahtar).
   const usb2Eth = eth.filter(e => e.bus === 'usb' && e.usbSpeedMbps !== null && e.usbSpeedMbps < 5000);
+  const wanNotes: Note[] = usb2Eth.map(e => ({ kind: 'warn', text: `${e.name} USB 2 portunda: hız ~300 Mbps ile sınırlı. Adaptörü mavi USB 3 portuna takın.` }));
+  wanNotes.push({ kind: 'info', text: 'Alternatif: tek port + VLAN destekli yönetilebilir anahtar (daha karmaşık kurulum).' });
   out.push({
-    id: 'wan-router', phase: 'R3',
+    id: 'wan-router', group: 'routing', phase: 'R3',
     status: eth.length >= 2 ? 'hw-ready' : 'needs-hw',
     checks: [
-      { ok: eth.length >= 2, label: 'İki Ethernet portu (internet + ev)', detail: `${eth.length} port: ${eth.map(e => e.name).join(', ') || '—'}` },
-      ...(usb2Eth.length ? [{ ok: false, label: 'USB 3 bağlantısı', detail: `${usb2Eth.map(e => e.name).join(', ')} USB 2 portunda — hız ~300 Mbps ile sınırlı; mavi USB 3 portuna takın` }] : []),
-      { ok: hw.modules['8021q'] ?? null, label: 'VLAN desteği (operatör istiyorsa)', detail: hw.modules['8021q'] ? 'çekirdek modülü var' : 'modül bulunamadı' },
-      { ok: hw.tools.pppd ? !!hw.modules.pppoe : null, label: 'PPPoE desteği (operatör istiyorsa)', detail: hw.tools.pppd ? (hw.modules.pppoe ? 'hazır' : 'pppoe modülü yok') : 'pppd kurulu değil — R3\'te kurulur' },
+      { ok: eth.length >= 2, label: 'İki Ethernet portu', value: `${eth.length} port${eth.length ? ` (${names(eth)})` : ''}` },
+      ...(eth.some(e => e.bus === 'usb') ? [{ ok: usb2Eth.length === 0, label: 'USB 3 bağlantısı', value: usb2Eth.length ? `${names(usb2Eth)}: USB 2` : 'evet' }] : []),
+      { ok: hw.modules['8021q'] ?? null, label: 'VLAN (operatör isterse)', value: hw.modules['8021q'] ? 'hazır' : 'modül yok' },
+      { ok: hw.tools.pppd ? !!hw.modules.pppoe : null, label: 'PPPoE (operatör isterse)', value: hw.tools.pppd ? (hw.modules.pppoe ? 'hazır' : 'modül yok') : "R3'te kurulur" },
     ],
     need: eth.length >= 2 ? [] : [HW_SUGGEST.usbEth],
-    notes: ['Alternatif: tek port + VLAN destekli yönetilebilir anahtar (daha karmaşık kurulum).'],
+    notes: wanNotes,
   });
 
   // Erişim noktası: ev Wi-Fi'ı Pi'den, ev ağına köprülü.
   const setupRadio = hw.net.apStage !== 'none' && hw.net.apIface ? radios.find(r => r.ifaces.includes(hw.net.apIface!)) : undefined;
-  const apNotes: string[] = [];
+  const apNotes: Note[] = [];
   if (setupRadio && apRadios.length === 1 && apRadios[0] === setupRadio && !setupRadio.apAp) {
-    apNotes.push(`Kurulum Wi-Fi'ı bu radyoyu kullanıyor ve radyo aynı anda iki yayın yapamıyor: ev Wi-Fi'ı açılırsa kurulum Wi-Fi'ı ya kapanır ya da ikinci radyoya taşınır.`);
+    apNotes.push({ kind: 'warn', text: "Kurulum Wi-Fi'ı bu radyoyu kullanıyor ve radyo aynı anda iki yayın yapamıyor: ev Wi-Fi'ı açılırsa kurulum Wi-Fi'ı ya kapanır ya da ikinci radyoya taşınır." });
   }
   if (apRadios.some(r => r.driver === 'brcmfmac') && !apRadios.some(r => r.bus === 'usb')) {
-    apNotes.push('Dahili radyo tek antenli Wi-Fi 5: küçük alan ve az cihaz için uygun; geniş ev için USB adaptör önerilir.');
+    apNotes.push({ kind: 'info', text: 'Dahili radyo tek antenli Wi-Fi 5: küçük alan ve az cihaz için uygun; geniş ev için USB adaptör önerilir.' });
   }
   out.push({
-    id: 'ap', phase: 'R1',
+    id: 'ap', group: 'wireless', phase: 'R1',
     status: unknownRadios ? 'unknown' : apRadios.length ? 'hw-ready' : 'needs-hw',
     checks: [
-      { ok: unknownRadios ? null : apRadios.length > 0, label: 'Erişim noktası (AP) modu', detail: unknownRadios ? 'okunamadı (iw yok)' : apRadios.map(radioLabel).join('; ') || 'AP destekli radyo yok' },
-      { ok: unknownRadios ? null : apRadios.some(r => r.bands.includes('5')), label: '5 GHz bant', detail: unknownRadios ? '—' : apRadios.some(r => r.bands.includes('5')) ? 'var' : 'yalnız 2.4 GHz' },
+      { ok: unknownRadios ? null : apRadios.length > 0, label: 'AP modu', value: unknownRadios ? unk : apRadios.map(radioLabel).join(', ') || 'yok' },
+      { ok: unknownRadios ? null : apRadios.some(r => r.bands.includes('5')), label: '5 GHz bant', value: unknownRadios ? unk : apRadios.some(r => r.bands.includes('5')) ? 'var' : 'yalnız 2.4 GHz' },
     ],
     need: !unknownRadios && !apRadios.length ? [HW_SUGGEST.wifiMesh] : [],
     notes: apNotes,
@@ -185,41 +196,44 @@ export function evaluateRoles(hw: Hardware): RoleEval[] {
   const twoRadio = staRadios.some(s => apRadios.some(a => a !== s));
   const bridgeCapable = staRadios.some(r => r.fourAddr === true);
   const singleApSta = radios.some(r => r.apSta);
+  const repNotes: Note[] = [];
+  if (!unknownRadios && !twoRadio && singleApSta) repNotes.push({ kind: 'info', text: 'Tek radyoyla çalışır ama bağlantı ve yayın aynı radyoyu paylaştığı için hız yarıya düşer.' });
+  if (!unknownRadios && !bridgeCapable && (twoRadio || singleApSta)) repNotes.push({ kind: 'info', text: '4 adres desteği olmadan köprü ARP vekiliyle (L3) kurulur; cihazlar yine aynı ağda görünür.' });
   out.push({
-    id: 'repeater', phase: 'R4',
+    id: 'repeater', group: 'wireless', phase: 'R4',
     status: unknownRadios ? 'unknown' : twoRadio || singleApSta ? 'hw-ready' : 'needs-hw',
     checks: [
-      { ok: unknownRadios ? null : twoRadio, label: 'İki radyo (biri bağlantı, biri yayın)', detail: unknownRadios ? 'okunamadı (iw yok)' : `${radios.length} radyo` },
-      { ok: unknownRadios ? null : singleApSta, label: 'Tek radyoda aynı anda bağlantı + yayın', detail: singleApSta ? 'destekleniyor (bant genişliği paylaşılır)' : 'desteklenmiyor' },
-      { ok: unknownRadios ? null : bridgeCapable, label: '4 adresli köprü', detail: bridgeCapable ? 'destekleniyor' : 'yok — köprü ARP vekiliyle (L3) kurulur' },
+      { ok: unknownRadios ? null : twoRadio, label: 'Ayrı bağlantı ve yayın radyosu', value: unknownRadios ? unk : `${radios.length} radyo` },
+      { ok: unknownRadios ? null : singleApSta, label: 'Tek radyoda bağlantı + yayın', value: unknownRadios ? unk : singleApSta ? 'var' : 'yok' },
+      { ok: unknownRadios ? null : bridgeCapable, label: '4 adresli köprü', value: unknownRadios ? unk : bridgeCapable ? 'var' : 'yok' },
     ],
     need: !unknownRadios && !(twoRadio && bridgeCapable) ? [HW_SUGGEST.wifiMesh] : [],
-    notes: twoRadio ? [] : singleApSta ? ['Tek radyoyla çalışır ama hız yarıya düşer.'] : [],
+    notes: repNotes,
   });
 
   // Kablolu mesh uydusu: ikinci Klyrix cihazı kabloyla ağa bağlanır, aynı ağ adıyla yayın yapar.
   out.push({
-    id: 'mesh-wired', phase: 'R2',
+    id: 'mesh-wired', group: 'mesh', phase: 'R2',
     status: unknownRadios ? 'unknown' : eth.length && apRadios.length ? 'hw-ready' : 'needs-hw',
     checks: [
-      { ok: eth.length > 0, label: 'Ethernet (uydu bağlantısı)', detail: linked.map(e => e.name).join(', ') || eth.map(e => e.name).join(', ') || 'yok' },
-      { ok: unknownRadios ? null : apRadios.length > 0, label: 'AP modu (yayın)', detail: unknownRadios ? 'okunamadı (iw yok)' : apRadios.length ? 'var' : 'yok' },
+      { ok: eth.length > 0, label: 'Ethernet (uydu bağlantısı)', value: names(linked) || names(eth) || 'yok' },
+      { ok: unknownRadios ? null : apRadios.length > 0, label: 'AP modu (yayın)', value: unknownRadios ? unk : apRadios.length ? 'var' : 'yok' },
     ],
     need: [HW_SUGGEST.secondDevice],
-    notes: ['Her uydu Klyrix yazılımıyla kurulur; kurulumda "ana cihaz / uydu" sorulur (R2).'],
+    notes: [{ kind: 'info', text: 'Her uydu Klyrix yazılımıyla kurulur; kurulumda "ana cihaz / uydu" sorulur.' }],
   });
 
   // Kablosuz mesh: 802.11s bağlantısı. İdeali mesh radyosu + ayrı yayın radyosu; tek radyoda AP + mesh birlikte olabiliyorsa o da olur.
   const meshWithAp = meshRadios.some(r => r.apMesh) || meshRadios.some(m => apRadios.some(a => a !== m));
   out.push({
-    id: 'mesh-wireless', phase: 'R2',
+    id: 'mesh-wireless', group: 'mesh', phase: 'R2',
     status: unknownRadios ? 'unknown' : meshWithAp ? 'hw-ready' : 'needs-hw',
     checks: [
-      { ok: unknownRadios ? null : meshRadios.length > 0, label: '802.11s mesh modu', detail: unknownRadios ? 'okunamadı (iw yok)' : meshRadios.map(radioLabel).join('; ') || 'mesh destekli radyo yok' },
-      { ok: unknownRadios ? null : meshWithAp, label: 'Mesh + yayın birlikte', detail: meshWithAp ? 'var' : 'yok' },
+      { ok: unknownRadios ? null : meshRadios.length > 0, label: '802.11s mesh modu', value: unknownRadios ? unk : meshRadios.map(radioLabel).join(', ') || 'yok' },
+      { ok: unknownRadios ? null : meshWithAp, label: 'Mesh + yayın birlikte', value: unknownRadios ? unk : meshWithAp ? 'var' : 'yok' },
     ],
     need: [...(!unknownRadios && !meshWithAp ? [HW_SUGGEST.wifiMesh] : []), HW_SUGGEST.secondDevice],
-    notes: radios.some(r => r.driver === 'brcmfmac') ? ["Pi'nin dahili Wi-Fi'ı (brcmfmac) mesh ve 4 adresli köprüyü desteklemez."] : [],
+    notes: radios.some(r => r.driver === 'brcmfmac') ? [{ kind: 'info', text: "Pi'nin dahili Wi-Fi'ı (brcmfmac) mesh ve 4 adresli köprüyü desteklemez." }] : [],
   });
   return out;
 }
