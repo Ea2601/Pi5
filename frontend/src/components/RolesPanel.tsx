@@ -5,6 +5,7 @@ import { Panel, Badge } from './ui';
 import { HomeWifiPanel } from './HomeWifiPanel';
 import { MeshPanel } from './MeshPanel';
 import { WanPanel } from './WanPanel';
+import { FailoverPanel } from './FailoverPanel';
 
 // Cihaz Rolleri: Pi'nin takılı donanımına göre hangi ağ rollerini üstlenebileceği (R0). WAN router (R3) "Yönlendirme"
 // grubunun altındaki İnternet bağlantısı panelinden (WanPanel), erişim noktası (R1) "Kablosuz yayın" grubunun altındaki
@@ -170,6 +171,10 @@ export function RolesPanel() {
             {/* WAN router (R3): ikinci Ethernet kartı varsa (ya da rol açıksa) ana cihazda. */}
             {g.id === 'routing' && data.net?.role !== 'satellite' && items.some(r => r.id === 'wan-router' && (r.status === 'available' || r.status === 'active')) && (
               <WanPanel ports={data.eth || []} onChange={refetch} />
+            )}
+            {/* Yedek hat: Pi ağ geçidiyken (LAN router ya da WAN router) ana cihazda; ön koşulları panel kendisi söyler. */}
+            {g.id === 'routing' && data.net?.role !== 'satellite' && (
+              <FailoverPanel ports={data.eth || []} onChange={refetch} />
             )}
             {/* Uyduda ev Wi-Fi'ı ana cihazdan gelir (net-mode.sh sat); panel yalnız ana cihazda. */}
             {g.id === 'wireless' && data.net?.role !== 'satellite' && items.some(r => r.id === 'ap' && (r.status === 'available' || r.status === 'active')) && (

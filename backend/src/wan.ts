@@ -11,7 +11,7 @@ import fs from 'fs';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
 import { dbAll, dbGet, dbRun, dbInsert } from './db';
-import { isLinux, readNetModeState, wanActive, wanIfaces } from './system';
+import { isLinux, readNetModeState, wanActive, uplinkIfaces } from './system';
 
 const execFileP = promisify(execFile);
 export const FWD_NFT = '/etc/nftables.d/pi5-wan-fwd.conf';
@@ -145,7 +145,8 @@ export async function applyPortForwards(): Promise<{ applied: number; error?: st
   let rules: PortForward[] = [];
   try { rules = await listForwards(); } catch (e: any) { return { applied: 0, error: e?.message || String(e) }; }
   const ns = readNetModeState();
-  const ifs = wanActive(ns) && ns.wanLan ? wanIfaces(ns) : [];
+  // Ana hat + yedek hat (yedek hat devredeyken ve açık IP'liyse yönlendirmeler ondan da çalışır).
+  const ifs = wanActive(ns) && ns.wanLan ? uplinkIfaces(ns) : [];
   const text = buildFwdNft(rules, ifs);
   const applied = ifs.length ? rules.filter(r => r.enabled).length : 0;
   try {

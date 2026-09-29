@@ -15,7 +15,7 @@ import {
   executeCommand, applyDomainRouting, applyBlockedDevices,
   sampleMetrics, detectInterfaces, recoverInterruptedFtlRestart, VALID_DNSMASQ_DOMAIN, getRoutingApplyStatus,
   getLanIdentity, protectedMacs, getPi5LanIp, readNetModeState, runExclusiveDnsTask, AP_ADDR, AP_NET, HOME_BRIDGE,
-  wanActive, wanIfaces,
+  wanActive, uplinkIfaces, readFailoverStatus, activeUplink,
 } from './system';
 import type { RangeRoute } from './system';
 import { listForwards, addForward, setForwardEnabled, deleteForward, applyPortForwards } from './wan';
@@ -1923,6 +1923,8 @@ app.get('/api/system/hardware', async (_req, res) => {
       role: STARTUP_ROLE, satellites: isSatellite() ? 0 : (await listSatellites().catch(() => [])).length,
       paired: isSatellite() && !!readSatState(), meshConfigured: (await mainMeshState().catch(() => null))?.configured || false,
       wanStage: ns?.wanStage || 'none', wanPort: ns?.wanPort || null, wanDev: ns?.wanDev || null, wanSingle: !!ns?.wanSingle,
+      bakStage: ns?.bakStage || 'none', bakDev: ns?.bakStage === 'on' ? (readFailoverStatus()?.backupDev || ns.bakDev || null) : null,
+      bakActive: ns?.bakStage === 'on' && readFailoverStatus()?.active === 'backup',
     });
     res.json({ supported: true, ...hw, roles: evaluateRoles(hw) });
   } catch (e: any) {
@@ -2280,7 +2282,23 @@ if (isLinux) {
           if (n.code === 0 && n.kv.wan_stage === 'on' && (n.kv.wan_up !== '1' || n.kv.wan_fw !== '1')) {
             const why = n.kv.wan_fw !== '1' ? 'güvenlik duvarı yüklü değil'
               : n.kv.wan_carrier !== '1' ? `kartta (${n.kv.wan_port}) kablo yok` : 'bağlantı kurulamadı';
-            await addAlert('health', 'critical', `İnternet kartı çalışmıyor: ${why} — ev ağı çalışıyor, internet yok (Cihaz Rolleri → WAN router)`, 'netmode-wan');
+            // Yedek hatta geçilmişse ev ağı internette: kritik değil.
+            if (n.kv.bak_active === 'backup') {
+              await addAlert('health', 'warning', `İnternet kartı çalışmıyor: ${why} — yedek hat devrede, ev ağı internette (Cihaz Rolleri → WAN router)`, 'netmode-wan');
+            } else {
+              await addAlert('health', 'critical', `İnternet kartı çalışmıyor: ${why} — ev ağı çalışıyor, internet yok (Cihaz Rolleri → WAN router)`, 'netmode-wan');
+            }
+          }
+          // Yedek hat kalıcıyken korumasız / izleyicisiz ya da kendisi çalışmıyor (ana hat düşerse geçiş yapılamaz).
+          if (n.code === 0 && n.kv.bak_stage === 'on') {
+            if (n.kv.bak_fw !== '1' || n.kv.bak_watch !== '1') {
+              await addAlert('health', 'warning', n.kv.bak_fw !== '1'
+                ? 'Yedek hat güvenlik duvarı yüklü değil — Pi bir sonraki açılışta yükler (Cihaz Rolleri → Yedek hat)'
+                : 'Yedek hat izleyicisi çalışmıyor — ana hat düşerse yedek hatta geçilemez (Cihaz Rolleri → Yedek hat)', 'netmode-bak-health');
+            } else if (n.kv.bak_kind === 'eth' && n.kv.bak_active !== 'backup' && n.kv.bak_backup_ok === '0') {
+              // Telefon hotspot'u / USB paylaşımı çoğu zaman kapalı tutulur: yalnız sürekli bağlı Ethernet yedek hatta uyarılır.
+              await addAlert('health', 'warning', `Yedek hat yanıt vermiyor (${n.kv.bak_dev || 'arayüz yok'}) — ana hat düşerse geçiş yapılamaz; modemi / telefonu denetleyin`, 'netmode-bak-health');
+            }
           }
         }
       } catch (e: any) {
@@ -2940,11 +2958,18 @@ const wanAfterChange = async (r: KvResult) => {
   if (r.code === null && r.exited) { void r.exited.then(apply); return; }
   await apply();
 };
-// Ev VPN'i açıldı / kapandı: internet kartı güvenlik duvarı portunu buna göre açar / kapar.
+// Ev VPN'i açıldı / kapandı: internet kartı (ve yedek hat) güvenlik duvarı portunu buna göre açar / kapar.
 async function wanFirewallReload(): Promise<void> {
-  if (!isLinux || !wanActive(readNetModeState()) || !require('fs').existsSync(NET_MODE_SCRIPT)) return;
-  const r = await runKvScript(NET_MODE_SCRIPT, ['wan', 'fw'], 60000);
-  if (r.code !== 0) console.error('[wan] güvenlik duvarı yeniden yüklenemedi:', kvError(r, 'bilinmeyen hata'));
+  if (!isLinux || !require('fs').existsSync(NET_MODE_SCRIPT)) return;
+  const ns = readNetModeState();
+  if (wanActive(ns)) {
+    const r = await runKvScript(NET_MODE_SCRIPT, ['wan', 'fw'], 60000);
+    if (r.code !== 0) console.error('[wan] güvenlik duvarı yeniden yüklenemedi:', kvError(r, 'bilinmeyen hata'));
+  }
+  if (ns?.bakStage === 'on') {
+    const r = await runKvScript(NET_MODE_SCRIPT, ['backup', 'fw'], 60000);
+    if (r.code !== 0) console.error('[yedek hat] güvenlik duvarı yeniden yüklenemedi:', kvError(r, 'bilinmeyen hata'));
+  }
 }
 const IFNAME_RE = /^[A-Za-z0-9_.-]{1,15}$/;
 const IPV4_RE = /^(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}$/;
@@ -3039,6 +3064,107 @@ app.post('/api/wan/off', async (_req, res) => {
   await kvEvent('netmode', r, `İnternet kartı kapatıldı; tek kablolu düzene dönüldü${r.kv.warning ? ` — ${r.kv.warning}` : ''}`, 'İnternet kartı kapatılamadı');
   if (r.code !== 0) return res.status(409).json({ error: kvError(r, 'internet kartı kapatılamadı') });
   res.json({ success: true, warning: r.kv.warning || undefined });
+});
+
+// ─── Yedek hat (failover; net-mode.sh backup …) ───
+// İkinci internet bağlantısı: Ethernet kartı / VLAN (ikinci modem, 4G router, ikinci operatör; DHCP / sabit / PPPoE), USB
+// 4G modem ya da telefon USB paylaşımı, telefon hotspot'u. Açma deneme süresizdir (ana hat ve ev ağı değişmez): hemen
+// sınanır, olmazsa geri alınır. İzleyici (pi5-wan-failover) ana hat düşünce yedek hatta geçer, 60 sn sağlam kalınca döner.
+// Uç adı /api/failover: /api/backup/* sistem yedeklemesine (dışa / içe aktarma) aittir.
+const BAK_NUMS = ['bak_since', 'bak_switches', 'bak_checked', 'bak_force_until', 'bak_rx', 'bak_tx', 'now'];
+const BAK_BOOLS = ['bak_up', 'bak_fw', 'bak_watch', 'bak_primary_ok', 'bak_backup_ok', 'bak_conntrack', 'pi_dhcp', 'wan_lan'];
+const BAK_KIND_TEXT: Record<string, string> = { eth: 'Ethernet', usb: 'USB modem / telefon', wifi: 'telefon hotspot\'u' };
+app.use('/api/failover', netAdminGuard);
+// Yedek hat açılınca / kapanınca: port yönlendirme ve panel güvenlik duvarı arayüz kümeleri, Ev VPN'i MTU'su.
+const backupAfterChange = async () => {
+  await applyPortForwards();
+  await firewallFollowsWan();
+  await reapplyWgServer();
+};
+
+app.get('/api/failover', async (_req, res) => {
+  if (!isLinux || !require('fs').existsSync(NET_MODE_SCRIPT)) return res.json({ supported: false });
+  const r = await runKvScript(NET_MODE_SCRIPT, ['status'], 30000);
+  if (r.code !== 0) return res.json({ supported: true, error: kvError(r, 'yedek hat durumu okunamadı') });
+  const keep = Object.fromEntries(Object.entries(r.kv).filter(([k]) => k.startsWith('bak_')
+    || ['now', 'stage', 'home_stage', 'sat_stage', 'ap_stage', 'wan_stage', 'wan_dev', 'wan_port', 'wan_ip', 'pi_dhcp', 'iface', 'lan_if',
+      'client', 'wan_lan', 'ap_iface', 'home_iface'].includes(k)));
+  const uplink = await activeUplink().catch(() => null);
+  res.json({ ...kvTyped(keep, BAK_NUMS, BAK_BOOLS), supported: true, satellite: isSatellite(), uplink });
+});
+
+app.post('/api/failover', async (req, res) => {
+  if (scriptMissing(NET_MODE_SCRIPT, res)) return;
+  if (isSatellite()) return res.status(409).json({ error: 'Bu cihaz uydu — yedek hat ana cihaz içindir' });
+  const b = req.body || {};
+  const str = (v: unknown) => (typeof v === 'string' ? v.trim() : typeof v === 'number' ? String(v) : '');
+  const kind = str(b.kind), type = str(b.type) || 'dhcp';
+  if (!['eth', 'usb', 'wifi'].includes(kind)) return res.status(400).json({ error: 'Yedek hat türünü seçin (Ethernet, USB modem / telefon, hotspot)' });
+  if (!['dhcp', 'static', 'pppoe'].includes(type)) return res.status(400).json({ error: 'Bağlantı türü DHCP, sabit adres ya da PPPoE olmalı' });
+  if (kind !== 'eth' && type !== 'dhcp') return res.status(400).json({ error: 'USB modem / telefon ve hotspot yedek hattı yalnız otomatik adresle (DHCP) çalışır' });
+  const args = ['backup', 'on', '--kind', kind, '--type', type];
+  const opt = (flag: string, v: string, re: RegExp, msg: string): string | null => {
+    if (!v) return null;
+    if (!re.test(v)) return msg;
+    args.push(flag, v);
+    return null;
+  };
+  const errs = [
+    ...(kind !== 'usb' ? [opt('--port', str(b.port), IFNAME_RE, 'Kart adı geçersiz')] : []),
+    ...(kind === 'eth' ? [
+      opt('--vlan', str(b.vlan), /^\d{1,4}$/, 'VLAN numarası 1-4094 olmalı'),
+      opt('--mtu', str(b.mtu), /^\d{3,4}$/, 'MTU 576-9000 arasında olmalı'),
+    ] : []),
+    ...(type === 'static' ? [
+      opt('--addr', str(b.addr), /^\d{1,3}(\.\d{1,3}){3}\/\d{1,2}$/, 'Sabit adres 203.0.113.10/24 biçiminde olmalı'),
+      opt('--gw', str(b.gw), IPV4_RE, 'Ağ geçidi geçersiz'),
+      opt('--dns', str(b.dns).replace(/\s+/g, ''), /^(\d{1,3}(\.\d{1,3}){3})(,\d{1,3}(\.\d{1,3}){3}){0,2}$/, 'DNS en çok 3 adres, virgülle'),
+    ] : []),
+    ...(type === 'pppoe' ? [opt('--user', str(b.user), /^[!-~]{1,64}$/, 'PPPoE kullanıcı adı 1-64 karakter, boşluksuz olmalı')] : []),
+    // Hotspot adı: telefon adlarında Türkçe harf / kesme işareti olabilir (1-32 bayt, denetim karakteri yok).
+    ...(kind === 'wifi' ? [opt('--ssid', typeof b.ssid === 'string' ? b.ssid : '', /^[^\x00-\x1f\x7f]{1,32}$/, 'Hotspot adı 1-32 karakter olmalı')] : []),
+  ].filter(Boolean);
+  if (errs.length) return res.status(400).json({ error: errs[0] });
+  if (kind === 'eth' && !b.port) return res.status(400).json({ error: 'Yedek hat kartını seçin' });
+  if (kind === 'wifi' && Buffer.byteLength(String(b.ssid || ''), 'utf8') > 32) return res.status(400).json({ error: 'Hotspot adı en çok 32 bayt olabilir' });
+  if (type === 'static' && (!b.addr || !b.gw)) return res.status(400).json({ error: 'Sabit adres ve ağ geçidi gerekli' });
+  const secret = typeof b.password === 'string' ? b.password : '';
+  if (type === 'pppoe') {
+    if (!b.user || !secret) return res.status(400).json({ error: 'PPPoE kullanıcı adı ve şifresi gerekli' });
+    if (!/^[!-~]([ -~]{0,126}[!-~])?$/.test(secret) || secret.includes('\\')) {
+      return res.status(400).json({ error: 'PPPoE şifresi 1-128 karakter olmalı: Türkçe harf ve ters bölü (\\) olmadan, başta/sonda boşluk olmadan' });
+    }
+  }
+  if (kind === 'wifi' && (!/^[ -~]{8,63}$/.test(secret) || secret.includes('\\') || secret !== secret.trim())) {
+    return res.status(400).json({ error: 'Hotspot parolası 8-63 karakter olmalı: Türkçe harf ve ters bölü (\\) olmadan, başta/sonda boşluk olmadan' });
+  }
+  const r = await runKvScript(NET_MODE_SCRIPT, args, 240000, secret ? `${secret}\n` : '');
+  await backupAfterChange();
+  const what = `${BAK_KIND_TEXT[kind]}${type === 'pppoe' ? ', PPPoE' : type === 'static' ? ', sabit adres' : ''}${b.vlan ? `, VLAN ${b.vlan}` : ''}`;
+  await kvEvent('netmode-bak', r, `Yedek hat açıldı: ${what} — ${r.kv.bak_dev || ''} ${r.kv.bak_ip || ''}`.trim(), 'Yedek hat açılamadı', secret);
+  if (r.code !== 0) return res.status(500).json({ error: maskSecret(kvError(r, 'yedek hat açılamadı'), secret), rolled_back: r.kv.rolled_back === '1' });
+  res.json({ success: true, bak_dev: r.kv.bak_dev || '', bak_ip: r.kv.bak_ip || '', bak_gateway: r.kv.bak_gateway || '', warning: r.kv.warning || undefined });
+});
+
+app.post('/api/failover/off', async (_req, res) => {
+  if (scriptMissing(NET_MODE_SCRIPT, res)) return;
+  const r = await runKvScript(NET_MODE_SCRIPT, ['backup', 'off'], 120000);
+  await backupAfterChange();
+  await kvEvent('netmode-bak', r, 'Yedek hat kapatıldı', 'Yedek hat kapatılamadı');
+  if (r.code !== 0) return res.status(409).json({ error: kvError(r, 'yedek hat kapatılamadı') });
+  res.json({ success: true, warning: r.kv.warning || undefined });
+});
+
+// Geçiş denemesi: izleyici SN saniye yedek hatta kalır (0 = bitir); ev ağındaki bir cihazdan internetin yedek hattan
+// çalıştığı görülür.
+app.post('/api/failover/test', async (req, res) => {
+  if (scriptMissing(NET_MODE_SCRIPT, res)) return;
+  const s = Number(req.body?.seconds ?? 60);
+  if (!Number.isInteger(s) || s < 0 || s > 600) return res.status(400).json({ error: 'Süre 0-600 sn olmalı' });
+  const r = await runKvScript(NET_MODE_SCRIPT, ['backup', 'test', String(s)], 15000);
+  if (r.code !== 0) return res.status(409).json({ error: kvError(r, 'geçiş denemesi başlatılamadı') });
+  if (s > 0) await recordEvent('netmode-bak', `Yedek hat geçiş denemesi: ${s} sn yedek hattan çıkılıyor`);
+  res.json({ success: true, force_until: Number(r.kv.force_until) || 0 });
 });
 
 // Port yönlendirme (wan.ts): kayıtlar her zaman düzenlenebilir, yalnız internet kartı açıkken uygulanır.
@@ -4701,6 +4827,25 @@ const server = app.listen(Number(port), bindHost, () => {
       if (ip) lastWanIp = ip;
     })();
   }, 60000);
+  // Yedek hat: izleyici hat değiştirince (durum dosyasındaki geçiş sayısı) olay geçmişine / zile yazılır ve DDNS etkin
+  // hattın dış adresine hemen güncellenir (Ev VPN'i istemcileri yeni adrese ulaşsın — yedek hat açık IP'liyse).
+  let lastFo: { switches: number } | null = null;
+  setInterval(() => {
+    void (async () => {
+      if (readNetModeState()?.bakStage !== 'on') { lastFo = null; return; }
+      const fo = readFailoverStatus();
+      if (!fo) return;
+      const changed = !!lastFo && fo.switches !== lastFo.switches;
+      lastFo = { switches: fo.switches };
+      if (!changed) return;
+      if (fo.active === 'backup') {
+        await recordEvent('netmode-bak', `Ana hat çalışmıyor — yedek hatta geçildi (${fo.backupDev || 'yedek hat'}): ${fo.reason}. Ev ağı internette; yedek hat kotalıysa büyük indirmelerden kaçının`, 'warning');
+      } else {
+        await recordEvent('netmode-bak', `Ana hatta dönüldü: ${fo.reason}`);
+      }
+      void ddnsAutoUpdate();
+    })().catch(() => { /* olay yazılamadı */ });
+  }, 15000);
   // AS aralıkları (ör. WhatsApp aramaları için Meta) 6 saatte bir denetlenir; ilk denetim açılıştan 2 dk sonra.
   setTimeout(() => { void refreshAsnRanges(); }, 120000);
   setInterval(() => { void refreshAsnRanges(); }, 6 * 3600 * 1000);
@@ -4715,7 +4860,7 @@ const server = app.listen(Number(port), bindHost, () => {
       const [neighbors, modem, own] = await Promise.all([readNeighbors(), readDefaultRoute(), readLocalIps()]);
       // İnternet kartı modu: kart tarafındaki komşular (operatörün modemi) ev ağı cihazı değildir; modem ayrı kartta
       // olduğundan ev ağı ölçümü için taban çizgisi olamaz.
-      const wanIfs = wanIfaces(readNetModeState());
+      const wanIfs = uplinkIfaces(readNetModeState()); // internet kartı + yedek hat
       const targets: ProbeTarget[] = [];
       for (const [ip, n] of neighbors) {
         if (['FAILED', 'INCOMPLETE'].includes(n.state) || !n.dev || /^(wg|lo|docker|veth)/.test(n.dev)) continue;

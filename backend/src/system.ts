@@ -525,8 +525,8 @@ export async function getNetworkDevices(): Promise<{ ip: string; mac: string }[]
   if (!isLinux) return [];
   const out = await run('ip neigh show') || await run('arp -an');
   if (!out) return [];
-  // İnternet kartı tarafındaki komşular (operatörün modemi / ağ geçidi) ev ağının cihazı değildir.
-  const wanIfs = wanIfaces(readNetModeState());
+  // İnternet kartı ve yedek hat tarafındaki komşular (operatörün / 4G modemin ağ geçidi) ev ağının cihazı değildir.
+  const wanIfs = uplinkIfaces(readNetModeState());
   const devices: { ip: string; mac: string }[] = [];
   for (const line of out.split('\n')) {
     const dev = /\bdev\s+(\S+)/.exec(line)?.[1];
@@ -831,6 +831,10 @@ export interface NetModeState {
   // Tek port (R3b): internet ev ağı kartının üzerindeki VLAN'dan (wanPort = iface) — kartın kendisi EV AĞIDIR.
   wanSingle: boolean;
   wanMtu: number; // kayıtlı MTU (0 = varsayılan); PPPoE'de Ev VPN'i tünel MTU'su buna göre
+  // Yedek hat (failover; aynı dosyada bak_*): ikinci internet bağlantısı. bakKind: eth (kart / VLAN bak.<ID>, PPPoE
+  // pppbak), usb (USB 4G modem / telefon paylaşımı: adı değişebilir, arayüz grubu 77), wifi (telefon hotspot'u).
+  bakStage: 'none' | 'on'; bakKind: '' | 'eth' | 'usb' | 'wifi'; bakType: '' | 'dhcp' | 'static' | 'pppoe';
+  bakPort: string; bakDev: string; bakVlan: string; bakMtu: number;
 }
 // Kurulum Wi-Fi'ının Pi adresi ve ağı (net-mode.sh AP_ADDR/AP_NET ile aynı; istemciler 192.168.50.20–200 alır).
 export const AP_ADDR = '192.168.50.1';
@@ -871,6 +875,13 @@ export function readNetModeState(): NetModeState | null {
     wanLan: kv.wan_lan === '1',
     wanSingle: !!kv.wan_port && kv.wan_port === kv.iface && ifName(kv.wan_port) !== '',
     wanMtu: /^\d{3,4}$/.test(kv.wan_mtu || '') ? Number(kv.wan_mtu) : 0,
+    bakStage: kv.bak_stage === 'on' && ['eth', 'usb', 'wifi'].includes(kv.bak_kind) ? 'on' : 'none',
+    bakKind: kv.bak_kind === 'eth' || kv.bak_kind === 'usb' || kv.bak_kind === 'wifi' ? kv.bak_kind : '',
+    bakType: kv.bak_type === 'dhcp' || kv.bak_type === 'static' || kv.bak_type === 'pppoe' ? kv.bak_type : '',
+    bakPort: ifName(kv.bak_port),
+    bakDev: ifName(kv.bak_dev),
+    bakVlan: /^\d{1,4}$/.test(kv.bak_vlan || '') ? kv.bak_vlan : '',
+    bakMtu: /^\d{3,4}$/.test(kv.bak_mtu || '') ? Number(kv.bak_mtu) : 0,
   };
 }
 const netModeActive = (s: NetModeState | null): s is NetModeState => !!s && (s.stage === 'trial' || s.stage === 'static');
@@ -882,6 +893,53 @@ export const wanActive = (s: NetModeState | null): s is NetModeState =>
 export function wanIfaces(s: NetModeState | null): string[] {
   if (!wanActive(s)) return [];
   return [...new Set([...(s.wanSingle ? [] : [s.wanPort]), ...(s.wanVlan ? [`wan.${s.wanVlan}`] : []), s.wanDev])];
+}
+// Yedek hattın arayüzleri — net-mode.sh bak_devs ile aynı küme: kart (ev ağı kartındaki VLAN'da kart ev ağıdır, girmez) +
+// VLAN + PPPoE, Wi-Fi kartı ya da USB türünde arayüz grubu 77'deki arayüzler (adı her takışta değişebilir).
+export const BAK_GROUP = '77';
+export const BAK_PPP_IF = 'pppbak';
+export function backupIfaces(s: NetModeState | null): string[] {
+  if (!s || s.bakStage !== 'on') return [];
+  if (s.bakKind === 'usb') {
+    const out: string[] = [];
+    try {
+      for (const n of fs.readdirSync('/sys/class/net')) {
+        try { if (fs.readFileSync(`/sys/class/net/${n}/netdev_group`, 'utf8').trim() === BAK_GROUP) out.push(n); } catch { /* arayüz gitti */ }
+      }
+    } catch { /* /sys yok */ }
+    return out;
+  }
+  const onLanCard = s.bakKind === 'eth' && !!s.bakPort && s.bakPort === s.iface;
+  return [...new Set([...(s.bakPort && !onLanCard ? [s.bakPort] : []), ...(s.bakVlan ? [`bak.${s.bakVlan}`] : []),
+    ...(s.bakType === 'pppoe' ? [BAK_PPP_IF] : [])])];
+}
+// İnternet tarafı arayüzlerinin tamamı (ana hat + yedek hat): ev ağı cihazı, ev ağı ağı ve NAT listelerinin dışında kalır.
+export function uplinkIfaces(s: NetModeState | null): string[] {
+  return [...new Set([...wanIfaces(s), ...backupIfaces(s)])];
+}
+// Yedek hat izleyicisinin durumu (net-mode.sh backup watch → /run/pi5-gateway/failover.status). active: hangi hattan
+// çıkılıyor; switches: açılıştan beri geçiş sayısı.
+export interface FailoverStatus {
+  active: 'primary' | 'backup'; since: number; switches: number; reason: string; primaryOk: boolean | null;
+  backupOk: boolean | null; backupDev: string; checked: number; forceUntil: number;
+}
+const FAILOVER_STATUS = '/run/pi5-gateway/failover.status';
+export function readFailoverStatus(): FailoverStatus | null {
+  let text: string;
+  try { text = fs.readFileSync(FAILOVER_STATUS, 'utf8'); } catch { return null; }
+  const kv: Record<string, string> = {};
+  for (const line of text.split('\n')) {
+    const i = line.indexOf('=');
+    if (i > 0) kv[line.slice(0, i)] = line.slice(i + 1).trim();
+  }
+  const num =(v: string | undefined) => (/^\d+$/.test(v || '') ? Number(v) : 0);
+  const bool = (v: string | undefined) => (v === '1' ? true : v === '0' ? false : null);
+  return {
+    active: kv.active === 'backup' ? 'backup' : 'primary', since: num(kv.since), switches: num(kv.switches),
+    reason: (kv.reason || '').slice(0, 200), primaryOk: bool(kv.primary_ok), backupOk: bool(kv.backup_ok),
+    backupDev: /^[A-Za-z0-9_.-]{1,15}$/.test(kv.backup_dev || '') ? kv.backup_dev : '', checked: num(kv.checked),
+    forceUntil: num(kv.force_until),
+  };
 }
 // Ev ağının arayüzü (internet kartı modunda): köprü açıkken br0, değilse sabit adresin kartı.
 function lanIfaceOf(s: NetModeState): string {
@@ -946,8 +1004,10 @@ export async function getLanIdentity(): Promise<LanIdentity | null> {
       };
     }
   }
+  // Yedek hat LAN kimliği olamaz: yedek hatta geçilmişken (metrik 10) de ana hattın (modem) rotası seçilir.
+  const bakIfs = backupIfaces(ns);
   const route = routes
-    .filter(r => r && r.dev && !/^(wg|lo|docker|veth)/.test(r.dev))
+    .filter(r => r && r.dev && !/^(wg|lo|docker|veth)/.test(r.dev) && !bakIfs.includes(r.dev))
     .sort((a, b) => (a.metric || 0) - (b.metric || 0))[0];
   if (!route) return null;
   const own = v4(route.dev);
@@ -985,18 +1045,47 @@ export async function getLanIdentity(): Promise<LanIdentity | null> {
 // o kart lan olur (eski iki kartlı davranış). Sabit adres modunda transit ve client ağları aynı karttadır: başka bir
 // kart ancak ikisinin de dışında bir adresi varsa ayrı LAN sayılır. Kurulum Wi-Fi'ı (yalnız panel, iletim yok) LAN
 // sayılmaz: yoksa firewall kurulumu iki kartlı yola sapıp NAT'ı yanlış karta yazardı.
+// Etkin internet çıkışı: yedek hatta geçilmişse yedek hattın arayüzü ve adresi, değilse ana hat (internet kartı modunda
+// kart, tek kollu modda modem tarafı). public: adres açık IP (modem / CGNAT arkasında değil).
+export interface ActiveUplink { via: 'primary' | 'backup'; dev: string; ip: string; gateway: string; public: boolean }
+export async function activeUplink(): Promise<ActiveUplink | null> {
+  if (!isLinux) return null;
+  const ns = readNetModeState();
+  const fo = ns?.bakStage === 'on' ? readFailoverStatus() : null;
+  if (fo?.active === 'backup' && fo.backupDev) {
+    let ip = '', gateway = '';
+    try {
+      const a: any[] = JSON.parse((await run(`ip -j -4 addr show dev ${fo.backupDev} 2>/dev/null`)) || '[]');
+      const inet = (a[0]?.addr_info || []).find((x: any) => x.family === 'inet' && x.local);
+      ip = inet?.local || '';
+      const r: any[] = JSON.parse((await run(`ip -j -4 route show default dev ${fo.backupDev} 2>/dev/null`)) || '[]');
+      // PPPoE: varsayılan rotada "via" yoktur; karşı uç adres kaydında (address) durur.
+      gateway = r.find(x => x?.gateway)?.gateway || (inet?.address && inet.address !== inet.local ? inet.address : '');
+    } catch { /* arayüz gitti */ }
+    return { via: 'backup', dev: fo.backupDev, ip, gateway, public: !!ip && !isPrivateIpv4(ip) };
+  }
+  const id = await getLanIdentity().catch(() => null);
+  if (!id) return null;
+  if (id.wan) return { via: 'primary', dev: id.wan.dev, ip: id.wan.ip, gateway: id.wan.gateway, public: id.wan.public };
+  return { via: 'primary', dev: id.iface, ip: id.transit.ip, gateway: id.gateway, public: !isPrivateIpv4(id.transit.ip) };
+}
+
 export async function detectInterfaces(): Promise<{ wan: string; lan: string }> {
   const ns = readNetModeState();
   // İnternet kartı modu: iki ayrı kart — internet tarafı adres/rota arayüzü (kart / VLAN / PPPoE), ev ağı eth0 / br0.
   if (wanActive(ns) && ns.wanLan) return { wan: ns.wanDev, lan: lanIfaceOf(ns) };
   const id = await getLanIdentity();
-  const wan = id?.iface || (await run(`ip -o -4 route show to default | awk '{print $5}' | head -1`)).trim() || 'eth0';
+  // Yedek hat arayüzleri ne LAN ne "diğer kart" sayılır (tek kollu algı bozulmasın: ikinci ağlı kart = LAN sanılırdı).
+  const bakIfs = backupIfaces(ns);
+  const wan = id?.iface || (await run(`ip -o -4 route show to default | awk '{print $5}'`)).split('\n').map(x => x.trim())
+    .find(d => d && !bakIfs.includes(d)) || 'eth0';
   const apIface = apActive(ns) ? ns.apIface : '';
   let other = '';
   try {
     const addrs: any[] = JSON.parse((await run('ip -j -4 addr show 2>/dev/null')) || '[]');
     for (const a of addrs) {
-      if (!a.ifname || a.ifname === wan || (apIface && a.ifname === apIface) || /^(wg|lo|docker|veth|br-)/.test(a.ifname)) continue;
+      if (!a.ifname || a.ifname === wan || (apIface && a.ifname === apIface) || /^(wg|lo|docker|veth|br-)/.test(a.ifname)
+        || bakIfs.includes(a.ifname)) continue;
       const ips = (a.addr_info || []).filter((x: any) => x.family === 'inet' && x.local).map((x: any) => x.local);
       const outside = (ip: string) => !!id
         && !sameSubnet(ip, id.transit.ip, id.transit.prefix) && !sameSubnet(ip, id.client.ip, id.client.prefix);
@@ -1661,7 +1750,7 @@ async function detectGatewayLan(ns: NetModeState | null = readNetModeState()): P
   const apIf = apActive(ns) ? ns.apIface : '';
   const isApIface = (dev: string) => !!apIf && dev === apIf;
   const inApNet = (net: string) => apOn && within(net, AP_NET);
-  const wanIfs = wanIfaces(ns);
+  const wanIfs = uplinkIfaces(ns); // internet kartı + yedek hat: ağları ev ağı listesine girmez
   const wanLan = wanActive(ns) && ns.wanLan;
   const nets = new Set<string>();
   const ifaces = new Set<string>();

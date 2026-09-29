@@ -20,7 +20,7 @@ import crypto from 'crypto';
 import { execFile, spawn } from 'child_process';
 import { promisify } from 'util';
 import { dbAll, dbGet, dbRun, dbInsert } from './db';
-import { isLinux, getCurrentExternalIp, getLanIdentity, listWireguardTunnels, readNetModeState, wanActive } from './system';
+import { isLinux, getCurrentExternalIp, getLanIdentity, listWireguardTunnels, readNetModeState, wanActive, activeUplink } from './system';
 
 const execFileP = promisify(execFile);
 export const WG_IFACE = 'wg_pi';
@@ -124,8 +124,12 @@ export async function serverEndpoint(): Promise<{ host: string; source: 'ddns' |
 const DEFAULT_WG_MTU = 1420;
 function pppoeWgMtu(): number {
   const ns = readNetModeState();
-  if (!wanActive(ns) || ns.wanType !== 'pppoe') return 0;
-  return Math.min(DEFAULT_WG_MTU, (ns.wanMtu || 1492) - 80);
+  // Ana hat ya da yedek hat PPPoE ise küçüğü: yedek hatta geçildiğinde de tünel paketleri parçalanmasın.
+  const mtus = [
+    ...(wanActive(ns) && ns.wanType === 'pppoe' ? [(ns.wanMtu || 1492) - 80] : []),
+    ...(ns?.bakStage === 'on' && ns.bakType === 'pppoe' ? [(ns.bakMtu || 1492) - 80] : []),
+  ];
+  return mtus.length ? Math.min(DEFAULT_WG_MTU, ...mtus) : 0;
 }
 // PPPoE değilken wg-quick'in açılışta bulacağı değer: varsayılan rotanın kartının MTU'su − 80 (en çok 1420). PPPoE'den
 // çıkınca arayüz buna döner; okunamazsa 0 (dokunulmaz).
@@ -412,6 +416,8 @@ export interface ReachResult {
   external: ReachExternal;
   // direct: Pi doğrudan internette (internet kartında açık IP, ör. PPPoE) — modem / NAT yok, yönlendirme gerekmez.
   scenario: 'reachable' | 'cgnat' | 'nat' | 'unknown' | 'direct';
+  // Testin yapıldığı hat: backup = ana hat çalışmıyor, yedek hattan (4G / telefon çoğu zaman CGNAT) ölçüldü.
+  uplink: 'main' | 'backup';
 }
 
 const HOP_TARGET = '9.9.9.9';
@@ -535,8 +541,11 @@ async function doReach(): Promise<ReachResult> {
   if (!isLinux) throw new Error('Test yalnız Pi üzerinde çalışır');
   const id = await getLanIdentity().catch(() => null);
   // İnternet kartı modunda (R3) duraklar ve dış adres internet kartından okunur; gateway zaten onun ağ geçididir.
-  const iface = id?.wan?.dev || id?.iface || '';
-  const gateway = id?.gateway || '';
+  // Yedek hatta geçilmişse test etkin hattan (yedek hat) yapılır.
+  const up = await activeUplink().catch(() => null);
+  const onBackup = up?.via === 'backup';
+  const iface = (onBackup ? up?.dev : '') || id?.wan?.dev || id?.iface || '';
+  const gateway = (onBackup ? up?.gateway : id?.gateway) || '';
   const endpoint = await serverEndpoint();
   const [publicIp, hops] = await Promise.all([wanPublicIp(iface), traceHops(iface)]);
   const ddnsIps = endpoint.source === 'ddns' ? await resolveHost(endpoint.host) : [];
@@ -552,7 +561,9 @@ async function doReach(): Promise<ReachResult> {
   const cgnatHop = hops.slice(0, firstPublic < 0 ? undefined : firstPublic).find(h => h.kind === 'cgnat')?.ip || '';
   // Açık IP Pi'nin kendi kartındaysa deneme paketi Pi'nin yerel adresine gider (yerel tablo, tünelden çıkmaz):
   // VPS'ten ölçülemez. Modem / NAT yoktur; port internet kartı güvenlik duvarında Ev VPN'i açıkken açıktır.
-  const direct = !!id?.wan?.public && !!id.wan.ip && (!publicIp || publicIp === id.wan.ip);
+  const upPublic = onBackup ? !!up?.public : !!id?.wan?.public;
+  const upIp = (onBackup ? up?.ip : id?.wan?.ip) || '';
+  const direct = upPublic && !!upIp && (!publicIp || publicIp === upIp);
   const external = direct
     ? { status: 'untested' as const, via: '', reason: "Pi doğrudan internette (açık IP internet kartında) — modemde yönlendirme gerekmez", sent: 0, received: 0 }
     : await externalProbe(publicIp || ddnsIps[0] || '');
@@ -562,8 +573,10 @@ async function doReach(): Promise<ReachResult> {
     at: new Date().toISOString(),
     running: fs.existsSync(`/sys/class/net/${WG_IFACE}`),
     port: WG_PORT,
-    // Modemde yönlendirmenin hedefi: internet kartı modunda Pi'nin modeme bakan adresi internet kartınınkidir.
-    piLanIp: id?.wan?.ip || id?.transit.ip || '',
+    // Modemde yönlendirmenin hedefi: internet kartı modunda Pi'nin modeme bakan adresi internet kartınınkidir; yedek
+    // hatta geçilmişse yedek hattın (4G modem / router) Pi'ye verdiği adres.
+    piLanIp: (onBackup ? up?.ip : '') || id?.wan?.ip || id?.transit.ip || '',
+    uplink: onBackup ? 'backup' : 'main',
     gateway,
     publicIp,
     endpoint,

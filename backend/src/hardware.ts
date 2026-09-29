@@ -34,6 +34,8 @@ export type Hardware = {
     // R3: internet kartı (WAN router) aşaması, kartı ve adres/rota arayüzü (kart / VLAN / PPPoE).
     wanStage?: string; wanPort?: string | null; wanDev?: string | null;
     wanSingle?: boolean; // R3b: tek port (internet ev ağı kartının üzerindeki VLAN'dan)
+    // Yedek hat (failover): açık mı, arayüzü, şu an etkin mi (ana hat düştü, yedek hattan çıkılıyor).
+    bakStage?: string; bakDev?: string | null; bakActive?: boolean;
   };
 };
 
@@ -150,6 +152,10 @@ export function evaluateRoles(hw: Hardware): RoleEval[] {
   const satRole = hw.net.role === 'satellite';
   const satNote: Note = { kind: 'info', text: 'Bu cihaz uydu: ağ geçidi rolleri ana cihazda. Ana cihaz yapmak için Uydu panelinden rolü çevirin.' };
 
+  // Yedek hat (isteğe bağlı; LAN router ve WAN router kartlarında açıkken görünür): arayüzü ve şu an devrede mi.
+  const bakRows: Check[] = hw.net.bakStage === 'on'
+    ? [{ ok: true, label: 'Yedek hat', value: `${hw.net.bakDev || 'bağlı değil'}${hw.net.bakActive ? ' · devrede' : ''}` }] : [];
+
   // LAN router: mevcut ağın arkasında DHCP + DNS + NAT (DHCP Ayarları sihirbazı).
   const lanActive = hw.net.piDhcp && hw.net.netStage === 'static';
   out.push({
@@ -159,6 +165,7 @@ export function evaluateRoles(hw: Hardware): RoleEval[] {
       { ok: eth.length > 0, label: 'Ethernet portu', value: names(eth) || 'yok' },
       { ok: hw.net.netStage === 'static', label: 'Sabit adres', value: hw.net.netStage === 'static' ? 'kalıcı' : hw.net.netStage === 'trial' ? 'deneme sürüyor' : 'yok' },
       { ok: hw.net.piDhcp, label: 'Pi DHCP sunucusu', value: hw.net.piDhcp ? 'açık' : 'kapalı' },
+      ...(hw.net.wanStage === 'on' ? [] : bakRows),
     ],
     need: eth.length ? [] : [HW_SUGGEST.usbEth],
     notes: satRole ? [satNote] : lanActive ? [] : [{ kind: 'info', text: 'DHCP Ayarları sayfasındaki sihirbazla açılır.' }],
@@ -190,6 +197,7 @@ export function evaluateRoles(hw: Hardware): RoleEval[] {
         : []),
       { ok: hw.modules['8021q'] ?? null, label: 'VLAN (operatör isterse)', value: hw.modules['8021q'] ? 'hazır' : 'modül yok' },
       { ok: hw.tools.pppd ? !!hw.modules.pppoe : null, label: 'PPPoE (operatör isterse)', value: hw.tools.pppd ? (hw.modules.pppoe ? 'hazır' : 'modül yok') : 'panel güncellemesiyle kurulur' },
+      ...(hw.net.wanStage === 'on' ? bakRows : []),
     ],
     need: eth.length >= 2 || (wanOn && hw.net.wanSingle) ? [] : [HW_SUGGEST.usbEth], // tek portta öneri (daha basit kurulum)
     notes: satRole ? [satNote, ...wanNotes.filter(n => n.kind === 'warn')] : wanNotes,

@@ -119,7 +119,9 @@ fi
 #     arping -D ile doğrular (ping, modemin rotası olmayan 192.168.0.x'te dolu adresi göremez).
 #     iw: Cihaz Rolleri sayfası Wi-Fi radyolarının yeteneklerini (AP / mesh / eşzamanlı çalışma) bununla okur.
 #     ppp: WAN router rolünde PPPoE bağlantısı (NetworkManager'ın PPP eklentisi pppd'yi çalıştırır; hizmet başlatmaz).
-if ! pkg_ensure wireguard-tools ipset iptables iputils-arping iw ppp; then
+#     Yedek hat: conntrack (geçişte eski hattın NAT kayıtlarını siler), usb-modeswitch (USB 4G modemi CD-ROM kipinden
+#     modem kipine alır; udev ile, hizmet yok), usbmuxd (iPhone USB paylaşımı; yalnız iPhone takılınca udev başlatır).
+if ! pkg_ensure wireguard-tools ipset iptables iputils-arping iw ppp conntrack usb-modeswitch usbmuxd; then
   echo "  [pkg] UYARI: sistem paketleri kurulamadı (ayrıntı yukarıda)" >> "$LOG"
 fi
 

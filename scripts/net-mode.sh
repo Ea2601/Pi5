@@ -40,6 +40,15 @@
 #                                        "wan confirm" gelmezse eski (tek kablolu) düzene dönülür
 #   wan confirm | rollback | off         kalıcı yapar | yalnız deneme sürüyorsa geri alır | bilerek kapatır (eski düzen)
 #   wan fw                               internet kartı güvenlik duvarını yeniden yükler (Ev VPN'i portu değişince)
+#   backup on --kind eth|usb|wifi [--type dhcp|static|pppoe] [--port KART] [--vlan ID] [--mtu N]
+#             [--addr IP/ÖNEK --gw IP [--dns IP,IP]] [--user AD] [--ssid AD]
+#                                        yedek hat (failover): ikinci internet bağlantısı (Ethernet kartı / VLAN, USB 4G
+#                                        modem ya da telefon USB paylaşımı, telefon hotspot'u). Hemen sınanır; olmazsa geri
+#                                        alınır. PPPoE / hotspot parolası STDIN'in ilk satırından. İzleyici ana hat düşünce
+#                                        yedek hatta geçer, ana hat 60 sn sağlam kalınca döner
+#   backup off | fw                      yedek hattı kapatır | güvenlik duvarını yeniden yükler
+#   backup test [SN]                     geçiş denemesi: SN (varsayılan 60, 0 = bitir) saniye yedek hatta kalınır
+#   backup watch                         izleyici (pi5-wan-failover.service)
 #   ensure                            güncelleme / açılış: süresi geçen denemeleri geri alır, kalıcı profili ve kalıcı
 #                                        kurulum Wi-Fi'ını denetler. Hiçbir şeyi kendiliğinden AÇMAZ.
 #   guard                                pi5-net-guard.service (açılış + her NetworkManager (yeniden) başlatması): kalıcı
@@ -59,6 +68,7 @@
 #                       sudo bash /opt/pi5-gateway/scripts/net-mode.sh home off   (ev Wi-Fi'ını / köprüyü kapatma)
 #                       sudo bash /opt/pi5-gateway/scripts/net-mode.sh sat off    (uydu köprüsünü kapatma)
 #                       sudo bash /opt/pi5-gateway/scripts/net-mode.sh wan off    (internet kartından tek kabloya dönüş)
+#                       sudo bash /opt/pi5-gateway/scripts/net-mode.sh backup off (yedek hattı kapatma)
 set -u
 export LC_ALL=C
 umask 077
@@ -119,8 +129,30 @@ WAN_FW_UNIT=pi5-wan-fw
 WAN_TIMER_UNIT=pi5-wan-rollback
 WAN_RETRY_PREFIX=$WAN_TIMER_UNIT-retry
 WAN_METRIC=50
+# Yedek hat (failover): profiller hep bağlı, varsayılan rota metrik 900; geçişte yedek rotanın metrik 10'lu kopyası.
+BAK_PROFILE=pi5-bak
+BAK_KEYFILE=/etc/NetworkManager/system-connections/pi5-bak.nmconnection
+BAK_VLAN_PROFILE=pi5-bak-vlan
+BAK_VLAN_KEYFILE=/etc/NetworkManager/system-connections/pi5-bak-vlan.nmconnection
+BAK_PPP_PROFILE=pi5-bak-ppp
+BAK_PPP_KEYFILE=/etc/NetworkManager/system-connections/pi5-bak-ppp.nmconnection
+BAK_PPP_IF=pppbak
+BAK_BACKUP_DIR=$DIR/bak
+BAK_NFT=/etc/nftables.d/pi5-bak.conf
+BAK_FW_UNIT=pi5-bak-fw
+BAK_WATCH_UNIT=pi5-wan-failover
+BAK_UDEV_RULE=/etc/udev/rules.d/90-pi5-bak.rules
+BAK_RUN=/run/pi5-gateway
+BAK_STATUS=$BAK_RUN/failover.status
+BAK_FORCE=$BAK_RUN/failover.force
+BAK_METRIC=900
+BAK_ACTIVE_METRIC=10
+BAK_GROUP=77
+# USB 4G modem (HiLink: cdc_ether / cdc_ncm) ve telefon USB paylaşımı (Android: rndis_host / cdc_ncm, iPhone: ipheth).
+BAK_USB_DRIVERS="rndis_host cdc_ether cdc_ncm ipheth"
+BAK_TARGETS="1.1.1.1 8.8.8.8 9.9.9.9"
 SELF=$(readlink -f "$0")
-STATE_KEYS="stage trial_ends iface transit client gw dns old_uuid old_name old_ipv6 wifi_off ap_stage ap_trial_ends ap_iface ap_ssid ap_old_uuid ap_radio_was_off home_stage home_trial_ends home_iface home_ssid home_band home_channel home_radio_was_off lan_if sat_stage sat_trial_ends sat_iface sat_old_uuid sat_old_name sat_wifi sat_ssid sat_band sat_channel sat_radio_was_off sat_backhaul wan_stage wan_trial_ends wan_port wan_dev wan_type wan_vlan wan_prio wan_mac wan_mtu wan_user wan_addr wan_gw wan_dns wan_lan wan_dhcp_vendor wan_dhcp_cid wan_dhcp_host"
+STATE_KEYS="stage trial_ends iface transit client gw dns old_uuid old_name old_ipv6 wifi_off ap_stage ap_trial_ends ap_iface ap_ssid ap_old_uuid ap_radio_was_off home_stage home_trial_ends home_iface home_ssid home_band home_channel home_radio_was_off lan_if sat_stage sat_trial_ends sat_iface sat_old_uuid sat_old_name sat_wifi sat_ssid sat_band sat_channel sat_radio_was_off sat_backhaul wan_stage wan_trial_ends wan_port wan_dev wan_type wan_vlan wan_prio wan_mac wan_mtu wan_user wan_addr wan_gw wan_dns wan_lan wan_dhcp_vendor wan_dhcp_cid wan_dhcp_host bak_stage bak_kind bak_type bak_port bak_dev bak_vlan bak_mtu bak_user bak_addr bak_gw bak_dns bak_ssid bak_match bak_radio_was_off"
 
 die() { echo "error=$*"; exit 1; }
 log() { logger -t pi5-net-mode "$*" 2>/dev/null || true; }
@@ -176,6 +208,23 @@ read_state() {
   { [[ $S_wan_dhcp_vendor =~ ^[\ -~]{1,64}$ ]] && [[ $S_wan_dhcp_vendor != *\\* ]]; } || S_wan_dhcp_vendor=""
   { [[ $S_wan_dhcp_cid =~ ^[\ -~]{1,64}$ ]] && [[ $S_wan_dhcp_cid != *\\* ]]; } || S_wan_dhcp_cid=""
   [[ $S_wan_dhcp_host =~ ^[A-Za-z0-9]([A-Za-z0-9.-]{0,62})$ ]] || S_wan_dhcp_host=""
+  # Yedek hat: adlar nft kuralına ve profil dosyasına girer; biçim dışıysa boş sayılır.
+  [ "$S_bak_stage" = on ] || S_bak_stage=none
+  case "$S_bak_kind" in eth|usb|wifi) ;; *) S_bak_kind="" ;; esac
+  case "$S_bak_type" in dhcp|static|pppoe) ;; *) S_bak_type="" ;; esac
+  [[ $S_bak_port =~ ^[A-Za-z0-9_.-]{1,15}$ ]] || S_bak_port=""
+  [[ $S_bak_dev =~ ^[A-Za-z0-9_.-]{1,15}$ ]] || S_bak_dev=""
+  [[ $S_bak_vlan =~ ^[0-9]{1,4}$ ]] || S_bak_vlan=""
+  [[ $S_bak_mtu =~ ^[0-9]{3,4}$ ]] || S_bak_mtu=""
+  [[ $S_bak_user =~ ^[!-~]{1,64}$ ]] || S_bak_user=""
+  [[ $S_bak_addr =~ ^[0-9.]{7,15}/[0-9]{1,2}$ ]] || S_bak_addr=""
+  valid_ip "$S_bak_gw" || S_bak_gw=""
+  [[ $S_bak_dns =~ ^[0-9.,]{7,47}$ ]] || S_bak_dns=""
+  { [ "$(printf '%s' "$S_bak_ssid" | wc -c)" -le 32 ] && ! [[ $S_bak_ssid =~ [[:cntrl:]] ]]; } || S_bak_ssid=""
+  [[ $S_bak_match =~ ^[a-z0-9_]+( [a-z0-9_]+)*$ ]] || S_bak_match=""
+  [ "$S_bak_radio_was_off" = 1 ] || S_bak_radio_was_off=0
+  # Kind yoksa yedek hat yok sayılır (bozuk durum dosyası).
+  [ -n "$S_bak_kind" ] || S_bak_stage=none
 }
 write_state() {
   local k v
@@ -207,6 +256,11 @@ wan_reset() {
   S_wan_stage=none; S_wan_trial_ends=0; S_wan_port=""; S_wan_dev=""; S_wan_type=""; S_wan_vlan=""; S_wan_prio=""
   S_wan_mac=""; S_wan_mtu=""; S_wan_user=""; S_wan_addr=""; S_wan_gw=""; S_wan_dns=""; S_wan_lan=0
   S_wan_dhcp_vendor=""; S_wan_dhcp_cid=""; S_wan_dhcp_host=""
+}
+# Yedek hat alanlarını boşaltır (bak_stage=none).
+bak_reset() {
+  S_bak_stage=none; S_bak_kind=""; S_bak_type=""; S_bak_port=""; S_bak_dev=""; S_bak_vlan=""; S_bak_mtu=""
+  S_bak_user=""; S_bak_addr=""; S_bak_gw=""; S_bak_dns=""; S_bak_ssid=""; S_bak_match=""; S_bak_radio_was_off=0
 }
 
 # static/confirm/dhcp: zamanlayıcıyı ve (varsa) biten geri alma servisini temizler. Geri alma işi KENDİ servisinde
@@ -276,12 +330,13 @@ nets_overlap() {
 
 # --- Ağ / NetworkManager sorguları ---
 nm_running() { command -v nmcli >/dev/null 2>&1 && [ "$(nmcli -t -f RUNNING general 2>/dev/null)" = running ]; }
-# En düşük metrikli varsayılan rota → "ARAYÜZ AĞ_GEÇİDİ" (wg*/lo/docker*/veth* hariç).
+# En düşük metrikli varsayılan rota → "ARAYÜZ AĞ_GEÇİDİ" (wg*/lo/docker*/veth* ve yedek hat arayüzleri hariç: yedek
+# hatta geçilmişken de ana hat görülür).
 default_route() {
-  ip -4 route show default 2>/dev/null | awk '
+  ip -4 route show default 2>/dev/null | awk -v skip=" $(bak_devs 2>/dev/null | tr '\n' ' ') " '
     { dev = ""; gw = ""; m = 0
       for (i = 1; i < NF; i++) { if ($i == "dev") dev = $(i + 1); else if ($i == "via") gw = $(i + 1); else if ($i == "metric") m = $(i + 1) + 0 }
-      if (dev == "" || dev == "lo" || dev ~ /^(wg|docker|veth)/) next
+      if (dev == "" || dev == "lo" || dev ~ /^(wg|docker|veth)/ || index(skip, " " dev " ")) next
       if (best == "" || m < bm) { best = dev " " gw; bm = m } }
     END { if (best != "") print best }'
 }
@@ -1848,6 +1903,566 @@ wan_guard_routine() {
   return 0
 }
 
+# --- Yedek hat (failover) ---
+# İkinci internet bağlantısı: Ethernet kartı (ikinci modem / 4G-5G router / ikinci operatör; isteğe bağlı VLAN; DHCP,
+# sabit ya da PPPoE), USB 4G modem ya da telefonun USB paylaşımı (sürücüye göre eşleşir: adı her takışta değişebilir) ya
+# da telefon hotspot'u (Wi-Fi istemci). Profiller hep bağlıdır ama varsayılan rotaları düşük önceliklidir (metrik 900;
+# ana hat 50, tek kollu ev ağı 100). İzleyici (pi5-wan-failover.service = "backup watch") ana hattı 5 sn'de bir ana hat
+# arayüzüne bağlı ping ile sınar; 3 tur yanıt yoksa (bağlantı hiç yoksa hemen) yedek hattın varsayılan rotasının metrik
+# 10'lu bir kopyasını koyar — hiçbir profile (ana hat, ev ağı) dokunulmaz. Ana hat 60 sn kesintisiz sağlam kalınca ve son
+# geçişten 2 dk geçince kopya kaldırılır. Geçişte eski hattın adresine bağlı NAT kayıtları (conntrack) silinir: açık
+# bağlantılar yeni hatta yeniden kurulur. Güvenlik duvarı ayrı tablolardadır (inet pi5_bak + ip pi5_bak_nat, açılışta
+# NetworkManager'dan önce): internetten gelen her şey düşer (kurulu bağlantıların yanıtı, DHCP yanıtı, Ev VPN'i portu ve
+# port yönlendirmeleri hariç), çıkan trafik maskelenir. USB modemler arayüz grubu 77 ile işaretlenir (udev kuralı +
+# izleyici): kural arayüzün adını bilmeden geçerlidir.
+
+# Ev ağı kartındaki VLAN (yönetilebilir anahtar yedek hattı etiketli getirir): kart ev ağıdır, ona profil yazılmaz.
+bak_on_lan_card() { [ "$S_bak_kind" = eth ] && [ -n "$S_bak_port" ] && [ "$S_bak_port" = "$S_iface" ]; }
+# Bu kurulumun profilleri (etkinleştirme sırası): kart / USB / Wi-Fi → VLAN → PPPoE.
+bak_profiles() {
+  if ! bak_on_lan_card; then echo "$BAK_PROFILE"; fi
+  if [ -n "$S_bak_vlan" ]; then echo "$BAK_VLAN_PROFILE"; fi
+  if [ "$S_bak_type" = pppoe ]; then echo "$BAK_PPP_PROFILE"; fi
+}
+bak_keyfile_of() {
+  case "$1" in
+    "$BAK_PROFILE") echo "$BAK_KEYFILE" ;;
+    "$BAK_VLAN_PROFILE") echo "$BAK_VLAN_KEYFILE" ;;
+    "$BAK_PPP_PROFILE") echo "$BAK_PPP_KEYFILE" ;;
+  esac
+}
+# Adresin ve varsayılan rotanın olduğu arayüz. USB'de ad değişebilir: pi5-bak'ın etkin olduğu aygıt, yoksa grup 77'de
+# adresi olan ilk arayüz.
+bak_cur_dev() {
+  local d="" n
+  if [ "$S_bak_kind" = usb ]; then
+    d=$(nmcli -t -f NAME,DEVICE connection show --active 2>/dev/null | awk -F: -v p="$BAK_PROFILE" '$1 == p { print $2; exit }')
+    if [ -z "$d" ]; then
+      for n in /sys/class/net/*; do
+        if [ "$(cat "$n/netdev_group" 2>/dev/null)" = "$BAK_GROUP" ] && [ -n "$(iface_addrs "${n##*/}")" ]; then d=${n##*/}; break; fi
+      done
+    fi
+    if [[ $d =~ ^[A-Za-z0-9_.-]{1,15}$ ]]; then echo "$d"; fi
+  else
+    echo "$S_bak_dev"
+  fi
+}
+# Yedek hattın arayüzleri (kart + VLAN + PPPoE, Wi-Fi kartı ya da grup 77'deki USB arayüzleri) — satır başına bir ad.
+bak_devs() {
+  local n
+  [ -n "${S_bak_kind:-}" ] || return 0
+  if [ "$S_bak_kind" = usb ]; then
+    for n in /sys/class/net/*; do [ "$(cat "$n/netdev_group" 2>/dev/null)" = "$BAK_GROUP" ] && echo "${n##*/}"; done
+    return 0
+  fi
+  if ! bak_on_lan_card && [ -n "$S_bak_port" ]; then echo "$S_bak_port"; fi
+  if [ -n "$S_bak_vlan" ]; then echo "bak.$S_bak_vlan"; fi
+  if [ "$S_bak_type" = pppoe ]; then echo "$BAK_PPP_IF"; fi
+  return 0
+}
+bak_is_dev() { bak_devs | grep -qx -- "$1"; }
+# nft eşleşmesi ($1 = iif | oif): USB'de arayüz grubu (ad değişebilir), değilse ad kümesi.
+bak_nft_match() {
+  local s=""
+  if [ "$S_bak_kind" = usb ]; then printf '%sgroup %s' "$1" "$BAK_GROUP"; return 0; fi
+  if ! bak_on_lan_card; then s="\"$S_bak_port\""; fi
+  if [ -n "$S_bak_vlan" ]; then s="${s:+$s, }\"bak.$S_bak_vlan\""; fi
+  if [ "$S_bak_type" = pppoe ]; then s="$s, \"$BAK_PPP_IF\""; fi
+  printf '%sname { %s }' "$1" "$s"
+}
+# pi5_bak + pi5_bak_nat (boş-tanımla → sil → yeniden-tanımla: idempotent). Hata → 1, BAK_NFT_OUT.
+bak_nft_load() {
+  local mi mo dhcp="" wgr="" wg out
+  BAK_NFT_OUT=""
+  command -v nft >/dev/null 2>&1 || { BAK_NFT_OUT="nft bulunamadı"; return 1; }
+  [ -n "$S_bak_kind" ] || { BAK_NFT_OUT="yedek hat kaydı yok"; return 1; }
+  mi=$(bak_nft_match iif); mo=$(bak_nft_match oif)
+  if [ "$S_bak_type" != pppoe ]; then dhcp="        $mi udp sport 67 udp dport 68 accept"; fi
+  if wg=$(wg_listen_port); then wgr="        $mi udp dport $wg accept"; fi
+  mkdir -p "$(dirname "$BAK_NFT")" 2>/dev/null
+  if ! printf '%s\n' "table inet pi5_bak {}
+delete table inet pi5_bak
+table inet pi5_bak {
+    chain input {
+        type filter hook input priority -10; policy accept;
+        $mi ct state established,related accept
+$dhcp
+$wgr
+        $mi drop
+    }
+    chain forward {
+        type filter hook forward priority -10; policy accept;
+        $mi tcp flags syn tcp option maxseg size set rt mtu
+        $mo tcp flags syn tcp option maxseg size set rt mtu
+        $mi ct state established,related accept
+        $mi ct status dnat accept
+        $mi drop
+    }
+}
+table ip pi5_bak_nat {}
+delete table ip pi5_bak_nat
+table ip pi5_bak_nat {
+    chain postrouting {
+        type nat hook postrouting priority srcnat; policy accept;
+        $mo masquerade
+    }
+}" > "$BAK_NFT.tmp" || ! mv -f "$BAK_NFT.tmp" "$BAK_NFT"; then
+    rm -f "$BAK_NFT.tmp"; BAK_NFT_OUT="$BAK_NFT yazılamadı"; return 1
+  fi
+  out=$(nft -f "$BAK_NFT" 2>&1) || { BAK_NFT_OUT=$(printf '%s' "$out" | oneline); return 1; }
+  return 0
+}
+bak_nft_remove() {
+  local del out rc=0
+  del=$'table inet pi5_bak {}\ndelete table inet pi5_bak\ntable ip pi5_bak_nat {}\ndelete table ip pi5_bak_nat'
+  if command -v nft >/dev/null 2>&1; then
+    if [ -d "$(dirname "$BAK_NFT")" ] && printf '%s\n' "$del" > "$BAK_NFT.tmp" && mv -f "$BAK_NFT.tmp" "$BAK_NFT"; then
+      out=$(nft -f "$BAK_NFT" 2>&1) || rc=1
+    else
+      out=$(printf '%s\n' "$del" | nft -f - 2>&1) || rc=1
+    fi
+    [ "$rc" = 0 ] || echo "warning=yedek hat güvenlik duvarı tabloları kaldırılamadı: $(printf '%s' "$out" | oneline)"
+  fi
+  rm -f "$BAK_NFT" "$BAK_NFT.tmp"
+}
+bak_nft_loaded() { nft list table inet pi5_bak >/dev/null 2>&1 && nft list table ip pi5_bak_nat >/dev/null 2>&1; }
+# Açılışta tabloyu NetworkManager'dan ÖNCE yükleyen birim (pi5-wan-fw ile aynı düzen).
+bak_fw_unit_install() {
+  local u="/etc/systemd/system/$BAK_FW_UNIT.service" nftb
+  nftb=$(command -v nft) || return 1
+  printf '%s\n' "[Unit]
+Description=Klyrix Gate: yedek hat güvenlik duvarı (NetworkManager'dan önce)
+DefaultDependencies=no
+After=local-fs.target nftables.service
+Before=network-pre.target NetworkManager.service shutdown.target
+Wants=network-pre.target
+Conflicts=shutdown.target
+ConditionPathExists=$BAK_NFT
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=$nftb -f $BAK_NFT
+
+[Install]
+WantedBy=multi-user.target NetworkManager.service" > "$u.tmp" && mv -f "$u.tmp" "$u" || { rm -f "$u.tmp"; return 1; }
+  systemctl daemon-reload >/dev/null 2>&1
+  systemctl enable "$BAK_FW_UNIT.service" >/dev/null 2>&1
+}
+bak_fw_unit_remove() {
+  local u="/etc/systemd/system/$BAK_FW_UNIT.service"
+  [ -e "$u" ] || return 0
+  systemctl disable "$BAK_FW_UNIT.service" >/dev/null 2>&1 || true
+  rm -f "$u"
+  systemctl daemon-reload >/dev/null 2>&1 || true
+}
+# İzleyici birimi (açılışta NM ve açılış korumasından sonra; düşerse 5 sn'de yeniden başlar).
+bak_watch_install() {
+  local u="/etc/systemd/system/$BAK_WATCH_UNIT.service"
+  printf '%s\n' "[Unit]
+Description=Klyrix Gate: yedek hat izleyicisi (ana hat düşünce yedek hatta geçer, dönünce geri alır)
+After=NetworkManager.service pi5-net-guard.service
+Wants=NetworkManager.service
+
+[Service]
+Type=simple
+ExecStart=/bin/bash $SELF backup watch
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target" > "$u.tmp" && mv -f "$u.tmp" "$u" || { rm -f "$u.tmp"; return 1; }
+  systemctl daemon-reload >/dev/null 2>&1
+  systemctl enable "$BAK_WATCH_UNIT.service" >/dev/null 2>&1
+  # Beklemesiz: açılış korumasından (pi5-net-guard, oneshot) çağrılırsa izleyici "korumadan sonra" sıralı olduğu için
+  # bekleyen bir başlatma korumanın bitmesini bekler, koruma da onu — zaman aşımına kadar kilitlenirdi.
+  systemctl --no-block restart "$BAK_WATCH_UNIT.service" >/dev/null 2>&1
+}
+bak_watch_remove() {
+  local u="/etc/systemd/system/$BAK_WATCH_UNIT.service"
+  systemctl stop "$BAK_WATCH_UNIT.service" >/dev/null 2>&1 || true
+  if [ -e "$u" ]; then
+    systemctl disable "$BAK_WATCH_UNIT.service" >/dev/null 2>&1 || true
+    rm -f "$u"
+    systemctl daemon-reload >/dev/null 2>&1 || true
+  fi
+  rm -f "$BAK_STATUS" "$BAK_STATUS.tmp" "$BAK_FORCE"
+}
+# USB türü: sürücüsü listedeki arayüzler takılır takılmaz (NM etkinleştirmeden önce) grup 77'ye alınır.
+bak_udev_install() {
+  local ipb drv
+  ipb=$(command -v ip) || return 1
+  drv=$(printf '%s' "$S_bak_match" | tr ' ' '|')
+  mkdir -p "$(dirname "$BAK_UDEV_RULE")" || return 1
+  printf '%s\n' "# Klyrix Gate yedek hat: USB 4G modem / telefon paylaşımı arayüzleri grup $BAK_GROUP (güvenlik duvarı pi5_bak)
+ACTION==\"add\", SUBSYSTEM==\"net\", DRIVERS==\"$drv\", RUN+=\"$ipb link set dev %k group $BAK_GROUP\"" > "$BAK_UDEV_RULE.tmp" \
+    && chmod 644 "$BAK_UDEV_RULE.tmp" && mv -f "$BAK_UDEV_RULE.tmp" "$BAK_UDEV_RULE" || { rm -f "$BAK_UDEV_RULE.tmp"; return 1; }
+  udevadm control --reload >/dev/null 2>&1 || true
+}
+bak_udev_remove() {
+  local n
+  if [ -e "$BAK_UDEV_RULE" ]; then rm -f "$BAK_UDEV_RULE"; udevadm control --reload >/dev/null 2>&1 || true; fi
+  for n in /sys/class/net/*; do
+    [ "$(cat "$n/netdev_group" 2>/dev/null)" = "$BAK_GROUP" ] && ip link set dev "${n##*/}" group default 2>/dev/null
+  done
+  return 0
+}
+# Ev ağı kartı, köprü ve ana hattın kartı yedek hat olamaz.
+bak_foreign_port() { [ "$1" = "$S_iface" ] || [ "$1" = "$BR_IF" ] || { [ -n "$S_wan_port" ] && [ "$1" = "$S_wan_port" ]; }; }
+dev_driver() { nmcli -g GENERAL.DRIVER device show "$1" 2>/dev/null; }
+# USB türü: sürücüsü listede olan kablolu arayüzleri grup 77'ye alır ve adlarını yazar (udev kuralının kaçırdığı ya da
+# kural kurulmadan önce takılmış aygıtlar). NetworkManager'ın yönetmediği arayüzler (ör. yapılandırmada unmanaged) alınmaz.
+bak_tag_usb() {
+  local n t st d
+  while IFS=: read -r n t st; do
+    case "$t" in ethernet|veth) ;; *) continue ;; esac
+    [ "$st" = unmanaged ] && continue
+    bak_foreign_port "$n" && continue
+    d=$(dev_driver "$n")
+    case " $S_bak_match " in *" $d "*) ;; *) continue ;; esac
+    [ "$(cat "/sys/class/net/$n/netdev_group" 2>/dev/null)" = "$BAK_GROUP" ] || ip link set dev "$n" group "$BAK_GROUP" 2>/dev/null
+    echo "$n"
+  done < <(nmcli -t -f DEVICE,TYPE,STATE device 2>/dev/null)
+}
+# Yedek hattın kartında (Ethernet / Wi-Fi / USB) başka bir profil etkinse indirilir (ör. karta bağlı olmayan eski netplan
+# profili ya da Pi'nin eski Wi-Fi profili ev modemine bağlandı): o zaman NM kendi önceliğiyle yedek hat profilini seçer.
+bak_evict_foreign() {
+  local d ac au
+  if [ "$S_bak_kind" = usb ]; then
+    # shellcheck disable=SC2046 # arayüz adları boşluksuz (satır başına bir ad): sözcüklere bölünmesi istenir
+    set -- $(bak_devs)
+  elif bak_on_lan_card; then
+    return 0
+  else
+    set -- "$S_bak_port"
+  fi
+  for d in "$@"; do
+    [ -n "$d" ] && [ -e "/sys/class/net/$d" ] || continue
+    ac=$(active_conn "$d")
+    [ -n "$ac" ] && [ "$ac" != "$BAK_PROFILE" ] || continue
+    au=$(active_uuid "$d")
+    [ -n "$au" ] && nmcli connection down uuid "$au" >/dev/null 2>&1 && log "yedek hat: $d üzerindeki başka profil ($ac) indirildi"
+  done
+  return 0
+}
+# [ipv4] bölümü. $1 = 1: bu profil adresi taşır; değilse adressiz. $2 = ppp: PPPoE profili.
+bak_ipv4_section() {
+  if [ "$1" != 1 ]; then printf 'method=disabled'; return 0; fi
+  if [ "$S_bak_type" = static ] && [ "${2:-}" != ppp ]; then
+    printf 'method=manual\naddress1=%s\ngateway=%s\n' "$S_bak_addr" "$S_bak_gw"
+    if [ -n "$S_bak_dns" ]; then printf 'dns=%s;\n' "${S_bak_dns//,/;}"; fi
+  else
+    printf 'method=auto\n'
+  fi
+  # Düşük öncelikli varsayılan rota; operatörün DNS'i Pi'nin kendisinden (Pi-hole) sonra.
+  printf 'route-metric=%s\ndns-priority=200\nmay-fail=false' "$BAK_METRIC"
+}
+# Wi-Fi ağ adı bayt listesi olarak yazılır ("65;108;105;"): telefon hotspot adlarında Türkçe harf, kesme işareti,
+# noktalı virgül olabilir; keyfile'da bu biçim her baytı olduğu gibi taşır.
+ssid_bytes() { printf '%s' "$1" | od -An -tu1 -v | tr -s ' \n' ';;' | sed 's/^;//'; }
+# Profil dosyaları (kendiliğinden bağlanır; öncelik 250: karta bağlı olmayan eski profillerden önce seçilir).
+# $1 = PPPoE parolası ya da Wi-Fi parolası (argv'ye / günlüğe girmez).
+bak_write_keyfiles() {
+  local u1 u2 u3 l3port=1 l3vlan=0 base_mtu="" eth="" vlan_eth="" ppp="" parent x="" p
+  u1=$(new_uuid) && u2=$(new_uuid) && u3=$(new_uuid) || return 1
+  if [ -n "$S_bak_vlan" ]; then l3port=0; l3vlan=1; fi
+  if [ "$S_bak_type" = pppoe ]; then l3port=0; l3vlan=0; fi
+  if [ "$S_bak_type" = pppoe ] && [ -n "$S_bak_mtu" ] && [ "$S_bak_mtu" -gt 1492 ]; then base_mtu=$((S_bak_mtu + 8)); fi
+  if [ -n "$S_bak_mtu" ] && [ "$l3port" = 1 ]; then eth="mtu=$S_bak_mtu"; elif [ -n "$base_mtu" ]; then eth="mtu=$base_mtu"; fi
+  case "$S_bak_kind" in
+    eth)
+      if ! bak_on_lan_card; then
+        home_put_keyfile "$BAK_KEYFILE" "[connection]
+id=$BAK_PROFILE
+uuid=$u1
+type=ethernet
+interface-name=$S_bak_port
+autoconnect=true
+autoconnect-priority=250
+autoconnect-retries=0
+
+[ethernet]
+$eth
+
+[ipv4]
+$(bak_ipv4_section "$l3port")
+
+[ipv6]
+method=disabled" || return 1
+      fi ;;
+    usb)
+      # Ev ağı kartı, köprü ve ana hattın kartı eşleşmeden çıkarılır ("!ad": zorunlu değil-eşleşme).
+      for p in "$S_iface" "$BR_IF" "$S_wan_port"; do if [ -n "$p" ]; then x="$x!$p;"; fi; done
+      home_put_keyfile "$BAK_KEYFILE" "[connection]
+id=$BAK_PROFILE
+uuid=$u1
+type=ethernet
+autoconnect=true
+autoconnect-priority=250
+autoconnect-retries=0
+
+[match]
+driver=${S_bak_match// /;};
+interface-name=$x
+
+[ethernet]
+$eth
+
+[ipv4]
+$(bak_ipv4_section 1)
+
+[ipv6]
+method=disabled" || return 1 ;;
+    wifi)
+      home_put_keyfile "$BAK_KEYFILE" "[connection]
+id=$BAK_PROFILE
+uuid=$u1
+type=wifi
+interface-name=$S_bak_port
+autoconnect=true
+autoconnect-priority=250
+autoconnect-retries=0
+
+[wifi]
+mode=infrastructure
+ssid=$(ssid_bytes "$S_bak_ssid")
+
+[wifi-security]
+key-mgmt=wpa-psk
+psk=$1
+
+[ipv4]
+$(bak_ipv4_section 1)
+
+[ipv6]
+method=disabled" || return 1 ;;
+  esac
+  if [ -n "$S_bak_vlan" ]; then
+    if [ -n "$S_bak_mtu" ] && [ "$l3vlan" = 1 ]; then vlan_eth="mtu=$S_bak_mtu"; elif [ -n "$base_mtu" ]; then vlan_eth="mtu=$base_mtu"; fi
+    home_put_keyfile "$BAK_VLAN_KEYFILE" "[connection]
+id=$BAK_VLAN_PROFILE
+uuid=$u2
+type=vlan
+interface-name=bak.$S_bak_vlan
+autoconnect=true
+autoconnect-priority=250
+autoconnect-retries=0
+
+[ethernet]
+$vlan_eth
+
+[vlan]
+parent=$S_bak_port
+id=$S_bak_vlan
+
+[ipv4]
+$(bak_ipv4_section "$l3vlan")
+
+[ipv6]
+method=disabled" || return 1
+  fi
+  if [ "$S_bak_type" = pppoe ]; then
+    parent=$S_bak_port
+    if [ -n "$S_bak_vlan" ]; then parent="bak.$S_bak_vlan"; fi
+    if [ -n "$S_bak_mtu" ]; then ppp="mtu=$S_bak_mtu
+mru=$S_bak_mtu"; fi
+    home_put_keyfile "$BAK_PPP_KEYFILE" "[connection]
+id=$BAK_PPP_PROFILE
+uuid=$u3
+type=pppoe
+interface-name=$BAK_PPP_IF
+autoconnect=true
+autoconnect-priority=250
+autoconnect-retries=0
+
+[pppoe]
+parent=$parent
+username=$S_bak_user
+password=$1
+
+[ppp]
+$ppp
+
+[ipv4]
+$(bak_ipv4_section 1 ppp)
+
+[ipv6]
+method=disabled" || return 1
+  fi
+}
+bak_loaded() {
+  local p f
+  for p in $(bak_profiles); do
+    f=$(bak_keyfile_of "$p")
+    [ -s "$f" ] && [ "$(file_of_name "$p")" = "$f" ] || return 1
+  done
+}
+bak_load_all() {
+  local p f out
+  BAK_LOAD_OUT=""
+  for p in $(bak_profiles); do
+    f=$(bak_keyfile_of "$p")
+    drop_tombstone "$f"
+    out=$(nmcli connection load "$f" 2>&1) || { BAK_LOAD_OUT="$p: $(printf '%s' "$out" | oneline)"; return 1; }
+  done
+  bak_loaded || { BAK_LOAD_OUT="profiller NetworkManager'da beklenen dosyalardan görünmüyor (dosya reddedilmiş olabilir)"; return 1; }
+}
+bak_delete_all() {
+  local f
+  delete_named "$BAK_PPP_PROFILE"; delete_named "$BAK_VLAN_PROFILE"; delete_named "$BAK_PROFILE"
+  for f in "$BAK_PPP_KEYFILE" "$BAK_VLAN_KEYFILE" "$BAK_KEYFILE"; do rm -f "$f" "$(dirname "$f")/.$(basename "$f").tmp"; done
+}
+bak_up() {
+  local p out w
+  BAK_UP_OUT=""
+  for p in $(bak_profiles); do
+    w=30; [ "$p" = "$BAK_PPP_PROFILE" ] && w=60; [ "$S_bak_kind" = wifi ] && w=45
+    if ! out=$(nmcli -w "$w" connection up id "$p" 2>&1); then
+      BAK_UP_OUT="$p etkinleştirilemedi: $(printf '%s' "$out" | oneline)"
+      if [ "$p" = "$BAK_PPP_PROFILE" ]; then
+        BAK_UP_OUT="PPPoE oturumu açılamadı — kullanıcı adı / şifre, VLAN numarası ya da operatörün PPPoE sunucusu ($BAK_UP_OUT)"
+      elif [ "$S_bak_kind" = wifi ]; then
+        BAK_UP_OUT="hotspot'a bağlanılamadı — telefonda hotspot açık mı, ağ adı ve parola doğru mu ($BAK_UP_OUT)"
+      elif [ "$S_bak_type" = dhcp ] && [[ $out == *Timeout* || $out == *"IP configuration"* ]]; then
+        BAK_UP_OUT="yedek hattan adres gelmedi (DHCP yanıtı yok) — modem / telefon açık mı, kablo ve VLAN numarası doğru mu ($BAK_UP_OUT)"
+      fi
+      return 1
+    fi
+  done
+}
+bak_ip() {
+  local d
+  d=$(bak_cur_dev); [ -n "$d" ] || return 0
+  ip -4 -o addr show dev "$d" 2>/dev/null | awk '{ if ($5 == "peer") print $4 "/32"; else print $4; exit }' | head -1
+}
+dev_gateway() {
+  local g
+  g=$(ip -4 route show default dev "$1" 2>/dev/null | awk '{ for (i = 1; i < NF; i++) if ($i == "via") { print $(i + 1); exit } }')
+  [ -n "$g" ] || g=$(ip -4 -o addr show dev "$1" 2>/dev/null | awk '$5 == "peer" { sub(/\/.*/, "", $6); print $6; exit }')
+  echo "$g"
+}
+bak_gateway() { local d; d=$(bak_cur_dev); [ -n "$d" ] && dev_gateway "$d"; }
+# Bağlı: arayüzde adres ve (düşük öncelikli) varsayılan rota var.
+bak_up_ok() {
+  local d
+  d=$(bak_cur_dev)
+  [ -n "$d" ] && [ -n "$(bak_ip)" ] && ip -4 route show default dev "$d" 2>/dev/null | grep -q .
+}
+wait_bak_ip() {
+  local end=$((SECONDS + $1))
+  while ! bak_up_ok; do
+    [ "$SECONDS" -ge "$end" ] && return 1
+    sleep 1
+  done
+}
+# Ana hat: internet kartı modunda kartın adres/rota arayüzü, tek kollu modda ev ağı arayüzü (modem ağ geçidi orada).
+bak_primary_dev() { if [ "$S_wan_stage" != none ] && [ -n "$S_wan_dev" ]; then echo "$S_wan_dev"; else lan_dev; fi; }
+bak_primary_ip() { if [ "$S_wan_stage" != none ] && [ -n "$S_wan_dev" ]; then wan_ip; else echo "$S_transit"; fi; }
+# Arayüze bağlı sınama (SO_BINDTODEVICE: metrik ve VPS yönlendirme kuralları araya girmez). Rota yoksa hemen başarısız.
+# Üç hedef aynı anda denenir (en çok 2 sn): biri yanıt verirse sağlam.
+bak_probe() {
+  local t p rc=1 pids=()
+  [ -n "$1" ] && [ -e "/sys/class/net/$1" ] || return 1
+  ip -4 route show default dev "$1" 2>/dev/null | grep -q . || return 1
+  for t in $BAK_TARGETS; do ping -n -c1 -W2 -I "$1" "$t" >/dev/null 2>&1 & pids+=("$!"); done
+  for p in "${pids[@]}"; do wait "$p" && rc=0; done
+  return "$rc"
+}
+# Geçiş rotası: yedek hattın varsayılan rotasının metrik 10'lu kopyası (NM'nin rotasına ve profillere dokunulmaz).
+bak_route_on() {
+  local g
+  g=$(dev_gateway "$1")
+  if [ -n "$g" ] && [ "$S_bak_type" != pppoe ]; then
+    ip route replace default via "$g" dev "$1" metric "$BAK_ACTIVE_METRIC" 2>/dev/null
+  else
+    ip route replace default dev "$1" metric "$BAK_ACTIVE_METRIC" 2>/dev/null
+  fi
+}
+bak_route_lines() { ip -4 route show default 2>/dev/null | awk -v m="$BAK_ACTIVE_METRIC" '$0 ~ (" metric " m "( |$)")'; }
+bak_route_present() { bak_route_lines | grep -Eq " dev $(rx "$1")( |\$)"; }
+bak_route_off() {
+  local l n=0
+  while l=$(bak_route_lines | head -1) && [ -n "$l" ] && [ "$n" -lt 8 ]; do
+    # shellcheck disable=SC2086 # satır "default via G dev D metric 10" biçiminde, sözcüklere bölünmesi gerekir
+    ip route del $l 2>/dev/null || break
+    n=$((n + 1))
+  done
+  return 0
+}
+# Eski hattın adresine bağlı NAT / bağlantı kayıtları (yanıt hedefi = o adres): yeni hatta yeniden kurulsunlar.
+bak_ct_flush() {
+  [ -n "$1" ] && valid_ip "$1" || return 0
+  command -v conntrack >/dev/null 2>&1 || return 0
+  conntrack -D -q "$1" >/dev/null 2>&1 || true
+}
+bak_failed_over() { [ "$(sed -n 's/^active=//p' "$BAK_STATUS" 2>/dev/null)" = backup ]; }
+bak_status_write() { # active since switches reason pdev pok bdev bok force_until
+  mkdir -p "$BAK_RUN" 2>/dev/null
+  printf 'active=%s\nsince=%s\nswitches=%s\nreason=%s\nprimary_dev=%s\nprimary_ok=%s\nbackup_dev=%s\nbackup_ok=%s\nchecked=%s\nforce_until=%s\n' \
+    "$1" "$2" "$3" "$4" "$5" "$6" "$7" "$8" "$(date +%s)" "$9" > "$BAK_STATUS.tmp" && mv -f "$BAK_STATUS.tmp" "$BAK_STATUS"
+}
+# Yedek hattı kaldırır (açma başarısız / kapatma): rota, NAT kayıtları, profiller, güvenlik duvarı, udev kuralı, Wi-Fi
+# kartının eski durumu. Durum dosyasına dokunmaz.
+bak_unwind() {
+  local ip
+  ip=$(bak_ip)
+  bak_watch_remove
+  bak_route_off
+  nmcli connection down id "$BAK_PPP_PROFILE" >/dev/null 2>&1 || true
+  nmcli connection down id "$BAK_VLAN_PROFILE" >/dev/null 2>&1 || true
+  nmcli connection down id "$BAK_PROFILE" >/dev/null 2>&1 || true
+  bak_delete_all
+  if [ -n "$S_bak_vlan" ] && [ -e "/sys/class/net/bak.$S_bak_vlan" ]; then ip link delete "bak.$S_bak_vlan" 2>/dev/null || true; fi
+  [ -n "$ip" ] && bak_ct_flush "${ip%/*}"
+  bak_nft_remove
+  bak_fw_unit_remove
+  bak_udev_remove
+  # Wi-Fi kartı: sabit adres kurulumunda kapatılmışsa (Faz 2) yeniden kapatılır.
+  if [ "$S_bak_kind" = wifi ] && { [ "$S_bak_radio_was_off" = 1 ] || [ "$S_wifi_off" = 1 ]; } \
+     && [ "$S_ap_stage" = none ] && [ "$S_home_stage" = none ] && [ "$S_sat_stage" = none ]; then
+    nmcli radio wifi off >/dev/null 2>&1 || true
+  fi
+  rm -rf "$BAK_BACKUP_DIR"
+  return 0
+}
+# Yedekleri profil dosyalarının yerine koyar (eksik / farklıysa) ve yükler (açılış koruması).
+bak_restore_backups() {
+  local p kf bk tmp
+  for p in $(bak_profiles); do
+    kf=$(bak_keyfile_of "$p"); bk="$BAK_BACKUP_DIR/$(basename "$kf")"
+    [ -s "$bk" ] || continue
+    if [ -s "$kf" ] && cmp -s "$bk" "$kf" && [ "$(file_of_name "$p")" = "$kf" ]; then continue; fi
+    tmp="$(dirname "$kf")/.$(basename "$kf").tmp"
+    { cp -f "$bk" "$tmp" && chown root:root "$tmp" && chmod 600 "$tmp" && mv -f "$tmp" "$kf"; } || { rm -f "$tmp"; continue; }
+    drop_tombstone "$kf"
+    nmcli connection load "$kf" >/dev/null 2>&1 && log "yedek hat profili yedekten geri yüklendi: $p"
+  done
+  return 0
+}
+# Kalıcı yedek hattı denetler (guard: açılış + NM yeniden başlatması; ensure: panel açılışı, güncelleme): güvenlik duvarı,
+# açılış birimleri, udev kuralı, profil dosyaları, izleyici. Güvenlik duvarı yüklenemezse yedek hat indirilir.
+bak_guard_routine() {
+  [ -n "$S_bak_kind" ] || return 0
+  if ! bak_nft_load; then
+    nmcli connection down id "$BAK_PPP_PROFILE" >/dev/null 2>&1; nmcli connection down id "$BAK_VLAN_PROFILE" >/dev/null 2>&1
+    nmcli connection down id "$BAK_PROFILE" >/dev/null 2>&1
+    echo "bak_guard_result=failed"
+    echo "bak_guard_detail=güvenlik duvarı (pi5_bak) yüklenemedi: $BAK_NFT_OUT — yedek hat güvenlik için kapatıldı"
+    log "yedek hat: güvenlik duvarı yüklenemedi ($BAK_NFT_OUT) — yedek hat kapatıldı"
+    return 0
+  fi
+  [ -e "/etc/systemd/system/$BAK_FW_UNIT.service" ] || bak_fw_unit_install || true
+  if [ "$S_bak_kind" = usb ]; then
+    [ -e "$BAK_UDEV_RULE" ] || bak_udev_install || true
+    bak_tag_usb >/dev/null
+  fi
+  nm_running && bak_restore_backups
+  if [ ! -e "/etc/systemd/system/$BAK_WATCH_UNIT.service" ]; then bak_watch_install || true
+  elif ! systemctl is-active --quiet "$BAK_WATCH_UNIT.service" 2>/dev/null; then systemctl --no-block start "$BAK_WATCH_UNIT.service" >/dev/null 2>&1 || true; fi
+  echo "bak_guard_result=ok"
+  return 0
+}
+
 cmd_status() {
   local now dr pifc pgw ptr="" ifc nm=0 ac="" au="" method="" wifi="" gr="" ga="" gd="" k v pok=0
   local wifc apc=0 apa=0 agr="" agd="" lifc hifc hc=0 ha=0 bra=0 sa=0 sb=0
@@ -1993,6 +2608,65 @@ cmd_status() {
   echo "wan_guard_result=$wgr"
   echo "wan_guard_detail=$wgd"
   echo "ppp_ok=$pppok"
+  # Yedek hat: kayıtlı ayar + canlı durum; bak_active/since/switches/reason/..._ok izleyicinin durum dosyasından (/run).
+  local bdev="" bup=0 bfw=0 bw=0 fa=primary fsi="" fsw=0 fre="" fpo="" fbo="" fck="" ffu=0 brx=0 btx=0 bct=0 bcand=""
+  if [ "$S_bak_stage" != none ]; then
+    bdev=$(bak_cur_dev)
+    bak_up_ok && bup=1
+    bak_nft_loaded && bfw=1
+    systemctl is-active --quiet "$BAK_WATCH_UNIT.service" 2>/dev/null && bw=1
+    if [ -n "$bdev" ]; then
+      brx=$(cat "/sys/class/net/$bdev/statistics/rx_bytes" 2>/dev/null || echo 0)
+      btx=$(cat "/sys/class/net/$bdev/statistics/tx_bytes" 2>/dev/null || echo 0)
+    fi
+    if [ -f "$BAK_STATUS" ]; then
+      while IFS='=' read -r k v; do
+        case "$k" in
+          active) fa=$v ;; since) fsi=$v ;; switches) fsw=$v ;; reason) fre=$v ;; primary_ok) fpo=$v ;;
+          backup_ok) fbo=$v ;; checked) fck=$v ;; force_until) ffu=$v ;;
+        esac
+      done < "$BAK_STATUS"
+    fi
+  fi
+  command -v conntrack >/dev/null 2>&1 && bct=1
+  # USB modem / telefon adayları (sürücüsü listede olan, ev ağı / ana hat kartı olmayan kablolu arayüzler).
+  if [ "$nm" = 1 ]; then
+    bcand=$(nmcli -t -f DEVICE,TYPE,STATE device 2>/dev/null | while IFS=: read -r n t st; do
+      case "$t" in ethernet|veth) ;; *) continue ;; esac
+      [ "$st" = unmanaged ] && continue
+      bak_foreign_port "$n" && continue
+      case " ${PI5_BAK_USB_DRIVERS:-$BAK_USB_DRIVERS} " in *" $(dev_driver "$n") "*) echo "$n" ;; esac
+    done | csv)
+  fi
+  echo "bak_stage=$S_bak_stage"
+  echo "bak_kind=$S_bak_kind"
+  echo "bak_type=$S_bak_type"
+  echo "bak_port=$S_bak_port"
+  echo "bak_dev=$bdev"
+  echo "bak_vlan=$S_bak_vlan"
+  echo "bak_mtu=$S_bak_mtu"
+  echo "bak_user=$S_bak_user"
+  echo "bak_ssid=$S_bak_ssid"
+  echo "bak_static_addr=$S_bak_addr"
+  echo "bak_static_gw=$S_bak_gw"
+  echo "bak_static_dns=$S_bak_dns"
+  echo "bak_ip=$( [ -n "$bdev" ] && bak_ip)"
+  echo "bak_gateway=$( [ -n "$bdev" ] && bak_gateway)"
+  echo "bak_up=$bup"
+  echo "bak_fw=$bfw"
+  echo "bak_watch=$bw"
+  echo "bak_active=$fa"
+  echo "bak_since=$fsi"
+  echo "bak_switches=$fsw"
+  echo "bak_reason=$fre"
+  echo "bak_primary_ok=$fpo"
+  echo "bak_backup_ok=$fbo"
+  echo "bak_checked=$fck"
+  echo "bak_force_until=$ffu"
+  echo "bak_rx=$brx"
+  echo "bak_tx=$btx"
+  echo "bak_conntrack=$bct"
+  echo "bak_usb_candidates=$bcand"
 }
 
 cmd_static() {
@@ -2167,6 +2841,7 @@ cmd_dhcp() {
   [ "$S_stage" = static ] || die "sabit adres yok — Pi zaten otomatik adreste"
   [ "$S_home_stage" = none ] || die "ev Wi-Fi'ı (köprü) açık — önce Cihaz Rolleri'nden ev Wi-Fi'ını kapatın"
   [ "$S_wan_stage" = none ] || die "internet kartı (WAN router) açık — önce Cihaz Rolleri → WAN router'dan kapatın"
+  [ "$S_bak_stage" = none ] || die "yedek hat açık — önce Cihaz Rolleri → Yedek hat'tan kapatın"
   pi_dhcp_active && die "Pi DHCP sunucusu açıkken otomatik adrese dönülemez — önce modemin DHCP'sini açıp Pi DHCP'sini kapatın"
   # Pi'nin dağıttığı kiralar sürerken cihaz tarafı adresi kaldırılırsa o cihazların ağ geçidi ve DNS'i kaybolur.
   lu=$(pi_lease_until)
@@ -2198,6 +2873,9 @@ cmd_wifi() {
   # Ev Wi-Fi'ı kartı yayında kullanır: ne kapatılabilir ne de ev ağına istemci olarak bağlanabilir.
   [ "$S_home_stage" = none ] || die "ev Wi-Fi'ı açık — Wi-Fi kartı yayında; önce Cihaz Rolleri'nden ev Wi-Fi'ını kapatın"
   [ "$S_sat_stage" = none ] || die "bu cihaz uydu olarak yayın yapıyor — Wi-Fi kartı yayında"
+  if [ "$S_bak_stage" != none ] && [ "$S_bak_kind" = wifi ]; then
+    die "Wi-Fi kartı yedek hat (telefon hotspot'u) olarak kullanılıyor — önce Cihaz Rolleri → Yedek hat'tan kapatın"
+  fi
   case "${1:-}" in
     off)
       [ "$S_ap_stage" = none ] || die "Kurulum Wi-Fi'ı açık — önce onu kapatın"
@@ -2260,6 +2938,9 @@ cmd_ap_on() {
   [ -n "$ifc" ] || die "Pi'de Wi-Fi kartı bulunamadı"
   [[ $ifc =~ ^[A-Za-z0-9_.-]{1,15}$ ]] || die "Wi-Fi kartının adı beklenmedik: $ifc"
   ap_capable "$ifc" || die "Wi-Fi kartı ($ifc) erişim noktası (AP) kipini desteklemiyor"
+  if [ "$S_bak_stage" != none ] && [ "$S_bak_kind" = wifi ]; then
+    die "Wi-Fi kartı yedek hat (telefon hotspot'u) olarak kullanılıyor — önce Cihaz Rolleri → Yedek hat'tan kapatın"
+  fi
   [ "$S_ap_stage" = on ] && die "kurulum Wi-Fi'ı zaten açık"
   [ "$S_ap_stage" = trial ] && die "kurulum Wi-Fi'ı denemesi sürüyor"
   [ "$S_home_stage" = none ] || die "ev Wi-Fi'ı açık — kurulum Wi-Fi'ı aynı kartı kullanır; önce ev Wi-Fi'ını kapatın"
@@ -2426,6 +3107,10 @@ cmd_home_on() {
   [ "$S_stage" = static ] || die "önce Pi'ye sabit adres verin ve kalıcı yapın (DHCP Ayarları, 1. adım)"
   [ "$S_ap_stage" = none ] || die "kurulum Wi-Fi'ı açık — ev Wi-Fi'ı aynı kartı kullanır; önce kurulum Wi-Fi'ını kapatın"
   [ "$S_wan_stage" = trial ] && die "internet kartı (WAN router) denemesi sürüyor — önce kalıcı yapın ya da geri alın"
+  if [ "$S_bak_stage" != none ]; then
+    [ "$S_bak_kind" = wifi ] && die "Wi-Fi kartı yedek hat (telefon hotspot'u) olarak kullanılıyor — önce Cihaz Rolleri → Yedek hat'tan kapatın"
+    bak_failed_over && die "yedek hat devrede (ana hat çalışmıyor) — ev Wi-Fi'ı denemesi internet rotasını ana hattan denetler; ana hat dönünce deneyin"
+  fi
   { [ "$(active_conn "$S_iface")" = "$PROFILE" ] && lan_addrs_ok "$S_iface"; } \
     || die "sabit adres profili ($PROFILE) $S_iface üzerinde etkin değil — önce DHCP Ayarları'ndaki uyarıyı giderin"
   [ -e "/sys/class/net/$BR_IF" ] && die "$BR_IF arayüzü zaten var (başka bir araç köprü kurmuş olabilir) — önce onu kaldırın"
@@ -2916,6 +3601,19 @@ cmd_wan_on() {
   lan=$(lan_dev)
   lan_addrs_ok "$lan" || die "ev ağı adresleri ($lan) beklenen düzende değil — önce DHCP Ayarları'ndaki uyarıyı giderin"
   [ -e "/sys/class/net/$port" ] || die "$port adlı kart yok"
+  # Yedek hat: kartı / VLAN'ı ana hat olamaz; yedek hattayken deneme internet rotasını ana hattan denetleyemez.
+  if [ "$S_bak_stage" != none ]; then
+    bak_failed_over && die "yedek hat devrede (ana hat çalışmıyor) — internet kartı denemesi rotayı ana hattan denetler; ana hat dönünce ya da yedek hattı kapatınca deneyin"
+    if [ "$S_bak_kind" = eth ] && [ "$port" = "$S_bak_port" ] && ! bak_on_lan_card; then
+      die "$port yedek hattın kartı — ana hat için başka bir kart seçin ya da önce yedek hattı kapatın"
+    fi
+    if [ "$S_bak_kind" = eth ] && bak_on_lan_card && [ "$port" = "$S_iface" ] && [ "$vlan" = "$S_bak_vlan" ]; then
+      die "VLAN $vlan yedek hatta kullanılıyor — ana hat için başka bir VLAN numarası girin"
+    fi
+    if [ "$S_bak_kind" = usb ]; then
+      case " $S_bak_match " in *" $(dev_driver "$port") "*) die "$port USB modem sürücüsünü ($(dev_driver "$port")) kullanıyor — yedek hat (USB) bu kartı alabilir; önce yedek hattı kapatın" ;; esac
+    fi
+  fi
   # Tek port: ev ağı kartı internete de bağlanır — yalnız VLAN ile (anahtar internet trafiğini etiketli getirir).
   if [ "$port" = "$S_iface" ]; then
     [ -n "$vlan" ] || die "$port ev ağı kartı — aynı porttan internet için VLAN numarası girin (VLAN destekli anahtar internet trafiğini etiketli getirir) ya da ikinci bir Ethernet kartı seçin"
@@ -3119,6 +3817,308 @@ cmd_wan() {
   esac
 }
 
+# Yedek hattı kurar ve hemen sınar (deneme süresi yok: ana hat ve ev ağı değişmez, yedek hat düşük öncelikte bekler).
+# PPPoE parolası / Wi-Fi parolası STDIN'in ilk satırından. Başarısızsa her şey geri alınır (rolled_back=1).
+cmd_backup_on() {
+  local kind="" type="" port="" vlan="" mtu="" addr="" gw="" dns="" user="" ssid="" secret="" d i p drv cands
+  local ip pfx n m net bc bip radio_off=0 why=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --kind) kind=${2:-}; shift ;;
+      --type) type=${2:-}; shift ;;
+      --port) port=${2:-}; shift ;;
+      --vlan) vlan=${2:-}; shift ;;
+      --mtu) mtu=${2:-}; shift ;;
+      --addr) addr=${2:-}; shift ;;
+      --gw) gw=${2:-}; shift ;;
+      --dns) dns=${2:-}; shift ;;
+      --user) user=${2:-}; shift ;;
+      --ssid) ssid=${2:-}; shift ;;
+      *) die "bilinmeyen seçenek: $1" ;;
+    esac
+    shift
+  done
+  [ -n "$type" ] || type=dhcp
+  if [ "$type" = pppoe ] || [ "$kind" = wifi ]; then
+    if [ -t 0 ]; then
+      printf "Parola: " >&2
+      IFS= read -r -s -t 120 secret || true
+      echo >&2
+    else
+      IFS= read -r -t 30 secret || true
+    fi
+  fi
+  read_state
+  command -v nmcli >/dev/null 2>&1 || die "nmcli bulunamadı (NetworkManager kurulu değil)"
+  nm_running || die "NetworkManager çalışmıyor"
+  [ "$S_bak_stage" = none ] || die "yedek hat zaten açık — değiştirmek için önce kapatın"
+  [ "$S_sat_stage" = none ] || die "bu cihaz uydu — yedek hat ana cihaz içindir"
+  [ "$S_stage" = static ] || die "önce Pi'ye sabit adres verip kalıcı yapın (DHCP Ayarları) — yedek hat Pi ağ geçidiyken çalışır"
+  [ "$S_home_stage" = trial ] && die "ev Wi-Fi'ı denemesi sürüyor — önce kalıcı yapın ya da geri alın"
+  [ "$S_wan_stage" = trial ] && die "internet kartı (WAN router) denemesi sürüyor — önce kalıcı yapın ya da geri alın"
+  pi_dhcp_active || die "Pi DHCP sunucusu kapalı — yedek hat, ev ağındaki cihazlar Pi'yi ağ geçidi olarak kullanırken çalışır (DHCP Ayarları)"
+  case "$kind" in eth|usb|wifi) ;; *) die "yedek hat türü eth (Ethernet), usb (USB modem / telefon) ya da wifi (hotspot) olmalı" ;; esac
+  case "$type" in dhcp|static|pppoe) ;; *) die "bağlantı türü dhcp, static ya da pppoe olmalı" ;; esac
+  [ "$kind" = eth ] || [ "$type" = dhcp ] || die "USB modem / telefon ve hotspot yedek hattı yalnız otomatik adresle (DHCP) çalışır"
+  [ "$kind" = eth ] || [ -z "$vlan" ] || die "VLAN yalnız Ethernet yedek hatta kullanılır"
+  if [ -n "$vlan" ]; then
+    { [[ $vlan =~ ^[0-9]{1,4}$ ]] && [ "$((10#$vlan))" -ge 1 ] && [ "$((10#$vlan))" -le 4094 ]; } || die "geçersiz VLAN numarası: $vlan (1-4094)"
+    vlan=$((10#$vlan))
+  fi
+  if [ -n "$mtu" ]; then
+    [[ $mtu =~ ^[0-9]{3,4}$ ]] || die "geçersiz MTU: $mtu"
+    mtu=$((10#$mtu))
+    if [ "$type" = pppoe ]; then { [ "$mtu" -ge 576 ] && [ "$mtu" -le 1500 ]; } || die "PPPoE MTU 576-1500 arasında olmalı ($mtu)"
+    else { [ "$mtu" -ge 576 ] && [ "$mtu" -le 9000 ]; } || die "MTU 576-9000 arasında olmalı ($mtu)"; fi
+  fi
+  if [ "$type" = static ]; then
+    [[ $addr =~ ^([0-9.]+)/([0-9]{1,2})$ ]] || die "geçersiz sabit adres: ${addr:-yok} (ör. 203.0.113.10/24)"
+    ip=${BASH_REMATCH[1]}; pfx=$((10#${BASH_REMATCH[2]}))
+    valid_ip "$ip" || die "geçersiz sabit adres: $addr"
+    { [ "$pfx" -ge 8 ] && [ "$pfx" -le 30 ]; } || die "sabit adresin öneki 8-30 arasında olmalı (/$pfx)"
+    n=$(ip2int "$ip"); m=$(pmask "$pfx"); net=$(( n & m )); bc=$(( net | (~m & 0xFFFFFFFF) ))
+    { [ "$n" -ne "$net" ] && [ "$n" -ne "$bc" ]; } || die "sabit adres ağ ya da yayın adresi olamaz: $addr"
+    addr="$ip/$pfx"
+    valid_ip "$gw" || die "geçersiz ağ geçidi: ${gw:-yok}"
+    in_net "$gw" "$addr" || die "ağ geçidi ($gw) sabit adresin ağında ($addr) değil"
+    [ "$gw" != "$ip" ] || die "ağ geçidi sabit adresle aynı olamaz"
+    if [ -n "$dns" ]; then
+      i=0
+      for d in ${dns//,/ }; do valid_ip "$d" || die "geçersiz DNS adresi: $d"; i=$((i + 1)); done
+      [ "$i" -le 3 ] || die "en çok 3 DNS adresi verilebilir"
+    fi
+  else
+    addr=""; gw=""; dns=""
+  fi
+  if [ "$type" = pppoe ]; then
+    { [[ $user =~ ^[!-~]{1,64}$ ]] && [[ $user != *\\* ]]; } \
+      || die "geçersiz PPPoE kullanıcı adı: 1-64 karakter, boşluk ve ters bölü (\\) olmaz"
+    { [[ $secret =~ ^[!-~]([\ -~]{0,126}[!-~])?$ ]] && [[ $secret != *\\* ]]; } \
+      || die "geçersiz PPPoE parolası: 1-128 karakter; Türkçe harf ve ters bölü (\\) olmaz, başta / sonda boşluk olmaz"
+  else
+    user=""
+  fi
+  case "$kind" in
+    eth)
+      [[ $port =~ ^[A-Za-z0-9_.-]{1,15}$ ]] || die "yedek hat kartını seçin (--port)"
+      [ -e "/sys/class/net/$port" ] || die "kart bulunamadı: $port"
+      [ -e "/sys/class/net/$port/wireless" ] || [ -e "/sys/class/net/$port/phy80211" ] && die "$port bir Wi-Fi kartı — hotspot için wifi türünü seçin"
+      [ -e "/sys/class/net/$port/bridge" ] && die "$port bir köprü — kablolu bir kart seçin"
+      [ "$port" = "$BR_IF" ] && die "$port bir köprü"
+      if [ -n "$S_wan_port" ] && [ "$port" = "$S_wan_port" ]; then
+        die "$port ana hattın (internet kartı) kartı — yedek hat için başka bir kart seçin"
+      fi
+      if [ "$port" = "$S_iface" ]; then
+        # Ev ağı kartı: yedek hat VLAN destekli anahtardan etiketli gelir, ev ağı aynı porttan etiketsiz akar.
+        [ -n "$vlan" ] || die "$port ev ağı kartı — aynı porttan yedek hat için VLAN numarası girin (VLAN destekli anahtar yedek hattı etiketli getirir) ya da başka bir kart seçin"
+        if [ "$S_wan_stage" != none ] && [ "$S_wan_port" = "$S_iface" ] && [ "$S_wan_vlan" = "$vlan" ]; then
+          die "VLAN $vlan ana hatta kullanılıyor — yedek hat için başka bir VLAN numarası girin"
+        fi
+        if [ "$type" = pppoe ] && [ -n "$mtu" ] && [ "$mtu" -gt 1492 ]; then die "ev ağı kartında PPPoE MTU en çok 1492 olabilir (kartın MTU'su değiştirilmez)"; fi
+        if [ -n "$mtu" ] && [ "$mtu" -gt 1500 ]; then die "ev ağı kartında MTU en çok 1500 olabilir"; fi
+      elif [ -n "$(basename "$(readlink "/sys/class/net/$port/master" 2>/dev/null)" 2>/dev/null)" ]; then
+        die "$port bir köprünün portu — yedek hat olamaz"
+      fi ;;
+    usb)
+      port=""
+      S_bak_match=${PI5_BAK_USB_DRIVERS:-$BAK_USB_DRIVERS}
+      [[ $S_bak_match =~ ^[a-z0-9_]+( [a-z0-9_]+)*$ ]] || die "geçersiz sürücü listesi"
+      # Ev ağı / ana hat kartı aynı sürücüyü kullanıyorsa eşleşme onları da alırdı. (PI5_BAK_USB_DRIVERS ve
+      # PI5_BAK_TEST_SAME_DRIVER=1 yalnız test kabı içindir: orada tüm kartlar veth.)
+      for p in "$S_iface" "$S_wan_port"; do
+        [ "${PI5_BAK_TEST_SAME_DRIVER:-0}" = 1 ] && break
+        [ -n "$p" ] && [ -e "/sys/class/net/$p" ] || continue
+        drv=$(dev_driver "$p")
+        case " $S_bak_match " in *" $drv "*) die "$p ($( [ "$p" = "$S_iface" ] && echo 'ev ağı kartı' || echo 'ana hattın kartı' )) da USB modem sürücüsünü ($drv) kullanıyor — yedek hat için Ethernet türünü seçin" ;; esac
+      done ;;
+    wifi)
+      [ -n "$port" ] || port=$(wifi_dev)
+      [[ $port =~ ^[A-Za-z0-9_.-]{1,15}$ ]] || die "Wi-Fi kartı bulunamadı"
+      [ "$(dev_type "$port")" = wifi ] || die "$port bir Wi-Fi kartı değil"
+      [ "$S_ap_stage" = none ] || die "kurulum Wi-Fi'ı açık — Wi-Fi kartı yayında; önce kurulum Wi-Fi'ını kapatın"
+      [ "$S_home_stage" = none ] || die "ev Wi-Fi'ı açık — Wi-Fi kartı yayında; hotspot yedek hattı için Wi-Fi kartı boş olmalı"
+      { [ -n "$ssid" ] && [ "$(printf '%s' "$ssid" | wc -c)" -le 32 ] && ! [[ $ssid =~ [[:cntrl:]] ]]; } \
+        || die "geçersiz ağ adı: 1-32 bayt, denetim karakteri olmadan"
+      valid_psk "$secret" || die "geçersiz hotspot parolası: 8-63 karakter; Türkçe harf ve ters bölü (\\) olmaz, başta / sonda boşluk olmaz" ;;
+  esac
+  [ "$kind" = wifi ] || ssid=""
+  S_bak_kind=$kind; S_bak_type=$type; S_bak_port=$port; S_bak_vlan=$vlan; S_bak_mtu=$mtu; S_bak_user=$user
+  S_bak_addr=$addr; S_bak_gw=$gw; S_bak_dns=$dns; S_bak_ssid=$ssid
+  [ "$kind" = usb ] || S_bak_match=""
+  if [ "$type" = pppoe ]; then S_bak_dev=$BAK_PPP_IF; elif [ -n "$vlan" ]; then S_bak_dev="bak.$vlan"; else S_bak_dev=$port; fi
+  if [ "$kind" = usb ]; then
+    cands=$(bak_tag_usb | csv)
+    [ -n "$cands" ] || die "USB modem ya da telefon bulunamadı — modemi takın (telefonda 'USB ile internet paylaşımı'nı açın), birkaç saniye bekleyip yeniden deneyin"
+  fi
+  # 1. Güvenlik duvarı profillerden ÖNCE (yedek hat bağlanırken korumasız an olmaz).
+  bak_nft_load || die "güvenlik duvarı (pi5_bak) yüklenemedi: $BAK_NFT_OUT"
+  bak_fw_unit_install || echo "warning=açılış güvenlik duvarı birimi ($BAK_FW_UNIT) kurulamadı — açılışta nftables.service yükler"
+  if [ "$kind" = usb ]; then bak_udev_install || echo "warning=udev kuralı yazılamadı — izleyici arayüzleri 5 sn'de bir işaretler"; fi
+  # 2. Wi-Fi kartı: kapalıysa açılır; kartta başka profil (ör. ev modemine bağlanan eski Wi-Fi profili) etkinse indirilir.
+  if [ "$kind" = wifi ] && [ "$(nmcli radio wifi 2>/dev/null)" = disabled ]; then
+    radio_off=1
+    nmcli radio wifi on >/dev/null 2>&1 && wait_dev_ready "$port" 15 || true
+  fi
+  S_bak_radio_was_off=$radio_off
+  bak_evict_foreign
+  # 3. Profiller
+  bak_delete_all
+  if ! bak_write_keyfiles "$secret"; then why="profil dosyaları yazılamadı"
+  elif ! bak_load_all; then why="profiller yüklenemedi: $BAK_LOAD_OUT"
+  elif ! bak_up; then why=$BAK_UP_OUT
+  elif ! wait_bak_ip 30; then why="yedek hatta adres ya da varsayılan rota yok ($(bak_cur_dev))"
+  fi
+  secret=""
+  # 4. Ağ çakışması: yedek hattın ağı ev ağı, kurulum Wi-Fi'ı, modem tarafı ya da ana hattın ağıyla aynı olamaz.
+  if [ -z "$why" ]; then
+    bip=$(bak_ip)
+    for n in "$S_client" "$AP_NET" "$( [ "$S_wan_lan" = 1 ] || echo "$S_transit")" "$( [ "$S_wan_stage" != none ] && wan_ip)"; do
+      [ -n "$n" ] && [ -n "$bip" ] || continue
+      [[ $n == */32 ]] && continue
+      if nets_overlap "$bip" "$n"; then why="yedek hattın ağı ($bip) Pi'nin kullandığı bir ağla ($n) çakışıyor — modemin / telefonun ağını değiştirin"; break; fi
+    done
+  fi
+  # 5. Yedek hattan internet.
+  if [ -z "$why" ] && ! bak_probe "$(bak_cur_dev)"; then
+    why="yedek hattan internete ulaşılamadı ($(bak_cur_dev), ${bip:-adres yok}) — modemin / telefonun internetini denetleyin"
+  fi
+  if [ -n "$why" ]; then
+    bak_unwind
+    bak_reset
+    write_state
+    echo "rolled_back=1"
+    die "yedek hat açılamadı — $why"
+  fi
+  S_bak_stage=on
+  write_state || { bak_unwind; bak_reset; write_state; die "durum dosyası yazılamadı ($STATE_FILE)"; }
+  mkdir -p "$BAK_BACKUP_DIR" && chmod 700 "$BAK_BACKUP_DIR"
+  for p in $(bak_profiles); do cp -f "$(bak_keyfile_of "$p")" "$BAK_BACKUP_DIR/" 2>/dev/null && chmod 600 "$BAK_BACKUP_DIR/$(basename "$(bak_keyfile_of "$p")")"; done
+  bak_watch_install || echo "warning=yedek hat izleyicisi ($BAK_WATCH_UNIT) başlatılamadı"
+  command -v conntrack >/dev/null 2>&1 || echo "warning=conntrack aracı yok — geçişte açık bağlantılar hemen taşınamaz (panel güncellemesi kurar)"
+  log "yedek hat açıldı: $kind/$type $(bak_cur_dev) ${bip:-}"
+  echo "ok=1"
+  echo "bak_dev=$(bak_cur_dev)"
+  echo "bak_ip=$bip"
+  echo "bak_gateway=$(bak_gateway)"
+  [ "$kind" = usb ] && echo "bak_candidates=$cands"
+  return 0
+}
+
+cmd_backup_off() {
+  read_state
+  [ "$S_bak_stage" != none ] || [ -n "$S_bak_kind" ] || die "yedek hat açık değil"
+  nm_running || die "NetworkManager çalışmıyor"
+  bak_unwind
+  bak_reset
+  write_state || die "durum dosyası yazılamadı ($STATE_FILE)"
+  log "yedek hat kapatıldı"
+  echo "ok=1"
+}
+
+# Güvenlik duvarını yeniden yükler (Ev VPN'i açıldı / kapandı, nftables yeniden başlatıldı).
+cmd_backup_fw() {
+  read_state
+  if [ "$S_bak_stage" != none ]; then bak_nft_load || die "güvenlik duvarı (pi5_bak) yüklenemedi: $BAK_NFT_OUT"
+  elif [ -e "$BAK_NFT" ]; then bak_nft_remove; fi
+  echo "ok=1"
+}
+
+# Geçiş denemesi (kilitsiz): izleyici SN saniye yedek hatta kalır (yedek hat sağlamsa), sonra ana hat sağlamsa hemen döner.
+# SN = 0 denemeyi bitirir.
+cmd_backup_test() {
+  local s=${1:-60} now
+  read_state
+  [ "$S_bak_stage" = on ] || die "yedek hat açık değil"
+  { [[ $s =~ ^[0-9]{1,3}$ ]] && [ "$((10#$s))" -le 600 ]; } || die "geçersiz süre: $s (0-600 sn)"
+  s=$((10#$s))
+  systemctl is-active --quiet "$BAK_WATCH_UNIT.service" 2>/dev/null || die "yedek hat izleyicisi çalışmıyor ($BAK_WATCH_UNIT)"
+  mkdir -p "$BAK_RUN" 2>/dev/null
+  now=$(date +%s)
+  if [ "$s" = 0 ]; then rm -f "$BAK_FORCE"; else echo "$((now + s))" > "$BAK_FORCE.tmp" && mv -f "$BAK_FORCE.tmp" "$BAK_FORCE"; fi
+  echo "ok=1"
+  echo "force_until=$( [ "$s" = 0 ] && echo 0 || echo $((now + s)) )"
+}
+
+# İzleyici (pi5-wan-failover.service; kilitsiz döngü, kilidi yalnız geçiş anında dener: ağ işlemi sürerken beklenir).
+cmd_backup_watch() {
+  local active=primary since sw=0 reason="" pfail=0 pfail_since=0 pok_since=0 last=0 forced=0 now pdev bdev pok bok force want
+  local k v oldip why
+  mkdir -p "$BAK_RUN" 2>/dev/null
+  since=$(date +%s)
+  # Servis yeniden başladıysa (açılış değil: /run korunur) önceki durum sürer.
+  if [ -f "$BAK_STATUS" ]; then
+    while IFS='=' read -r k v; do
+      case "$k" in
+        active) [ "$v" = backup ] && active=backup ;;
+        since) [[ $v =~ ^[0-9]+$ ]] && since=$v ;;
+        switches) [[ $v =~ ^[0-9]+$ ]] && sw=$v ;;
+        reason) reason=$v ;;
+      esac
+    done < "$BAK_STATUS"
+  fi
+  last=$since
+  exec 9>"$LOCK"
+  while :; do
+    read_state
+    now=$(date +%s)
+    if [ "$S_bak_stage" != on ]; then
+      bak_route_off; rm -f "$BAK_STATUS"; active=primary; sleep 10; continue
+    fi
+    if [ "$S_bak_kind" = usb ]; then bak_tag_usb >/dev/null; fi
+    bak_evict_foreign
+    pdev=$(bak_primary_dev); bdev=$(bak_cur_dev)
+    pok=0; bak_probe "$pdev" && pok=1
+    bok=0; bak_probe "$bdev" && bok=1
+    force=$(cat "$BAK_FORCE" 2>/dev/null); [[ $force =~ ^[0-9]+$ ]] || force=0
+    [ "$force" -gt "$now" ] || force=0
+    if [ "$pok" = 1 ]; then pfail=0; pfail_since=0; [ "$pok_since" -gt 0 ] || pok_since=$now
+    else pfail=$((pfail + 1)); pok_since=0; [ "$pfail_since" -gt 0 ] || pfail_since=$now; fi
+    want=$active; why=""
+    if [ "$active" = primary ]; then
+      if [ "$bok" = 1 ]; then
+        if [ "$force" -gt 0 ]; then want=backup; why="geçiş denemesi (panelden)"
+        elif [ "$pfail" -ge 1 ] && ! ip -4 route show default dev "$pdev" 2>/dev/null | grep -q .; then
+          want=backup; why="ana hat bağlantısı yok (${pdev:-arayüz yok})"
+        elif [ "$pfail" -ge 3 ]; then want=backup; why="ana hat $((now - pfail_since + 5)) sn'dir yanıt vermiyor ($pdev)"; fi
+      fi
+    else
+      if [ "$pok" = 1 ] && [ "$bok" != 1 ]; then want=primary; why="yedek hat yanıt vermiyor, ana hat sağlam"
+      elif [ "$forced" = 1 ] && [ "$force" = 0 ] && [ "$pok" = 1 ]; then want=primary; why="geçiş denemesi bitti"
+      elif [ "$force" = 0 ] && [ "$pok" = 1 ] && [ $((now - pok_since)) -ge 60 ] && [ $((now - last)) -ge 120 ]; then
+        want=primary; why="ana hat 60 sn'dir sağlam"
+      fi
+    fi
+    if [ "$want" != "$active" ]; then
+      if flock -n 9; then
+        if [ "$want" = backup ]; then oldip=$(bak_primary_ip); bak_route_on "$bdev"; else oldip=$(bak_ip); bak_route_off; fi
+        bak_ct_flush "${oldip%/*}"
+        flock -u 9
+        active=$want; since=$now; last=$now; sw=$((sw + 1)); reason=$why
+        forced=0; [ "$want" = backup ] && [ "$force" -gt 0 ] && forced=1
+        log "yedek hat: $( [ "$active" = backup ] && echo 'yedek hatta geçildi' || echo 'ana hatta dönüldü') — $why"
+      fi
+    elif [ "$active" = backup ]; then
+      # NM yeniden başladı / kart yeniden bağlandı: geçiş rotası yerinde olmalı.
+      if [ "$bok" = 1 ] && [ -n "$bdev" ] && ! bak_route_present "$bdev"; then bak_route_off; bak_route_on "$bdev"; fi
+    elif [ -n "$(bak_route_lines)" ]; then
+      bak_route_off
+    fi
+    bak_status_write "$active" "$since" "$sw" "$reason" "$pdev" "$pok" "$bdev" "$bok" "$force"
+    sleep 5
+  done
+}
+
+cmd_backup() {
+  local sub=${1:-}
+  shift || true
+  case "$sub" in
+    on) cmd_backup_on "$@" ;;
+    off) cmd_backup_off ;;
+    fw) cmd_backup_fw ;;
+    *) die "kullanım: backup on --kind eth|usb|wifi [--type dhcp|static|pppoe] [--port KART] [...] | backup off | backup fw | backup test [SN] | backup watch" ;;
+  esac
+}
+
 cmd_ensure() {
   mkdir -p "$DIR" && chmod 700 "$DIR"
   read_state
@@ -3128,7 +4128,7 @@ cmd_ensure() {
       [ "$S_home_stage" = trial ] && home_trial_check
       [ "$S_wan_stage" = trial ] && wan_trial_check
       # Kurulum Wi-Fi'ı ya da ev Wi-Fi'ı açıkken Wi-Fi kapatılmaz (yayın Wi-Fi kartından yapılır).
-      if [ "$S_wifi_off" = 1 ] && [ "$S_ap_stage" = none ] && [ "$S_home_stage" = none ] && nm_running; then
+      if [ "$S_wifi_off" = 1 ] && [ "$S_ap_stage" = none ] && [ "$S_home_stage" = none ] && [ "$S_bak_kind" != wifi ] && nm_running; then
         nmcli radio wifi off >/dev/null 2>&1
       fi
       # Ev Wi-Fi'ı denemesi sürerken eth0 bilerek köprüdedir, internet kartı denemesi sürerken ev ağı profilleri bilerek
@@ -3139,7 +4139,8 @@ cmd_ensure() {
           none) guard_routine 5 passive ;;
         esac
       fi
-      [ "$S_wan_stage" = on ] && wan_guard_routine 5 0 ;;
+      [ "$S_wan_stage" = on ] && wan_guard_routine 5 0
+      [ "$S_bak_stage" = on ] && bak_guard_routine ;;
     none)
       case "$S_sat_stage" in
         trial) sat_trial_check ;;
@@ -3159,7 +4160,7 @@ cmd_guard() {
       # kendiliğinden bağlanmaz). NetworkManager yeniden başlatıldıysa zamanlayıcı yerindedir: deneme sürer.
       [ "$S_home_stage" = trial ] && home_trial_check
       [ "$S_wan_stage" = trial ] && wan_trial_check
-      if [ "$S_wifi_off" = 1 ] && [ "$S_ap_stage" = none ] && [ "$S_home_stage" = none ]; then nmcli radio wifi off >/dev/null 2>&1; fi
+      if [ "$S_wifi_off" = 1 ] && [ "$S_ap_stage" = none ] && [ "$S_home_stage" = none ] && [ "$S_bak_kind" != wifi ]; then nmcli radio wifi off >/dev/null 2>&1; fi
       if [ "$S_wan_stage" != trial ]; then
         case "$S_home_stage" in
           on) home_guard_routine 40 ;;
@@ -3167,7 +4168,8 @@ cmd_guard() {
         esac
       fi
       # pi5-net-guard.service TimeoutStartSec=150: internet kartı onarımı betiğin başından 130. sn'de biter.
-      [ "$S_wan_stage" = on ] && wan_guard_routine 30 130 ;;
+      [ "$S_wan_stage" = on ] && wan_guard_routine 30 130
+      [ "$S_bak_stage" = on ] && bak_guard_routine ;;
     none)
       # Açılışta geçici zamanlayıcı yoktur: uydu denemesi geri alınır (profilleri kendiliğinden bağlanmaz).
       case "$S_sat_stage" in
@@ -3185,9 +4187,12 @@ shift || true
 if [ "$cmd" = status ]; then cmd_status; exit 0; fi
 # Salt okunur, kilitsiz: ana cihazın ev Wi-Fi'ı ayarları (backend uydulara aktarır).
 if [ "$cmd" = home ] && [ "${1:-}" = secret ]; then cmd_home_secret; exit 0; fi
+# Yedek hat izleyicisi (servis; kilidi yalnız geçiş anında dener) ve geçiş denemesi (yalnız izleyiciye dosya bırakır).
+if [ "$cmd" = backup ] && [ "${1:-}" = watch ]; then cmd_backup_watch; exit 0; fi
+if [ "$cmd" = backup ] && [ "${1:-}" = test ]; then shift; cmd_backup_test "$@"; exit 0; fi
 case "$cmd" in
-  ensure|guard|static|confirm|rollback|dhcp|wifi|ap|home|sat|wan) ;;
-  *) die "bilinmeyen komut: $cmd (status|static|confirm|rollback|dhcp|wifi|ap|home|sat|wan|ensure|guard)" ;;
+  ensure|guard|static|confirm|rollback|dhcp|wifi|ap|home|sat|wan|backup) ;;
+  *) die "bilinmeyen komut: $cmd (status|static|confirm|rollback|dhcp|wifi|ap|home|sat|wan|backup|ensure|guard)" ;;
 esac
 exec 9>"$LOCK"
 if ! flock -w 60 9; then
@@ -3203,7 +4208,7 @@ fi
 # Kullanıcının başlattığı değişiklikler kilit alındıktan sonra SIGTERM/SIGHUP ile yarıda kesilmez (panelin istek zaman
 # aşımı ya da kapanan SSH oturumu Pi'yi adressiz bırakmasın). Kilit beklerken öldürülebilir: onay, kilidi bekleyen
 # geri alma servisini durdurabilsin. guard/ensure idempotenttir, systemd'nin durdurmasına engel olmaz.
-case "$cmd" in static|confirm|rollback|dhcp|wifi|ap|home|sat|wan) trap '' TERM HUP ;; esac
+case "$cmd" in static|confirm|rollback|dhcp|wifi|ap|home|sat|wan|backup) trap '' TERM HUP ;; esac
 case "$cmd" in
   ensure) cmd_ensure ;;
   guard) cmd_guard; exit 0 ;;
@@ -3216,4 +4221,5 @@ case "$cmd" in
   home) cmd_home "$@" ;;
   sat) cmd_sat "$@" ;;
   wan) cmd_wan "$@" ;;
+  backup) cmd_backup "$@" ;;
 esac

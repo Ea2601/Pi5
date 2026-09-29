@@ -691,6 +691,10 @@ cmd_disable() {
   case "$(kv_get "$NET_STATE" wan_stage)" in
     trial|on) die "internet kartı (WAN router) açıkken Pi DHCP'si kapatılamaz — ev ağındaki cihazlar adresini yalnız Pi'den alır; önce Cihaz Rolleri → WAN router'ı kapatın" ;;
   esac
+  # Yedek hat, cihazlar Pi'yi ağ geçidi olarak kullanırken çalışır: Pi DHCP'si kapanırsa cihazlar modeme geçer, yedek hat
+  # onlar için boşa çalışır.
+  [ "$(kv_get "$NET_STATE" bak_stage)" = on ] \
+    && die "yedek hat açıkken Pi DHCP'si kapatılamaz — yedek hat, cihazlar Pi'yi ağ geçidi kullanırken çalışır; önce Cihaz Rolleri → Yedek hat'ı kapatın"
   if [ "$force" = 0 ]; then
     run_probe "$(probe_iface)" || die "DHCP taraması çalışmadı ($PROBE_DETAIL) — modemin DHCP'sinin açık olduğu doğrulanamadı"
     [ "$PROBE_OTHER" -gt 0 ] || die "önce modemin DHCP'sini açın; sonra Pi DHCP'sini kapatın"

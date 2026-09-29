@@ -4,7 +4,7 @@ import fs from 'fs';
 import {
   isLinux, systemctlAction, detectInterfaces, MANAGED_SERVICE_UNITS, isManagedService, TOGGLEABLE_SERVICES,
   listWireguardTunnels, runResult, FTL_SYSTEMCTL_TIMEOUT, getLanIdentity, readNetModeState, HOME_BRIDGE,
-  wanActive, wanIfaces,
+  wanActive, uplinkIfaces,
 } from './system';
 import { shq, isValidDomain } from './util';
 
@@ -84,7 +84,9 @@ export const systemServices = {
             ? [...new Set([detected.wan, ...((await getLanIdentity())?.secondary || []).map(s => s.iface),
                 ...[ifaces?.lan, ifaces?.wan].filter((n): n is string => exists(n)), ...netModeIfs])]
             : [lan];
-        const wanIfs = wanMode ? wanIfaces(ns) : oneArm ? lanIfs : [wan];
+        // İnternet kartı modunda ana hat + yedek hat (maskeleme, port yönlendirme iletimi); tek kollu modda yedek hattın
+        // maskelemesi ve güvenlik duvarı kendi tablolarında (pi5_bak), buraya girmez.
+        const wanIfs = wanMode ? uplinkIfaces(ns) : oneArm ? lanIfs : [wan];
         const nftIfs = (xs: string[]) => (xs.length === 1 ? `"${xs[0]}"` : `{ ${xs.map(x => `"${x}"`).join(', ')} }`);
         // Port yönlendirme (yalnız internet kartı modunda): DNAT'lanan yeni bağlantılar ev ağına iletilir.
         const dnatLine = wanMode ? `\n        iifname ${nftIfs(wanIfs)} oifname ${nftIfs(lanIfs)} ct status dnat accept` : '';

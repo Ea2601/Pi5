@@ -72,7 +72,8 @@ apt install -y -qq \
   sqlite3 libsqlite3-dev \
   nginx certbot python3-certbot-nginx apache2-utils \
   qrencode speedtest-cli vnstat \
-  ipset iptables wireguard-tools iputils-arping iw ppp
+  ipset iptables wireguard-tools iputils-arping iw ppp \
+  conntrack usb-modeswitch usbmuxd
 
 # Node.js 22 LTS
 if ! command -v node &>/dev/null || [ "$(node -v | cut -d. -f1 | tr -d v)" -lt 20 ]; then

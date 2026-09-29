@@ -5,6 +5,7 @@
 #   2) Adaptör takılıp modeme / ONT'ye bağlanınca: kart tanındı mı (sürücü, USB 3, hız, kablo), modemden adres aldı mı
 #   3) Cihaz Rolleri → İnternet bağlantısı açıldıktan sonra: rota, internet, DNS, güvenlik duvarı, ev ağı, tüneller
 # Tek port (ev ağı kartı + VLAN destekli anahtar) da denetlenir: VLAN arayüzü, ev ağı kartının internet tarafı sayılmaması.
+# Yedek hat açıksa (7. bölüm): güvenlik duvarı, izleyici, bağlantı, internet, etkin hat, conntrack.
 # Çalıştırma: sudo bash /opt/pi5-gateway/scripts/pi5-wan-check.sh 2>&1 | tee /tmp/wan-check.txt
 # PPPoE parolası okunmaz; kullanıcı adı maskelenir (çıktı paylaşılabilir).
 set +e
@@ -47,6 +48,18 @@ WAN_STAGE=$(kv "$NET_STATE" wan_stage); WAN_STAGE=${WAN_STAGE:-none}
 WAN_DEV=$(kv "$NET_STATE" wan_dev); WAN_TYPE=$(kv "$NET_STATE" wan_type)
 WAN_PORT=$(kv "$NET_STATE" wan_port); WAN_VLAN=$(kv "$NET_STATE" wan_vlan)
 WAN_SINGLE=0; [ -n "$WAN_PORT" ] && [ "$WAN_PORT" = "$LAN_IF" ] && WAN_SINGLE=1
+BAK_STAGE=$(kv "$NET_STATE" bak_stage); BAK_STAGE=${BAK_STAGE:-none}; BAK_PORT=$(kv "$NET_STATE" bak_port)
+# Yedek hat arayüzleri (kart, VLAN, PPPoE, Wi-Fi kartı, grup 77'deki USB arayüzleri): ana hattın rota denetimlerine girmez.
+BAK_DEVS=""
+if [ "$BAK_STAGE" = on ]; then
+  BAK_DEVS="$(kv "$NET_STATE" bak_dev) $BAK_PORT pppbak"
+  [ -n "$(kv "$NET_STATE" bak_vlan)" ] && BAK_DEVS="$BAK_DEVS bak.$(kv "$NET_STATE" bak_vlan)"
+  for p in /sys/class/net/*; do [ "$(cat "$p/netdev_group" 2>/dev/null)" = 77 ] && BAK_DEVS="$BAK_DEVS ${p##*/}"; done
+fi
+# Ana hattın varsayılan rotaları (yedek hat arayüzlerininkiler hariç).
+main_defaults() {
+  ip -4 route show default 2>/dev/null | awk -v s=" $BAK_DEVS " '{ for (i = 1; i < NF; i++) if ($i == "dev" && index(s, " " $(i + 1) " ")) next; print }'
+}
 LAN_DEV=$LAN_IF
 if [ "$HOME_STAGE" != none ] && [ -e /sys/class/net/br0 ]; then LAN_DEV=br0; fi
 
@@ -104,6 +117,10 @@ for p in /sys/class/net/*; do
     "${mst:+ · köprü $mst}" "$(addrs "$n" | sed 's/^$/—/')"
   if [ "$n" = "$LAN_IF" ]; then continue; fi
   [ -n "$mst" ] && continue
+  # Yedek hattın kartı / USB modemi internet kartı adayı değildir.
+  if [ "$BAK_STAGE" = on ] && { [ "$n" = "$BAK_PORT" ] || [ "$(cat "$p/netdev_group" 2>/dev/null)" = 77 ]; }; then
+    info "$n yedek hat arayüzü"; continue
+  fi
   # NetworkManager'ın yönetmediği kart (ör. yapılandırmada unmanaged) internet kartı olamaz.
   if [ "$(nmcli -g GENERAL.STATE device show "$n" 2>/dev/null | cut -d' ' -f1)" = 10 ]; then
     info "$n NetworkManager tarafından yönetilmiyor — internet kartı olarak kullanılamaz"; continue
@@ -128,7 +145,7 @@ if [ -z "$CANDS" ] && [ "$WAN_STAGE" = none ]; then info "İkinci bir Ethernet k
   [ -n "$LAN_IF" ] && info "Ya da tek port: $LAN_IF + VLAN destekli yönetilebilir anahtar (panelde kart olarak '$LAN_IF · tek port' seçilir, internet VLAN numarası girilir)"
 elif [ -n "$CANDS" ]; then info "İnternet kartı adayı: $CANDS"; fi
 echo "Varsayılan rotalar:"; ip -4 route show default | sed 's/^/  /'
-[ "$(ip -4 route show default | grep -c .)" -gt 1 ] && [ "$WAN_STAGE" = none ] && info "Birden çok varsayılan rota var: adaptörü eski otomatik profil aldı (en düşük metrik geçerli; internet kartı açılınca tek rota kalır)"
+[ "$(main_defaults | grep -c .)" -gt 1 ] && [ "$WAN_STAGE" = none ] && info "Birden çok varsayılan rota var: adaptörü eski otomatik profil aldı (en düşük metrik geçerli; internet kartı açılınca tek rota kalır)"
 
 h "4. Ağ profilleri"
 nmcli -t -f NAME,TYPE,DEVICE,AUTOCONNECT,AUTOCONNECT-PRIORITY connection show 2>/dev/null | while IFS=: read -r nm ty dv ac pr; do
@@ -158,9 +175,11 @@ if [ "$WAN_STAGE" != none ]; then
   [ -n "$user" ] && echo "  wan_user=$user"
   cid=$(printf '%s\n' "$st" | sed -n 's/^wan_dhcp_client_id=//p'); [ -n "$cid" ] && echo "  wan_dhcp_client_id=${cid:0:3}***"
   wip=$(printf '%s\n' "$st" | sed -n 's/^wan_ip=//p')
-  if [ "$(ip -4 route show default | grep -c .)" = 1 ] && ip -4 route show default | grep -q " dev $WAN_DEV "; then ok "Tek varsayılan rota, $WAN_DEV üzerinde"
-  else warn "Varsayılan rotalar beklenenden farklı: $(ip -4 route show default | paste -sd'|' -)"; fi
-  if [[ " $(ip -4 route get 1.1.1.1 2>/dev/null | head -1) " == *" dev $WAN_DEV "* ]]; then ok "İnternet rotası $WAN_DEV üzerinden"; else miss "İnternet rotası $WAN_DEV üzerinden değil: $(ip -4 route get 1.1.1.1 2>&1 | head -1)"; fi
+  if [ "$(main_defaults | grep -c .)" = 1 ] && main_defaults | grep -q " dev $WAN_DEV "; then ok "Tek varsayılan rota (yedek hat hariç), $WAN_DEV üzerinde"
+  else warn "Varsayılan rotalar beklenenden farklı: $(main_defaults | paste -sd'|' -)"; fi
+  if [[ " $(ip -4 route get 1.1.1.1 2>/dev/null | head -1) " == *" dev $WAN_DEV "* ]]; then ok "İnternet rotası $WAN_DEV üzerinden"
+  elif [ "$(sed -n 's/^active=//p' /run/pi5-gateway/failover.status 2>/dev/null)" = backup ]; then warn "İnternet rotası yedek hatta (ana hat çalışmıyor): $(ip -4 route get 1.1.1.1 2>&1 | head -1)"
+  else miss "İnternet rotası $WAN_DEV üzerinden değil: $(ip -4 route get 1.1.1.1 2>&1 | head -1)"; fi
   if ping -c2 -W3 -I "$WAN_DEV" 1.1.1.1 >/dev/null 2>&1 || ping -c2 -W3 -I "$WAN_DEV" 8.8.8.8 >/dev/null 2>&1; then ok "İnternete ulaşılıyor (ping, $WAN_DEV)"
   else miss "İnternet kartından ping yanıtı yok"; fi
   if [ -n "$LAN_DEV" ] && [ -n "$TRANSIT" ] && ip -4 -o addr show dev "$LAN_DEV" | awk '{print $4}' | grep -qxF "$TRANSIT"; then
@@ -198,6 +217,41 @@ if [ "$WAN_STAGE" != none ]; then
   n=$(nft list table ip pi5_wan_fwd 2>/dev/null | grep -c 'dnat to')
   echo "  port yönlendirme kuralı: ${n:-0}"
   [ -f "$WAN_GUARD" ] && echo "  son koruma sonucu: $(tr '\n' ' ' < "$WAN_GUARD")"
+fi
+
+if [ "$BAK_STAGE" = on ]; then
+  h "7. Yedek hat"
+  st=$(bash "$NET_MODE" status 2>/dev/null)
+  bv() { printf '%s\n' "$st" | sed -n "s/^bak_$1=//p" | head -1; }
+  printf '%s\n' "$st" | grep -E '^bak_(kind|type|port|dev|vlan|ip|gateway|active|switches|reason|primary_ok|backup_ok)=' | sed 's/^/  /'
+  [ -n "$(bv user)" ] && echo "  bak_user=$(bv user | cut -c1-3)***"
+  [ -n "$(bv ssid)" ] && echo "  bak_ssid=$(bv ssid)"
+  if [ "$(bv fw)" = 1 ]; then ok "Yedek hat güvenlik duvarı yüklü (pi5_bak + pi5_bak_nat)"
+  else miss "Yedek hat güvenlik duvarı YÜKLÜ DEĞİL — sudo bash $NET_MODE backup fw"; fi
+  if [ "$(systemctl is-enabled pi5-bak-fw.service 2>/dev/null)" = enabled ]; then ok "Açılışta yedek hat güvenlik duvarı birimi (pi5-bak-fw) etkin"
+  else warn "pi5-bak-fw.service etkin değil — açılışta yedek hat kısa bir süre korumasız kalabilir"; fi
+  if [ "$(bv watch)" = 1 ]; then ok "Yedek hat izleyicisi (pi5-wan-failover) çalışıyor"
+  else miss "Yedek hat izleyicisi çalışmıyor — ana hat düşerse geçiş yapılamaz (sudo systemctl start pi5-wan-failover)"; fi
+  bd=$(bv dev)
+  if [ "$(bv up)" = 1 ]; then ok "Yedek hat bağlı ($bd $(bv ip))"
+  elif [ "$(bv kind)" = wifi ] || [ "$(bv kind)" = usb ]; then info "Yedek hat şu an bağlı değil ($(bv kind)) — telefonun hotspot'u / USB paylaşımı kapalıysa beklenen durum"
+  else warn "Yedek hat bağlı değil (${bd:-arayüz yok}) — modemi / kabloyu denetleyin"; fi
+  if [ -n "$bd" ] && [ "$(bv up)" = 1 ]; then
+    if ping -c2 -W3 -I "$bd" 1.1.1.1 >/dev/null 2>&1 || ping -c2 -W3 -I "$bd" 8.8.8.8 >/dev/null 2>&1; then ok "Yedek hattan internete ulaşılıyor ($bd)"
+    else warn "Yedek hattan ping yanıtı yok ($bd) — ana hat düşerse geçiş yapılamaz"; fi
+    if have curl; then
+      bpub=$(curl -s --max-time 6 --interface "$bd" https://api.ipify.org 2>/dev/null)
+      [ -n "$bpub" ] && echo "  yedek hattın dış IP'si (internetin gördüğü): $bpub"
+    fi
+  fi
+  if [ "$(bv active)" = backup ]; then warn "Şu an YEDEK HATTAN çıkılıyor: $(bv reason)"
+  else ok "Şu an ana hattan çıkılıyor (yedek hat hazır bekliyor)"; fi
+  if have conntrack; then ok "conntrack kurulu (geçişte açık bağlantılar yeni hatta taşınır)"
+  else warn "conntrack yok — geçişte açık bağlantılar takılabilir (panel güncellemesi kurar ya da: sudo apt install conntrack)"; fi
+  if [ "$(bv kind)" = usb ]; then
+    if [ -f /etc/udev/rules.d/90-pi5-bak.rules ]; then ok "USB modem udev kuralı yerinde"; else warn "USB modem udev kuralı yok — sudo bash $NET_MODE ensure"; fi
+  fi
+  echo "  varsayılan rotalar:"; ip -4 route show default | sed 's/^/    /'
 fi
 
 h "Özet"
