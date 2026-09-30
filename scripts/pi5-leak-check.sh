@@ -19,7 +19,8 @@ if ! [[ $CLIENT =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]]; then
   echo "kullanım: sudo bash $0 [--izle [sn]] <istemci-ip> [alan-adı ...]   (ör. --izle 192.168.1.187 site.com)"; exit 1
 fi
 CONF=/etc/dnsmasq.d/05-domain-routing.conf
-FTLDB=/etc/pihole/pihole-FTL.db
+# Pi-hole sorgu veritabanı: veri diski varsa Depolama onu /var/lib/klyrix/pihole altına taşır (files.database ayarı)
+FTLDB=$(pihole-FTL --config files.database 2>/dev/null | tail -1 | tr -d '"'); [ -f "$FTLDB" ] || FTLDB=/etc/pihole/pihole-FTL.db
 TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT
 h(){ printf '\n===== %s =====\n' "$*"; }
 mask4(){ awk -F. 'NF==4{print $1"."$2".x.x"; next}{print}' <<<"$1"; }

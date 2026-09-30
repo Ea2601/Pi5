@@ -43,7 +43,16 @@ export async function runResult(cmd: string, timeout = 10000, maxBuffer = 1024 *
 // Pi-hole v6 removed the legacy admin/api.php; its REST API needs the embedded FTL
 // webserver + auth (which collides with our nginx on :80). Reading the FTL SQLite DB
 // directly is version-proof and needs no webserver/port/auth. Backend runs as root.
-export const FTL_DB = '/etc/pihole/pihole-FTL.db';
+// Sorgu veritabanının yeri Pi-hole'un files.database ayarından okunur: Depolama sayfası veri diski hazırlayınca onu
+// /var/lib/klyrix/pihole/pihole-FTL.db'ye (diske bağlı klasör) taşır. Taşıma işi panel servisini yeniden başlattığı için
+// açılışta bir kez okumak yeter; okunamazsa (Pi-hole yok / v5) varsayılan yol kalır.
+export let FTL_DB = '/etc/pihole/pihole-FTL.db';
+export async function refreshFtlDbPath(): Promise<void> {
+  if (!isLinux) return;
+  const v = (await run('pihole-FTL --config files.database', 5000)).split('\n').pop()?.trim().replace(/^"|"$/g, '') || '';
+  if (v.startsWith('/') && fs.existsSync(v)) FTL_DB = v;
+}
+void refreshFtlDbPath();
 const GRAVITY_DB = '/etc/pihole/gravity.db';
 // FTL query status codes that mean "blocked" (gravity/blacklist/regex/upstream/special).
 const BLOCKED_STATUS = [1, 4, 5, 6, 7, 8, 9, 10, 11, 15, 16];

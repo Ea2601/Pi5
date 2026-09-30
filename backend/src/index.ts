@@ -45,7 +45,7 @@ import { recordEvent, recordEventOnce, recordVersionChange, serviceLabel } from 
 import { wgServerStatus, setServerEnabled, addPeer, updatePeerRole, deletePeer, peerConfig, reapplyWgServer,
   validatePeerName, validRole, WG_PORT, reachabilityTest } from './wgServer';
 import { startReachWatch, noteReachResult, reachWatchState, REACH_WATCH_INTERVAL_H } from './wgWatch';
-import { storageStatus } from './storage';
+import { storageStatus, storageJob, noteStorageJob, startArchive, startPrepare, startMigrate, startStorageWatch } from './storage';
 import type { ListSyncResult } from './piholeLists';
 import {
   shq, sedEscape, isValidMac, isValidDomain, isValidTimezone,
@@ -3484,7 +3484,7 @@ app.post('/api/backup/import', async (req, res) => {
   }
 });
 
-// ─── Depolama (storage.ts): takılı diskler, bölümler, doluluk ve verilerin hangi diskte durduğu — salt okunur ───
+// ─── Depolama (storage.ts): takılı diskler, bölümler, doluluk ve verilerin hangi diskte durduğu ───
 app.get('/api/storage', async (_req, res) => {
   try {
     res.json(await storageStatus());
@@ -3492,6 +3492,40 @@ app.get('/api/storage', async (_req, res) => {
     res.status(500).json({ error: e.message });
   }
 });
+
+// Veri diski işleri (scripts/storage.sh, pi5-storage birimi): hemen döner, panel ilerlemeyi /api/storage/job'dan izler.
+// Hazırlama ve taşıma panel servisini bir süre durdurur; sayfa bu sırada bağlantıyı bekler.
+app.get('/api/storage/job', async (_req, res) => {
+  try {
+    const j = await storageJob();
+    if (j.state === 'done' || j.state === 'failed') void noteStorageJob();
+    res.json(j);
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+app.post('/api/storage/archive', async (req, res) => {
+  try {
+    res.json(await startArchive(req.body?.src));
+  } catch (e: any) {
+    res.status(400).json({ error: e.message });
+  }
+});
+app.post('/api/storage/prepare', async (req, res) => {
+  try {
+    res.json(await startPrepare(req.body || {}));
+  } catch (e: any) {
+    res.status(400).json({ error: e.message });
+  }
+});
+app.post('/api/storage/migrate', async (_req, res) => {
+  try {
+    res.json(await startMigrate());
+  } catch (e: any) {
+    res.status(400).json({ error: e.message });
+  }
+});
+startStorageWatch();
 
 // ─── Parental Controls ───
 app.get('/api/parental/rules', async (_req, res) => {

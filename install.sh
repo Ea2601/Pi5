@@ -351,89 +351,35 @@ SVCEOF
 # systemctl enable pi5-kiosk ile aktif edilir
 log "Kiosk modu hazır (pi5-kiosk.service — panelden etkinleştirin)"
 
-# ─── 7. SSD Algılama & Veri Dizini ───
-step "7/10 — SSD Algılama & Veri Dizini"
+# ─── 7. Veri Diski & Veri Dizini ───
+step "7/10 — Veri Diski & Veri Dizini"
 
-# NVMe SSD algılama
-SSD_DETECTED=false
-SSD_MOUNT=""
-if lsblk -dno NAME,TYPE | grep -q "nvme.*disk"; then
-  SSD_DEV=$(lsblk -dno NAME,TYPE | grep "nvme.*disk" | head -1 | awk '{print $1}')
-  log "NVMe SSD algılandı: /dev/$SSD_DEV"
-
-  # SSD mount edilmiş mi kontrol et
-  SSD_MOUNT=$(lsblk -no MOUNTPOINT /dev/${SSD_DEV}p1 2>/dev/null | head -1)
-
-  if [ -z "$SSD_MOUNT" ]; then
-    PART="/dev/${SSD_DEV}p1"
-    HAS_PART=false
-    lsblk -no NAME /dev/$SSD_DEV | grep -q "p1" && HAS_PART=true
-    HAS_FS=false
-    { blkid "$PART" 2>/dev/null | grep -q "TYPE="; } && HAS_FS=true
-
-    # GÜVENLİK: Disk üzerinde bölüm/dosya sistemi varsa ASLA otomatik formatlama (veri kaybını önle).
-    # Boş diski formatlamak için açık onay gerekir: PI5_FORMAT_SSD=1 sudo ./install.sh
-    if { [ "$HAS_PART" = true ] || [ "$HAS_FS" = true ]; } && [ "${PI5_FORMAT_SSD:-0}" != "1" ]; then
-      warn "SSD'de mevcut bölüm/veri tespit edildi — otomatik formatlama ATLANDI (veri korundu)."
-      warn "Diski sıfırlayıp kullanmak isterseniz: PI5_FORMAT_SSD=1 ile yeniden çalıştırın."
-      warn "SD kart üzerinde devam ediliyor."
-      SSD_DETECTED=false
-      mkdir -p "$INSTALL_DIR/core"
-    else
-      warn "SSD mount edilmemiş. /mnt/ssd olarak hazırlanıyor..."
-      if [ "$HAS_PART" = false ]; then
-        warn "SSD bölümlendiriliyor..."
-        echo -e "g\nn\n\n\n\nw" | fdisk /dev/$SSD_DEV 2>/dev/null
-        sleep 2
-      fi
-      if [ "$HAS_FS" = false ] || [ "${PI5_FORMAT_SSD:-0}" = "1" ]; then
-        warn "SSD ext4 formatlanıyor..."
-        mkfs.ext4 -F "$PART"
-      fi
-
-      SSD_MOUNT="/mnt/ssd"
-      mkdir -p "$SSD_MOUNT"
-      mount "$PART" "$SSD_MOUNT"
-
-      UUID=$(blkid -s UUID -o value "$PART")
-      if ! grep -q "$UUID" /etc/fstab; then
-        echo "UUID=$UUID /mnt/ssd ext4 defaults,noatime,discard 0 2" >> /etc/fstab
-        log "SSD /etc/fstab'a eklendi (kalıcı mount)"
-      fi
-      SSD_DETECTED=true
-      log "SSD mount noktası: $SSD_MOUNT"
-    fi
+# İşletim sistemi SD kartta kalır. Veri diski işi scripts/storage.sh'dedir (panelin Depolama sayfası da onu kullanır):
+#  - Daha önce hazırlanmış veri diski (etiket klyrix-data) varsa yalnız fstab satırları ve bağlamalar onarılır.
+#  - TAMAMEN BOŞ bir NVMe varsa veri diski yapılır (128 GB ve üstü: 64 GB sistem verileri + geri kalanı paylaşım; küçükse
+#    tek bölüm); panel verileri, Pi-hole sorgu veritabanı ve günlükler diske taşınır, SD kartta bir kopyası kalır.
+#  - Bölümü ya da verisi olan disk ASLA kendiliğinden silinmez: panelde Depolama sayfasından (önce eski sistemi arşivleyip)
+#    hazırlanır. Kurulumda silmek için açık onay: PI5_FORMAT_SSD=1 sudo ./install.sh
+mkdir -p "$INSTALL_DIR/core"
+STORAGE_ARGS=(auto)
+[ "${PI5_FORMAT_SSD:-0}" = "1" ] && STORAGE_ARGS+=(--force)
+if STORAGE_OUT=$(bash "$INSTALL_DIR/scripts/storage.sh" "${STORAGE_ARGS[@]}" 2>&1); then
+  if grep -q '^result=ok' <<<"$STORAGE_OUT"; then
+    log "Veri diski hazırlandı: $(grep -m1 '^data_dev=' <<<"$STORAGE_OUT" | cut -d= -f2) — panel verileri, Pi-hole ve günlükler diskte"
+    grep '^warning=' <<<"$STORAGE_OUT" | cut -d= -f2- | while read -r w; do warn "$w"; done
+  elif grep -q '^error=' <<<"$STORAGE_OUT"; then
+    warn "Veri diski bağlanamadı: $(grep -m1 '^error=' <<<"$STORAGE_OUT" | cut -d= -f2-) — SD karttaki kopyayla devam ediliyor"
+  elif grep -q '^data=/dev/' <<<"$STORAGE_OUT"; then
+    log "Veri diski bağlı: $(grep -m1 '^data=' <<<"$STORAGE_OUT" | cut -d= -f2)"
   else
-    SSD_DETECTED=true
-    log "SSD mount noktası: $SSD_MOUNT"
-  fi
-
-  # Core ve DB dizinini SSD'ye taşı (performans için)
-  if [ -n "$SSD_MOUNT" ]; then
-    SSD_DATA="$SSD_MOUNT/pi5-data"
-    mkdir -p "$SSD_DATA"
-
-    # Mevcut core dizinini SSD'ye taşı — SADECE kopyalama başarılıysa sil (veri kaybını önle)
-    CORE_MOVED=true
-    if [ -d "$INSTALL_DIR/core" ] && [ ! -L "$INSTALL_DIR/core" ]; then
-      if cp -a "$INSTALL_DIR/core/." "$SSD_DATA/" 2>/dev/null; then
-        rm -rf "$INSTALL_DIR/core"
-      else
-        CORE_MOVED=false
-        warn "core/ SSD'ye kopyalanamadı — taşıma atlandı, veri korundu (core/ yerinde kaldı, SD kart kullanılıyor)"
-      fi
-    fi
-
-    # Symlink oluştur: core → SSD (yalnızca gerçek core dizini kaldıysa/taşındıysa)
-    if [ "$CORE_MOVED" = true ] && [ ! -e "$INSTALL_DIR/core" -o -L "$INSTALL_DIR/core" ]; then
-      ln -sfn "$SSD_DATA" "$INSTALL_DIR/core"
-      log "Veri dizini SSD'ye taşındı: $SSD_DATA → $INSTALL_DIR/core"
-    fi
+    grep '^skipped=' <<<"$STORAGE_OUT" | cut -d= -f2- | while read -r s; do warn "Disk atlandı: $s"; done
+    warn "Veri diski yok — SD kart üzerinde çalışılacak (desteklenen kurulum)"
   fi
 else
-  warn "NVMe SSD algılanamadı, SD kart üzerinde çalışılacak"
-  mkdir -p "$INSTALL_DIR/core"
+  warn "Veri diski hazırlanamadı: $(grep -m1 '^error=' <<<"$STORAGE_OUT" | cut -d= -f2-) — SD kart üzerinde devam ediliyor"
+  warn "Ayrıntı: sudo bash $INSTALL_DIR/scripts/storage.sh status; panelde Depolama sayfası"
 fi
+mkdir -p "$INSTALL_DIR/core"
 
 touch "$INSTALL_DIR/core/system.log"
 log "Core dizini hazır"

@@ -51,6 +51,61 @@
 .st-meter-fill[data-level='warn'] { background: var(--warning-color); }
 .st-meter-fill[data-level='bad'] { background: var(--danger-color); }
 
+.st-place-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; }
+.st-place-label svg { vertical-align: -2px; margin-right: 4px; color: var(--text-muted); }
+.st-archive { font-size: 12px; padding: 6px 10px; border-radius: var(--radius-sm); background: var(--input-bg-soft); overflow-wrap: anywhere; }
+.st-part-action { align-self: flex-start; }
+.st-disk-actions {
+  display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 12px;
+  padding-top: 10px; border-top: 1px solid var(--panel-border); font-size: 12px;
+}
+.st-btn-danger { color: var(--danger-color); border-color: color-mix(in srgb, var(--danger-color) 45%, transparent); }
+.st-btn-danger:hover:not(:disabled) { color: var(--danger-color); border-color: var(--danger-color); background: var(--danger-glow); }
+.st-btn-danger:disabled, .st-btn-danger-solid:disabled { opacity: 0.5; cursor: not-allowed; }
+.st-btn-danger-solid { background: var(--danger-color); color: #fff; }
+.st-btn-danger-solid:hover:not(:disabled) { background: var(--danger-color); box-shadow: 0 4px 12px var(--danger-glow); }
+
+/* İş ilerleme şeridi */
+.st-job { display: flex; flex-direction: column; gap: 10px; padding: 14px 16px; margin-bottom: 14px; border-left: 3px solid var(--accent-color); }
+.st-job-ok { border-left-color: var(--success-color); }
+.st-job-bad { border-left-color: var(--danger-color); }
+.st-job-head { display: flex; align-items: flex-start; gap: 10px; }
+.st-job-head > svg { flex-shrink: 0; margin-top: 2px; color: var(--accent-color); }
+.st-job-ok .st-job-head > svg { color: var(--success-color); }
+.st-job-bad .st-job-head > svg { color: var(--danger-color); }
+.st-job-title { display: flex; flex-direction: column; gap: 2px; flex: 1; min-width: 0; font-size: 13px; }
+.st-job-title span { color: var(--text-secondary); overflow-wrap: anywhere; }
+.st-job-bar { height: 6px; border-radius: 999px; background: var(--panel-border); overflow: hidden; }
+.st-job-bar > div { height: 100%; border-radius: 999px; background: var(--accent-color); transition: width 0.6s ease; }
+.st-job-note { font-size: 12px; color: var(--text-secondary); margin: 0; }
+.st-job-log summary { cursor: pointer; font-size: 12px; color: var(--text-secondary); }
+.st-job-log pre {
+  margin-top: 6px; max-height: 220px; overflow: auto; padding: 8px 10px; border-radius: var(--radius-sm);
+  background: var(--input-bg-soft); font-size: 11px; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere;
+}
+
+/* Diski hazırla penceresi */
+.st-danger-box {
+  display: flex; gap: 10px; padding: 10px 12px; border-radius: var(--radius-sm); font-size: 13px;
+  color: var(--text-primary); background: var(--danger-glow); border: 1px solid color-mix(in srgb, var(--danger-color) 40%, transparent);
+}
+.st-danger-box > svg { flex-shrink: 0; margin-top: 2px; color: var(--danger-color); }
+.st-danger-box ul { margin: 6px 0 0; padding-left: 16px; font-size: 12px; color: var(--text-secondary); }
+.st-danger-box li { overflow-wrap: anywhere; }
+.st-modal-h { margin: 14px 0 8px; font-size: 13px; }
+.st-check { display: flex; align-items: center; gap: 8px; font-size: 13px; cursor: pointer; }
+.st-check input { width: 16px; height: 16px; accent-color: var(--accent-color); }
+.st-layout { display: flex; gap: 3px; margin-top: 10px; }
+.st-layout-seg {
+  display: flex; flex-direction: column; gap: 2px; min-width: 88px; flex-basis: 0; padding: 8px 10px;
+  border-radius: var(--radius-sm); font-size: 11px; color: var(--text-secondary); overflow: hidden;
+}
+.st-layout-seg strong { font-size: 13px; color: var(--text-primary); white-space: nowrap; }
+.st-layout-data { background: var(--accent-glow); border: 1px solid var(--accent-ring); }
+.st-layout-share { background: var(--input-bg-soft); border: 1px solid var(--panel-border); }
+.st-help { font-size: 12px; color: var(--text-secondary); line-height: 1.55; margin: 10px 0 0; }
+.st-list { margin: 6px 0 0; padding-left: 18px; font-size: 13px; }
+
 @media (min-width: 640px) {
   .st-place-row { grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr) auto; }
   .st-place-label { grid-column: auto; }

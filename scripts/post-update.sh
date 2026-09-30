@@ -303,6 +303,10 @@ bash "$BASE/scripts/panel-auth.sh" ensure >> "$LOG" 2>&1 || echo "  [auth] UYARI
 #     ASLA kendiliğinden açmaz.
 bash "$BASE/scripts/net-mode.sh" ensure >> "$LOG" 2>&1 || echo "  [ağ] UYARI: sabit IP durumu denetlenemedi" >> "$LOG"
 
+# 8c. Veri diski: hazırlanmış veri diski (klyrix-data) varsa fstab satırlarını ve bağlamaları (panel verileri, Pi-hole,
+#     günlükler) onarır. Disk yoksa hiçbir şey yapmaz; veri taşımaz, diski ASLA silmez (hazırlama: Depolama sayfası).
+bash "$BASE/scripts/storage.sh" ensure >> "$LOG" 2>&1 || echo "  [depolama] UYARI: veri diski denetlenemedi" >> "$LOG"
+
 # 9. Hız testi motoru: Ookla Speedtest CLI (sabit sürüm + SHA256; kuruluysa hiçbir şey yapmaz). Kurulamazsa panel
 #    speedtest-cli'ye düşer; hata güncellemeyi durdurmaz.
 bash "$BASE/scripts/ookla-ensure.sh" >> "$LOG" 2>&1 || echo "  [ookla] UYARI: kurulamadı — hız testi speedtest-cli ile sürer" >> "$LOG"
