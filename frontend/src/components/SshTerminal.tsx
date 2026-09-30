@@ -192,7 +192,7 @@ export function SshTerminal() {
   };
 
   return (
-    <div className="fade-in">
+    <div className="fade-in terminal-page">
       <div className="terminal-layout">
         {/* Quick commands sidebar */}
         <div className={`terminal-sidebar ${showQuickCmds ? '' : 'terminal-sidebar-hidden'}`}>

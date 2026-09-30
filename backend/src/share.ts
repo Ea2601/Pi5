@@ -118,21 +118,42 @@ async function nft(script: string): Promise<void> {
   });
 }
 
-// Politikası drop olan giriş zincirlerine izin zinciri: açıksa ekle / tazele, kapalıysa kaldır. Tablo yoksa dokunulmaz.
-async function syncShareFirewall(enable: boolean): Promise<void> {
+// Giriş zincirinde bizim jump'ın ve ilk koşulsuz son kararın (ör. eski kurulumların `inet filter`'ındaki sondaki `drop`,
+// `counter drop`, `reject ...`) yeri. Koşulsuz karardan SONRA gelen kural hiç okunmaz: jump onun önüne konur. Karar
+// satırı yoksa (panelin pi5_filter'ı: yalnız politika drop) sona eklenir — kullanıcının özel "engelle" kuralları önce kalır.
+const TERMINAL = /^(counter( packets \d+ bytes \d+)?\s+)?(log\b.*?\s+)?(drop|reject\b.*)$/;
+export function shareJumpPlan(listing: string): { jump?: string; terminal?: string; misplaced: boolean } {
+  const rules: { text: string; handle: string }[] = [];
+  for (const line of listing.split('\n')) {
+    const m = /^\s*(.+?)\s+# handle (\d+)\s*$/.exec(line);
+    if (m && !/^(chain|table)\s/.test(m[1])) rules.push({ text: m[1].trim(), handle: m[2] });
+  }
+  const ji = rules.findIndex(r => r.text === `jump ${FW_CHAIN}`);
+  const ti = rules.findIndex(r => TERMINAL.test(r.text));
+  return { jump: rules[ji]?.handle, terminal: rules[ti]?.handle, misplaced: ji >= 0 && ti >= 0 && ji > ti };
+}
+
+// Politikası drop olan giriş zincirlerine izin zinciri: açıksa ekle / tazele (yanlış yerdeki jump taşınır), kapalıysa
+// kaldır. Tablo yoksa dokunulmaz.
+export async function syncShareFirewall(enable: boolean): Promise<void> {
   for (const table of FW_TABLES) {
     const listing = await execFileP('nft', ['-a', 'list', 'chain', 'inet', table, 'input'], { timeout: 5000 }).then(r => r.stdout, () => null);
     if (listing === null) continue;
     const policyDrop = /policy drop;/.test(listing);
-    const jump = new RegExp(`jump ${FW_CHAIN} # handle (\\d+)`).exec(listing);
+    const plan = shareJumpPlan(listing);
     const exists = await execFileP('nft', ['list', 'chain', 'inet', table, FW_CHAIN], { timeout: 5000 }).then(() => true, () => false);
     let script = '';
     if (enable && policyDrop) {
       script += `add chain inet ${table} ${FW_CHAIN}\nflush chain inet ${table} ${FW_CHAIN}\n`;
       for (const r of FW_RULES) script += `add rule inet ${table} ${FW_CHAIN} ${r}\n`;
-      if (!jump) script += `add rule inet ${table} input jump ${FW_CHAIN}\n`;
+      if (plan.jump && plan.misplaced) script += `delete rule inet ${table} input handle ${plan.jump}\n`;
+      if (!plan.jump || plan.misplaced) {
+        script += plan.terminal
+          ? `insert rule inet ${table} input position ${plan.terminal} jump ${FW_CHAIN}\n`
+          : `add rule inet ${table} input jump ${FW_CHAIN}\n`;
+      }
     } else {
-      if (jump) script += `delete rule inet ${table} input handle ${jump[1]}\n`;
+      if (plan.jump) script += `delete rule inet ${table} input handle ${plan.jump}\n`;
       if (exists) script += `delete chain inet ${table} ${FW_CHAIN}\n`;
     }
     if (script) await nft(script);

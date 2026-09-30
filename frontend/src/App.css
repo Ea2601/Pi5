@@ -3279,6 +3279,18 @@ button.user-profile { cursor: pointer; font-family: var(--font-family); transiti
   color: var(--text-primary);
 }
 
+/* Masaüstü: terminal sayfası içerik alanının yüksekliğini doldurur, çıktı kutusu kalan yeri alır. Eskiden çıktı yüksekliği
+   sabit hesaptı (100vh - 360px, en az 300px): ilk komuttan sonra "Son:" satırı eklenince sayfa ~50px taşıyor, giriş
+   satırına odaklanınca içerik kayıyor, kart başlığındaki düğmelerin üstü kırpılıp yalnız alt kenarları tıklanıyordu. */
+@media (min-width: 1024px) {
+  .terminal-page { height: 100%; }
+  .terminal-layout { height: 100%; min-height: 0; }
+  .terminal-sidebar { max-height: none; }
+  .terminal-main { display: flex; flex-direction: column; min-height: 0; }
+  .terminal-main > .glass-panel { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+  .terminal-output { flex: 1 1 auto; height: auto; min-height: 140px; }
+}
+
 /* ═══════════════════ RESPONSIVE SETTINGS ═══════════════════ */
 @media (max-width: 768px) {
   .service-tabs {
