@@ -10,6 +10,7 @@ import { useMetricHistory } from '../hooks/useMetricHistory';
 import { Panel, StatCard, ProgressMetric, Badge } from './ui';
 import type { SystemStats, ServiceStatus, HealthStatus, VpsServer } from '../types';
 import { BRAND } from '../brand';
+import { tunnelBadge } from '../vpsTunnel';
 
 // Her 20. noktada bir zaman etiketi göster (120 nokta → 6 etiket)
 const LABEL_INTERVAL = 20;
@@ -58,7 +59,9 @@ export function Dashboard() {
   const activeServices = svcData.services.filter(s => s.enabled).length;
   const latest = history[history.length - 1];
   const failOpen = health.isFailOpen;
-  const connectedVpn = vpsData.servers.filter(s => s.status === 'connected').length;
+  // Tünel durumu varsa (Pi) el sıkışmaya göre; yoksa VPS kaydının durumu.
+  const vpsUp = (s: VpsServer) => (s.tunnel ? s.tunnel.state === 'up' : s.status === 'connected');
+  const connectedVpn = vpsData.servers.filter(vpsUp).length;
 
   // Mobile-first sıra: özet (durum + ana göstergeler) → donanım ve servisler → grafikler → VPN tünelleri.
   // Telefonda tek sütun; ≥768px iki sütunlu ızgara (VPN kartı tam genişlik).
@@ -237,7 +240,8 @@ export function Dashboard() {
             badge={<Badge variant="info">{connectedVpn} aktif</Badge>}>
             <div className="vpn-grid">
               {vpsData.servers.map(vps => {
-                const isConnected = vps.status === 'connected';
+                const isConnected = vpsUp(vps);
+                const tb = vps.tunnel ? tunnelBadge(vps.tunnel) : null;
                 return (
                   <div key={vps.id} className={`vpn-card ${isConnected ? 'vpn-connected' : 'vpn-disconnected'}`}>
                     <div className="vpn-card-header">
@@ -249,9 +253,13 @@ export function Dashboard() {
                       <strong>{vps.location || 'VPS'}</strong>
                     </div>
                     <div className="vpn-card-ip">{vps.ip}</div>
-                    <Badge variant={isConnected ? 'success' : 'neutral'}>
-                      {isConnected ? 'Bağlı' : vps.status === 'error' ? 'Hata' : 'Bağlı Değil'}
-                    </Badge>
+                    {tb ? (
+                      <span title={tb.title}><Badge variant={tb.variant}>{tb.label}</Badge></span>
+                    ) : (
+                      <Badge variant={isConnected ? 'success' : 'neutral'}>
+                        {isConnected ? 'Bağlı' : vps.status === 'error' ? 'Hata' : 'Bağlı Değil'}
+                      </Badge>
+                    )}
                   </div>
                 );
               })}

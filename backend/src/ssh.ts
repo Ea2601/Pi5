@@ -1,6 +1,7 @@
 import { NodeSSH } from 'node-ssh';
 import * as fs from 'fs';
 import * as path from 'path';
+import { shq } from './util';
 
 const configDir = path.resolve(__dirname, '../../core');
 const isLinux = process.platform === 'linux';
@@ -10,6 +11,95 @@ interface VpsConnectOptions {
   username: string;
   password?: string;
   privateKeyPath?: string;
+}
+
+// ─── VPS wg0.conf blokları ───
+// Bloklar [Interface] / [Peer] başlığıyla başlar; bir bloğun hemen üstündeki yorum ("# ad") ve boş satırlar o bloğa aittir.
+// mode=remove: PublicKey'i `key` olan ya da AllowedIPs'inde `aip` bulunan [Peer] bloğu (yorumuyla) atılır, gerisi aynen
+// yazılır. mode=peers: yalnız [Peer] blokları yazılır (kurulum yinelenirken eşler korunsun). Ad eşleşmesi YOK: eskiden
+// `sed '/# ad/,/^$/d'` alt dizi eşleşmesiyle "Pi" adlı istemci silinince "# Pi5-Gateway" bloğu da gidiyordu. mawk / gawk.
+export const WG_BLOCKS_AWK = String.raw`
+function keep() { if (mode == "peers") return hdr == "[Peer]"; return !(hdr == "[Peer]" && hit) }
+function emit() { if (cur != "" && keep()) printf "%s", cur; cur = ""; hdr = ""; hit = 0 }
+{
+  t = $0; sub(/^[ \t]+/, "", t); sub(/[ \t\r]+$/, "", t)
+  if (substr(t, 1, 1) == "[") { emit(); cur = pend $0 "\n"; pend = ""; hdr = t; next }
+  if (t == "" || substr(t, 1, 1) == "#") { pend = pend $0 "\n"; next }
+  cur = cur pend $0 "\n"; pend = ""
+  if (hdr != "[Peer]") next
+  k = t; sub(/[ \t]*=.*$/, "", k); v = t; sub(/^[^=]*=[ \t]*/, "", v)
+  if (k == "PublicKey" && key != "" && v == key) hit = 1
+  if (k == "AllowedIPs" && aip != "") { n = split(v, a, /[ \t]*,[ \t]*/); for (i = 1; i <= n; i++) if (a[i] == aip) hit = 1 }
+}
+END { emit(); if (mode != "peers") printf "%s", pend }
+`;
+// VPS'te çalışır (bash -s -- KEY AIP AWK): önce yedek (wg0.conf.bak-<zaman>, son 5 tutulur), sonra eş atılır ve sonuç
+// doğrulanır — [Interface] duruyor, eş sayısı tam 1 azaldı, (Pi'nin kendi eşi silinmiyorsa) Pi eşi (10.66.66.2/32)
+// yerinde. Tutmazsa dosyaya dokunulmaz. Çıktı: result=removed|notfound|failed, detail=...
+export const WG_REMOVE_PEER_SH = String.raw`set -u
+KEY=$1; AIP=$2; AWKP=$3
+F=/etc/wireguard/wg0.conf
+PI=10.66.66.2/32
+if [ ! -f "$F" ]; then echo "result=notfound"; echo "detail=wg0.conf yok"; exit 0; fi
+TS=$(date +%s)
+if ! cp -p "$F" "$F.bak-$TS"; then echo "result=failed"; echo "detail=yedek alınamadı"; exit 0; fi
+ls -1t "$F".bak-* 2>/dev/null | tail -n +6 | xargs -r rm -f --
+if ! awk -v mode=remove -v key="$KEY" -v aip="$AIP" "$AWKP" "$F" > "$F.tmp"; then
+  rm -f "$F.tmp"; echo "result=failed"; echo "detail=wg0.conf işlenemedi"; exit 0
+fi
+b=$(grep -c '^[[:space:]]*\[Peer\]' "$F"); a=$(grep -c '^[[:space:]]*\[Peer\]' "$F.tmp"); i=$(grep -c '^[[:space:]]*\[Interface\]' "$F.tmp")
+pat='^[[:space:]]*AllowedIPs[[:space:]]*=[[:space:]]*10\.66\.66\.2/32[[:space:]]*$'
+pb=$(grep -cE "$pat" "$F"); pa=$(grep -cE "$pat" "$F.tmp")
+if [ "$a" -eq "$b" ]; then rm -f "$F.tmp"; echo "result=notfound"; echo "detail=eş wg0.conf'ta yok"; exit 0; fi
+if [ "$i" -ne 1 ] || [ "$a" -ne $((b - 1)) ] || { [ "$AIP" != "$PI" ] && [ "$pa" -ne "$pb" ]; }; then
+  rm -f "$F.tmp"
+  echo "result=failed"; echo "detail=doğrulama tutmadı (eş $b→$a, [Interface] $i, Pi eşi $pb→$pa) — wg0.conf değiştirilmedi"; exit 0
+fi
+if chmod 600 "$F.tmp" && mv -f "$F.tmp" "$F"; then echo "result=removed"; echo "detail=yedek: $F.bak-$TS"; exit 0; fi
+rm -f "$F.tmp"; echo "result=failed"; echo "detail=wg0.conf yazılamadı"
+`;
+export interface PeerRemoval { result: 'removed' | 'notfound' | 'failed'; detail: string }
+async function removePeerFromConfig(ssh: NodeSSH, sel: { publicKey?: string; allowedIp?: string }): Promise<PeerRemoval> {
+  const r = await ssh.execCommand(`bash -s -- ${shq(sel.publicKey || '')} ${shq(sel.allowedIp || '')} ${shq(WG_BLOCKS_AWK)}`,
+    { stdin: WG_REMOVE_PEER_SH });
+  const kv: Record<string, string> = {};
+  for (const line of String(r.stdout || '').split('\n')) {
+    const i = line.indexOf('=');
+    if (i > 0) kv[line.slice(0, i).trim()] = line.slice(i + 1).trim();
+  }
+  const result = kv.result === 'removed' || kv.result === 'notfound' ? kv.result : 'failed';
+  return { result, detail: kv.detail || String(r.stderr || '').trim().slice(0, 200) || 'VPS yanıt vermedi' };
+}
+/**
+ * VPS'ten bir WireGuard istemcisini açık anahtarıyla siler: çalışan arayüzden (wg set … remove) ve wg0.conf'tan
+ * (yedekli, doğrulamalı — bkz. WG_REMOVE_PEER_SH). SSH hatası fırlatılır.
+ */
+export async function removeWireGuardClient(opts: VpsConnectOptions, publicKey: string): Promise<PeerRemoval> {
+  const ssh = await connectSSH(opts);
+  try {
+    await ssh.execCommand(`wg set wg0 peer ${shq(publicKey)} remove 2>/dev/null || true`);
+    return await removePeerFromConfig(ssh, { publicKey });
+  } finally {
+    try { ssh.dispose(); } catch { /* */ }
+  }
+}
+
+// VPS panelden silinirken panelin eklediği istemciler tek SSH oturumunda kaldırılır (kayıtları silinince panel onları artık
+// göstermez / silemez; kalırlarsa ör. kaybolan telefon bağlanmayı sürdürürdü). İlk başarısızlıkta durur.
+export async function removeWireGuardClients(opts: VpsConnectOptions, publicKeys: string[]): Promise<PeerRemoval[]> {
+  const ssh = await connectSSH(opts);
+  const out: PeerRemoval[] = [];
+  try {
+    for (const key of publicKeys) {
+      await ssh.execCommand(`wg set wg0 peer ${shq(key)} remove 2>/dev/null || true`);
+      const r = await removePeerFromConfig(ssh, { publicKey: key });
+      out.push(r);
+      if (r.result === 'failed') break;
+    }
+    return out;
+  } finally {
+    try { ssh.dispose(); } catch { /* */ }
+  }
 }
 
 /**
@@ -180,7 +270,19 @@ export async function executeSetupStep(
           if [ -z "$PRIMARY_IFACE" ]; then PRIMARY_IFACE="eth0"; fi
           echo "Network interface: $PRIMARY_IFACE"
 
-          SERVER_PRIV=$(wg genkey)
+          # Kurulum yineleniyorsa (wg0.conf var): yedek alınır, sunucu anahtarı ve eşler (istemciler + Pi) KORUNUR —
+          # anahtar yeniden üretilirse bütün istemcilerin yapılandırması geçersiz olur. Yalnız [Interface] yeniden yazılır.
+          WGF=/etc/wireguard/wg0.conf
+          WG_PEERS=""
+          SERVER_PRIV=""
+          if [ -f "$WGF" ] && grep -q '^[[:space:]]*PrivateKey' "$WGF"; then
+            cp -p "$WGF" "$WGF.bak-$(date +%s)"
+            ls -1t "$WGF".bak-* 2>/dev/null | tail -n +6 | xargs -r rm -f --
+            SERVER_PRIV=$(grep -m1 '^[[:space:]]*PrivateKey' "$WGF" | cut -d'=' -f2- | tr -d ' ')
+            WG_PEERS=$(awk -v mode=peers ${shq(WG_BLOCKS_AWK)} "$WGF")
+            echo "Mevcut wg0.conf korunuyor (anahtar + $(printf '%s\\n' "$WG_PEERS" | grep -c '^[[:space:]]*\\[Peer\\]') eş)"
+          fi
+          [ -n "$SERVER_PRIV" ] || SERVER_PRIV=$(wg genkey)
           SERVER_PUB=$(echo "$SERVER_PRIV" | wg pubkey)
 
           # Get public IP — try curl, wget, hostname fallback
@@ -205,6 +307,7 @@ PrivateKey = $SERVER_PRIV
 PostUp = iptables -A FORWARD -i wg0 -j ACCEPT; iptables -t nat -A POSTROUTING -o $PRIMARY_IFACE -j MASQUERADE; iptables -A FORWARD -o wg0 -j ACCEPT
 PostDown = iptables -D FORWARD -i wg0 -j ACCEPT; iptables -t nat -D POSTROUTING -o $PRIMARY_IFACE -j MASQUERADE; iptables -D FORWARD -o wg0 -j ACCEPT
 WGEOF
+          if [ -n "$WG_PEERS" ]; then printf '\\n%s\\n' "$WG_PEERS" >> /etc/wireguard/wg0.conf; fi
 
           chmod 600 /etc/wireguard/wg0.conf
           systemctl enable wg-quick@wg0
@@ -434,8 +537,9 @@ PEEREOF`);
         await ssh.execCommand(`wg set wg0 peer ${oldKey} remove 2>/dev/null || true`);
       }
       await ssh.execCommand(`wg set wg0 peer ${pi5Pub} allowed-ips ${pi5Ip}`);
-      // Rewrite config to replace old peer
-      await ssh.execCommand(`sed -i '/# Pi5-Gateway/,/^$/d' /etc/wireguard/wg0.conf`);
+      // Eski Pi eşi wg0.conf'tan adresiyle (10.66.66.2/32) silinir — ad eşleşmesiyle değil (yedekli, doğrulamalı).
+      const rm = await removePeerFromConfig(ssh, { allowedIp: '10.66.66.2/32' });
+      if (rm.result === 'failed') throw new Error(`VPS wg0.conf'taki eski Pi eşi silinemedi: ${rm.detail}`);
       await ssh.execCommand(`cat >> /etc/wireguard/wg0.conf << 'PEEREOF'
 
 # Pi5-Gateway

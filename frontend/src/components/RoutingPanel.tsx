@@ -23,6 +23,19 @@ const categoryMeta: Record<string, { label: string; icon: React.ReactNode; color
 
 interface VpsServer { id: number; ip: string; location: string }
 
+// VPS çıkışlı kuralda tünel kapanınca / VPS yanıt vermeyince ne olacağı (backend routeMarks.ts, kural başına).
+const FALLBACK_TITLE = "VPS tüneli kapanırsa ya da VPS yanıt vermezse — engelle: bu trafik operatörden (ISP) çıkmaz, site açılmaz; operatörden devam: trafik ISP üzerinden sürer (gerçek konumunuz görünür)";
+function FallbackSelect({ value, onChange }: { value: string | undefined; onChange: (v: 'block' | 'isp') => void }) {
+  return (
+    <Select className="config-select config-select-sm" value={value === 'isp' ? 'isp' : 'block'}
+      onChange={e => onChange(e.target.value === 'isp' ? 'isp' : 'block')} title={FALLBACK_TITLE} aria-label="Tünel düşerse">
+      <option value="block">Tünel düşerse: engelle</option>
+      <option value="isp">Tünel düşerse: operatörden devam</option>
+    </Select>
+  );
+}
+const stackStyle = { display: 'flex', flexDirection: 'column', gap: 4 } as const;
+
 // Uygulama kuralının listesinde alan adları ile IP aralığı girdileri (backend ipRanges.ts) birlikte durur:
 // "@asn:<n>[!443]" bir ağın (AS) IP aralıkları, "a.b.c.d[/nn]" sabit aralık. Aralıklar etiket olarak gösterilir.
 const ASN_ENTRY = /^@asn:(\d{1,10})(!443)?$/i;
@@ -268,7 +281,7 @@ function AppRoutingView({ onApplied }: { onApplied: () => void }) {
                         </button>
                       </span>
 
-                      <span className="routing-col-vps">
+                      <span className="routing-col-vps" style={exitNode !== 'isp' ? stackStyle : undefined}>
                         <Select
                           className="config-select config-select-sm"
                           value={exitNode}
@@ -279,6 +292,9 @@ function AppRoutingView({ onApplied }: { onApplied: () => void }) {
                             <option key={v.id} value={String(v.id)}>VPS {v.location} ({v.ip})</option>
                           ))}
                         </Select>
+                        {exitNode !== 'isp' && (
+                          <FallbackSelect value={rule.vps_fallback} onChange={v => handleChange(rule.id, 'vps_fallback', v)} />
+                        )}
                       </span>
 
                       <span className="routing-col-dpi">
@@ -339,6 +355,7 @@ interface DomainRule {
   description: string;
   enabled: number;
   redirect_url?: string;
+  vps_fallback?: 'block' | 'isp';
   created_at: string;
 }
 
@@ -651,7 +668,7 @@ function DomainRoutingView({ onApplied }: { onApplied: () => void }) {
                   ) : null}
                 </span>
 
-                <span className="routing-col-vps">
+                <span className="routing-col-vps" style={exitNode !== 'isp' && !d.redirect_url ? stackStyle : undefined}>
                   <Select
                     className="config-select config-select-sm"
                     value={exitNode}
@@ -662,6 +679,9 @@ function DomainRoutingView({ onApplied }: { onApplied: () => void }) {
                       <option key={v.id} value={String(v.id)}>VPS {v.location} ({v.ip})</option>
                     ))}
                   </Select>
+                  {exitNode !== 'isp' && !d.redirect_url && (
+                    <FallbackSelect value={d.vps_fallback} onChange={v => handleChange(d.id, 'vps_fallback', v)} />
+                  )}
                 </span>
 
                 <span className="routing-col-dpi">

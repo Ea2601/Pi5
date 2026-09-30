@@ -421,7 +421,8 @@ export interface ReachResult {
 }
 
 const HOP_TARGET = '9.9.9.9';
-const PROBE_TABLE = '51820'; // geçici rota tablosu (panelin yönlendirme tabloları 100–999)
+const PROBE_TABLE = '31820'; // geçici rota tablosu (panelin VPS tabloları 32768–65535, routeMarks.ts — çakışmaz)
+const LEGACY_PROBE_TABLE = '51820'; // ≤ v2.24.54: artık kural yalnız deneme önceliğiyle silinir (VPS #2668 + DPI tablosuyla aynı sayı)
 const PROBE_PREF = '50';
 const PROBE_LEN = 37; // 'klyrix-reach-' + 24 onaltılık → UDP uzunluğu 45
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
@@ -473,6 +474,10 @@ function resolveHost(host: string): Promise<string[]> {
 async function probeCleanup(): Promise<void> {
   for (let i = 0; i < 5; i++) {
     const removed = await execFileP('ip', ['rule', 'del', 'table', PROBE_TABLE], { timeout: 5000 }).then(() => true, () => false);
+    if (!removed) break;
+  }
+  for (let i = 0; i < 5; i++) {
+    const removed = await execFileP('ip', ['rule', 'del', 'pref', PROBE_PREF, 'table', LEGACY_PROBE_TABLE], { timeout: 5000 }).then(() => true, () => false);
     if (!removed) break;
   }
   await execFileP('ip', ['route', 'flush', 'table', PROBE_TABLE], { timeout: 5000 }).catch(() => {});

@@ -82,6 +82,8 @@ export const initDb = () => {
     db.run(`ALTER TABLE traffic_routing ADD COLUMN exit_node TEXT DEFAULT 'isp'`, () => {});
     db.run(`ALTER TABLE traffic_routing ADD COLUMN dpi_bypass INTEGER DEFAULT 0`, () => {});
     db.run(`ALTER TABLE traffic_routing ADD COLUMN domains TEXT DEFAULT ''`, () => {});
+    // VPS çıkışlı kuralda tünel düşünce: 'block' (engelle — trafik operatöre sızmaz) | 'isp' (operatörden devam).
+    db.run(`ALTER TABLE traffic_routing ADD COLUMN vps_fallback TEXT DEFAULT 'block'`, () => {});
 
     // Default app routing rules with known domains
     const trafficRules: [number, string, string, string, string][] = [
@@ -165,6 +167,7 @@ export const initDb = () => {
     db.run(`ALTER TABLE domain_routing ADD COLUMN exit_node TEXT DEFAULT 'isp'`, () => {});
     db.run(`ALTER TABLE domain_routing ADD COLUMN dpi_bypass INTEGER DEFAULT 0`, () => {});
     db.run(`ALTER TABLE domain_routing ADD COLUMN redirect_url TEXT DEFAULT ''`, () => {});
+    db.run(`ALTER TABLE domain_routing ADD COLUMN vps_fallback TEXT DEFAULT 'block'`, () => {});
     // Routing önerisinden eklenen kuralın kaynak kuralı: bu kurallar kendileri öneri üretmez (siteler arası zincir olmasın).
     db.run(`ALTER TABLE domain_routing ADD COLUMN parent_id INTEGER DEFAULT NULL`, () => {});
     // Yoksayılan öneriler (kayıtlı alan adı; global — hiçbir kural için yeniden önerilmez)

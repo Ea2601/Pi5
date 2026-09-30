@@ -5,6 +5,7 @@ import os from 'os';
 import { promises as dnsPromises } from 'dns';
 import sqlite3 from 'sqlite3';
 import { shq } from './util';
+import { encodeRouteMark, decodeVpsMark, decodeLegacyVpsMark, isManagedRuleMark, normFallback, DPI_ONLY_MARK, type VpsMark } from './routeMarks';
 
 const execAsync = promisify(exec);
 export const isLinux = os.platform() === 'linux';
@@ -1191,10 +1192,11 @@ interface DomainRoute {
   dpi_bypass: number;  // 0 or 1
   enabled: number;
   redirect_url?: string; // if set, DNS-redirect domain to Pi5 IP → HTTP redirect to this URL
+  vps_fallback?: string; // VPS çıkışında tünel düşerse: 'block' (varsayılan) | 'isp'
 }
 // IP aralığı kuralı (bkz. ipRanges.ts): DNS'e dayanmayan trafik (ör. WhatsApp aramaları) için. prefixes normalize edilmiş
 // IPv4 CIDR'lardır; excludeWeb → 443 (tcp/udp) yönlendirilmez (aynı sunuculardaki web trafiği yerel kalır).
-export interface RangeRoute { exit_node: string; dpi_bypass: number; prefixes: string[]; excludeWeb: boolean }
+export interface RangeRoute { exit_node: string; dpi_bypass: number; prefixes: string[]; excludeWeb: boolean; vps_fallback?: string }
 // Statik IP aralığı seti (hash:net; dnsmasq doldurmaz): rt_n<mark> tüm portlar, rt_x<mark> 443 hariç.
 type NetSet = { mark: number; excludeWeb: boolean; prefixes: Set<string> };
 const CIDR_LINE = /^(\d{1,3}\.){3}\d{1,3}\/\d{1,2}$/;
@@ -1264,6 +1266,8 @@ export const VALID_DNSMASQ_DOMAIN = /^(\*\.)?(?=.{1,253}$)[a-z0-9_-]{1,63}(\.[a-
 const pendingFlush = new Map<string, number>();
 let pendingFlushSeq = 0;
 const markPendingFlush = (s: string) => { pendingFlush.set(s, ++pendingFlushSeq); };
+// Eski işaret şemasının zincirde takma ad olarak bekleyen setleri (bkz. applyDomainRouting 1c).
+let legacyHeld = new Set<string>();
 
 // Pi-hole v6 (FTL) /etc/dnsmasq.d'yi varsayılan olarak OKUMAZ (misc.etc_dnsmasq_d = false); routing (05-)
 // ve redirect (06-) dosyalarımız oradan yüklenir. Değer: 'true' | 'false'; v5'te `--config` yoktur → başka
@@ -1466,6 +1470,15 @@ async function syncNetSet(name: string, prefixes: string[]): Promise<boolean> {
   await run(`ipset destroy ${tmp} 2>/dev/null || true`);
   return swapped;
 }
+// Adres setinin (hash:ip) içeriğini yeni ada kopyalar; kaynak yerinde kalır (ona başvuran zincir çalışmaya devam eder).
+async function copyHashIpSet(from: string, to: string): Promise<boolean> {
+  if (!ROUTING_SET_RE.test(from) || !ROUTING_SET_RE.test(to)) return false;
+  const r = await runResult(`ipset save ${from}`, 10000, 16 * 1024 * 1024);
+  if (r.code !== 0) return false;
+  const ips = r.stdout.split('\n').map(l => l.trim().split(/\s+/))
+    .filter(f => f[0] === 'add' && f[1] === from && isRoutableV4(f[2] || '')).map(f => f[2]);
+  return ipsetRestore([`create ${to} hash:ip family inet`, ...ips.map(ip => `add ${to} ${ip}`)]);
+}
 const addLines = (target: (set: string) => string, map: Map<string, Set<string>>): string[] => {
   const out: string[] = [];
   for (const [set, ips] of map) {
@@ -1619,6 +1632,14 @@ async function restartFtlNow(): Promise<boolean> {
   await withFtlStopped(async () => {});
   await ensureFtlActive();
   return false;
+}
+
+// Eski şema takma adları bekliyor ve FTL artık güncel dosyalarla çalışıyor (DNS işi bitti): yeniden uygulama takma adları
+// kaldırır, eski setleri siler. İzleyici (index.ts) sorar ve routing kuyruğunda uygular.
+export async function legacyRoutingCleanupDue(): Promise<boolean> {
+  if (!legacyHeld.size || dnsJobPending || dnsJobRunning) return false;
+  if (routingStatus.restart_done_seq < routingStatus.restart_needed_seq) return false;
+  return !(await ftlStartedBeforeFiles());
 }
 
 // Güvenlik ağı 05/06'yı boşalttı ve o günden beri hiçbir uygulama dosyaları DB'den yeniden yazmadı: routing kapalı.
@@ -1826,7 +1847,8 @@ async function detectGatewayLan(ns: NetModeState | null = readNetModeState()): P
   return { nets: all.filter(n => !all.some(o => o !== n && within(n, o))), ifaces: [...ifaces], selfIps: [...selfIps], wanIfs, sameNet };
 }
 
-export async function applyDomainRouting(domains?: DomainRoute[], ranges: RangeRoute[] = []): Promise<void> {
+// opts.staleVps: izleyicinin "yanıt vermiyor" onayladığı VPS'ler — tünel rotaları tablolara konmaz (bkz. syncMarkTable).
+export async function applyDomainRouting(domains?: DomainRoute[], ranges: RangeRoute[] = [], opts: { staleVps?: ReadonlySet<number> } = {}): Promise<void> {
   if (!isLinux) return;
   if (!domains) return;
 
@@ -1932,18 +1954,14 @@ export async function applyDomainRouting(domains?: DomainRoute[], ranges: RangeR
     await run('nginx -t 2>/dev/null && (nginx -s reload 2>/dev/null || systemctl reload nginx 2>/dev/null) || true');
   } catch { /* */ }
 
-  // fwmark scheme:
-  //   exit_node='isp', dpi_bypass=0 → mark 0 (default, no special routing)
-  //   exit_node='isp', dpi_bypass=1 → mark 200 (DPI bypass via zapret nfqueue)
-  //   exit_node=vps_id, dpi_bypass=0 → mark 100 + vps_id (route through VPS tunnel)
-  //   exit_node=vps_id, dpi_bypass=1 → mark 300 + vps_id (VPS tunnel + DPI bypass)
-  function getFwmark(exit_node: string, dpi_bypass: number): number {
-    const isVps = exit_node !== 'isp';
-    const vpsId = isVps ? parseInt(exit_node, 10) || 0 : 0;
-    if (!isVps && !dpi_bypass) return 0; // default route, nothing to do
-    if (!isVps && dpi_bypass) return 200; // DPI bypass only
-    if (isVps && !dpi_bypass) return 100 + vpsId; // VPS exit only
-    return 300 + vpsId; // VPS exit + DPI bypass
+  // İşaret şeması: routeMarks.ts — ISP (0), yalnız DPI (200), VPS tüneli 0x8000|id (+DPI, +tünel düşerse operatörden
+  // devam). Geçersiz çıkış (VPS kimliği sayı değil / 8191'den büyük) ISP sayılır ve günlüğe yazılır.
+  const badExits = new Set<string>();
+  function getFwmark(exit_node: string, dpi_bypass: number, vps_fallback?: string): number {
+    const m = encodeRouteMark(String(exit_node || 'isp'), !!dpi_bypass, normFallback(vps_fallback));
+    if (m !== null) return m;
+    badExits.add(String(exit_node));
+    return dpi_bypass ? DPI_ONLY_MARK : 0;
   }
 
   // 1. dnsmasq ipset config — Pi-hole/dnsmasq, çözülen IP'leri kernel ipset'lerine yazar.
@@ -1951,7 +1969,7 @@ export async function applyDomainRouting(domains?: DomainRoute[], ranges: RangeR
   const markSets = new Map<number, string>(); // mark → ipset name
 
   for (const d of routingDomains) {
-    const mark = getFwmark(d.exit_node, d.dpi_bypass);
+    const mark = getFwmark(d.exit_node, d.dpi_bypass, d.vps_fallback);
     if (mark === 0) continue; // default route, no special routing needed
     const setName = `rt_m${mark}`;
     if (!markSets.has(mark)) markSets.set(mark, setName);
@@ -1963,7 +1981,7 @@ export async function applyDomainRouting(domains?: DomainRoute[], ranges: RangeR
   // 1b. IP aralığı setleri (kuralın çıkışına göre): aynı çıkış + aynı kip (tüm portlar / 443 hariç) tek sette birleşir.
   const netSets = new Map<string, NetSet>();
   for (const r of ranges) {
-    const mark = getFwmark(r.exit_node, r.dpi_bypass);
+    const mark = getFwmark(r.exit_node, r.dpi_bypass, r.vps_fallback);
     if (mark === 0) continue;
     const name = `${r.excludeWeb ? 'rt_x' : 'rt_n'}${mark}`;
     const e = netSets.get(name) || { mark, excludeWeb: r.excludeWeb, prefixes: new Set<string>() };
@@ -1971,12 +1989,43 @@ export async function applyDomainRouting(domains?: DomainRoute[], ranges: RangeR
     netSets.set(name, e);
   }
   for (const [name, e] of netSets) if (!e.prefixes.size) netSets.delete(name);
+  if (badExits.size) console.error(`[routing] geçersiz VPS çıkışı ISP sayıldı: ${[...badExits].join(', ')}`);
 
   // Önceki satırlar: bir satır ÇIKARILDIYSA (domain silindi / başka sete taşındı) o setteki eski IP'ler bayat kalır →
   // yalnız o set boşaltılır. Salt eklemede bayat içerik yoktur; boşaltmak tüm açık tünel bağlantılarını koparırdı.
   let oldRoutingLines: string[] = [];
   try { oldRoutingLines = fs.readFileSync('/etc/dnsmasq.d/05-domain-routing.conf', 'utf8').split('\n').filter(Boolean); } catch { /* ilk kurulum */ }
+
+  // 1c. Eski işaret şemasından (100+id / 300+id) geçiş: eski setin adresleri yeni adına KOPYALANIR ve eski set, FTL yeni
+  //     dosyayla yeniden başlayana dek zincirde yeni işaretin TAKMA ADI olarak kalır — o arada dnsmasq yeni çözdüğü adresleri
+  //     hâlâ eski sete yazar, zincir onları da yeni işaretle işaretler (geçişte sızıntı yok, çözülmüş adresler kaybolmaz).
+  //     Eski satırlar yeni adlarla eşlenir: geçiş "satır çıkarıldı" / "yeni set" sayılmaz, kopya boşaltılmaz. Eski kurallar
+  //     "engelle" (sütunun varsayılanı) sayılır. Karşılığı istenmeyen eski setler zincir yenilendikten hemen sonra silinir;
+  //     takma adlar FTL güncel dosyaları yükledikten sonraki uygulamada kalkar (izleyici tetikler: legacyRoutingCleanupDue).
+  const existingSets = new Set((await run('ipset list -n 2>/dev/null')).split('\n').map(s => s.trim()).filter(Boolean));
+  const legacySets: string[] = [];
+  const legacyAlias = new Map<string, number>(); // eski set → yeni işaret (hedefi istenenler)
+  const migrated = new Map<string, string>(); // bu uygulamada kopyalananlar
+  const wantedSets = new Set(markSets.values());
+  for (const s of existingSets) {
+    const lm = /^rt_m(\d+)$/.exec(s);
+    const legacy = lm ? decodeLegacyVpsMark(Number(lm[1])) : null;
+    if (!legacy) continue;
+    legacySets.push(s);
+    const mark = encodeRouteMark(String(legacy.vpsId), legacy.dpi, 'block');
+    if (mark === null || !wantedSets.has(`rt_m${mark}`)) continue;
+    legacyAlias.set(s, mark);
+    if (!existingSets.has(`rt_m${mark}`) && await copyHashIpSet(s, `rt_m${mark}`)) migrated.set(s, `rt_m${mark}`);
+  }
+  if (legacyAlias.size) {
+    oldRoutingLines = oldRoutingLines.map(l => l.replace(/\/(rt_m\d+)$/, (all, set: string) => (legacyAlias.has(set) ? `/rt_m${legacyAlias.get(set)}` : all)));
+  }
+  if (migrated.size) console.log(`[routing] eski işaret şemasından geçiş: ${[...migrated].map(([a, b]) => `${a} → ${b}`).join(', ')}`);
   const routingChanged = writeIfChanged('/etc/dnsmasq.d/05-domain-routing.conf', ipsetLines.join('\n') + '\n');
+  // Takma adlar FTL güncel dosyayı yükleyene dek kalır: dosya bu uygulamada değiştiyse, DNS işi bekliyor / sürüyorsa ya da
+  // FTL dosyalardan önce başladıysa.
+  const aliases = legacyAlias.size && (routingChanged || dnsJobPending || dnsJobRunning || ftlStale) ? legacyAlias : new Map<string, number>();
+  legacyHeld = new Set(aliases.keys());
   routingFilesCleared = false; // dosya artık DB'deki kuralları yansıtıyor
   const newRoutingLines = new Set(ipsetLines);
   const setsWithRemovals = new Set<string>();
@@ -2005,7 +2054,6 @@ export async function applyDomainRouting(domains?: DomainRoute[], ranges: RangeR
   //    durmuşken yapılır): sete ait bir satır çıkarıldıysa, set eski dosyada hiç yoksa (yeniden kullanılan setin
   //    önceki domainlerden kalan IP'leri) ya da FTL diskteki eski dosyalardan önce başladıysa. Salt eklemede içerik
   //    hâlâ geçerlidir, boşaltılmaz — boşaltmak açık tünel bağlantılarını koparırdı.
-  const existingSets = new Set((await run('ipset list -n 2>/dev/null')).split('\n').map(s => s.trim()));
   let setCreated = false;
   for (const [, setName] of markSets) {
     if (!existingSets.has(setName)) setCreated = true;
@@ -2024,14 +2072,26 @@ export async function applyDomainRouting(domains?: DomainRoute[], ranges: RangeR
     }
   }
 
+  // 3a. VPS tabloları ve "fwmark N lookup N" kuralları zincirden ÖNCE hazırlanır: yeni işaret alan paket kuralsız kalıp
+  //     ana tablodan (ISP) çıkmasın. Tablo içeriği tünel durumuna göre (syncMarkTable); kullanılmayanlar 4. adımda.
+  const ruleCounts = await readManagedRuleCounts();
+  const allMarks = new Set<number>([...markSets.keys(), ...[...netSets.values()].map(e => e.mark)]);
+  const staleVps = opts.staleVps || new Set<number>();
+  for (const mark of allMarks) {
+    const v = decodeVpsMark(mark);
+    if (!v) continue;
+    if (!ruleCounts.has(mark)) await run(`ip rule add fwmark ${mark} table ${mark} 2>/dev/null || true`);
+    await syncMarkTable(mark, v, staleVps);
+  }
+
   // 3. iptables mangle ile marklama — `-m set` kernel ipset'lerini DOĞRU okur (nft @set okuyamaz).
   //    Zincir tek iptables-restore işlemiyle (atomik) yeniden kurulur: eski yöntemde -F ile -A'lar arasındaki boşlukta
   //    işaretsiz kalan tünel paketleri, masquerade arayüz değişimi yüzünden çekirdekçe kesiliyordu (her kural
   //    değişikliğinde açık tünel bağlantıları sıfırlanıyordu). Olmazsa eski adım adım yönteme düşülür (aynı kurallar).
-  if (!(await rebuildRoutingChainAtomic(markSets, netSets))) {
+  if (!(await rebuildRoutingChainAtomic(markSets, netSets, aliases))) {
     await run('iptables -t mangle -N PI5_ROUTING 2>/dev/null || true');
     await run('iptables -t mangle -F PI5_ROUTING 2>/dev/null || true');
-    for (const line of buildRoutingChainRestore(markSets, netSets).split('\n')) {
+    for (const line of buildRoutingChainRestore(markSets, netSets, aliases).split('\n')) {
       if (line.startsWith('-A PI5_ROUTING ')) await run(`iptables -t mangle ${line}`);
     }
   }
@@ -2041,6 +2101,12 @@ export async function applyDomainRouting(domains?: DomainRoute[], ranges: RangeR
   }
   await run('iptables -t mangle -C PREROUTING -j PI5_ROUTING 2>/dev/null || iptables -t mangle -A PREROUTING -j PI5_ROUTING');
   await run('iptables -t mangle -C OUTPUT -j PI5_ROUTING 2>/dev/null || iptables -t mangle -A OUTPUT -j PI5_ROUTING');
+  // Eski şemanın setleri (takma ad olarak bekleyenler hariç): zincir artık onlara başvurmuyor.
+  for (const s of legacySets) {
+    if (aliases.has(s)) continue;
+    pendingFlush.delete(s);
+    await run(`ipset destroy ${s} 2>/dev/null || true`);
+  }
 
   // 3b. Tünel çıkışına SNAT. VPS, Pi peer'ından yalnız 10.66.66.2 kaynaklı paketi kabul eder (AllowedIPs);
   //     NAT'sız giren LAN kaynaklı (192.168.x.x) paketleri sessizce düşürür. iptables yerine kendi nft
@@ -2154,37 +2220,14 @@ export async function applyDomainRouting(domains?: DomainRoute[], ranges: RangeR
     }
   }
 
-  // 4. VPS-çıkış markları (≥100) için ip rule + routing tablosu.
-  //    mark 200 (yalnız DPI bypass) ISP ana tablosunu kullanır — zapret trafiği kendi hook'uyla işler; ona kural/tablo
-  //    kurulmaz (eskiden olmayan wg_vps100 için boş "fwmark 200 lookup 200" ekleniyordu → artık temizlenir).
-  //    `ip rule add` varlık kontrolü yapmaz, her uygulamada yeni kopya ekler → mevcut "fwmark N lookup N"
-  //    (100–999) kurallarını say: istenen marklarda fazlayı sil (biri hep kalır, trafik ISP'ye kaçmaz),
-  //    artık kullanılmayan markların kurallarını tamamen kaldır, eksikse bir kez ekle.
-  const ruleCounts = new Map<number, number>();
-  for (const line of (await run('ip rule show 2>/dev/null')).split('\n')) {
-    const m = line.match(/fwmark (0x[0-9a-f]+|\d+) lookup (\d+)/i);
-    if (!m) continue;
-    const mark = Number(m[1]);
-    if (mark !== Number(m[2]) || mark < 100 || mark > 999) continue;
-    ruleCounts.set(mark, (ruleCounts.get(mark) || 0) + 1);
-  }
-  // Alan adı setlerinin ve IP aralığı setlerinin çıkışları birlikte (yalnız aralık kuralı olan bir çıkış da tabloya gider).
-  const allMarks = new Set<number>([...markSets.keys(), ...[...netSets.values()].map(e => e.mark)]);
+  // 4. Kullanılmayan "fwmark N lookup N" kuralları (eski şemanın 100–999 işaretleri, yalnız DPI'nin 200'ü — ISP ana
+  //    tablosunu kullanır, Zapret kendi kancasıyla işler — ve silinen / değişen kuralların işaretleri) zincir yenilendikten
+  //    sonra tamamen kaldırılır, tabloları boşaltılır. `ip rule add` varlık kontrolü yapmaz (trixie iproute2 her uygulamada
+  //    kopya ekliyordu) → istenenlerin fazla kopyaları silinir; biri hep kalır, trafik ISP'ye kaçmaz.
   for (const [mark, count] of ruleCounts) {
-    const extra = allMarks.has(mark) && mark !== 200 ? count - 1 : count;
-    for (let i = 0; i < extra; i++) await run(`ip rule del fwmark ${mark} table ${mark} 2>/dev/null || true`);
-  }
-  for (const mark of allMarks) {
-    if (mark < 100 || mark === 200) continue;
-    const vpsId = mark >= 300 ? mark - 300 : mark - 100;
-    const iface = `wg_vps${vpsId}`;
-    if (!ruleCounts.has(mark)) await run(`ip rule add fwmark ${mark} table ${mark} 2>/dev/null || true`);
-    const ifaceCheck = await run(`ip link show ${iface} 2>/dev/null`);
-    if (ifaceCheck) {
-      await run(`ip route replace default dev ${iface} table ${mark} 2>/dev/null || true`);
-      // Tünelden dönen yanıtlar işaretsiz gelir; katı rp_filter (1) onları düşürür → bu arayüzde gevşek (2).
-      await run(`sysctl -q -w net.ipv4.conf.${iface}.rp_filter=2 2>/dev/null || true`);
-    }
+    const wanted = allMarks.has(mark) && decodeVpsMark(mark) !== null;
+    for (let i = 0; i < (wanted ? count - 1 : count); i++) await run(`ip rule del fwmark ${mark} table ${mark} 2>/dev/null || true`);
+    if (!wanted) await run(`ip route flush table ${mark} 2>/dev/null || true`);
   }
 
   // 4b. Yeni eklenen kuralların adresleri HEMEN sete: FTL yeni satırları ancak yeniden başlayınca yükler (2-15 sn) ve
@@ -2208,6 +2251,47 @@ export async function applyDomainRouting(domains?: DomainRoute[], ranges: RangeR
   }
 }
 
+// Panelin "fwmark N lookup N" kuralları (N = tablo; routeMarks.isManagedRuleMark) ve kopya sayıları.
+async function readManagedRuleCounts(): Promise<Map<number, number>> {
+  const counts = new Map<number, number>();
+  for (const line of (await run('ip rule show 2>/dev/null')).split('\n')) {
+    const m = line.match(/fwmark (0x[0-9a-f]+|\d+) lookup (\d+)/i);
+    if (!m) continue;
+    const mark = Number(m[1]);
+    if (mark !== Number(m[2]) || !isManagedRuleMark(mark)) continue;
+    counts.set(mark, (counts.get(mark) || 0) + 1);
+  }
+  return counts;
+}
+
+// VPS işaretinin tablosu (kill-switch):
+//  - "engelle" (0x2000 yok): tabanda kalıcı `unreachable default metric 1000` — tünel rotası (metric 0) varken o seçilir,
+//    yokken paket hemen reddedilir (uygulama hata alır), ISP'ye SIZMAZ. Arayüz silinince çekirdek tünel rotasını kaldırır.
+//  - "operatörden devam" (0x2000): tabloda yalnız tünel rotası; yokken tablo boş → kural eşleşmez, ana tablo (ISP).
+// Tünel rotası arayüz varsa ve tünel "yanıt vermiyor" onaylanmamışsa konur; onaylıysa kaldırılır (izleyici, index.ts).
+async function syncMarkTable(mark: number, v: VpsMark, staleVps: ReadonlySet<number>): Promise<void> {
+  const iface = `wg_vps${v.vpsId}`;
+  if (!v.ispFallback) await run(`ip route replace unreachable default metric 1000 table ${mark} 2>/dev/null || true`);
+  if (!fs.existsSync(`/sys/class/net/${iface}`)) return;
+  if (staleVps.has(v.vpsId)) {
+    await run(`ip route del default dev ${iface} table ${mark} 2>/dev/null || true`);
+    return;
+  }
+  await run(`ip route replace default dev ${iface} table ${mark} 2>/dev/null || true`);
+  // Tünelden dönen yanıtlar işaretsiz gelir; katı rp_filter (1) onları düşürür → bu arayüzde gevşek (2).
+  await run(`sysctl -q -w net.ipv4.conf.${iface}.rp_filter=2 2>/dev/null || true`);
+}
+
+// Tünel "yanıt vermiyor" olunca / yeniden yanıt verince izleyici çağırır: yalnız tablo rotaları güncellenir (dnsmasq,
+// zincir ve NAT'a dokunulmaz). Tablolar kurulu "fwmark N lookup N" kurallarından bulunur.
+export async function syncVpsRoutes(staleVps: ReadonlySet<number>): Promise<void> {
+  if (!isLinux) return;
+  for (const mark of (await readManagedRuleCounts()).keys()) {
+    const v = decodeVpsMark(mark);
+    if (v) await syncMarkTable(mark, v, staleVps);
+  }
+}
+
 // PI5_ROUTING'i tek iptables-restore işlemiyle kurar (--noflush: diğer zincirlere dokunmaz; zincir bildirimi yalnız
 // bu zinciri aynı işlem içinde boşaltır). iptables ile iptables-restore farklı altyapıya (nf_tables/legacy) bağlıysa
 // ya da işlem başarısızsa false → çağıran eski adım adım yöntemi kullanır.
@@ -2216,9 +2300,11 @@ let restoreBackendOk: boolean | null = null;
 // (3)'te 443 paketi RETURN ile zincirden çıkar: yukarıdaki bir alan adı setiyle işaretlendiyse işaretini korur (ör. WhatsApp
 // sohbeti, chat.cdn.whatsapp.net:443), işaretlenmediyse yerel kalır (ör. aynı Meta sunucusundaki Instagram); diğer portlar
 // işaretlenir (ör. WhatsApp aramaları, UDP 3478). RETURN yalnız sondaki 443-hariç bloklarını atlatır (onlar da 443'ü almaz).
+// aliases: eski şema seti → yeni işaret (geçişte, FTL yeni dosyaları yükleyene dek; alan adı setleriyle aynı sırada).
 export function buildRoutingChainRestore(
   markSets: Map<number, string>,
   netSets: Map<string, { mark: number; excludeWeb: boolean }> = new Map(),
+  aliases: Map<string, number> = new Map(),
 ): string {
   const out = ['*mangle', ':PI5_ROUTING - [0:0]'];
   const markRules = (set: string, mark: number) => [
@@ -2227,6 +2313,7 @@ export function buildRoutingChainRestore(
     `-A PI5_ROUTING -m set --match-set ${set} dst -j CONNMARK --save-mark`,
   ];
   for (const [mark, setName] of markSets) out.push(...markRules(setName, mark));
+  for (const [set, mark] of aliases) out.push(...markRules(set, mark));
   for (const [name, e] of netSets) if (!e.excludeWeb) out.push(...markRules(name, e.mark));
   for (const [name, e] of netSets) {
     if (!e.excludeWeb) continue;
@@ -2242,6 +2329,7 @@ export function buildRoutingChainRestore(
 async function rebuildRoutingChainAtomic(
   markSets: Map<number, string>,
   netSets: Map<string, { mark: number; excludeWeb: boolean }> = new Map(),
+  aliases: Map<string, number> = new Map(),
 ): Promise<boolean> {
   if (restoreBackendOk === null) {
     const tag = (s: string) => /\((nf_tables|legacy)\)/.exec(s)?.[1] || '';
@@ -2253,7 +2341,7 @@ async function rebuildRoutingChainAtomic(
   const file = '/opt/pi5-gateway/core/pi5-routing.rules';
   try {
     fs.mkdirSync('/opt/pi5-gateway/core', { recursive: true });
-    fs.writeFileSync(file, buildRoutingChainRestore(markSets, netSets));
+    fs.writeFileSync(file, buildRoutingChainRestore(markSets, netSets, aliases));
   } catch {
     return false;
   }

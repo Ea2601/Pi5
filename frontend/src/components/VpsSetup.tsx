@@ -4,12 +4,24 @@ import {
   Signal, ShieldCheck, Home
 } from 'lucide-react';
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { useApi, postApi, deleteApi } from '../hooks/useApi';
+import { useApi, getApi, postApi, deleteApi } from '../hooks/useApi';
 import { ServiceSettings } from './ui/ServiceSettings';
 import { Select } from './ui';
 import { toast } from '../toast';
 import type { VpsServer } from '../types';
 import { PiVpnServer } from './PiVpnServer';
+import { tunnelBadge, type TunnelInfo, type TunnelState } from '../vpsTunnel';
+
+// tunnel-status yanıtı: connected = wg_vps<ID> arayüzü var (Tünel Kes / Bağla düğmesi), state = el sıkışmaya göre durum.
+type TunnelStatus = TunnelInfo & { connected: boolean };
+const TUNNEL_DOWN: TunnelStatus = { connected: false, state: 'down', handshakeAge: null };
+const TUNNEL_STATES: TunnelState[] = ['up', 'connecting', 'stale', 'down'];
+const parseTunnel = (d: unknown): TunnelStatus => {
+  const o = (d && typeof d === 'object' ? d : {}) as { connected?: unknown; state?: unknown; handshakeAge?: unknown };
+  const connected = !!o.connected;
+  const state = TUNNEL_STATES.includes(o.state as TunnelState) ? o.state as TunnelState : connected ? 'up' : 'down';
+  return { connected, state, handshakeAge: typeof o.handshakeAge === 'number' ? o.handshakeAge : null };
+};
 
 type SetupState = 'idle' | 'deploying' | 'success' | 'error';
 // 'pivpn': Pi üzerindeki WireGuard sunucusu (Ev VPN'i) — dış VPS'lerden ve onların istemcilerinden ayrı alan.
@@ -77,6 +89,42 @@ function StepIndicator({ step }: { step: SetupStep }) {
       )}
     </div>
   );
+}
+
+// Bu VPS'e yönlenen etkin kurallar, tünel düşünce ne olacağına göre (Kes / Sil onayı). Okunamazsa boş: onay sorulmaz,
+// işlem eskisi gibi sürer.
+async function vpsRuleUsage(id: number): Promise<{ block: string[]; isp: string[] }> {
+  try {
+    const r = await getApi<{ block?: string[]; isp?: string[] }>(`/vps/${id}/routing-usage`);
+    return { block: r.block || [], isp: r.isp || [] };
+  } catch {
+    return { block: [], isp: [] };
+  }
+}
+const ruleNames = (xs: string[]) => xs.slice(0, 6).join(', ') + (xs.length > 6 ? ` +${xs.length - 6}` : '');
+
+// VPS istemcisini siler. VPS'e ulaşılamaz ya da wg0.conf güncellenemezse sunucu kaydı bırakır (VPS'te eş kalmasın) ve
+// hatayı döner: kullanıcıya sorulur, onaylarsa yalnız listeden silinir (?force=1 — ör. VPS artık yok).
+async function deleteVpsClient(vpsId: number | string, clientId: number, name: string): Promise<boolean> {
+  try {
+    const r = await deleteApi(`/vps/${vpsId}/clients/${clientId}`);
+    if (r?.warning) toast.info(`${name}: ${r.warning}`); else toast.success(`${name} silindi`);
+    return true;
+  } catch (e) {
+    const msg = e instanceof Error && e.message ? e.message : 'silinemedi';
+    if (!window.confirm(`${name} VPS'ten silinemedi: ${msg}\n\nYalnız listeden silinsin mi? VPS'te eş kalabilir — VPS artık yoksa bunu seçin.`)) {
+      toast.error(`${name} silinmedi: ${msg}`);
+      return false;
+    }
+    try {
+      await deleteApi(`/vps/${vpsId}/clients/${clientId}?force=1`);
+      toast.info(`${name} listeden silindi (VPS'te eş kalmış olabilir)`);
+      return true;
+    } catch (e2) {
+      toast.error(`${name} silinemedi: ${e2 instanceof Error && e2.message ? e2.message : 'bilinmeyen hata'}`);
+      return false;
+    }
+  }
 }
 
 function ClientCard({ client, vpsLabel, onShowConfig, onShowQr, onDelete }: {
@@ -217,8 +265,10 @@ function VpsCard({ server, onConnect, onDisconnect, onDelete, onRefresh, tunnelN
   const [checking, setChecking] = useState(false);
   const [repairing, setRepairing] = useState(false);
   const [repairResults, setRepairResults] = useState<RepairResult[] | null>(null);
-  // Pi5 tarafındaki wg_vps<ID> arayüzü gerçekten ayakta mı (status alanı yalnız VPS erişilebilirliğini gösterir).
-  const [tunnelUp, setTunnelUp] = useState<boolean | null>(null);
+  // Pi5 tarafındaki wg_vps<ID> tünelinin canlı durumu (status alanı yalnız VPS erişilebilirliğini gösterir).
+  const [tunnel, setTunnel] = useState<TunnelStatus | null>(null);
+  const [tunnelPoll, setTunnelPoll] = useState(0);
+  const refreshTunnel = () => setTunnelPoll(k => k + 1);
 
   // Client management
   const [showClients, setShowClients] = useState(false);
@@ -250,17 +300,9 @@ function VpsCard({ server, onConnect, onDisconnect, onDelete, onRefresh, tunnelN
     setAdding(false);
   };
 
-  const loadTunnel = async () => {
-    try {
-      const res = await fetch(`/api/vps/${server.id}/tunnel-status`);
-      const data = await res.json();
-      setTunnelUp(!!data.connected);
-    } catch { setTunnelUp(false); }
-  };
-
   const checkInternet = async () => {
     setChecking(true);
-    void loadTunnel();
+    refreshTunnel();
     try {
       const res = await fetch(`/api/vps/${server.id}/internet-check`);
       setNetStatus(await res.json());
@@ -276,15 +318,24 @@ function VpsCard({ server, onConnect, onDisconnect, onDelete, onRefresh, tunnelN
 
   // Durum değişince ya da kurulum bitince (tunnelNonce) tünel durumunu yeniden oku; kart yeniden mount
   // edilmediği için mount'taki okuma tünel kurulmadan önceki değerde kalırdı (internet-check status'u kurulum
-  // sırasında zaten 'connected' yapabildiğinden yalnız status'a bakmak yetmez).
+  // sırasında zaten 'connected' yapabildiğinden yalnız status'a bakmak yetmez). Sonra 30 sn'de bir (VPS yanıt vermezse
+  // kart kendiliğinden "yanıt vermiyor"a döner); yeni açılan tünelde el sıkışma birkaç saniyede gelir → 5 sn'de bir.
   useEffect(() => {
     let cancelled = false;
-    fetch(`/api/vps/${server.id}/tunnel-status`)
-      .then(r => r.json())
-      .then(d => { if (!cancelled) setTunnelUp(!!d.connected); })
-      .catch(() => { if (!cancelled) setTunnelUp(false); });
-    return () => { cancelled = true; };
-  }, [server.id, server.status, tunnelNonce]);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const poll = () => {
+      fetch(`/api/vps/${server.id}/tunnel-status`)
+        .then(r => r.json())
+        .then(parseTunnel, () => TUNNEL_DOWN)
+        .then(t => {
+          if (cancelled) return;
+          setTunnel(t);
+          timer = setTimeout(poll, t.state === 'connecting' ? 5000 : 30000);
+        });
+    };
+    poll();
+    return () => { cancelled = true; if (timer) clearTimeout(timer); };
+  }, [server.id, server.status, tunnelNonce, tunnelPoll]);
 
   const StatusDot = ({ ok, label }: { ok: boolean; label: string }) => (
     <span title={label} style={{ display: 'inline-flex', alignItems: 'center', gap: 3, fontSize: 10, color: ok ? 'var(--success-color)' : 'var(--danger-color)' }}>
@@ -309,11 +360,10 @@ function VpsCard({ server, onConnect, onDisconnect, onDelete, onRefresh, tunnelN
         <span className={`badge ${server.status === 'connected' ? 'badge-success' : server.status === 'error' ? 'badge-error' : 'badge-neutral'}`}>
           {server.status === 'connected' ? 'Bağlı' : server.status === 'installing' ? 'Kuruluyor' : server.status === 'error' ? 'Hata' : 'Bağlı Değil'}
         </span>
-        {tunnelUp !== null && (
-          <span className={`badge ${tunnelUp ? 'badge-success' : 'badge-neutral'}`} title="Pi5 ↔ VPS WireGuard tüneli (wg_vps)">
-            {tunnelUp ? 'Tünel açık' : 'Tünel kapalı'}
-          </span>
-        )}
+        {tunnel && (() => {
+          const b = tunnelBadge(tunnel);
+          return <span className={`badge badge-${b.variant}`} title={b.title}>{b.label}</span>;
+        })()}
       </div>
 
       {/* Internet status badges */}
@@ -374,17 +424,17 @@ function VpsCard({ server, onConnect, onDisconnect, onDelete, onRefresh, tunnelN
       })()}
 
       <div style={{ display: 'flex', gap: 4, marginTop: 6 }}>
-        {tunnelUp === null ? null : tunnelUp ? (
+        {tunnel === null ? null : tunnel.connected ? (
           <button className="btn-outline btn-sm" style={{ flex: 1, fontSize: 11 }} onClick={async () => {
             try { await onDisconnect(); } catch (e) { toast.error(e instanceof Error ? e.message : 'Tünel kesilemedi'); }
-            await loadTunnel();
+            refreshTunnel();
           }}>
             Tünel Kes
           </button>
         ) : server.status !== 'installing' ? (
           <button className="btn-primary btn-sm" style={{ flex: 1, fontSize: 11 }} onClick={async () => {
             try { await onConnect(); } catch (e) { toast.error(e instanceof Error ? e.message : 'Bağlantı başarısız'); }
-            await loadTunnel();
+            refreshTunnel();
           }}>
             Tünel Bağla
           </button>
@@ -436,10 +486,7 @@ function VpsCard({ server, onConnect, onDisconnect, onDelete, onRefresh, tunnelN
                   )}
                   <button className="btn-outline btn-sm" style={{ fontSize: 9, padding: '1px 4px', color: 'var(--danger-color)', borderColor: 'var(--danger-color)' }}
                     onClick={async () => {
-                      try {
-                        await deleteApi(`/vps/${server.id}/clients/${c.id}`);
-                        loadClients();
-                      } catch { /* */ }
+                      if (await deleteVpsClient(server.id, c.id, c.name)) loadClients();
                     }} title="Sil">
                     <Trash2 size={9} />
                   </button>
@@ -572,6 +619,16 @@ export function VpsSetup() {
   };
 
   const handleDelete = async (id: number) => {
+    // Silmede bu VPS'e yönlenen kurallar operatöre (ISP) çevrilir, panelden eklenen istemciler VPS'ten de silinir — biri
+    // varsa önce sorulur.
+    const u = await vpsRuleUsage(id);
+    const all = [...u.block, ...u.isp];
+    const nClients = await getApi<{ clients?: unknown[] }>(`/vps/${id}/clients`).then(r => r.clients?.length || 0, () => 0);
+    const lines = [
+      ...(all.length ? [`Bu VPS'e yönlenen ${all.length} kural operatöre (ISP) çevrilecek: ${ruleNames(all)}`] : []),
+      ...(nClients ? [`${nClients} VPN istemcisi VPS'ten de silinecek (bağlantıları kesilir)`] : []),
+    ];
+    if (lines.length && !window.confirm(`VPS silinsin mi?\n\n${lines.join('\n')}`)) return;
     try {
       await deleteApi(`/vps/${id}`);
       await refetch();
@@ -683,7 +740,19 @@ export function VpsSetup() {
                       else toast.error(`Pi5 tüneli kurulamadı${r.tunnelError ? `: ${r.tunnelError}` : ''}`);
                       await refetch();
                     }}
-                    onDisconnect={async () => { await postApi(`/vps/${server.id}/disconnect`, {}); await refetch(); }}
+                    onDisconnect={async () => {
+                      // Tünel kesilince "engelle" kuralları açılmaz (trafik operatöre sızmaz) — kural varsa önce sorulur.
+                      const u = await vpsRuleUsage(server.id);
+                      if (u.block.length || u.isp.length) {
+                        const lines = [
+                          ...(u.block.length ? [`Engellenecek (${u.block.length}): ${ruleNames(u.block)} — tünel kapalıyken bu siteler açılmaz.`] : []),
+                          ...(u.isp.length ? [`Operatörden devam edecek (${u.isp.length}): ${ruleNames(u.isp)}`] : []),
+                        ];
+                        if (!window.confirm(`Tünel kesilsin mi?\n\n${lines.join('\n')}\n\nKural başına seçim: Routing → "Tünel düşerse".`)) return;
+                      }
+                      await postApi(`/vps/${server.id}/disconnect`, {});
+                      await refetch();
+                    }}
                     onDelete={() => handleDelete(server.id)}
                     onRefresh={refetch}
                     tunnelNonce={tunnelNonce} />
@@ -799,10 +868,7 @@ export function VpsSetup() {
                       onShowConfig={() => setConfigClient(client)}
                       onShowQr={() => setQrClient(client)}
                       onDelete={async () => {
-                        try {
-                          await deleteApi(`/vps/${selectedVpsId}/clients/${client.id}`);
-                          await fetchClients(Number(selectedVpsId));
-                        } catch { /* */ }
+                        if (await deleteVpsClient(selectedVpsId, client.id, client.name)) await fetchClients(Number(selectedVpsId));
                       }} />
                   ))}
                 </div>

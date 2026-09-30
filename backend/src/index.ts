@@ -3,7 +3,9 @@ import cors from 'cors';
 import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
 import { initDb, dbAll, dbRun, dbGet, dbInsert } from './db';
-import { setupWireGuardVPS, testSSHConnection, executeSetupStep, addWireGuardClient, connectPi5ToVps, disconnectPi5FromVps, isPi5ConnectedToVps } from './ssh';
+import { setupWireGuardVPS, testSSHConnection, executeSetupStep, addWireGuardClient, connectPi5ToVps, disconnectPi5FromVps, removeWireGuardClient, removeWireGuardClients } from './ssh';
+import { readVpsTunnels, validVpsId, staleTunnels, setTunnelStale } from './vpsTunnel';
+import { normFallback } from './routeMarks';
 import { systemServices } from './services';
 import { startHealthMonitor, getHealthStatus } from './monitor';
 import { startCronJobs, getSystemLogs, clearSystemLogs } from './maintenance';
@@ -15,7 +17,8 @@ import {
   executeCommand, applyDomainRouting, applyBlockedDevices,
   sampleMetrics, detectInterfaces, recoverInterruptedFtlRestart, VALID_DNSMASQ_DOMAIN, getRoutingApplyStatus,
   getLanIdentity, protectedMacs, getPi5LanIp, readNetModeState, runExclusiveDnsTask, AP_ADDR, AP_NET, HOME_BRIDGE,
-  wanActive, uplinkIfaces, readFailoverStatus, activeUplink, sameNetActive, readRepLanStatus,
+  wanActive, uplinkIfaces, readFailoverStatus, activeUplink, sameNetActive, readRepLanStatus, syncVpsRoutes,
+  legacyRoutingCleanupDue,
 } from './system';
 import type { RangeRoute } from './system';
 import { listForwards, addForward, setForwardEnabled, deleteForward, applyPortForwards } from './wan';
@@ -49,7 +52,7 @@ import { storageStatus, storageJob, noteStorageJob, startArchive, startPrepare, 
 import { applyKiosk } from './kiosk';
 import type { ListSyncResult } from './piholeLists';
 import {
-  shq, sedEscape, isValidMac, isValidDomain, isValidTimezone,
+  shq, isValidMac, isValidDomain, isValidTimezone,
   isValidHexColor, normalizeAnimation, sanitizeName,
 } from './util';
 import { promisify } from 'util';
@@ -801,10 +804,16 @@ app.put('/api/devices/:mac/profile', async (req, res) => {
 });
 
 // ─── VPS Servers ───
+// status: VPS'in kendisi (kurulum / erişilebilirlik — DB). tunnel: Pi ↔ VPS tünelinin canlı durumu (el sıkışma yaşı;
+// Linux değilse null).
 app.get('/api/vps/list', async (_req, res) => {
   try {
-    const servers = await dbAll('SELECT id, ip, username, location, status, created_at FROM vps_servers ORDER BY id');
-    res.json({ servers });
+    const servers = await dbAll('SELECT id, ip, username, location, status, created_at FROM vps_servers ORDER BY id') as any[];
+    const tunnels = await readVpsTunnels(servers.map(s => Number(s.id))).catch(() => new Map());
+    res.json({ servers: servers.map(s => {
+      const t = tunnels.get(Number(s.id));
+      return { ...s, tunnel: t ? { state: t.state, handshakeAge: t.handshakeAge } : null };
+    }) });
   } catch (e: any) {
     res.status(500).json({ error: e.message });
   }
@@ -1198,37 +1207,36 @@ app.post('/api/vps/:id/auto-repair', async (req, res) => {
 });
 
 // ─── Delete WireGuard Client (from DB + VPS) ───
+// VPS'te açık anahtarla silinir (ssh.ts removeWireGuardClient: yedekli, doğrulamalı — ad eşleşmesi yok: "Pi" adlı istemci
+// silinirken Pi5-Gateway eşi gitmesin). VPS'e ulaşılamaz ya da doğrulama tutmazsa kayıt SİLİNMEZ (VPS'te eş kalırdı);
+// ?force=1 → VPS'e dokunulamasa da yalnız listeden silinir (ör. VPS artık yok).
 app.delete('/api/vps/:id/clients/:clientId', async (req, res) => {
+  const force = req.query.force === '1';
   try {
     const server: any = await dbGet('SELECT * FROM vps_servers WHERE id = ?', [req.params.id]);
     const client: any = await dbGet('SELECT * FROM wg_clients WHERE id = ? AND vps_id = ?', [req.params.clientId, req.params.id]);
     if (!client) return res.status(404).json({ error: 'Client bulunamadı' });
-
-    // Remove peer from VPS via SSH
+    const vpsLabel = server ? `${server.location || 'VPS'} (${server.ip})` : `#${req.params.id}`;
+    let warning = '';
     if (server && client.public_key) {
+      let why = '';
       try {
-        const { NodeSSH } = require('node-ssh');
-        const ssh = new NodeSSH();
-        await ssh.connect({
-          host: server.ip, username: server.username,
-          password: server.password || undefined, readyTimeout: 10000,
-        });
-        // Remove peer from running WireGuard (public key is base64 — shell-quote it)
-        await ssh.execCommand(`wg set wg0 peer ${shq(client.public_key)} remove 2>/dev/null || true`);
-        // Remove peer from config file — shell-quote the whole sed script, sed-escape the interpolated values
-        await ssh.execCommand(`sed -i ${shq(`/# ${sedEscape(sanitizeName(client.name))}/,/^$/d`)} /etc/wireguard/wg0.conf 2>/dev/null || true`);
-        // Also try removing by public key pattern
-        await ssh.execCommand(`sed -i ${shq(`/PublicKey = ${sedEscape(client.public_key)}/,/^$/d`)} /etc/wireguard/wg0.conf 2>/dev/null || true`);
-        ssh.dispose();
+        const r = await removeWireGuardClient(
+          { ip: server.ip, username: server.username, password: server.password || undefined }, client.public_key);
+        if (r.result === 'failed') why = `VPS yapılandırması (wg0.conf) güncellenemedi: ${r.detail}`;
       } catch (sshErr: any) {
-        console.error('VPS peer removal failed:', sshErr.message);
-        // Continue with DB deletion even if VPS removal fails
+        why = `VPS'e ulaşılamadı: ${sshErr?.message || sshErr}`;
       }
+      if (why && !force) {
+        await recordEvent('vps', `VPS istemcisi silinemedi: ${client.name} — ${vpsLabel}: ${why}`, 'warning');
+        return res.status(502).json({ error: `${why} — istemci listede bırakıldı`, canForce: true });
+      }
+      if (why) warning = `${why} — yalnız listeden silindi; VPS'te eş kalmış olabilir`;
     }
 
-    // Delete from DB
     await dbRun('DELETE FROM wg_clients WHERE id = ?', [req.params.clientId]);
-    res.json({ success: true });
+    await recordEvent('vps', `VPS istemcisi silindi: ${client.name} — ${vpsLabel}${warning ? ` (${warning})` : ''}`, warning ? 'warning' : 'info');
+    res.json({ success: true, warning: warning || undefined });
   } catch (e: any) {
     res.status(500).json({ error: e.message });
   }
@@ -1395,29 +1403,76 @@ app.post('/api/vps/:id/disconnect', async (req, res) => {
     await dbRun('UPDATE vps_servers SET status = ? WHERE id = ?', ['disconnected', req.params.id]);
     await applyAllRoutingRules().catch((e: any) => console.error('Routing yeniden uygulanamadı:', e.message));
     const server: any = await dbGet('SELECT ip, location FROM vps_servers WHERE id = ?', [req.params.id]);
-    await recordEvent('vps', `VPS tüneli kesildi: ${server ? `${server.location || 'VPS'} (${server.ip})` : `#${req.params.id}`}`);
+    const usage = await vpsRuleUsage(req.params.id).catch(() => null);
+    const effect = usage ? routeEffectText(usage) : '';
+    await recordEvent('vps', `VPS tüneli kesildi: ${server ? `${server.location || 'VPS'} (${server.ip})` : `#${req.params.id}`}${effect ? ` — ${effect}` : ''}`,
+      usage?.block.length ? 'warning' : 'info');
     res.json({ success: true });
   } catch (e: any) {
     res.status(500).json({ error: e.message });
   }
 });
 
+// connected: wg_vps<ID> arayüzü var (Tünel Kes / Bağla düğmesi buna göre); state: el sıkışmaya göre up / connecting /
+// stale (yanıt yok) / down; handshakeAge: son el sıkışmanın yaşı (sn; null = hiç).
 app.get('/api/vps/:id/tunnel-status', async (req, res) => {
+  const down = { connected: false, state: 'down', handshakeAge: null };
+  const id = validVpsId(req.params.id);
+  if (id === null) return res.json(down);
   try {
-    const connected = await isPi5ConnectedToVps(Number(req.params.id));
-    res.json({ connected });
-  } catch { res.json({ connected: false }); }
+    const t = (await readVpsTunnels([id])).get(id);
+    res.json(t ? { connected: t.state !== 'down', state: t.state, handshakeAge: t.handshakeAge } : down);
+  } catch { res.json(down); }
+});
+
+// "Tünel Kes" / "VPS Sil" onay metni: bu VPS'e yönlenen etkin kurallar (engellenecek / operatörden devam edecek).
+app.get('/api/vps/:id/routing-usage', async (req, res) => {
+  const id = validVpsId(req.params.id);
+  if (id === null) return res.json({ block: [], isp: [] });
+  try {
+    res.json(await vpsRuleUsage(id));
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
 });
 
 app.delete('/api/vps/:id', async (req, res) => {
   try {
-    const server: any = await dbGet('SELECT ip, location FROM vps_servers WHERE id = ?', [req.params.id]);
+    const server: any = await dbGet('SELECT ip, username, password, location FROM vps_servers WHERE id = ?', [req.params.id]);
     // Disconnect Pi5 tunnel before deleting
     await disconnectPi5FromVps(Number(req.params.id));
+    // Panelden eklenen istemciler VPS'ten de kaldırılır (kayıtları aşağıda silinir; kalsalar panelde görünmeden bağlanmayı
+    // sürdürürlerdi). VPS'e ulaşılamazsa silme yine yapılır, olaya yazılır.
+    const clients = (await dbAll('SELECT name, public_key FROM wg_clients WHERE vps_id = ?', [req.params.id]) as any[]).filter(c => c.public_key);
+    let clientNote = '';
+    if (server && clients.length) {
+      try {
+        const rs = await removeWireGuardClients(
+          { ip: server.ip, username: server.username, password: server.password || undefined }, clients.map(c => String(c.public_key)));
+        const failed = rs.find(r => r.result === 'failed');
+        clientNote = failed
+          ? `${clients.length - rs.length + 1} istemci VPS'ten silinemedi (${failed.detail}) — VPS'te kalmış olabilir`
+          : `${clients.length} istemci VPS'ten de silindi`;
+      } catch (e: any) {
+        clientNote = `VPS'e ulaşılamadı (${e?.message || e}) — ${clients.length} istemci VPS'te kalmış olabilir`;
+      }
+    }
+    // Bu VPS'e yönlenen kurallar operatöre (ISP) çevrilir: "engelle" kuralları sahipsiz kalıcı engele dönmesin.
+    const usage = await vpsRuleUsage(req.params.id);
+    await dbRun(`UPDATE traffic_routing SET exit_node = 'isp' WHERE exit_node = ?`, [String(req.params.id)]);
+    await dbRun(`UPDATE domain_routing SET exit_node = 'isp' WHERE exit_node = ?`, [String(req.params.id)]);
     await dbRun('DELETE FROM wg_clients WHERE vps_id = ?', [req.params.id]);
     await dbRun('DELETE FROM vps_servers WHERE id = ?', [req.params.id]);
     await applyAllRoutingRules().catch((e: any) => console.error('Routing yeniden uygulanamadı:', e.message));
-    if (server) await recordEvent('vps', `VPS silindi: ${server.location || 'VPS'} (${server.ip})`);
+    const moved = [...usage.block, ...usage.isp];
+    if (server) {
+      const notes = [
+        ...(moved.length ? [`${moved.length} kural operatöre (ISP) çevrildi: ${nameList(moved)}`] : []),
+        ...(clientNote ? [clientNote] : []),
+      ];
+      await recordEvent('vps', `VPS silindi: ${server.location || 'VPS'} (${server.ip})${notes.length ? ` — ${notes.join('; ')}` : ''}`,
+        moved.length || clientNote.includes('kalmış') ? 'warning' : 'info');
+    }
     res.json({ success: true });
   } catch (e: any) {
     res.status(500).json({ error: e.message });
@@ -1429,20 +1484,49 @@ app.delete('/api/vps/:id', async (req, res) => {
 // Çağrılar sıraya alınır: eşzamanlı iki uygulama PI5_ROUTING'i birbirinin ortasında boşaltıp eski kuralları
 // bırakabilir. Her sıradaki çalışma DB'yi kendi başında okur → en güncel durumu uygular.
 let routingQueue: Promise<void> = Promise.resolve();
-function applyAllRoutingRules(): Promise<void> {
-  const next = routingQueue.then(applyAllRoutingRulesNow, applyAllRoutingRulesNow);
+function runInRoutingQueue(fn: () => Promise<void>): Promise<void> {
+  const next = routingQueue.then(fn, fn);
   routingQueue = next.catch(() => {});
   return next;
+}
+function applyAllRoutingRules(): Promise<void> {
+  return runInRoutingQueue(applyAllRoutingRulesNow);
+}
+
+// Bir VPS'e yönlenen etkin kurallar, tünel düşünce ne olacağına göre (uygulama adı / alan adı).
+async function vpsRuleUsage(vpsId: string | number): Promise<{ block: string[]; isp: string[] }> {
+  const id = String(vpsId);
+  const apps = await dbAll(`SELECT app_name AS name, vps_fallback FROM traffic_routing WHERE enabled = 1 AND exit_node = ? AND domains != ''`, [id]) as any[];
+  const doms = await dbAll(`SELECT domain AS name, vps_fallback FROM domain_routing WHERE enabled = 1 AND exit_node = ? AND COALESCE(redirect_url, '') = ''`, [id]) as any[];
+  const out = { block: [] as string[], isp: [] as string[] };
+  for (const r of [...apps, ...doms]) out[normFallback(r.vps_fallback)].push(String(r.name));
+  return out;
+}
+const nameList = (names: string[], max = 5) => names.slice(0, max).join(', ') + (names.length > max ? ` +${names.length - max}` : '');
+function routeEffectText(u: { block: string[]; isp: string[] }): string {
+  const parts: string[] = [];
+  if (u.block.length) parts.push(`${u.block.length} kural engellendi (${nameList(u.block)})`);
+  if (u.isp.length) parts.push(`${u.isp.length} kural operatörden devam ediyor (${nameList(u.isp)})`);
+  return parts.join('; ');
 }
 
 // Helper: collect all routing domains from both tables and apply
 async function applyAllRoutingRulesNow() {
   if (!isLinux) return;
   // 1. App routing: expand domains column into individual domain entries
-  const appRules = await dbAll('SELECT app_name, domains, exit_node, dpi_bypass, enabled FROM traffic_routing WHERE enabled = 1 AND domains != ""');
-  const domainRules = await dbAll('SELECT domain, exit_node, dpi_bypass, enabled, redirect_url FROM domain_routing WHERE enabled = 1');
+  const appRules = await dbAll('SELECT app_name, domains, exit_node, dpi_bypass, vps_fallback, enabled FROM traffic_routing WHERE enabled = 1 AND domains != ""');
+  const domainRules = await dbAll('SELECT domain, exit_node, dpi_bypass, vps_fallback, enabled, redirect_url FROM domain_routing WHERE enabled = 1');
+  // Kayıtlı olmayan VPS'e yönlenen kural (silinmiş VPS'in eski kaydı) ISP sayılır: "engelle" tablosu sahipsiz kalıcı
+  // engele dönmesin.
+  const vpsIds = (await dbAll('SELECT id FROM vps_servers') as any[]).map(r => Number(r.id));
+  const known = new Set(vpsIds.map(String));
+  const exitOf = (e: unknown) => { const x = String(e ?? 'isp'); return known.has(x) ? x : 'isp'; };
+  // Yeniden açılan / yeni kurulan tünel "yanıt vermiyor" sayılmaz (izleyicinin sonraki ölçümünü beklemeden rota geri gelir).
+  for (const t of (await readVpsTunnels(vpsIds).catch(() => new Map())).values()) {
+    if (t.state === 'up' || t.state === 'connecting') setTunnelStale(t.vpsId, false);
+  }
 
-  const allDomains: { domain: string; exit_node: string; dpi_bypass: number; enabled: number; redirect_url?: string }[] = [];
+  const allDomains: { domain: string; exit_node: string; dpi_bypass: number; enabled: number; redirect_url?: string; vps_fallback?: string }[] = [];
   // IP aralığı girdileri (ipRanges.ts): @asn:<n>[!443] ve a.b.c.d[/nn] — DNS'siz trafik (ör. WhatsApp aramaları) için.
   const ranges: RangeRoute[] = [];
 
@@ -1453,27 +1537,27 @@ async function applyAllRoutingRulesNow() {
       const asn = ASN_TOKEN.exec(domain);
       if (asn) {
         const r = await getAsnPrefixes(Number(asn[1]));
-        if (r.prefixes.length) ranges.push({ exit_node: rule.exit_node, dpi_bypass: rule.dpi_bypass, prefixes: r.prefixes, excludeWeb: !!asn[2] });
+        if (r.prefixes.length) ranges.push({ exit_node: exitOf(rule.exit_node), dpi_bypass: rule.dpi_bypass, prefixes: r.prefixes, excludeWeb: !!asn[2], vps_fallback: rule.vps_fallback });
         continue;
       }
       const cidr = normalizeCidr(domain);
       if (cidr) {
-        ranges.push({ exit_node: rule.exit_node, dpi_bypass: rule.dpi_bypass, prefixes: [cidr], excludeWeb: false });
+        ranges.push({ exit_node: exitOf(rule.exit_node), dpi_bypass: rule.dpi_bypass, prefixes: [cidr], excludeWeb: false, vps_fallback: rule.vps_fallback });
         continue;
       }
       // dnsmasq ipset handles subdomains automatically, strip leading *.
       const clean = domain.replace(/^\*\./, '');
-      allDomains.push({ domain: clean, exit_node: rule.exit_node, dpi_bypass: rule.dpi_bypass, enabled: 1 });
+      allDomains.push({ domain: clean, exit_node: exitOf(rule.exit_node), dpi_bypass: rule.dpi_bypass, enabled: 1, vps_fallback: rule.vps_fallback });
     }
   }
 
   // Custom domain rules — redirect_url dahil (yoksa DNS-redirect kuralları kaybolur)
   for (const rule of domainRules) {
-    allDomains.push({ domain: rule.domain, exit_node: rule.exit_node, dpi_bypass: rule.dpi_bypass, enabled: 1, redirect_url: rule.redirect_url || undefined });
+    allDomains.push({ domain: rule.domain, exit_node: exitOf(rule.exit_node), dpi_bypass: rule.dpi_bypass, enabled: 1, redirect_url: rule.redirect_url || undefined, vps_fallback: rule.vps_fallback });
   }
 
   try {
-    await applyDomainRouting(allDomains, ranges);
+    await applyDomainRouting(allDomains, ranges, { staleVps: staleTunnels() });
   } finally {
     // Routing'deki "DPI" kurallarının alan adları Zapret listesine de yazılır (zapret.ts); routing'i bekletmez.
     void applyZapret().then(r => {
@@ -1545,7 +1629,7 @@ app.get('/api/routing/rules', async (_req, res) => {
   try {
     const rules = await dbAll(`
       SELECT t.id, t.app_name, t.category, t.route_type, t.vps_id, t.enabled,
-             t.exit_node, t.dpi_bypass, t.domains,
+             t.exit_node, t.dpi_bypass, t.domains, COALESCE(t.vps_fallback, 'block') AS vps_fallback,
              s.ip as vps_ip, s.location as vps_location
       FROM traffic_routing t
       LEFT JOIN vps_servers s ON t.vps_id = s.id
@@ -1559,7 +1643,10 @@ app.get('/api/routing/rules', async (_req, res) => {
 
 app.put('/api/routing/rules/:id', async (req, res) => {
   try {
-    const { route_type, vps_id, enabled, exit_node, dpi_bypass } = req.body;
+    const { route_type, vps_id, enabled, exit_node, dpi_bypass, vps_fallback } = req.body;
+    if (vps_fallback !== undefined && vps_fallback !== 'block' && vps_fallback !== 'isp') {
+      return res.status(400).json({ error: "vps_fallback 'block' ya da 'isp' olmalı" });
+    }
     const updates: string[] = [];
     const params: any[] = [];
     if (route_type !== undefined) { updates.push('route_type = ?'); params.push(route_type); }
@@ -1567,6 +1654,7 @@ app.put('/api/routing/rules/:id', async (req, res) => {
     if (enabled !== undefined) { updates.push('enabled = ?'); params.push(enabled ? 1 : 0); }
     if (exit_node !== undefined) { updates.push('exit_node = ?'); params.push(exit_node); }
     if (dpi_bypass !== undefined) { updates.push('dpi_bypass = ?'); params.push(dpi_bypass ? 1 : 0); }
+    if (vps_fallback !== undefined) { updates.push('vps_fallback = ?'); params.push(vps_fallback); }
     if (updates.length === 0) return res.json({ success: true });
     params.push(req.params.id);
     await dbRun(`UPDATE traffic_routing SET ${updates.join(', ')} WHERE id = ?`, params);
@@ -1586,7 +1674,7 @@ app.get('/api/routing/status', (_req, res) => {
 // ─── Domain-Based Routing ───
 app.get('/api/routing/domains', async (_req, res) => {
   try {
-    const domains = await dbAll('SELECT id, domain, route_type, description, enabled, exit_node, dpi_bypass, redirect_url, created_at FROM domain_routing ORDER BY domain');
+    const domains = await dbAll(`SELECT ${DOMAIN_ROUTING_COLUMNS} FROM domain_routing ORDER BY domain`);
     res.json({ domains });
   } catch (e: any) {
     res.status(500).json({ error: e.message });
@@ -1595,14 +1683,14 @@ app.get('/api/routing/domains', async (_req, res) => {
 
 app.post('/api/routing/domains', async (req, res) => {
   try {
-    const { domain, route_type, description, exit_node, dpi_bypass, redirect_url } = req.body;
+    const { domain, route_type, description, exit_node, dpi_bypass, redirect_url, vps_fallback } = req.body;
     if (!domain) return res.status(400).json({ error: 'Domain gerekli' });
     const cleanDomain = domain.trim().toLowerCase().replace(/^(https?:\/\/)?(www\.)?/, '').replace(/\/.*$/, '');
-    await dbRun('INSERT INTO domain_routing (domain, route_type, description, exit_node, dpi_bypass, redirect_url) VALUES (?, ?, ?, ?, ?, ?)',
-      [cleanDomain, route_type || 'direct', description || '', exit_node || 'isp', dpi_bypass ? 1 : 0, redirect_url || '']);
+    await dbRun('INSERT INTO domain_routing (domain, route_type, description, exit_node, dpi_bypass, redirect_url, vps_fallback) VALUES (?, ?, ?, ?, ?, ?, ?)',
+      [cleanDomain, route_type || 'direct', description || '', exit_node || 'isp', dpi_bypass ? 1 : 0, redirect_url || '', normFallback(vps_fallback)]);
     // Apply unified routing (app + domain rules together)
     await applyAllRoutingRules();
-    const domains = await dbAll('SELECT id, domain, route_type, description, enabled, exit_node, dpi_bypass, redirect_url, created_at FROM domain_routing ORDER BY domain');
+    const domains = await dbAll(`SELECT ${DOMAIN_ROUTING_COLUMNS} FROM domain_routing ORDER BY domain`);
     res.json({ success: true, domains });
   } catch (e: any) {
     if (e.message?.includes('UNIQUE')) {
@@ -1614,7 +1702,10 @@ app.post('/api/routing/domains', async (req, res) => {
 
 app.put('/api/routing/domains/:id', async (req, res) => {
   try {
-    const { route_type, enabled, description, exit_node, dpi_bypass, redirect_url } = req.body;
+    const { route_type, enabled, description, exit_node, dpi_bypass, redirect_url, vps_fallback } = req.body;
+    if (vps_fallback !== undefined && vps_fallback !== 'block' && vps_fallback !== 'isp') {
+      return res.status(400).json({ error: "vps_fallback 'block' ya da 'isp' olmalı" });
+    }
     const updates: string[] = [];
     const params: any[] = [];
     if (route_type !== undefined) { updates.push('route_type = ?'); params.push(route_type); }
@@ -1623,6 +1714,7 @@ app.put('/api/routing/domains/:id', async (req, res) => {
     if (exit_node !== undefined) { updates.push('exit_node = ?'); params.push(exit_node); }
     if (dpi_bypass !== undefined) { updates.push('dpi_bypass = ?'); params.push(dpi_bypass ? 1 : 0); }
     if (redirect_url !== undefined) { updates.push('redirect_url = ?'); params.push(redirect_url); }
+    if (vps_fallback !== undefined) { updates.push('vps_fallback = ?'); params.push(vps_fallback); }
     if (updates.length === 0) return res.json({ success: true });
     params.push(req.params.id);
     await dbRun(`UPDATE domain_routing SET ${updates.join(', ')} WHERE id = ?`, params);
@@ -1645,7 +1737,7 @@ app.delete('/api/routing/domains/:id', async (req, res) => {
 
 // ─── Routing önerileri: yönlendirilen siteyle birlikte açılan alan adları (öner → tek tıkla ekle / yoksay) ───
 // /api/routing/domains/... altında DEĞİL: PUT/DELETE /:id rotaları o yolu yakalar.
-const DOMAIN_ROUTING_COLUMNS = 'id, domain, route_type, description, enabled, exit_node, dpi_bypass, redirect_url, created_at';
+const DOMAIN_ROUTING_COLUMNS = "id, domain, route_type, description, enabled, exit_node, dpi_bypass, redirect_url, COALESCE(vps_fallback, 'block') AS vps_fallback, created_at";
 // Öneri adları sunucunun ürettiği hedeflerdir: yalnız kırpılır/küçültülür. POST /api/routing/domains'teki gibi 'www.'
 // SİLİNMEZ — tek görülen 'www.x.com' önerisi 'x.com' (tüm alt adresler) olarak kaydedilirse onaylanandan geniş olurdu.
 const cleanSuggestedDomain = (d: unknown) => (typeof d === 'string' ? d.trim().toLowerCase() : '');
@@ -1682,7 +1774,7 @@ app.post('/api/routing/suggestions/accept', async (req, res) => {
     if (!Number.isInteger(ruleId) || !Array.isArray(list) || list.length < 1 || list.length > 20) {
       return res.status(400).json({ error: 'Geçersiz istek' });
     }
-    const parent = await dbGet('SELECT id, domain, exit_node, dpi_bypass, redirect_url, parent_id FROM domain_routing WHERE id = ?', [ruleId]);
+    const parent = await dbGet('SELECT id, domain, exit_node, dpi_bypass, redirect_url, parent_id, vps_fallback FROM domain_routing WHERE id = ?', [ruleId]);
     if (!parent) return res.status(404).json({ error: 'Kural bulunamadı' });
     if (parent.redirect_url || ((parent.exit_node || 'isp') === 'isp' && !parent.dpi_bypass)) {
       return res.status(400).json({ error: 'Bu kural özel bir çıkış kullanmıyor' });
@@ -1695,9 +1787,9 @@ app.post('/api/routing/suggestions/accept', async (req, res) => {
     for (const d of clean) {
       // Düz INSERT: eşzamanlı iki istekte ikincisi UNIQUE hatasıyla 'zaten ekli'ye düşer (yanlışlıkla 'eklendi' sayılmaz).
       try {
-        await dbRun(`INSERT INTO domain_routing (domain, route_type, description, exit_node, dpi_bypass, redirect_url, parent_id)
-          VALUES (?, 'direct', ?, ?, ?, '', ?)`,
-          [d, `Öneri: ${parent.domain}`, parent.exit_node || 'isp', parent.dpi_bypass ? 1 : 0, parent.parent_id ?? parent.id]);
+        await dbRun(`INSERT INTO domain_routing (domain, route_type, description, exit_node, dpi_bypass, redirect_url, parent_id, vps_fallback)
+          VALUES (?, 'direct', ?, ?, ?, '', ?, ?)`,
+          [d, `Öneri: ${parent.domain}`, parent.exit_node || 'isp', parent.dpi_bypass ? 1 : 0, parent.parent_id ?? parent.id, normFallback(parent.vps_fallback)]);
         added.push(d);
       } catch (e: any) {
         if (!String(e?.message).includes('UNIQUE')) throw e;
@@ -2335,6 +2427,69 @@ if (isLinux) {
   // Run first check after 30 seconds, then every 5 minutes
   setTimeout(healthCheck, 30000);
   setInterval(healthCheck, 300000);
+}
+
+// ─── VPS tünel izleyicisi (30 sn) ───
+// Arayüz ayakta ama VPS el sıkışmaya yanıt vermiyorsa (VPS kapalı, UDP 51820 kesik) bu VPS'e yönlenen trafik karşıya
+// ulaşmaz. Uyarı yalnız DURUM DEĞİŞİNCE yazılır: 'yanıt yok' iki ardışık ölçümde (≥30 sn) sürerse bir kez; tünel yeniden
+// yanıt verince okunmuş bilgi satırı. Arayüz yoksa (kesilmiş / açılamamış) 5 dk'lık sağlık denetimi uyarır (service:wireguard).
+if (isLinux) {
+  const staleTicks = new Map<number, number>();
+  let routesDirty = false; // rota senkronu başarısız olduysa sonraki turda yeniden denenir
+  let lastWatchError = ''; // aynı hata her 30 sn'de günlüğe yazılmasın
+  const lastTunnelAlert = (source: string) =>
+    dbGet(`SELECT severity FROM alerts WHERE type = 'health' AND source = ? ORDER BY id DESC LIMIT 1`, [source]);
+  const fmtAge = (s: number) => (s < 120 ? `${s} sn` : s < 7200 ? `${Math.floor(s / 60)} dk` : `${Math.floor(s / 3600)} sa`);
+  const watchVpsTunnels = async () => {
+    try {
+      const servers = await dbAll('SELECT id, ip, location FROM vps_servers') as any[];
+      const tunnels = await readVpsTunnels(servers.map(s => Number(s.id)));
+      let changed = false;
+      for (const s of servers) {
+        const t = tunnels.get(Number(s.id));
+        if (!t) continue;
+        const src = `vps-tunnel:${t.iface}`;
+        const label = `${s.location || 'VPS'} (${s.ip})`;
+        if (t.state === 'stale') {
+          const n = (staleTicks.get(t.vpsId) || 0) + 1;
+          staleTicks.set(t.vpsId, n);
+          if (n < 2) continue;
+          // Onaylandı: tünel rotası bu VPS'in tablolarından çıkar (engelle → hemen hata, operatörden devam → ISP).
+          if (setTunnelStale(t.vpsId, true)) changed = true;
+          const last = await lastTunnelAlert(src);
+          if (last && last.severity === 'warning') continue;
+          const age = t.handshakeAge === null ? 'hiç el sıkışma olmadı' : `son el sıkışma ${fmtAge(t.handshakeAge)} önce`;
+          const effect = routeEffectText(await vpsRuleUsage(t.vpsId));
+          await dbRun(`INSERT INTO alerts (type, severity, message, source) VALUES ('health', 'warning', ?, ?)`,
+            [`VPS tüneli yanıt vermiyor: ${label} — ${age}; VPS kapalı ya da UDP 51820 erişilemiyor olabilir (VPS Yönetimi → internet kontrolü)${effect ? `. ${effect}` : ''}`, src]);
+          continue;
+        }
+        staleTicks.set(t.vpsId, 0);
+        // Açık / yeni kuruluyor / kapalı: onay düşer (kapalıda çekirdek tünel rotasını zaten kaldırmıştır).
+        if (setTunnelStale(t.vpsId, false)) changed = true;
+        if (t.state !== 'up') continue; // connecting / down → uyarı yok
+        const last = await lastTunnelAlert(src);
+        if (last && last.severity === 'warning') {
+          await dbRun(`INSERT INTO alerts (type, severity, message, source, acknowledged) VALUES ('health', 'info', ?, ?, 1)`,
+            [`VPS tüneli yeniden yanıt veriyor: ${label} — yönlendirilen trafik yeniden tünelden`, src]);
+        }
+      }
+      if (changed || routesDirty) {
+        routesDirty = true;
+        await runInRoutingQueue(() => syncVpsRoutes(staleTunnels()));
+        routesDirty = false;
+      }
+      // Eski işaret şemasından geçiş: FTL güncel dosyaları yükleyince takma adlar kalkar, eski setler silinir.
+      if (await legacyRoutingCleanupDue()) await applyAllRoutingRules();
+      lastWatchError = '';
+    } catch (e: any) {
+      const msg = String(e?.message || e);
+      if (msg !== lastWatchError) console.error('[vps-tunnel] izleyici başarısız:', msg);
+      lastWatchError = msg;
+    }
+  };
+  setTimeout(watchVpsTunnels, 20000);
+  setInterval(watchVpsTunnels, 30000);
 }
 
 // Cron görevlerinin ve panel güncellemesinin hatası panelin dışında olur (zamanlayıcı / arka plan işi): 5 dk'lık sağlık

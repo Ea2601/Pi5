@@ -3,11 +3,13 @@ import { execFile } from 'child_process';
 import { promisify } from 'util';
 import type { IpCounters } from './bandwidth';
 import { classifyLink, isRandomMac, wirelessHint, type LinkInfo } from './linkProbe';
+import { decodeVpsMark, DPI_ONLY_MARK } from './routeMarks';
 
 // Canlı ağ topolojisi: cihaz → Pi → çıkış (yerel / DPI / VPS tüneli) → internet. Trafik bandwidth.ts'in ct mark'a göre
-// ayrılmış sayaçlarından gelir; sınıflar system.ts getFwmark şemasıyla aynı:
+// ayrılmış sayaçlarından gelir; sınıflar routeMarks.ts şemasıyla aynı:
 //   0 → yerel çıkış (ISP), 200 → ISP + DPI (istenen; Zapret kendi hostlist'iyle çalışır),
-//   100+id → wg_vps<id> tüneli, 300+id → tünel + DPI (DPI tünel içinde etkisiz → tünel sayılır, işaretlenir).
+//   0x8000|id → wg_vps<id> tüneli (+0x4000 DPI: tünel içinde etkisiz → tünel sayılır, işaretlenir; +0x2000 yalnız tünel
+//   düşünce ne olacağını söyler). Eski şema (100+id, 300+id) de çözülür: güncellemeden önce açılan bağlantılar.
 // Başka işaretler (şemada yok) yerel sayılır: forward yolundan ISP'ye çıkarlar.
 
 const execFileP = promisify(execFile);
@@ -17,8 +19,10 @@ export type MarkClass = { exit: ExitId; dpiRequested: boolean };
 
 export function classifyMark(mark: number): MarkClass {
   const m = mark & 0xffff;
+  const v = decodeVpsMark(m);
+  if (v) return { exit: `vps:${v.vpsId}`, dpiRequested: v.dpi };
   if (m >= 100 && m < 200) return { exit: `vps:${m - 100}`, dpiRequested: false };
-  if (m === 200) return { exit: 'dpi', dpiRequested: true };
+  if (m === DPI_ONLY_MARK) return { exit: 'dpi', dpiRequested: true };
   if (m >= 300 && m < 400) return { exit: `vps:${m - 300}`, dpiRequested: true };
   return { exit: 'local', dpiRequested: false };
 }

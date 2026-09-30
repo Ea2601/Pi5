@@ -1,3 +1,5 @@
+import type { TunnelInfo } from './vpsTunnel';
+
 export type TabId =
   | 'dashboard' | 'topology' | 'pihole' | 'dhcp' | 'zapret' | 'firewall' | 'routing' | 'vps'
   | 'unbound' | 'fail2ban' | 'maintenance' | 'docs'
@@ -36,6 +38,8 @@ export interface VpsServer {
   location: string;
   status: string;
   created_at: string;
+  // Pi ↔ VPS tünelinin canlı durumu (el sıkışma yaşı); Pi dışında (geliştirme) null.
+  tunnel?: TunnelInfo | null;
 }
 
 export interface TrafficRule {
@@ -45,6 +49,8 @@ export interface TrafficRule {
   route_type: string;
   exit_node: string;
   dpi_bypass: number;
+  // VPS çıkışında tünel düşerse: engelle (varsayılan) ya da operatörden devam.
+  vps_fallback?: 'block' | 'isp';
   domains: string;
   vps_id: number | null;
   vps_ip: string | null;
