@@ -5,7 +5,7 @@ import os from 'os';
 import { promises as dnsPromises } from 'dns';
 import sqlite3 from 'sqlite3';
 import { shq } from './util';
-import { encodeRouteMark, decodeVpsMark, decodeLegacyVpsMark, isManagedRuleMark, normFallback, DPI_ONLY_MARK, type VpsMark } from './routeMarks';
+import { encodeRouteMark, decodeVpsMark, decodeLegacyVpsMark, isManagedRuleMark, normFallback, DPI_ONLY_MARK, ISP_FALLBACK_BIT, type VpsMark } from './routeMarks';
 
 const execAsync = promisify(exec);
 export const isLinux = os.platform() === 'linux';
@@ -2074,14 +2074,21 @@ export async function applyDomainRouting(domains?: DomainRoute[], ranges: RangeR
 
   // 3a. VPS tabloları ve "fwmark N lookup N" kuralları zincirden ÖNCE hazırlanır: yeni işaret alan paket kuralsız kalıp
   //     ana tablodan (ISP) çıkmasın. Tablo içeriği tünel durumuna göre (syncMarkTable); kullanılmayanlar 4. adımda.
-  const ruleCounts = await readManagedRuleCounts();
+  const rulePrefs = await readManagedRules();
   const allMarks = new Set<number>([...markSets.keys(), ...[...netSets.values()].map(e => e.mark)]);
   const staleVps = opts.staleVps || new Set<number>();
+  const localRules = await readLocalRules();
   for (const mark of allMarks) {
     const v = decodeVpsMark(mark);
     if (!v) continue;
-    if (!ruleCounts.has(mark)) await run(`ip rule add fwmark ${mark} table ${mark} 2>/dev/null || true`);
+    if (!(rulePrefs.get(mark) || []).some(p => p > LOCAL_MAIN_PREF)) await run(`ip rule add pref ${VPS_RULE_PREF} fwmark ${mark} table ${mark} 2>/dev/null || true`);
     await syncMarkTable(mark, v, staleVps);
+    // "Engelle": Pi'nin kendi trafiği ikiz tabloya (yalnız tünel rotası) bakar — tünel yokken operatörden devam eder.
+    if (v.ispFallback) continue;
+    const twin = mark | ISP_FALLBACK_BIT;
+    await syncMarkTable(twin, { ...v, ispFallback: true }, staleVps);
+    if (!localRules.twin.has(mark)) await run(`ip rule add pref ${LOCAL_RULE_PREF} fwmark ${mark} iif lo table ${twin} 2>/dev/null || true`);
+    if (!localRules.main.has(mark)) await run(`ip rule add pref ${LOCAL_MAIN_PREF} fwmark ${mark} iif lo table main 2>/dev/null || true`);
   }
 
   // 3. iptables mangle ile marklama — `-m set` kernel ipset'lerini DOĞRU okur (nft @set okuyamaz).
@@ -2223,11 +2230,29 @@ export async function applyDomainRouting(domains?: DomainRoute[], ranges: RangeR
   // 4. Kullanılmayan "fwmark N lookup N" kuralları (eski şemanın 100–999 işaretleri, yalnız DPI'nin 200'ü — ISP ana
   //    tablosunu kullanır, Zapret kendi kancasıyla işler — ve silinen / değişen kuralların işaretleri) zincir yenilendikten
   //    sonra tamamen kaldırılır, tabloları boşaltılır. `ip rule add` varlık kontrolü yapmaz (trixie iproute2 her uygulamada
-  //    kopya ekliyordu) → istenenlerin fazla kopyaları silinir; biri hep kalır, trafik ISP'ye kaçmaz.
-  for (const [mark, count] of ruleCounts) {
+  //    kopya ekliyordu) → istenen işarette Pi'nin kendi trafiği kurallarından SONRA gelen tek kural kalır (3a'da eksikse
+  //    1200 önceliğiyle eklendi); fazla kopyalar ve önde kalmış eski kurallar önceliğiyle silinir. Trafik ISP'ye kaçmaz.
+  for (const [mark, prefs] of rulePrefs) {
     const wanted = allMarks.has(mark) && decodeVpsMark(mark) !== null;
-    for (let i = 0; i < (wanted ? count - 1 : count); i++) await run(`ip rule del fwmark ${mark} table ${mark} 2>/dev/null || true`);
+    const keep = wanted ? (prefs.includes(VPS_RULE_PREF) ? VPS_RULE_PREF : prefs.find(p => p > LOCAL_MAIN_PREF)) : undefined;
+    let kept = false;
+    for (const p of prefs) {
+      if (p === keep && !kept) { kept = true; continue; }
+      await run(`ip rule del pref ${p} fwmark ${mark} table ${mark} 2>/dev/null || true`);
+    }
     if (!wanted) await run(`ip route flush table ${mark} 2>/dev/null || true`);
+  }
+  // Pi'nin kendi trafiği kuralları: işaret artık "engelle" değilse kaldırılır, ikiz tablo (başka kural kullanmıyorsa) boşaltılır.
+  const localWanted = (mark: number) => allMarks.has(mark) && decodeVpsMark(mark)?.ispFallback === false;
+  for (const [mark, count] of localRules.twin) {
+    const twin = mark | ISP_FALLBACK_BIT;
+    const wanted = localWanted(mark);
+    for (let i = 0; i < (wanted ? count - 1 : count); i++) await run(`ip rule del pref ${LOCAL_RULE_PREF} fwmark ${mark} iif lo table ${twin} 2>/dev/null || true`);
+    if (!wanted && !allMarks.has(twin)) await run(`ip route flush table ${twin} 2>/dev/null || true`);
+  }
+  for (const [mark, count] of localRules.main) {
+    const wanted = localWanted(mark);
+    for (let i = 0; i < (wanted ? count - 1 : count); i++) await run(`ip rule del pref ${LOCAL_MAIN_PREF} fwmark ${mark} iif lo table main 2>/dev/null || true`);
   }
 
   // 4b. Yeni eklenen kuralların adresleri HEMEN sete: FTL yeni satırları ancak yeniden başlayınca yükler (2-15 sn) ve
@@ -2251,17 +2276,42 @@ export async function applyDomainRouting(domains?: DomainRoute[], ranges: RangeR
   }
 }
 
-// Panelin "fwmark N lookup N" kuralları (N = tablo; routeMarks.isManagedRuleMark) ve kopya sayıları.
-async function readManagedRuleCounts(): Promise<Map<number, number>> {
-  const counts = new Map<number, number>();
+// Panelin "fwmark N lookup N" kuralları (N = tablo; routeMarks.isManagedRuleMark): işaret → her kopyanın önceliği.
+async function readManagedRules(): Promise<Map<number, number[]>> {
+  const prefs = new Map<number, number[]>();
   for (const line of (await run('ip rule show 2>/dev/null')).split('\n')) {
-    const m = line.match(/fwmark (0x[0-9a-f]+|\d+) lookup (\d+)/i);
+    const m = line.match(/^(\d+):\s+from all fwmark (0x[0-9a-f]+|\d+) lookup (\d+)/i);
     if (!m) continue;
-    const mark = Number(m[1]);
-    if (mark !== Number(m[2]) || !isManagedRuleMark(mark)) continue;
-    counts.set(mark, (counts.get(mark) || 0) + 1);
+    const mark = Number(m[2]);
+    if (mark !== Number(m[3]) || !isManagedRuleMark(mark)) continue;
+    prefs.set(mark, [...(prefs.get(mark) || []), Number(m[1])]);
   }
-  return counts;
+  return prefs;
+}
+
+// Pi'nin kendi trafiği (kullanıcı kararı: kill-switch evdeki cihazlar için): "engelle" işareti M'de yerelden çıkan paket
+// (`iif lo`) ikiz tabloya M|0x2000 bakar — yalnız tünel rotası; tünel yokken / yanıt vermezken kural eşleşmez, ana tablo
+// (operatör). Panel güncellemesi, DDNS, hız testi tünel kapalıyken de çalışır. Sabit öncelikler, fwmark kurallarından önce:
+// 1100 ikiz tablo; 1101 ana tablo — ikizde rota yoksa sonraki kural "engelle" tablosu olurdu (unreachable).
+const LOCAL_RULE_PREF = 1100;
+const LOCAL_MAIN_PREF = 1101;
+// VPS "fwmark N lookup N" kuralları da sabit öncelikle: öncelik verilmeden eklenen kural mevcut en küçüğün bir altına girer
+// (Pi kuralları varken 1099; Ev VPN'i erişim testi sürerken 49) ve Pi'nin kendi trafiğini engel tablosuna düşürürdü.
+const VPS_RULE_PREF = 1200;
+// "1100: fwmark M iif lo lookup M|0x2000" (twin) ve "1101: fwmark M iif lo lookup main" (main) kuralları: M → kopya sayısı.
+async function readLocalRules(): Promise<{ twin: Map<number, number>; main: Map<number, number> }> {
+  const twin = new Map<number, number>();
+  const main = new Map<number, number>();
+  for (const line of (await run('ip rule show 2>/dev/null')).split('\n')) {
+    const m = line.match(/^(\d+):\s+from all fwmark (0x[0-9a-f]+|\d+) iif lo lookup (\w+)/i);
+    if (!m) continue;
+    const pref = Number(m[1]);
+    const mark = Number(m[2]);
+    if (!decodeVpsMark(mark)) continue;
+    if (pref === LOCAL_RULE_PREF && Number(m[3]) === (mark | ISP_FALLBACK_BIT)) twin.set(mark, (twin.get(mark) || 0) + 1);
+    else if (pref === LOCAL_MAIN_PREF && m[3] === 'main') main.set(mark, (main.get(mark) || 0) + 1);
+  }
+  return { twin, main };
 }
 
 // VPS işaretinin tablosu (kill-switch):
@@ -2283,10 +2333,12 @@ async function syncMarkTable(mark: number, v: VpsMark, staleVps: ReadonlySet<num
 }
 
 // Tünel "yanıt vermiyor" olunca / yeniden yanıt verince izleyici çağırır: yalnız tablo rotaları güncellenir (dnsmasq,
-// zincir ve NAT'a dokunulmaz). Tablolar kurulu "fwmark N lookup N" kurallarından bulunur.
+// zincir ve NAT'a dokunulmaz). Tablolar kurulu "fwmark N lookup N" ve Pi'nin kendi trafiği kurallarından bulunur.
 export async function syncVpsRoutes(staleVps: ReadonlySet<number>): Promise<void> {
   if (!isLinux) return;
-  for (const mark of (await readManagedRuleCounts()).keys()) {
+  const tables = new Set<number>([...(await readManagedRules()).keys()]);
+  for (const mark of (await readLocalRules()).twin.keys()) tables.add(mark | ISP_FALLBACK_BIT);
+  for (const mark of tables) {
     const v = decodeVpsMark(mark);
     if (v) await syncMarkTable(mark, v, staleVps);
   }
