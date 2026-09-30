@@ -65,12 +65,18 @@ export function isOnline(n: Neighbor | undefined, recentTraffic: boolean): boole
   return n.state === 'STALE' && n.confirmed !== null && n.confirmed <= ONLINE_CONFIRM_S;
 }
 
+// Ev VPN'i (wg_pi) istemcisi: panelin istemci kaydı (ad, rol) + WireGuard'ın el sıkışması. WireGuard trafik varken en geç
+// 2 dk'da bir el sıkışır: son el sıkışma 3 dk içindeyse istemci bağlı sayılır. handshake: unix sn, 0 = hiç.
+export type VpnPeer = { ip: string; name: string; role: 'admin' | 'guest'; handshake: number };
+export const VPN_ONLINE_S = 180;
+
 export type Flow = { exit: ExitId; dpiRequested: boolean; downBps: number; upBps: number; bytesDown: number; bytesUp: number };
 export type TopoDevice = {
   // routed: sayaçlarda izi var (trafiği Pi'den geçiyor); yoksa cihaz modemin ağında ve Pi'yi ağ geçidi olarak kullanmıyor.
   mac: string; ip: string; hostname: string | null; type: string; blocked: boolean; online: boolean; routed: boolean;
   downBps: number; upBps: number; bytesDown: number; bytesUp: number; flows: Flow[];
-  link: LinkInfo; // kablolu / Wi-Fi / Kurulum Wi-Fi'ı / belirsiz (linkProbe.ts)
+  link: LinkInfo; // kablolu / Wi-Fi / Kurulum Wi-Fi'ı / Ev VPN'i / belirsiz (linkProbe.ts)
+  vpn?: { name: string; role: 'admin' | 'guest'; handshakeAgeS: number | null };
 };
 export type TopoExit = {
   id: ExitId; kind: 'local' | 'dpi' | 'vps'; label: string; detail: string;
@@ -107,6 +113,8 @@ export type TopoInput = {
   onSetupWifi?: (ip: string) => boolean;
   // Pi'nin ev Wi-Fi yayınına bağlı MAC (homeWifi.ts).
   onPiWifi?: (mac: string) => boolean;
+  // Ev VPN'i istemcileri (wg_server_peers + `wg show wg_pi dump`).
+  vpnPeers?: VpnPeer[];
 };
 
 const byExitOrder = (a: ExitId) => (a === 'local' ? 0 : a === 'dpi' ? 1 : 2 + Number(a.slice(4)));
@@ -166,6 +174,19 @@ export function buildTopology(inp: TopoInput): Topology {
     f.downBps += r.downBps; f.upBps += r.upBps; f.bytesDown += c.down; f.bytesUp += c.up;
   }
 
+  // Ev VPN'i istemcileri: MAC'leri yok (WireGuard IP katmanında), komşu tablosunda görünmezler; trafik sayaçlarından IP ile
+  // gelirler. Kimin olduğu ve bağlı olup olmadığı panelin kaydından ve el sıkışmadan kesin bilinir. Bağlı olmayan ve
+  // trafiği de olmayan istemci haritaya eklenmez.
+  for (const p of inp.vpnPeers || []) {
+    const age = p.handshake > 0 ? Math.max(0, inp.nowS - p.handshake) : null;
+    let d = devByMac.get(macOfIp.get(p.ip) || p.ip);
+    if (!d && !(age !== null && age <= VPN_ONLINE_S)) continue;
+    d = d || ensure(p.ip, p.ip);
+    d.ip = p.ip;
+    d.hostname = d.hostname || p.name;
+    d.vpn = { name: p.name, role: p.role, handshakeAgeS: age };
+  }
+
   const exits = new Map<ExitId, TopoExit>();
   const addExit = (e: Omit<TopoExit, 'downBps' | 'upBps' | 'bytesDown' | 'bytesUp' | 'devices'>) =>
     exits.set(e.id, { ...e, downBps: 0, upBps: 0, bytesDown: 0, bytesUp: 0, devices: 0 });
@@ -198,6 +219,12 @@ export function buildTopology(inp: TopoInput): Topology {
       }
     }
     d.routed = d.bytesDown + d.bytesUp > 0;
+    if (d.vpn) {
+      d.link = { kind: 'vpn', basis: 'wg-peer', certain: true, medMs: null, p90Ms: null, baseMs: null, samples: 0 };
+      d.online = (d.vpn.handshakeAgeS !== null && d.vpn.handshakeAgeS <= VPN_ONLINE_S) || d.downBps + d.upBps > 0;
+      devices.push(d);
+      continue;
+    }
     const hasMac = /^[0-9a-f]{2}(:[0-9a-f]{2}){5}$/.test(d.mac);
     d.link = classifyLink({
       samples: hasMac && inp.probe ? inp.probe(d.mac) : [], baseMs: inp.probeBaseMs ?? null,
@@ -245,6 +272,29 @@ export async function readHandshakes(): Promise<Map<string, number>> {
     const { stdout } = await execFileP('wg', ['show', 'all', 'latest-handshakes'], { timeout: 5000 });
     return parseHandshakes(stdout);
   } catch { return new Map(); } // wg yok ya da tünel yok
+}
+
+// `wg show <arayüz> dump` → istemci IP'si başına son el sıkışma (unix sn; 0 = hiç). İlk satır arayüzün kendisidir; istemci
+// satırları: açık anahtar, psk, uç, izinli adresler (virgüllü), son el sıkışma, rx, tx, keepalive (sekmeyle ayrılmış).
+export function parsePeerDump(text: string): Map<string, number> {
+  const out = new Map<string, number>();
+  for (const line of text.split('\n').slice(1)) {
+    const f = line.split('\t');
+    if (f.length < 8) continue;
+    const hs = /^\d+$/.test(f[4]) ? Number(f[4]) : 0;
+    for (const a of f[3].split(',')) {
+      const ip = a.trim().replace(/\/32$/, '');
+      if (/^\d+\.\d+\.\d+\.\d+$/.test(ip)) out.set(ip, hs);
+    }
+  }
+  return out;
+}
+
+export async function readPeerHandshakes(iface: string): Promise<Map<string, number>> {
+  try {
+    const { stdout } = await execFileP('wg', ['show', iface, 'dump'], { timeout: 5000 });
+    return parsePeerDump(stdout);
+  } catch { return new Map(); } // arayüz kapalı ya da wg yok
 }
 
 export async function readDefaultRoute(): Promise<{ ip: string; dev: string } | null> {

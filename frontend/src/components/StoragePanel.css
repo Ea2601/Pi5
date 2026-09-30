@@ -106,6 +106,7 @@
 .st-help { font-size: 12px; color: var(--text-secondary); line-height: 1.55; margin: 10px 0 0; }
 
 /* Ağ paylaşımı (SharePanel) ve USB bölümü paylaşım düğmeleri */
+.sh-panel { margin-top: 14px; }
 .st-part-share { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; font-size: 12px; }
 .sh-connect, .sh-shares { margin-top: 14px; display: flex; flex-direction: column; gap: 6px; }
 .sh-connect h4, .sh-shares h4 { display: flex; align-items: center; gap: 6px; font-size: 13px; margin-bottom: 2px; }

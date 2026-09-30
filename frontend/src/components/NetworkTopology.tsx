@@ -1,4 +1,4 @@
-import { Router, Smartphone, Laptop, Tv, CircleDot, Tablet, RefreshCw, Wifi, Globe, Plus, Minus, Maximize, Eye, EyeOff, X, Cable, RadioTower, CircleHelp } from 'lucide-react';
+import { Router, Smartphone, Laptop, Tv, CircleDot, Tablet, RefreshCw, Wifi, Globe, Plus, Minus, Maximize, Eye, EyeOff, X, Cable, RadioTower, CircleHelp, ShieldCheck } from 'lucide-react';
 import type { ReactNode, PointerEvent as RPointerEvent, KeyboardEvent as RKeyboardEvent, MouseEvent as RMouseEvent } from 'react';
 import { useState, useMemo, useRef, useEffect, useLayoutEffect, useCallback } from 'react';
 import { useApi } from '../hooks/useApi';
@@ -10,16 +10,20 @@ import { computeLayout, joinPaths, pointAt, level, type ExitId, type AccessId, t
 // yollar kesikli çizilir. "Önizleme" tüm yolları temsili akışla gösterir ve bunu açıkça belirtir.
 
 type Flow = { exit: ExitId; dpiRequested: boolean; downBps: number; upBps: number; bytesDown: number; bytesUp: number };
-// Bağlantı türü (arka uç linkProbe.ts): ARP yanıt süresi + gizli MAC / cihaz türü ipuçları; Kurulum Wi-Fi'ı kesin.
+// Bağlantı türü (arka uç linkProbe.ts): ARP yanıt süresi + gizli MAC / cihaz türü ipuçları; Kurulum Wi-Fi'ı ve Ev VPN'i
+// istemcisi (panelin kaydı + el sıkışma, topology.ts) kesin.
 type LinkInfo = {
-  kind: 'wired' | 'wifi' | 'setup' | 'unknown'; basis: 'latency' | 'random-mac' | 'device-type' | 'setup-wifi' | 'pi-wifi' | 'none';
+  kind: 'wired' | 'wifi' | 'setup' | 'vpn' | 'unknown';
+  basis: 'latency' | 'random-mac' | 'device-type' | 'setup-wifi' | 'pi-wifi' | 'wg-peer' | 'none';
   certain: boolean; medMs: number | null; p90Ms: number | null; baseMs: number | null; samples: number;
 };
 type TopoDevice = {
   mac: string; ip: string; hostname: string | null; type: string; blocked: boolean; online: boolean; routed: boolean;
   downBps: number; upBps: number; bytesDown: number; bytesUp: number; flows: Flow[];
   link?: LinkInfo;
+  vpn?: VpnInfo; // Ev VPN'i istemcisi: panelde verilen ad, rol, son el sıkışma
 };
+type VpnInfo = { name: string; role: 'admin' | 'guest'; handshakeAgeS: number | null };
 type TopoExit = {
   id: ExitId; kind: 'local' | 'dpi' | 'vps'; label: string; detail: string;
   vpsId?: number; ip?: string; iface?: string; up?: boolean; handshakeAgeS?: number | null; known?: boolean;
@@ -97,22 +101,31 @@ function exitStatus(x: TopoExit): string {
 const exitShort = (x: TopoExit | undefined, id: ExitId) => (x ? (x.kind === 'local' ? 'Yerel' : x.kind === 'dpi' ? 'DPI' : `VPS ${x.label}`) : id);
 
 // ─── Erişim katmanı (kablolu / Wi-Fi) ───
-const ACCESS_ORDER: AccessId[] = ['acc:wired', 'acc:wifi', 'acc:setup', 'acc:unknown'];
+const ACCESS_ORDER: AccessId[] = ['acc:wired', 'acc:wifi', 'acc:setup', 'acc:vpn', 'acc:unknown'];
 const accessOf = (d: TopoDevice): AccessId => {
   const k = d.link?.kind;
-  return k === 'wired' ? 'acc:wired' : k === 'wifi' ? 'acc:wifi' : k === 'setup' ? 'acc:setup' : 'acc:unknown';
+  return k === 'wired' ? 'acc:wired' : k === 'wifi' ? 'acc:wifi' : k === 'setup' ? 'acc:setup' : k === 'vpn' ? 'acc:vpn' : 'acc:unknown';
 };
-const ACCESS_LABEL: Record<AccessId, string> = { 'acc:wired': 'Kablolu', 'acc:wifi': 'Wi-Fi', 'acc:setup': "Kurulum Wi-Fi'ı", 'acc:unknown': 'Belirsiz' };
+const ACCESS_LABEL: Record<AccessId, string> = {
+  'acc:wired': 'Kablolu', 'acc:wifi': 'Wi-Fi', 'acc:setup': "Kurulum Wi-Fi'ı", 'acc:vpn': "Ev VPN'i", 'acc:unknown': 'Belirsiz',
+};
 const accessDetail = (id: AccessId, st: AccStats) =>
   id === 'acc:wired' ? 'modem / anahtar portu' : id === 'acc:wifi' ? 'erişim noktası üzerinden' : id === 'acc:setup' ? "Pi'nin kendi yayını"
+    : id === 'acc:vpn' ? 'WireGuard · evin dışından'
     : st.measuring ? 'yanıt süresi ölçülüyor' : 'kablo ile Wi-Fi arasında';
 const accessIcon = (id: AccessId) => {
   const p = { size: 24, strokeWidth: 1.8 };
-  return id === 'acc:wired' ? <Cable {...p} /> : id === 'acc:wifi' ? <Wifi {...p} /> : id === 'acc:setup' ? <RadioTower {...p} /> : <CircleHelp {...p} />;
+  return id === 'acc:wired' ? <Cable {...p} /> : id === 'acc:wifi' ? <Wifi {...p} /> : id === 'acc:setup' ? <RadioTower {...p} />
+    : id === 'acc:vpn' ? <ShieldCheck {...p} /> : <CircleHelp {...p} />;
 };
 const fmtMs = (v: number | null) => (v == null ? '—' : v < 10 ? `${v.toFixed(1)} ms` : `${Math.round(v)} ms`);
-function linkText(l?: LinkInfo): string {
+const roleText = (v: VpnInfo) => (v.role === 'admin' ? 'yönetici' : 'misafir');
+function linkText(l?: LinkInfo, v?: VpnInfo): string {
   if (!l) return 'Bağlantı türü bilinmiyor';
+  if (l.kind === 'vpn') {
+    return v ? `Ev VPN'i — ${roleText(v)} profili «${v.name}», ${v.handshakeAgeS == null ? 'el sıkışma yok' : `el sıkışma ${fmtAge(v.handshakeAgeS)} önce`}`
+      : "Ev VPN'i — WireGuard";
+  }
   if (l.kind === 'setup') return "Kurulum Wi-Fi'ı (Pi'nin kendi yayını)";
   if (l.kind === 'unknown') return l.samples >= 3 ? `Belirsiz — yanıt ${fmtMs(l.medMs)}, kablo ile Wi-Fi arasında` : 'Belirsiz — yanıt süresi ölçülüyor';
   if (l.basis === 'pi-wifi') return "Wi-Fi — Pi'nin ev Wi-Fi'ına bağlı";
@@ -120,8 +133,9 @@ function linkText(l?: LinkInfo): string {
     : l.basis === 'random-mac' ? 'gizli MAC adresi' : 'cihaz türü';
   return `${l.kind === 'wired' ? 'Kablolu' : 'Wi-Fi'} — ${l.certain ? '' : 'tahmini, '}${why}`;
 }
-const linkShort = (l?: LinkInfo) =>
-  !l || l.kind === 'unknown' ? '' : l.kind === 'setup' ? "Kurulum Wi-Fi'ı" : `${l.kind === 'wired' ? 'Kablolu' : 'Wi-Fi'}${l.certain ? '' : ' (tahmini)'}`;
+const linkShort = (l?: LinkInfo, v?: VpnInfo) =>
+  !l || l.kind === 'unknown' ? '' : l.kind === 'setup' ? "Kurulum Wi-Fi'ı" : l.kind === 'vpn' ? `Ev VPN'i${v ? ` (${roleText(v)})` : ''}`
+    : `${l.kind === 'wired' ? 'Kablolu' : 'Wi-Fi'}${l.certain ? '' : ' (tahmini)'}`;
 
 // Cihaz bağlantısının rengi: şu an en çok trafik taşıyan sınıf; boştaysa toplamda en çok kullanılan.
 function dominantCls(d: TopoDevice): Cls {
@@ -164,10 +178,10 @@ function DeviceNode({ d, b, lod, mode, exitsById, onPick, hl }: DeviceNodeProps)
       </g>);
       fx += tw;
     }
-    const meta = [`Toplam ↓ ${fmtBytes(d.bytesDown)} ↑ ${fmtBytes(d.bytesUp)}`, linkShort(d.link), TYPE_LABEL[d.type], d.blocked ? 'Engelli' : '', !d.online ? 'çevrimdışı' : ''].filter(Boolean).join(' · ');
+    const meta = [`Toplam ↓ ${fmtBytes(d.bytesDown)} ↑ ${fmtBytes(d.bytesUp)}`, linkShort(d.link, d.vpn), TYPE_LABEL[d.type], d.blocked ? 'Engelli' : '', !d.online ? 'çevrimdışı' : ''].filter(Boolean).join(' · ');
     body = <>
       <text x={x0} y={b.y + 12.5} className="topo-t-name" fontSize={fn}>{fitText(name, w - 8, fn)}</text>
-      <text x={x0} y={b.y + 22} className="topo-t-mono" fontSize={fs}>{fitText(`${d.ip || '—'} · ${d.mac}`, w, fs)}</text>
+      <text x={x0} y={b.y + 22} className="topo-t-mono" fontSize={fs}>{fitText(`${d.ip || '—'} · ${d.vpn ? "Ev VPN'i" : d.mac}`, w, fs)}</text>
       {chips.length ? chips : <text x={x0} y={b.y + 31.5} className="topo-t-sub" fontSize={fs}>{d.routed ? 'şu an trafik yok' : 'Pi üzerinden trafik görülmedi'}</text>}
       <text x={x0} y={b.y + 40.5} className="topo-t-sub" fontSize={fs}>{fitText(meta, w, fs)}</text>
     </>;
@@ -181,7 +195,7 @@ function DeviceNode({ d, b, lod, mode, exitsById, onPick, hl }: DeviceNodeProps)
       <rect x={b.x} y={b.y} width={b.w} height={b.h} rx={10} className="topo-card" />
       <circle cx={icx} cy={icy} r={iconR} className={`topo-icon-bg topo-c-${dominantCls(d)}`} />
       <svg x={icx - iconR * 0.6} y={icy - iconR * 0.6} width={iconR * 1.2} height={iconR * 1.2} viewBox="0 0 24 24" className="topo-icon" overflow="visible">
-        {deviceIcon(d.type, 24)}
+        {d.vpn ? <ShieldCheck size={24} strokeWidth={1.8} /> : deviceIcon(d.type, 24)}
       </svg>
       <circle cx={b.x + b.w - 9} cy={b.y + 9} r={3} className={`topo-status ${d.blocked ? 'is-blocked' : active ? 'is-active' : d.online ? 'is-on' : 'is-off'}`} />
       {body}
@@ -224,7 +238,7 @@ function AccessNode({ id, b, lod, mode, st, onPick, hl }: AccessNodeProps) {
       <text x={b.x + 12} y={b.y + 24} className="topo-t-sub" fontSize={6}>{fitText(detail, b.w - 20, 6)}</text>
       <text x={b.x + 12} y={b.y + 32.5} className="topo-t-sub" fontSize={6}>{fitText(`${count} · ${st.online} çevrimiçi`, b.w - 20, 6)}</text>
       <text x={b.x + 12} y={b.y + 41} className="topo-t-rate" fontSize={6}>{fitText(rates(st.down, st.up), b.w - 20, 6)}</text>
-      <text x={b.x + 12} y={b.y + 49} className="topo-t-sub" fontSize={5.5}>{fitText(id === 'acc:setup' ? 'kesin: Pi yayınına bağlı' : 'yanıt süresine göre ayrılır', b.w - 20, 5.5)}</text>
+      <text x={b.x + 12} y={b.y + 49} className="topo-t-sub" fontSize={5.5}>{fitText(id === 'acc:setup' ? 'kesin: Pi yayınına bağlı' : id === 'acc:vpn' ? 'kesin: panelin istemci kaydı' : 'yanıt süresine göre ayrılır', b.w - 20, 5.5)}</text>
     </>;
   }
   return (
@@ -835,11 +849,11 @@ export function NetworkTopology() {
                     <>
                       <div className="topo-drawer-title">{deviceName(selDevice)}</div>
                       <div className="topo-drawer-sub">
-                        {selDevice.ip || '—'} · <span className="mono">{selDevice.mac}</span>
+                        {selDevice.ip || '—'} · {selDevice.vpn ? "Ev VPN'i istemcisi" : <span className="mono">{selDevice.mac}</span>}
                         {TYPE_LABEL[selDevice.type] ? ` · ${TYPE_LABEL[selDevice.type]}` : ''}
                         {' · '}{selDevice.online ? 'çevrimiçi' : 'çevrimdışı'}{selDevice.blocked ? ' · engelli' : ''}
                       </div>
-                      <div className="topo-drawer-sub">Bağlantı: {linkText(selDevice.link)}</div>
+                      <div className="topo-drawer-sub">Bağlantı: {linkText(selDevice.link, selDevice.vpn)}</div>
                       {selDevice.flows.length === 0
                         ? <div className="topo-drawer-empty">Bu cihazın Pi üzerinden geçen trafiği görülmedi{selDevice.online ? ' (modemin ağında olabilir ya da henüz bağlantı kurmadı)' : ''}.</div>
                         : (
@@ -868,6 +882,8 @@ export function NetworkTopology() {
                       <div className="topo-drawer-sub">
                         {selAccess === 'acc:setup'
                           ? "Pi'nin kendi Kurulum Wi-Fi'ına bağlı cihazlar (kesin)."
+                          : selAccess === 'acc:vpn'
+                          ? "WireGuard · evin dışından Ev VPN'ine bağlanan cihazlar (kesin): kimin olduğu panelde oluşturulan istemci profilinden, bağlı olup olmadığı son el sıkışmadan (3 dk içinde) bilinir. Yönetici profili ev ağına ve panele erişir, misafir yalnız internete çıkar."
                           : 'Pi her cihaza ara sıra ARP ile sorar: kablolu cihaz modeme göre 1 ms içinde ve sabit yanıt verir, Wi-Fi\'daki cihaz radyo yüzünden dalgalı ve yavaş. Gizli MAC ve telefon/tablet de Wi-Fi ipucudur.'}
                       </div>
                       <table className="topo-flows">
@@ -876,7 +892,7 @@ export function NetworkTopology() {
                           {shown.filter(d => accessOf(d) === selAccess).slice(0, 12).map(d => (
                             <tr key={d.mac}>
                               <td>{deviceName(d)}</td>
-                              <td className="topo-note">{linkText(d.link).replace(/^[^—]*— /, '')}</td>
+                              <td className="topo-note">{linkText(d.link, d.vpn).replace(/^[^—]*— /, '')}</td>
                               <td>{fmtRate(d.downBps)}</td>
                               <td>{fmtRate(d.upBps)}</td>
                             </tr>

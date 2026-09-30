@@ -12,8 +12,9 @@ import { promisify } from 'util';
 
 const execFileP = promisify(execFile);
 
-export type LinkKind = 'wired' | 'wifi' | 'setup' | 'unknown';
-export type LinkBasis = 'latency' | 'random-mac' | 'device-type' | 'setup-wifi' | 'pi-wifi' | 'none';
+// vpn: Ev VPN'i (wg_pi) istemcisi — ölçülmez, panelin istemci kaydından kesin bilinir (topology.ts).
+export type LinkKind = 'wired' | 'wifi' | 'setup' | 'vpn' | 'unknown';
+export type LinkBasis = 'latency' | 'random-mac' | 'device-type' | 'setup-wifi' | 'pi-wifi' | 'wg-peer' | 'none';
 export type LinkInfo = {
   kind: LinkKind; basis: LinkBasis; certain: boolean;
   medMs: number | null; p90Ms: number | null; baseMs: number | null; samples: number;

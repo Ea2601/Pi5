@@ -31,7 +31,7 @@ export function SharePanel({ st, busy, sharePart, usbPart, hasShareSpace, onChan
   const ip = st.ip || '192.168.x.x';
 
   return (
-    <Panel title="Ağ paylaşımı" icon={<Share2 size={20} style={{ marginRight: 8 }} />}
+    <Panel title="Ağ paylaşımı" icon={<Share2 size={20} style={{ marginRight: 8 }} />} className="sh-panel"
       subtitle="Diskleri ev ağındaki bilgisayar, telefon ve TV'lere açar (Windows, Mac, iPhone, Android)"
       actions={st.enabled ? (
         <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>

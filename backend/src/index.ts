@@ -29,7 +29,7 @@ import { ASN_TOKEN, getAsnPrefixes, normalizeCidr, refreshAsnIfStale } from './i
 import { getRoutingSuggestions, MAX_HOURS as SUGGEST_MAX_HOURS } from './domainSuggest';
 import { startUpdate, getUpdateStatus } from './update';
 import { sampleBandwidth, neighborMacs, buildLive } from './bandwidth';
-import { buildTopology, readNeighbors, readHandshakes, readDefaultRoute, readIfaces, readLocalIps, noteActivity, inCidr } from './topology';
+import { buildTopology, readNeighbors, readHandshakes, readDefaultRoute, readIfaces, readLocalIps, noteActivity, inCidr, readPeerHandshakes } from './topology';
 import { startLinkProbe, probeSamples, probeBaseline, noteTopologyView, type ProbeTarget } from './linkProbe';
 import { startTrafficRecorder, usageSummary, appActivity, appDefsFrom } from './trafficHistory';
 import { readHardware, evaluateRoles } from './hardware';
@@ -48,7 +48,7 @@ import type { ZapretApplyResult } from './zapret';
 import { unboundStatus, applyUnboundSettings, validateUnboundSettings } from './unbound';
 import { recordEvent, recordEventOnce, recordVersionChange, serviceLabel } from './events';
 import { wgServerStatus, setServerEnabled, addPeer, updatePeerRole, deletePeer, peerConfig, reapplyWgServer,
-  validatePeerName, validRole, WG_PORT, reachabilityTest } from './wgServer';
+  validatePeerName, validRole, WG_PORT, WG_IFACE, reachabilityTest } from './wgServer';
 import { startReachWatch, noteReachResult, reachWatchState, REACH_WATCH_INTERVAL_H } from './wgWatch';
 import { storageStatus, storageJob, noteStorageJob, startArchive, startPrepare, startMigrate, startStorageWatch } from './storage';
 import { applyKiosk } from './kiosk';
@@ -2094,6 +2094,13 @@ app.get('/api/topology/live', async (_req, res) => {
     const piWifi = ns && ns.homeStage !== 'none' && ns.homeIface ? await readHomeStations(ns.homeIface, HOME_BRIDGE) : new Set<string>();
     // Uyduların (R2) yayınına bağlı cihazlar da kesin Wi-Fi (uydunun dakikalık bildiriminden).
     if (isLinux) for (const m of await satelliteStations()) piWifi.add(m);
+    // Ev VPN'i istemcileri: panelin kaydı (ad, rol) + el sıkışma (topology.ts VpnPeer). Tablo yoksa (hiç kurulmadıysa) boş.
+    const [peerRows, peerHs] = isLinux
+      ? await Promise.all([dbAll('SELECT ip, name, role FROM wg_server_peers').catch(() => []), readPeerHandshakes(WG_IFACE)])
+      : [[], new Map<string, number>()];
+    const vpnPeers = (peerRows as { ip: string; name: string; role: string }[]).map(p => ({
+      ip: String(p.ip), name: String(p.name), role: p.role === 'admin' ? 'admin' as const : 'guest' as const, handshake: peerHs.get(String(p.ip)) || 0,
+    }));
     const now = Date.now();
     noteTopologyView(); // harita açıkken bağlantı türü ölçümü sıklaşır
     res.json(buildTopology({
@@ -2101,7 +2108,7 @@ app.get('/api/topology/live', async (_req, res) => {
       recentIps: noteActivity(markRates, now), handshakes, ifacesUp: isLinux ? readIfaces() : new Set(),
       lanIp, hostname: require('os').hostname(), modem, localIps, accounting, nowS: Math.floor(now / 1000),
       probe: probeSamples, probeBaseMs: probeBaseline(), onSetupWifi: ip => inCidr(ip, AP_NET),
-      onPiWifi: mac => piWifi.has(mac),
+      onPiWifi: mac => piWifi.has(mac), vpnPeers,
     }));
   } catch (e: any) {
     res.status(500).json({ error: e.message });

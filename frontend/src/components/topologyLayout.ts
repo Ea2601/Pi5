@@ -69,8 +69,8 @@ export function pointAt(p: PathGeom, s: number): Pt {
 }
 
 export type TierLabel = { text: string; x: number; y: number; anchor: 'start' | 'middle' };
-// Erişim katmanı: cihazın Pi'ye hangi yoldan geldiği (kablolu / Wi-Fi / Pi'nin Kurulum Wi-Fi'ı / belirsiz).
-export type AccessId = 'acc:wired' | 'acc:wifi' | 'acc:setup' | 'acc:unknown';
+// Erişim katmanı: cihazın Pi'ye hangi yoldan geldiği (kablolu / Wi-Fi / Pi'nin Kurulum Wi-Fi'ı / Ev VPN'i / belirsiz).
+export type AccessId = 'acc:wired' | 'acc:wifi' | 'acc:setup' | 'acc:vpn' | 'acc:unknown';
 export type AccessGroup = { id: AccessId; keys: string[] };
 export type Layout = {
   mode: LayoutMode;
