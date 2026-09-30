@@ -1,23 +1,25 @@
 import { useState } from 'react';
 import {
-  Clock, Gauge, BarChart3, Plus, Check, X, Trash2, Edit3,
-  ArrowDown, ArrowUp, Activity, Shield
+  Clock, Gauge, BarChart3, Plus, Check, X, Trash2, Activity, Shield
 } from 'lucide-react';
 import { useApi, postApi, putApi, deleteApi } from '../hooks/useApi';
 import { Panel, Badge, Select } from './ui';
-import type { TrafficRule, TrafficSchedule, ThrottleRule } from '../types';
+import type { TrafficRule, TrafficSchedule } from '../types';
 import { TrafficAnalytics } from './TrafficAnalytics';
+import { openBandwidthLimits } from '../nav';
 
 interface VpsServer { id: number; ip: string; location: string }
 
-type TrafficTab = 'scheduler' | 'throttle' | 'analytics';
+type TrafficTab = 'scheduler' | 'analytics';
 
 export function TrafficControlPanel() {
   const [activeTab, setActiveTab] = useState<TrafficTab>('scheduler');
 
-  const tabs: { id: TrafficTab; label: string; icon: React.ReactNode }[] = [
+  // Hız Limitleme Bant Genişliği → Kota ve Hız'a taşındı (cihaz hız sınırı orada Pi'ye uygulanır; eskiden buradaki kurallar
+  // yalnız veritabanına yazılıyordu): sekme oraya götürür.
+  const tabs: { id: TrafficTab | 'speed'; label: string; icon: React.ReactNode }[] = [
     { id: 'scheduler', label: 'Zamanlayici', icon: <Clock size={14} /> },
-    { id: 'throttle', label: 'Hiz Limitleme', icon: <Gauge size={14} /> },
+    { id: 'speed', label: 'Hız Limitleme', icon: <Gauge size={14} /> },
     { id: 'analytics', label: 'Trafik Analizi', icon: <BarChart3 size={14} /> },
   ];
 
@@ -33,7 +35,8 @@ export function TrafficControlPanel() {
             <button
               key={tab.id}
               className={`service-tab ${activeTab === tab.id ? 'service-tab-active' : ''}`}
-              onClick={() => setActiveTab(tab.id)}
+              onClick={() => (tab.id === 'speed' ? openBandwidthLimits() : setActiveTab(tab.id))}
+              title={tab.id === 'speed' ? 'Cihaz hız sınırı ve kota: Bant Genişliği → Kota ve Hız' : undefined}
             >
               {tab.icon}<span>{tab.label}</span>
             </button>
@@ -42,7 +45,6 @@ export function TrafficControlPanel() {
       </Panel>
 
       {activeTab === 'scheduler' && <SchedulerView />}
-      {activeTab === 'throttle' && <ThrottleView />}
       {activeTab === 'analytics' && <TrafficAnalytics />}
     </div>
   );
@@ -237,198 +239,6 @@ function SchedulerView() {
             <div className="empty-state" style={{ padding: 30 }}>
               <Clock size={32} />
               <p>Henuz zamanlama kurali olusturulmadi</p>
-            </div>
-          )}
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function ThrottleView() {
-  const { data, refetch } = useApi<{ rules: ThrottleRule[] }>('/throttle/rules', { rules: [] });
-  const [showAdd, setShowAdd] = useState(false);
-  const [editId, setEditId] = useState<number | null>(null);
-  const [newRule, setNewRule] = useState({
-    target_type: 'device' as 'device' | 'app' | 'group',
-    target_value: '',
-    max_download_kbps: 1000,
-    max_upload_kbps: 500,
-  });
-  const [editData, setEditData] = useState({ target_value: '', max_download_kbps: 0, max_upload_kbps: 0 });
-
-  const handleAdd = async () => {
-    if (!newRule.target_value) return;
-    try {
-      await postApi('/throttle/rules', {
-        target_type: newRule.target_type,
-        target_value: newRule.target_value,
-        max_download_kbps: newRule.max_download_kbps,
-        max_upload_kbps: newRule.max_upload_kbps,
-      });
-      setNewRule({ target_type: 'device', target_value: '', max_download_kbps: 1000, max_upload_kbps: 500 });
-      setShowAdd(false);
-      await refetch();
-    } catch { /* */ }
-  };
-
-  const handleToggle = async (rule: ThrottleRule) => {
-    try {
-      await putApi(`/throttle/rules/${rule.id}`, { enabled: rule.enabled ? 0 : 1 });
-      await refetch();
-    } catch { /* */ }
-  };
-
-  const handleDelete = async (id: number) => {
-    try {
-      await deleteApi(`/throttle/rules/${id}`);
-      await refetch();
-    } catch { /* */ }
-  };
-
-  const startEdit = (rule: ThrottleRule) => {
-    setEditId(rule.id);
-    setEditData({ target_value: rule.target_value, max_download_kbps: rule.max_download_kbps, max_upload_kbps: rule.max_upload_kbps });
-  };
-
-  const saveEdit = async () => {
-    if (editId === null) return;
-    try {
-      await putApi(`/throttle/rules/${editId}`, {
-        target_value: editData.target_value,
-        max_download_kbps: editData.max_download_kbps,
-        max_upload_kbps: editData.max_upload_kbps,
-      });
-      setEditId(null);
-      await refetch();
-    } catch { /* */ }
-  };
-
-  const maxBandwidth = 10000;
-
-  return (
-    <div style={{ marginTop: 14 }}>
-      <div className="glass-panel widget-large">
-        <div className="widget-header">
-          <h3><Gauge size={18} style={{ marginRight: 8 }} />Hiz Limitleme Kurallari</h3>
-          <button className="btn-primary btn-sm" onClick={() => setShowAdd(!showAdd)}>
-            <Plus size={14} /> Yeni Kural
-          </button>
-        </div>
-
-        {showAdd && (
-          <div className="cron-add-form">
-            <div className="cron-add-grid">
-              <div className="form-group">
-                <label>Hedef Tipi</label>
-                <Select className="config-select" value={newRule.target_type}
-                  onChange={e => setNewRule({ ...newRule, target_type: e.target.value as 'device' | 'app' | 'group' })}>
-                  <option value="device">Cihaz</option>
-                  <option value="app">Uygulama</option>
-                  <option value="group">Grup</option>
-                </Select>
-              </div>
-              <div className="form-group">
-                <label>Hedef</label>
-                <input className="config-input" type="text" placeholder="Cihaz MAC, uygulama adi veya grup"
-                  value={newRule.target_value} onChange={e => setNewRule({ ...newRule, target_value: e.target.value })} />
-              </div>
-              <div className="form-group">
-                <label><ArrowDown size={12} /> Maks Indirme (kbps)</label>
-                <input className="config-input" type="number" value={newRule.max_download_kbps}
-                  onChange={e => setNewRule({ ...newRule, max_download_kbps: Number(e.target.value) })} />
-              </div>
-              <div className="form-group">
-                <label><ArrowUp size={12} /> Maks Yukleme (kbps)</label>
-                <input className="config-input" type="number" value={newRule.max_upload_kbps}
-                  onChange={e => setNewRule({ ...newRule, max_upload_kbps: Number(e.target.value) })} />
-              </div>
-            </div>
-            <div className="cron-add-actions">
-              <button className="btn-primary btn-sm" onClick={handleAdd} disabled={!newRule.target_value}>
-                <Check size={13} /> Ekle
-              </button>
-              <button className="btn-outline btn-sm" onClick={() => setShowAdd(false)}>
-                <X size={13} /> Iptal
-              </button>
-            </div>
-          </div>
-        )}
-
-        <div className="list-items">
-          {data.rules.map(rule => (
-            <div key={rule.id} className={`list-item ${!rule.enabled ? 'cron-row-disabled' : ''}`}>
-              {editId === rule.id ? (
-                <div style={{ display: 'flex', gap: 8, width: '100%', alignItems: 'center' }}>
-                  <input className="config-input" value={editData.target_value}
-                    onChange={e => setEditData({ ...editData, target_value: e.target.value })} />
-                  <input className="config-input" type="number" value={editData.max_download_kbps}
-                    onChange={e => setEditData({ ...editData, max_download_kbps: Number(e.target.value) })}
-                    style={{ width: 100 }} />
-                  <input className="config-input" type="number" value={editData.max_upload_kbps}
-                    onChange={e => setEditData({ ...editData, max_upload_kbps: Number(e.target.value) })}
-                    style={{ width: 100 }} />
-                  <button className="btn-primary btn-sm" onClick={saveEdit}><Check size={13} /></button>
-                  <button className="btn-outline btn-sm" onClick={() => setEditId(null)}><X size={13} /></button>
-                </div>
-              ) : (
-                <>
-                  <button
-                    className={`toggle-btn toggle-sm ${rule.enabled ? 'toggle-on' : 'toggle-off'}`}
-                    onClick={() => handleToggle(rule)}
-                  >
-                    <div className="toggle-knob" />
-                  </button>
-                  <div style={{ flex: 1 }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                      <strong>{rule.target_value}</strong>
-                      <Badge variant="neutral">{rule.target_type === 'device' ? 'Cihaz' : rule.target_type === 'app' ? 'Uygulama' : 'Grup'}</Badge>
-                    </div>
-                    <div style={{ display: 'flex', gap: 16, marginTop: 6 }}>
-                      <div style={{ flex: 1 }}>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 11, color: '#94a3b8', marginBottom: 3 }}>
-                          <ArrowDown size={10} /> Indirme: {rule.max_download_kbps} kbps
-                        </div>
-                        <div style={{
-                          height: 6, borderRadius: 8, background: 'rgba(255,255,255,0.08)', overflow: 'hidden'
-                        }}>
-                          <div style={{
-                            height: '100%', borderRadius: 8, background: '#3b82f6',
-                            width: `${Math.min((rule.max_download_kbps / maxBandwidth) * 100, 100)}%`
-                          }} />
-                        </div>
-                      </div>
-                      <div style={{ flex: 1 }}>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 11, color: '#94a3b8', marginBottom: 3 }}>
-                          <ArrowUp size={10} /> Yukleme: {rule.max_upload_kbps} kbps
-                        </div>
-                        <div style={{
-                          height: 6, borderRadius: 8, background: 'rgba(255,255,255,0.08)', overflow: 'hidden'
-                        }}>
-                          <div style={{
-                            height: '100%', borderRadius: 8, background: '#8b5cf6',
-                            width: `${Math.min((rule.max_upload_kbps / maxBandwidth) * 100, 100)}%`
-                          }} />
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                  <div style={{ display: 'flex', gap: 4 }}>
-                    <button className="icon-btn icon-btn-sm" onClick={() => startEdit(rule)} title="Duzenle">
-                      <Edit3 size={13} />
-                    </button>
-                    <button className="icon-btn icon-btn-sm cron-delete" onClick={() => handleDelete(rule.id)} title="Sil">
-                      <Trash2 size={13} />
-                    </button>
-                  </div>
-                </>
-              )}
-            </div>
-          ))}
-          {data.rules.length === 0 && (
-            <div className="empty-state" style={{ padding: 30 }}>
-              <Gauge size={32} />
-              <p>Henuz hiz limitleme kurali olusturulmadi</p>
             </div>
           )}
         </div>

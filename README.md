@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/Ea2601/klyrix-gate/releases"><img src="https://img.shields.io/badge/version-2.24.63-38bdf8.svg?style=for-the-badge&logo=git&logoColor=white" alt="Version 2.24.63"></a>
+  <a href="https://github.com/Ea2601/klyrix-gate/releases"><img src="https://img.shields.io/badge/version-2.24.64-38bdf8.svg?style=for-the-badge&logo=git&logoColor=white" alt="Version 2.24.64"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-22c55e.svg?style=for-the-badge" alt="License MIT"></a>
   <img src="https://img.shields.io/badge/100%25-Free%20%26%20Open%20Source-ef4444.svg?style=for-the-badge&logo=opensourceinitiative&logoColor=white" alt="Free & Open Source">
   <img src="https://img.shields.io/badge/Telemetry-Zero-10b981.svg?style=for-the-badge" alt="Zero Telemetry">
@@ -120,7 +120,7 @@ flowchart TD
 
 ### 📊 4. Network Observability & Device Intelligence
 - **Mesh Topology & Discovery:** Automatic LAN host discovery, vendor profiling, custom naming, and instant device isolation/blocking.
-- **Bandwidth & Quota Management:** Real-time throughput metrics per device with bandwidth limits and quota warning alerts.
+- **Bandwidth, Speed Limits & Quotas:** Real-time throughput per device; per-device download / upload speed limits and daily / monthly quotas (when used up, internet is cut or slowed until the period resets), alerts at 80% and 100%. Enforced on the Pi with nftables.
 - **Integrated Speedtest:** Benchmark your WAN and VPN throughput directly from the gateway hardware.
 - **Parental Controls:** Schedule internet access times and block entire service categories per child device.
 

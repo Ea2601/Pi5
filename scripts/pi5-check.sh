@@ -120,7 +120,7 @@ checks = [
  ("routing: domain kuralları", "SELECT domain, exit_node, dpi_bypass, enabled FROM domain_routing"),
  ("panel Pi-hole listeleri (yalnız DB)", "SELECT list_type, COUNT(*) FROM pihole_lists GROUP BY list_type"),
  ("statik DHCP (yalnız DB)", "SELECT COUNT(*) FROM dhcp_leases WHERE is_static=1"),
- ("ebeveyn / hız kuralı (yalnız DB)", "SELECT (SELECT COUNT(*) FROM parental_rules), (SELECT COUNT(*) FROM throttle_rules)"),
+ ("ebeveyn kuralı / cihaz hız-kota sınırı (etkin)", "SELECT (SELECT COUNT(*) FROM parental_rules), (SELECT COUNT(*) FROM bandwidth_limits WHERE enabled=1)"),
 ]
 if c:
     for label, sql in checks:

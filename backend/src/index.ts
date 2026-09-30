@@ -32,6 +32,7 @@ import { sampleBandwidth, neighborMacs, buildLive } from './bandwidth';
 import { buildTopology, readNeighbors, readHandshakes, readDefaultRoute, readIfaces, readLocalIps, noteActivity, inCidr, readPeerHandshakes } from './topology';
 import { startLinkProbe, probeSamples, probeBaseline, noteTopologyView, type ProbeTarget } from './linkProbe';
 import { startTrafficRecorder, usageSummary, appActivity, appDefsFrom } from './trafficHistory';
+import { qosStatus, validateLimit, saveLimit, deleteLimit, resetQuota, normMac, runQos, migrateThrottleRules, startQos, isProtectedMac, normalizeLimitMacs } from './qos';
 import { readHardware, evaluateRoles } from './hardware';
 import { readHomeStations } from './homeWifi';
 import { STARTUP_ROLE, isSatellite, readRole, writeRole, type DeviceRole } from './role';
@@ -149,7 +150,7 @@ app.use('/api', authGate);
 // terminali çalıştıramasın). Ağ uçlarındaki (netmode, wan …) denetimin aynısı; localhost (kiosk) ve IP güvenilir.
 // netAdminGuard aşağıda tanımlı: istek anında çağrılır.
 app.use(['/api/terminal', '/api/cron', '/api/backup', '/api/system', '/api/services', '/api/storage', '/api/firewall',
-  '/api/fail2ban', '/api/unbound'], (req, res, next) => { void netAdminGuard(req, res, next); });
+  '/api/fail2ban', '/api/unbound', '/api/bandwidth'], (req, res, next) => { void netAdminGuard(req, res, next); });
 registerAuthRoutes(app);
 
 // Graceful shutdown
@@ -744,6 +745,7 @@ app.post('/api/services/:name/restart', async (req, res) => {
     }
     // nftables "yeniden uygula": cihaz engeli, Ev VPN'i, internet kartı güvenlik duvarı ve port yönlendirmeleri de yüklenir.
     if (name === 'nftables') await reapplyBlockedDevices();
+    if (name === 'nftables') await runQos({ notify: false, force: true }).catch((e: any) => console.error('Kota / hız sınırları yeniden uygulanamadı:', e.message));
     if (name === 'nftables') await reapplyWgServer();
     if (name === 'nftables') { await wanFirewallReload(); await applyPortForwards(); }
     const st = await waitServiceSettled(name, 'running', actionError ? 3000 : name === 'pihole' ? FTL_SETTLE_TIMEOUT : 15000);
@@ -2197,10 +2199,11 @@ app.get('/api/bandwidth/history/:mac', async (req, res) => {
   }
 });
 
+// ─── Kota ve hız sınırları (qos.ts): cihaz başına hız (indirme / yükleme) ve günlük / aylık kota, Pi'de uygulanır ───
+// Eskiden yalnız veritabanına yazılıyordu (ekleme de yoktu). Hız kbps, kota MB; boş / 0 = sınırsız.
 app.get('/api/bandwidth/limits', async (_req, res) => {
   try {
-    const limits = await dbAll('SELECT * FROM bandwidth_limits');
-    res.json({ limits });
+    res.json(await qosStatus());
   } catch (e: any) {
     res.status(500).json({ error: e.message });
   }
@@ -2208,13 +2211,33 @@ app.get('/api/bandwidth/limits', async (_req, res) => {
 
 app.put('/api/bandwidth/limits/:mac', async (req, res) => {
   try {
-    const { daily_limit_mb, monthly_limit_mb, enabled } = req.body;
-    await dbRun(
-      `INSERT INTO bandwidth_limits (device_mac, daily_limit_mb, monthly_limit_mb, enabled) VALUES (?, ?, ?, ?)
-       ON CONFLICT(device_mac) DO UPDATE SET daily_limit_mb = ?, monthly_limit_mb = ?, enabled = ?`,
-      [req.params.mac, daily_limit_mb, monthly_limit_mb, enabled ? 1 : 0,
-       daily_limit_mb, monthly_limit_mb, enabled ? 1 : 0]
-    );
+    const v = validateLimit(req.params.mac, req.body);
+    if ('error' in v) return res.status(400).json({ error: v.error });
+    if (await isProtectedMac(v.limit.device_mac)) {
+      return res.status(400).json({ error: "Bu MAC modemin ya da Pi'nin: sınır konamaz (tüm evin internet trafiği bu adresten geçer)" });
+    }
+    await saveLimit(v.limit);
+    res.json({ success: true });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.delete('/api/bandwidth/limits/:mac', async (req, res) => {
+  try {
+    if (!await deleteLimit(normMac(req.params.mac))) return res.status(404).json({ error: 'Bu cihaz için sınır yok' });
+    res.json({ success: true });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Kotayı sıfırla: seçilen dönemin sayacı bu andan başlar (kota dolmuşsa sınır hemen kalkar).
+app.post('/api/bandwidth/limits/:mac/reset', async (req, res) => {
+  try {
+    const period = req.body?.period;
+    if (period !== 'daily' && period !== 'monthly') return res.status(400).json({ error: 'Dönem günlük ya da aylık olmalı' });
+    if (!await resetQuota(normMac(req.params.mac), period)) return res.status(404).json({ error: 'Bu cihaz için sınır yok' });
     res.json({ success: true });
   } catch (e: any) {
     res.status(500).json({ error: e.message });
@@ -3967,6 +3990,13 @@ async function applyRestored(tables: Set<string>, keys: Set<string>, req: expres
       if (!r.ok) throw new Error(r.error || 'uygulanamadı');
     });
   }
+  if (tables.has('bandwidth_limits') || tables.has('throttle_rules')) {
+    await step('Kota ve hız sınırları', async () => {
+      await normalizeLimitMacs(); // eski yedekte büyük harfli MAC olabilir
+      await migrateThrottleRules(); // eski yedekteki Hız Limitleme kuralları
+      await runQos({ force: true });
+    });
+  }
   return out;
 }
 
@@ -4385,59 +4415,8 @@ app.post('/api/devices/:mac/approve', async (req, res) => {
   }
 });
 
-// ─── Bandwidth Throttling ───
-app.get('/api/throttle/rules', async (_req, res) => {
-  try {
-    const rules = await dbAll('SELECT * FROM throttle_rules ORDER BY id');
-    res.json({ rules });
-  } catch (e: any) {
-    res.status(500).json({ error: e.message });
-  }
-});
-
-app.post('/api/throttle/rules', async (req, res) => {
-  try {
-    const { target_type, target_value, max_download_kbps, max_upload_kbps, enabled } = req.body;
-    if (!target_type || !target_value) {
-      return res.status(400).json({ error: 'target_type ve target_value gerekli' });
-    }
-    await dbRun(
-      'INSERT INTO throttle_rules (target_type, target_value, max_download_kbps, max_upload_kbps, enabled) VALUES (?, ?, ?, ?, ?)',
-      [target_type, target_value, max_download_kbps || 0, max_upload_kbps || 0, enabled !== undefined ? (enabled ? 1 : 0) : 1]
-    );
-    res.json({ success: true });
-  } catch (e: any) {
-    res.status(500).json({ error: e.message });
-  }
-});
-
-app.put('/api/throttle/rules/:id', async (req, res) => {
-  try {
-    const { target_type, target_value, max_download_kbps, max_upload_kbps, enabled } = req.body;
-    const updates: string[] = [];
-    const params: any[] = [];
-    if (target_type !== undefined) { updates.push('target_type = ?'); params.push(target_type); }
-    if (target_value !== undefined) { updates.push('target_value = ?'); params.push(target_value); }
-    if (max_download_kbps !== undefined) { updates.push('max_download_kbps = ?'); params.push(max_download_kbps); }
-    if (max_upload_kbps !== undefined) { updates.push('max_upload_kbps = ?'); params.push(max_upload_kbps); }
-    if (enabled !== undefined) { updates.push('enabled = ?'); params.push(enabled ? 1 : 0); }
-    if (updates.length === 0) return res.json({ success: true });
-    params.push(req.params.id);
-    await dbRun(`UPDATE throttle_rules SET ${updates.join(', ')} WHERE id = ?`, params);
-    res.json({ success: true });
-  } catch (e: any) {
-    res.status(500).json({ error: e.message });
-  }
-});
-
-app.delete('/api/throttle/rules/:id', async (req, res) => {
-  try {
-    await dbRun('DELETE FROM throttle_rules WHERE id = ?', [req.params.id]);
-    res.json({ success: true });
-  } catch (e: any) {
-    res.status(500).json({ error: e.message });
-  }
-});
+// Trafik Kontrol → Hız Limitleme (throttle_rules) kaldırıldı: kurallar yalnız veritabanındaydı, hiç uygulanmıyordu.
+// Cihaz hız sınırı artık Bant Genişliği → Kota ve Hız'da (qos.ts, /api/bandwidth/limits); eski kurallar açılışta taşınır.
 
 // ─── Settings (Theme/Language) ───
 app.get('/api/settings', async (_req, res) => {
@@ -5503,6 +5482,8 @@ const server = app.listen(Number(port), bindHost, () => {
     });
     // Trafik analizi: cihaz × yol bayt kayıtları, 5 dk'da bir (saat sınırlarına hizalı).
     startTrafficRecorder();
+    // Cihaz hız sınırı ve kota (Bant Genişliği → Kota ve Hız): açılıştan 15 sn sonra, sonra dakikada bir.
+    startQos({ protectedMacs: blockProtectedMacs });
   }
   } // !isSatellite
   // Cron: panel görevleri zamanlayıcıya yazılır, ancak bu başarılıysa eski pi5-maintenance satırları çıkarılır (önce yeni

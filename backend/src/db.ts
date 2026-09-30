@@ -333,6 +333,12 @@ export const initDb = () => {
       device_mac TEXT PRIMARY KEY, daily_limit_mb INTEGER DEFAULT 0,
       monthly_limit_mb INTEGER DEFAULT 0, enabled INTEGER DEFAULT 0
     )`);
+    // Cihaz sınırı (Bant Genişliği → Kota ve Hız, qos.ts): hız (kbps, 0 = sınırsız) ve kota dolunca ne olacağı
+    // (block: interneti kes, throttle: over_kbps'e yavaşlat).
+    db.run(`ALTER TABLE bandwidth_limits ADD COLUMN max_down_kbps INTEGER DEFAULT 0`, () => {});
+    db.run(`ALTER TABLE bandwidth_limits ADD COLUMN max_up_kbps INTEGER DEFAULT 0`, () => {});
+    db.run(`ALTER TABLE bandwidth_limits ADD COLUMN over_action TEXT DEFAULT 'block'`, () => {});
+    db.run(`ALTER TABLE bandwidth_limits ADD COLUMN over_kbps INTEGER DEFAULT 1000`, () => {});
 
     db.run(`CREATE TABLE IF NOT EXISTS speed_tests (
       id INTEGER PRIMARY KEY AUTOINCREMENT,

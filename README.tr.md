@@ -11,7 +11,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/Ea2601/klyrix-gate/releases"><img src="https://img.shields.io/badge/version-2.24.63-38bdf8.svg?style=for-the-badge&logo=git&logoColor=white" alt="Version 2.24.63"></a>
+  <a href="https://github.com/Ea2601/klyrix-gate/releases"><img src="https://img.shields.io/badge/version-2.24.64-38bdf8.svg?style=for-the-badge&logo=git&logoColor=white" alt="Version 2.24.64"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-22c55e.svg?style=for-the-badge" alt="License MIT"></a>
   <img src="https://img.shields.io/badge/100%25-Free%20%26%20Open%20Source-ef4444.svg?style=for-the-badge&logo=opensourceinitiative&logoColor=white" alt="Free & Open Source">
   <img src="https://img.shields.io/badge/Telemetry-Zero-10b981.svg?style=for-the-badge" alt="Zero Telemetry">
@@ -121,7 +121,7 @@ flowchart TD
 
 ### 📊 4. Canlı Ağ Haritası & Gözlemlenebilirlik
 - **Ağ Topolojisi & Cihaz Profilleri:** Ağdaki tüm bağlı cihazları otomatik keşfetme, özel isim/grup atama ve tek tıkla ağdan izole etme.
-- **Bant Genişliği & Kota Takibi:** Cihaz başına anlık veri tüketimi, hız grafikleri ve kota aşımlarında uyarı mekanizması.
+- **Bant Genişliği, Hız Sınırı ve Kota:** Cihaz başına anlık veri tüketimi; cihaz başına indirme / yükleme hız sınırı ve günlük / aylık kota (dolunca internet kesilir ya da yavaşlatılır, dönem başında kendiliğinden kalkar), %80 ve %100'de uyarı. Pi'de nftables ile uygulanır.
 - **Dahili Hız Testi:** Ağ geçidi üzerinden doğrudan internet bağlantı hızını ölçümleme.
 - **Ebeveyn Kontrolü:** Belirli cihazlar için zaman kısıtlamaları ve güvenli internet profilleri.
 

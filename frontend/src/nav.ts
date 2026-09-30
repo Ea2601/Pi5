@@ -84,3 +84,11 @@ export function rememberTab(tab: TabId): void {
 export function tabLabel(id: TabId): string {
   return NAV_TABS.find(t => t.id === id)?.label ?? '';
 }
+
+// Bant Genişliği sayfasının açılışta göstereceği sekme (tek seferlik): Trafik Kontrol → Hız Limitleme buraya taşındı,
+// sekme "Kota ve Hız"ı açar.
+export const BANDWIDTH_TAB_KEY = 'pi5-bandwidth-tab';
+export function openBandwidthLimits(): void {
+  try { sessionStorage.setItem(BANDWIDTH_TAB_KEY, 'limits'); } catch { /* depolama yok: Canlı İzleme açılır */ }
+  window.location.hash = '#bandwidth';
+}

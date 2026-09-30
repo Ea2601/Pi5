@@ -9,10 +9,12 @@ import { FTL_DB } from './system';
 // kullanımı. Kaynak, ağ haritasıyla aynı nft sayaçları (bandwidth.ts: ip . ct mark). Kayıt tablosu bu modülün kendisi:
 // traffic_usage (ts = aralık başı, unix sn). traffic_counter_last son sayaç değerlerini tutar → panel yeniden başlasa da
 // aradaki trafik kaybolmaz; Pi yeniden başlayınca sayaçlar sıfırlanır (azalan sayaç = yeni başlangıç, değeri olduğu gibi
-// fark sayılır). 14 gün saklanır.
+// fark sayılır). 14 gün saklanır. traffic_daily: cihaz başına günlük toplam (yerel gün, 400 gün) — kota (qos.ts) aylık
+// dönemi 14 günlük kayıttan uzun sürer.
 
 export const INTERVAL_S = 300;
 const KEEP_S = 14 * 86400;
+const DAILY_KEEP_DAYS = 400;
 
 type Counter = { down: number; up: number };
 export type UsageRow = { ts: number; mac: string; route: string; down: number; up: number };
@@ -57,6 +59,14 @@ function ensureTables(): Promise<void> {
       )`);
       await dbRun('CREATE INDEX IF NOT EXISTS idx_traffic_usage_ts ON traffic_usage(ts)');
       await dbRun(`CREATE TABLE IF NOT EXISTS traffic_counter_last (k TEXT PRIMARY KEY, down INTEGER NOT NULL, up INTEGER NOT NULL)`);
+      await dbRun(`CREATE TABLE IF NOT EXISTS traffic_daily (
+        day TEXT NOT NULL, mac TEXT NOT NULL, down INTEGER NOT NULL DEFAULT 0, up INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (day, mac)
+      )`);
+      // Tablo boşsa (ilk kez) mevcut 5 dakikalık kayıtlardan doldurulur: bu ayın kullanımı sıfırdan başlamasın.
+      if (!(await dbAll('SELECT 1 FROM traffic_daily LIMIT 1')).length) {
+        await dbRun(`INSERT OR IGNORE INTO traffic_daily (day, mac, down, up)
+          SELECT date(ts, 'unixepoch', 'localtime'), mac, SUM(down), SUM(up) FROM traffic_usage GROUP BY 1, 2`);
+      }
     })().catch(e => { tableReady = null; throw e; });
   }
   return tableReady;
@@ -83,7 +93,29 @@ async function saveLast(cur: Map<string, Counter>): Promise<void> {
   await insertMany('traffic_counter_last', ['k', 'down', 'up'], [[MARKER, 0, 0], ...[...cur].map(([k, c]) => [k, c.down, c.up])]);
 }
 
-export async function recordInterval(now = Date.now()): Promise<number> {
+// IP → MAC: komşu tablosu, yoksa cihaz listesindeki son IP.
+async function macResolver(): Promise<(ip: string) => string | undefined> {
+  const neighbors = await readNeighbors();
+  const known = new Map<string, string>();
+  for (const d of await dbAll('SELECT mac_address, ip_address FROM devices WHERE ip_address IS NOT NULL')) {
+    known.set(String((d as any).ip_address), String((d as any).mac_address).toLowerCase());
+  }
+  return ip => neighbors.get(ip)?.mac || known.get(ip);
+}
+
+// Kayıt ile kota okuması (periodUsage) sıralı: kayıt satırlarını yazıp son sayaçları kaydetmeden araya giren okuma aynı
+// trafiği iki kez saymasın.
+let chain: Promise<unknown> = Promise.resolve();
+function serial<T>(fn: () => Promise<T>): Promise<T> {
+  const next = chain.then(fn, fn);
+  chain = next.catch(() => {});
+  return next;
+}
+
+export function recordInterval(now = Date.now()): Promise<number> {
+  return serial(() => recordIntervalNow(now));
+}
+async function recordIntervalNow(now: number): Promise<number> {
   await ensureTables();
   const { markCounters } = await sampleBandwidth();
   const prev = await loadLast();
@@ -91,17 +123,50 @@ export async function recordInterval(now = Date.now()): Promise<number> {
   const ts = Math.floor(now / 1000 / INTERVAL_S) * INTERVAL_S - INTERVAL_S; // biten aralığın başı
   let rows: UsageRow[] = [];
   if (deltas.size) {
-    const neighbors = await readNeighbors();
-    const known = new Map<string, string>();
-    for (const d of await dbAll('SELECT mac_address, ip_address FROM devices WHERE ip_address IS NOT NULL')) {
-      known.set(String((d as any).ip_address), String((d as any).mac_address).toLowerCase());
-    }
-    rows = toUsageRows(ts, deltas, ip => neighbors.get(ip)?.mac || known.get(ip));
+    rows = toUsageRows(ts, deltas, await macResolver());
     await insertMany('traffic_usage', ['ts', 'mac', 'route', 'down', 'up'], rows.map(r => [r.ts, r.mac, r.route, r.down, r.up]));
+    const daily = new Map<string, Counter>();
+    for (const r of rows) {
+      const c = daily.get(r.mac) || { down: 0, up: 0 };
+      c.down += r.down; c.up += r.up;
+      daily.set(r.mac, c);
+    }
+    for (const [mac, c] of daily) {
+      await dbRun(`INSERT INTO traffic_daily (day, mac, down, up) VALUES (date(?, 'unixepoch', 'localtime'), ?, ?, ?)
+        ON CONFLICT(day, mac) DO UPDATE SET down = down + excluded.down, up = up + excluded.up`, [ts, mac, c.down, c.up]);
+    }
   }
   await saveLast(markCounters);
   await dbRun('DELETE FROM traffic_usage WHERE ts < ?', [Math.floor(now / 1000) - KEEP_S]);
+  await dbRun(`DELETE FROM traffic_daily WHERE day < date('now', 'localtime', '-${DAILY_KEEP_DAYS} days')`);
   return rows.length;
+}
+
+// Kota (qos.ts): cihaz (MAC) başına bugünkü ve aylık dönemdeki kullanım, indirme + yükleme bayt. today / monthStart
+// 'YYYY-MM-DD' (yerel gün). Kayıtlı günlük toplamlar + henüz kaydedilmemiş sayaç farkı (en çok son 5 dk; bugüne sayılır).
+// Sayaçlar okunamazsa (nft yok) yalnız kayıtlı toplamlar.
+export function periodUsage(today: string, monthStart: string): Promise<Map<string, { day: number; month: number }>> {
+  return serial(async () => {
+    await ensureTables();
+    const out = new Map<string, { day: number; month: number }>();
+    const add = (mac: string, day: number, month: number) => {
+      const c = out.get(mac) || { day: 0, month: 0 };
+      c.day += day; c.month += month;
+      out.set(mac, c);
+    };
+    const rows = await dbAll(`SELECT mac, SUM(CASE WHEN day = ? THEN down + up ELSE 0 END) AS d, SUM(down + up) AS m
+      FROM traffic_daily WHERE day >= ? GROUP BY mac`, [today, monthStart]);
+    for (const r of rows as any[]) add(String(r.mac), Number(r.d) || 0, Number(r.m) || 0);
+    const prev = await loadLast();
+    if (prev) {
+      try {
+        const { markCounters } = await sampleBandwidth();
+        const deltas = counterDeltas(prev, markCounters);
+        if (deltas.size) for (const r of toUsageRows(0, deltas, await macResolver())) add(r.mac, r.down + r.up, r.down + r.up);
+      } catch { /* sayaçlar okunamadı: kayıtlı toplamlar */ }
+    }
+    return out;
+  });
 }
 
 // 5 dakikalık saat sınırlarına hizalı kayıt (ilk kayıt açılıştan en az 1 dk sonra).

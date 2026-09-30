@@ -197,15 +197,6 @@ export interface DeviceGroup {
   members?: Device[];
 }
 
-export interface ThrottleRule {
-  id: number;
-  target_type: 'device' | 'app' | 'group';
-  target_value: string;
-  max_download_kbps: number;
-  max_upload_kbps: number;
-  enabled: number;
-}
-
 export interface TrafficSchedule {
   id: number;
   traffic_routing_id: number;
