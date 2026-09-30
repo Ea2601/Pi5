@@ -11,9 +11,11 @@ interface ServiceSettingsProps {
   categoryIcons?: Record<string, React.ReactNode>;
   // Gösterilmeyecek kategoriler (ör. Pi-hole 'dhcp': alanları sisteme uygulanmıyor, yerini gerçek durum kartı aldı)
   excludeCategories?: string[];
+  // Yeniden başlatma düğmesinin adı (ör. nftables: "Kuralları yeniden uygula" — flush yapmadan yeniden yükler)
+  restartLabel?: string;
 }
 
-export function ServiceSettings({ service, categoryLabels = {}, categoryIcons = {}, excludeCategories = [] }: ServiceSettingsProps) {
+export function ServiceSettings({ service, categoryLabels = {}, categoryIcons = {}, excludeCategories = [], restartLabel }: ServiceSettingsProps) {
   const { data, refetch } = useApi<{ service: string; config: Record<string, ConfigItem[]> }>(
     `/services/${service}/config`, { service, config: {} }
   );
@@ -50,7 +52,7 @@ export function ServiceSettings({ service, categoryLabels = {}, categoryIcons = 
     try {
       // Yanıt, servis yeniden başlayıp durumu doğrulandıktan sonra gelir (başarısızsa hata döner).
       await postApi(`/services/${service}/restart`, {});
-      toast.success('Servis yeniden başlatıldı');
+      toast.success(restartLabel ? `${restartLabel}: tamam` : 'Servis yeniden başlatıldı');
     } catch (e: any) {
       toast.error(e.message);
     }
@@ -109,7 +111,7 @@ export function ServiceSettings({ service, categoryLabels = {}, categoryIcons = 
         <div className="settings-toolbar-right">
           <button className="btn-outline btn-sm" onClick={handleRestart} disabled={restarting}>
             <RotateCcw size={13} className={restarting ? 'spin' : ''} />
-            {restarting ? 'Yeniden Başlatılıyor...' : 'Servisi Yeniden Başlat'}
+            {restarting ? (restartLabel ? 'Uygulanıyor...' : 'Yeniden Başlatılıyor...') : (restartLabel || 'Servisi Yeniden Başlat')}
           </button>
           <button className="btn-primary btn-sm" onClick={handleSave} disabled={!hasChanges || saving}>
             <Save size={13} />

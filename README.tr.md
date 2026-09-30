@@ -11,7 +11,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/Ea2601/klyrix-gate/releases"><img src="https://img.shields.io/badge/version-2.24.57-38bdf8.svg?style=for-the-badge&logo=git&logoColor=white" alt="Version 2.24.57"></a>
+  <a href="https://github.com/Ea2601/klyrix-gate/releases"><img src="https://img.shields.io/badge/version-2.24.58-38bdf8.svg?style=for-the-badge&logo=git&logoColor=white" alt="Version 2.24.58"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-22c55e.svg?style=for-the-badge" alt="License MIT"></a>
   <img src="https://img.shields.io/badge/100%25-Free%20%26%20Open%20Source-ef4444.svg?style=for-the-badge&logo=opensourceinitiative&logoColor=white" alt="Free & Open Source">
   <img src="https://img.shields.io/badge/Telemetry-Zero-10b981.svg?style=for-the-badge" alt="Zero Telemetry">
@@ -108,7 +108,7 @@ flowchart TD
 ### 🛡️ 1. Ağ & Siber Güvenlik
 - **nftables Çekirdek Güvenlik Duvarı:** Yeniden başlatmalarda kalıcı kural setleri, NAT, port yönlendirme ve modem/ağ bypass girişimlerini engelleyen ICMP redirect koruması.
 - **Zapret DPI Bypass:** Servis sağlayıcıların SNI ve TCP paket incelemelerine karşı paket manipülasyonu ile engelleri aşma.
-- **Fail2Ban Saldırı Önleme:** SSH ve yönetim paneline yönelik yetkisiz giriş denemelerini algılayarak IP seviyesinde bloklama.
+- **Fail2Ban Saldırı Önleme:** SSH'a yönelik yetkisiz giriş denemelerini algılayarak IP seviyesinde bloklama; tekrarlayanlara 1 hafta yasak, ev ağı muaf (kendinizi kilitleyemezsiniz). Ayarlar panelden Fail2Ban'a uygulanır.
 
 ### 🌐 2. DNS Egemenliği & Reklam Engelleme
 - **Pi-hole Entegrasyonu:** Ağ seviyesinde reklam, izleyici ve kötü amaçlı yazılım alan adlarını engelleme, canlı sorgu kaydı ve blokliste yönetimi.

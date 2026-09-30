@@ -374,10 +374,11 @@ function FirewallDoc() {
         </table>
       </DocBlock>
 
-      <DocBlock title="Ayarlar">
-        <p><strong>Politikalar:</strong> Her zincirin varsayılan davranışını belirler (accept/drop).</p>
-        <p><strong>NAT:</strong> Masquerade yapılacak çıkış arayüzü ve NAT etkinliği.</p>
-        <p><strong>Yönlendirme:</strong> LAN/WAN/WireGuard arayüz atamaları ve IP forwarding.</p>
+      <DocBlock title="Kurallar ve ayarlar">
+        <p><strong>Özel kurallar:</strong> sırayla ve sabit izinlerden (SSH, DNS, panel) ÖNCE değerlendirilir — "düşür" kuralı gerçekten engeller. Kaynak IP kuralında port boşsa cihazın Pi'ye tüm erişimi (DNS dahil), doluysa yalnız o port etkilenir. Panele eriştiğiniz cihazı dışarıda bırakan kural kabul edilmez.</p>
+        <p><strong>Uygulama:</strong> kurallar önce sınanır (<code>nft -c</code>), sonra yüklenir ve kaydedilir; sınamadan geçmezse hiçbir şey değişmez. Kurallar sekmesindeki önizleme yüklenecek gerçek kurallardır.</p>
+        <p><strong>Politika ve NAT:</strong> gelen ve iletilen trafik varsayılan olarak düşürülür; adres çevirisi ağ düzenine göre (tek bacak, internet kartı, Wi-Fi köprüsü) kendiliğinden kurulur.</p>
+        <p><strong>Arayüzler:</strong> LAN/WAN ataması yalnız iki kartlı eski düzende kullanılır.</p>
       </DocBlock>
     </div>
   );
@@ -428,21 +429,21 @@ function Fail2banDoc() {
         <table className="doc-table">
           <thead><tr><th lang="en">Jail</th><th>Koruduğu Servis</th><th>Açıklama</th></tr></thead>
           <tbody>
-            <tr><td><strong>sshd</strong></td><td>SSH</td><td>Başarısız SSH giriş denemelerini izler</td></tr>
-            <tr><td><strong>nginx-http-auth</strong></td><td>Web sunucu</td><td>HTTP Basic Auth denemelerini izler</td></tr>
-            <tr><td><strong>recidive</strong></td><td>Tüm jail'ler</td><td>Tekrar ban alan IP'lere uzun süreli ban uygular</td></tr>
+            <tr><td><strong>sshd</strong></td><td>SSH</td><td>Başarısız SSH giriş denemelerini izler (sistem günlüğünden)</td></tr>
+            <tr><td><strong>recidive</strong></td><td>Tüm portlar</td><td>1 günde 5 kez yasaklanan adresi 1 hafta tüm portlardan engeller (Ayarlar'dan kapatılabilir)</td></tr>
           </tbody>
         </table>
       </DocBlock>
 
-      <DocBlock title="Temel Ayarlar">
-        <p><strong>bantime:</strong> IP'nin engellenme süresi (varsayılan: 1 saat).</p>
-        <p><strong>findtime:</strong> Hata sayma penceresi (bu sürede maxretry aşılırsa ban).</p>
-        <p><strong>maxretry:</strong> Ban öncesi izin verilen başarısız deneme sayısı.</p>
-        <p><strong>ignoreip:</strong> Ban uygulanmayacak IP/subnet listesi (yerel ağ dahil).</p>
+      <DocBlock title="Ayarlar (Fail2Ban → Ayarlar)">
+        <p>Ayarlar Fail2Ban'a gerçekten uygulanır: <code>/etc/fail2ban/jail.d/klyrix-panel.local</code> yazılır, sınanır ve Fail2Ban yeniden yüklenir; sınamadan geçmezse eski ayarlar kalır. <code>jail.local</code>'e dokunulmaz.</p>
+        <p><strong>SSH deneme hakkı / yasak süresi:</strong> varsayılan 3 hatalı giriş → 2 saat.</p>
+        <p><strong>Hata penceresi:</strong> denemelerin sayıldığı süre (varsayılan 10 dk).</p>
+        <p><strong>Ev ağı muaf:</strong> Pi'nin ev ağı, kurulum Wi-Fi'ı ve yerel adresler yasaklanmaz — evdeki bir cihazdan yanlış şifre SSH'ı kilitlemez. Ev ağı değişirse liste kendiliğinden güncellenir.</p>
+        <p><strong>Ek muaf adresler:</strong> ev dışında güvendiğiniz adresler.</p>
       </DocBlock>
 
-      <DocTip type="warning">Recidive jail'i, kısa süreli banlardan sonra tekrar yakalanan IP'lere 1 haftalık ban uygular.</DocTip>
+      <DocTip type="info">Yasaklı bir adresi Genel Bakış'taki jail satırından "Yasağı kaldır" ile hemen açabilirsiniz.</DocTip>
     </div>
   );
 }
@@ -567,7 +568,7 @@ function TroubleshootingDoc({ expandedFaq, setExpandedFaq }: { expandedFaq: stri
     { id: 'wg-fail', q: 'WireGuard tüneli bağlanmıyor', a: 'VPS\'in erişilebilir olduğundan emin olun (ping). UDP 51820 portunun VPS firewall\'unda açık olduğunu kontrol edin. "wg show" komutuyla handshake durumunu kontrol edin.' },
     { id: 'high-cpu', q: 'CPU kullanımı çok yüksek', a: 'Zapret NFQWS modunda paket işleme CPU yoğundur. TPROXY moduna geçmeyi deneyin. Ayrıca Unbound thread sayısını CPU çekirdek sayısıyla eşleştirin.' },
     { id: 'blocked-site', q: 'Bir site Pi-hole tarafından yanlışlıkla engelleniyor', a: 'Pi-hole → Beyaz Liste sekmesinden domaini ekleyin. Alternatif olarak "pihole -w example.com" komutuyla CLI\'dan ekleyebilirsiniz.' },
-    { id: 'ssh-locked', q: 'SSH ile bağlanamıyorum, Fail2Ban engelledi', a: 'Fiziksel erişimle "fail2ban-client set sshd unbanip <IP>" çalıştırın. Yerel ağınızı ignoreip listesine ekleyin.' },
+    { id: 'ssh-locked', q: 'SSH ile bağlanamıyorum, Fail2Ban engelledi', a: 'Ev ağı varsayılan olarak muaftır. Dışarıdan (ör. Ev VPN\'i ile) yasaklandıysanız panelde Fail2Ban → Genel Bakış → "Yasağı kaldır". Panele de erişemiyorsanız Pi\'de "fail2ban-client unban <IP>" çalıştırın.' },
     { id: 'slow-dns', q: 'DNS sorguları yavaş', a: 'Unbound önbellek boyutunu artırın (msg_cache_size, rrset_cache_size). Prefetch özelliğini aktifleştirin. cache_min_ttl değerini yükseltin.' },
     { id: 'gravity-fail', q: 'Pi-hole Gravity güncellemesi başarısız', a: 'İnternet bağlantısını kontrol edin. Bloklistelerindeki URL\'lerin erişilebilir olduğunu doğrulayın. Erişilemeyen listeleri devre dışı bırakın.' },
   ];
@@ -632,7 +633,7 @@ wg-quick down wg0          # Tüneli durdur`}</CodeBlock>
       <DocBlock title="nftables & Ağ">
         <CodeBlock>{`nft list ruleset           # Tüm kurallar
 nft list chain inet filter input  # Input zinciri
-systemctl restart nftables # Kuralları yeniden yükle
+nft list table inet pi5_filter  # Panelin güvenlik duvarı (yeniden yüklemek: panel → Güvenlik Duvarı → Ayarlar → Kuralları yeniden uygula)
 ip addr show               # Ağ arayüzleri
 ss -tulnp                  # Açık portlar`}</CodeBlock>
       </DocBlock>

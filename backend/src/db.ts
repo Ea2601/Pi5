@@ -69,6 +69,17 @@ export const initDb = () => {
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       type TEXT NOT NULL, target TEXT NOT NULL, action TEXT NOT NULL, enabled INTEGER DEFAULT 1
     )`);
+    // Güvenlik duvarı IP kuralında isteğe bağlı port (boş = cihazın Pi'ye tüm erişimi) ve protokolü (tcp / udp / both).
+    // Sütun ilk kez eklenirken (bu sürüme güncelleme): eski "düşür / reddet" kuralları hiç işlemiyordu (sabit izinlerin
+    // arkasındaydı) — artık önde değerlendirildikleri için denetimsiz devreye girmesinler: kapalı olarak kalırlar, kullanıcı
+    // Güvenlik Duvarı sayfasında gözden geçirip açar (açarken kilitlenme denetimi yapılır). Davranış değişmez.
+    db.run(`ALTER TABLE routing_rules ADD COLUMN port TEXT DEFAULT ''`, (err: Error | null) => {
+      if (err) return; // sütun zaten var
+      db.run(`UPDATE routing_rules SET enabled = 0 WHERE action IN ('drop', 'reject') AND enabled = 1`, function (this: any, e: Error | null) {
+        if (!e && this?.changes) console.log(`[firewall] eski sürümden ${this.changes} engelle kuralı kapalı olarak taşındı (gözden geçirip açın)`);
+      });
+    });
+    db.run(`ALTER TABLE routing_rules ADD COLUMN proto TEXT DEFAULT ''`, () => {});
 
     db.run(`CREATE TABLE IF NOT EXISTS traffic_routing (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -256,25 +267,14 @@ export const initDb = () => {
       db.run(`INSERT OR IGNORE INTO service_config VALUES (?, ?, ?, ?, ?, ?, ?, '')`, [svc, cat, key, val, label, desc, type]);
     });
 
-    // Fail2ban config
-    const f2bConfigs: [string, string, string, string, string, string, string][] = [
-      ['fail2ban', 'default', 'bantime', '3600', 'Ban Suresi (sn)', 'IP engelleme suresi', 'number'],
-      ['fail2ban', 'default', 'findtime', '600', 'Bulma Suresi (sn)', 'Hata sayma penceresi', 'number'],
-      ['fail2ban', 'default', 'maxretry', '5', 'Maks Deneme', 'Ban oncesi deneme sayisi', 'number'],
-      ['fail2ban', 'default', 'ignoreip', '127.0.0.1/8 192.168.1.0/24', 'Muaf IPler', 'Ban uygulanmayacak IP listesi', 'text'],
-      ['fail2ban', 'sshd', 'sshd_enabled', 'true', 'SSH Korumasi', 'SSH brute-force korumasi', 'boolean'],
-      ['fail2ban', 'sshd', 'sshd_maxretry', '3', 'SSH Maks Deneme', 'SSH ban oncesi deneme', 'number'],
-    ];
-    f2bConfigs.forEach(([svc, cat, key, val, label, desc, type]) => {
-      db.run(`INSERT OR IGNORE INTO service_config VALUES (?, ?, ?, ?, ?, ?, ?, '')`, [svc, cat, key, val, label, desc, type]);
-    });
+    // Fail2Ban ayarları artık Fail2Ban'a gerçekten uygulanır (fail2ban.ts; app_settings.fail2ban_settings). Eski satırlar
+    // yalnız veritabanındaydı; mevcut kurulumlarda ilk okumada yeni ayarlara taşınıp silinir, artık tohumlanmaz.
 
-    // nftables config
+    // nftables config. Politika / NAT anahtarları (input_policy, forward_policy, masquerade_iface, nat_enabled) hiç
+    // uygulanmıyordu (yalnız veritabanı; politikalar sabit drop, NAT kipe göre) → kaldırıldı; gerçek durum Kurallar
+    // sekmesindeki önizlemede. LAN/WAN arayüzü iki kartlı eski düzende kullanılır.
+    db.run(`DELETE FROM service_config WHERE service = 'nftables' AND key IN ('input_policy', 'forward_policy', 'masquerade_iface', 'nat_enabled')`);
     const nftConfigs: [string, string, string, string, string, string, string][] = [
-      ['nftables', 'policy', 'input_policy', 'drop', 'Input Politikasi', 'Gelen trafik varsayilan politikasi', 'select'],
-      ['nftables', 'policy', 'forward_policy', 'drop', 'Forward Politikasi', 'Yonlendirme varsayilan politikasi', 'select'],
-      ['nftables', 'nat', 'masquerade_iface', 'wlan0', 'NAT Arayuzu', 'Masquerade cikis arayuzu', 'text'],
-      ['nftables', 'nat', 'nat_enabled', 'true', 'NAT Aktif', 'Network Address Translation', 'boolean'],
       ['nftables', 'forwarding', 'lan_iface', 'eth0', 'LAN Arayuzu', 'Yerel ag arayuzu', 'text'],
       ['nftables', 'forwarding', 'wan_iface', 'wlan0', 'WAN Arayuzu', 'Internet cikis arayuzu', 'text'],
     ];

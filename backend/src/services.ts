@@ -10,6 +10,15 @@ import { shq, isValidDomain } from './util';
 
 const execAsync = util.promisify(exec);
 
+// Güvenlik duvarı yapılandırması (uygulanmadan): Deploy Et, önizleme ve "kuralları yeniden uygula" aynı metni kullanır.
+export interface NftLine { rule: string; label: string; kind: 'system' | 'custom' | 'service' }
+export interface NftBuild {
+  config: string; mode: 'wan' | 'sameNet' | 'oneArm' | 'twoCard'; lanIfs: string[]; wanIfs: string[];
+  input: NftLine[]; forward: NftLine[]; nat: NftLine[];
+}
+const NFT_CONF = '/etc/nftables.conf';
+let nftTmpSeq = 0;
+
 // WireGuard "yeniden başlat": ayakta ya da açılışta etkin her wg_vps tünelini systemd üzerinden yeniden kurar
 // (panel bağlantısı wg-quick'i doğrudan çalıştırdığı için önce birim + arayüz indirilir; ssh.ts connect ile aynı sıra).
 async function restartWireguardTunnels(): Promise<string> {
@@ -57,7 +66,7 @@ export const systemServices = {
         return execAsync(zapretBash, { timeout: 120000 });
     },
 
-    async configureNftables(ifaces?: { lan?: string; wan?: string }, customInputRules?: string[]) {
+    async buildNftables(ifaces?: { lan?: string; wan?: string }, customInputRules?: string[]): Promise<NftBuild> {
         if (!isLinux) throw new Error('nftables yapılandırması sadece Pi5 üzerinde çalışır');
         // Arayüz rollerini DB config'ten al; geçersiz/var olmayan arayüzde otomatik algılamaya düş
         // (böylece hem eth0=WAN hem wlan0=WAN topolojileri doğru çalışır).
@@ -93,16 +102,44 @@ export const systemServices = {
         // maskelemesi ve güvenlik duvarı kendi tablolarında (pi5_bak), buraya girmez.
         const wanIfs = sameNet ? [sameNet.up] : wanMode ? uplinkIfaces(ns) : oneArm ? lanIfs : [wan];
         const nftIfs = (xs: string[]) => (xs.length === 1 ? `"${xs[0]}"` : `{ ${xs.map(x => `"${x}"`).join(', ')} }`);
-        // Port yönlendirme (yalnız internet kartı modunda): DNAT'lanan yeni bağlantılar ev ağına iletilir.
-        const dnatLine = wanMode ? `\n        iifname ${nftIfs(wanIfs)} oifname ${nftIfs(lanIfs)} ct status dnat accept` : '';
-        // Wi-Fi köprüsü: üst ağdaki cihazlar (ve modemin port yönlendirmeleri) ev tarafındaki cihazlara yeni bağlantı açabilir.
-        const sameNetLine = sameNet ? `\n        iifname ${nftIfs(wanIfs)} oifname ${nftIfs(lanIfs)} accept` : '';
-        const wanMasq = sameNet ? '' : `\n        oifname ${nftIfs(wanIfs)} masquerade`;
 
-        // Özel kullanıcı kuralları (index.ts'te doğrulanmış nft satırları olarak gelir).
-        const customLines = (customInputRules && customInputRules.length)
-            ? '\n        # Özel kullanıcı kuralları\n        ' + customInputRules.join('\n        ')
-            : '';
+        // Input: özel kullanıcı kuralları (index.ts / firewall.ts'te doğrulanmış nft satırları) Pi'nin kendisinden ve açık
+        // bağlantıların yanıtlarından hemen SONRA, sabit izinlerden ÖNCE — "engelle" kuralı gerçekten engeller (eskiden
+        // sabit izinlerin arkasındaydı: 22/53/80'i kapatan kurala hiç sıra gelmiyordu). Kuralı ekleyen cihazın panele erişimini
+        // kesecek kural index.ts'te reddedilir.
+        const input: NftLine[] = [
+            { rule: 'iif lo accept', label: "Pi'nin kendisi (panel arka ucu, HDMI ekran)", kind: 'system' },
+            { rule: 'ct state established,related accept', label: 'Açık bağlantıların yanıtları', kind: 'system' },
+            ...(customInputRules || []).map(rule => ({ rule, label: 'Özel kural', kind: 'custom' as const })),
+            { rule: 'ip protocol icmp accept', label: 'Ping (ICMP)', kind: 'system' },
+            { rule: 'ip6 nexthdr ipv6-icmp accept', label: 'IPv6 ICMP (komşu keşfi)', kind: 'system' },
+            { rule: 'tcp dport 22 accept', label: 'SSH', kind: 'service' },
+            { rule: 'tcp dport 53 accept', label: 'DNS (Pi-hole)', kind: 'service' },
+            { rule: 'udp dport 53 accept', label: 'DNS (Pi-hole)', kind: 'service' },
+            { rule: 'tcp dport 80 accept', label: 'Panel (nginx)', kind: 'service' },
+            { rule: 'udp dport 67 accept', label: 'DHCP (Pi DHCP sunucusu)', kind: 'service' },
+            { rule: 'udp dport 123 accept', label: 'Saat (NTP)', kind: 'service' },
+            { rule: 'udp dport 51820 accept', label: "WireGuard (Ev VPN'i)", kind: 'service' },
+        ];
+        const forward: NftLine[] = [
+            { rule: 'ct state established,related accept', label: 'Açık bağlantıların yanıtları', kind: 'system' },
+            { rule: 'tcp flags syn tcp option maxseg size set rt mtu', label: 'Tünel yolunda MSS kısma (PMTU kara deliği önlenir)', kind: 'system' },
+            { rule: 'iifname "wg0" accept', label: 'wg0 (eski kurulumlar)', kind: 'system' },
+            { rule: 'oifname "wg0" accept', label: 'wg0 (eski kurulumlar)', kind: 'system' },
+            { rule: 'iifname "wg_vps*" accept', label: 'VPS tünellerinden', kind: 'system' },
+            { rule: 'oifname "wg_vps*" accept', label: 'VPS tünellerine', kind: 'system' },
+            { rule: `iifname ${nftIfs(lanIfs)} accept`, label: 'Ev ağından her yere', kind: 'system' },
+            { rule: `iifname ${nftIfs(wanIfs)} oifname ${nftIfs(lanIfs)} ct state related,established accept`, label: 'İnternetten ev ağına yalnız yanıtlar', kind: 'system' },
+            // Port yönlendirme (yalnız internet kartı modunda): DNAT'lanan yeni bağlantılar ev ağına iletilir.
+            ...(wanMode ? [{ rule: `iifname ${nftIfs(wanIfs)} oifname ${nftIfs(lanIfs)} ct status dnat accept`, label: 'Port yönlendirmeleri', kind: 'system' as const }] : []),
+            // Wi-Fi köprüsü: üst ağdaki cihazlar (ve modemin port yönlendirmeleri) ev tarafındaki cihazlara yeni bağlantı açabilir.
+            ...(sameNet ? [{ rule: `iifname ${nftIfs(wanIfs)} oifname ${nftIfs(lanIfs)} accept`, label: 'Wi-Fi köprüsü: üst ağdan ev tarafına', kind: 'system' as const }] : []),
+        ];
+        const nat: NftLine[] = [
+            ...(sameNet ? [] : [{ rule: `oifname ${nftIfs(wanIfs)} masquerade`, label: 'İnternet çıkışında adres çevirisi', kind: 'system' as const }]),
+            { rule: 'oifname "wg_vps*" masquerade', label: 'VPS tünel çıkışında adres çevirisi', kind: 'system' },
+        ];
+        const body = (xs: NftLine[]) => xs.map(l => `        ${l.rule}`).join('\n');
 
         // ÖNEMLI: `flush ruleset` KULLANILMAZ — yalnızca kendi tablolarımızı idempotent yönetiriz.
         // Böylece zapret NFQUEUE, domain_routing ve pi5_block tabloları korunur.
@@ -113,29 +150,11 @@ delete table inet pi5_filter
 table inet pi5_filter {
     chain input {
         type filter hook input priority 0; policy drop;
-        iif lo accept
-        ct state established,related accept
-        ip protocol icmp accept
-        ip6 nexthdr ipv6-icmp accept
-        tcp dport 22 accept
-        tcp dport 53 accept
-        udp dport 53 accept
-        tcp dport 80 accept
-        udp dport 67 accept
-        udp dport 123 accept
-        udp dport 51820 accept${customLines}
+${body(input)}
     }
     chain forward {
         type filter hook forward priority 0; policy drop;
-        ct state established,related accept
-        # PMTU kara deliğini önlemek için tünel yolunda MSS clamp
-        tcp flags syn tcp option maxseg size set rt mtu
-        iifname "wg0" accept
-        oifname "wg0" accept
-        iifname "wg_vps*" accept
-        oifname "wg_vps*" accept
-        iifname ${nftIfs(lanIfs)} accept
-        iifname ${nftIfs(wanIfs)} oifname ${nftIfs(lanIfs)} ct state related,established accept${dnatLine}${sameNetLine}
+${body(forward)}
     }
 }
 table ip pi5_nat {}
@@ -143,19 +162,38 @@ delete table ip pi5_nat
 table ip pi5_nat {
     chain postrouting {
         type nat hook postrouting priority 100;
-        # WAN çıkışı + VPS tünel çıkışı (Pi5-tarafı SNAT: LAN kaynaklı paketler tünelden doğru dönebilsin)${wanMasq}
-        oifname "wg_vps*" masquerade
+        # WAN çıkışı + VPS tünel çıkışı (Pi5-tarafı SNAT: LAN kaynaklı paketler tünelden doğru dönebilsin)
+${body(nat)}
     }
 }
 
 # Kalıcılık: domain-routing/device-block/zapret gibi ek tablolar boot'ta yüklensin
-include "/etc/nftables.d/*.conf"`;
+include "/etc/nftables.d/*.conf"
+`; // Sondaki satır sonu şart: nft 1.1 (trixie) son satırdaki include'u "unexpected end of file" ile reddediyordu.
+        const mode = wanMode ? 'wan' : sameNet ? 'sameNet' : oneArm ? 'oneArm' : 'twoCard';
+        return { config: nftablesConfig, mode, lanIfs, wanIfs, input, forward, nat };
+    },
+
+    // Doğrulamalı uygulama: yapılandırma geçici dosyada `nft -c` ile sınanır, yüklenir, ANCAK SONRA /etc/nftables.conf olur.
+    // Sınama ya da yükleme başarısızsa diskteki dosya ve yüklü kurallar değişmez (eskiden dosya önce yazılıyordu: bozuk
+    // yapılandırma açılışta yüklenmeye çalışılırdı). `nft -f` tek işlemdir: yarım kural kalmaz.
+    async configureNftables(ifaces?: { lan?: string; wan?: string }, customInputRules?: string[]) {
+        const b = await this.buildNftables(ifaces, customInputRules);
         fs.mkdirSync('/etc/nftables.d', { recursive: true });
-        // Sondaki satır sonu şart: nft 1.1 (trixie) son satırdaki include'u "unexpected end of file" ile reddediyordu.
-        fs.writeFileSync('/etc/nftables.conf', nftablesConfig + '\n');
-        await execAsync('nft -f /etc/nftables.conf');
+        const tmp = `${NFT_CONF}.pi5-new.${process.pid}.${++nftTmpSeq}`;
+        fs.writeFileSync(tmp, b.config);
+        try {
+            const chk = await runResult(`nft -c -f ${tmp}`, 20000);
+            if (chk.code !== 0) throw new Error(`Güvenlik duvarı kuralları sınamadan geçmedi — hiçbir şey değişmedi: ${(chk.stderr || chk.stdout).trim().slice(0, 400)}`);
+            const load = await runResult(`nft -f ${tmp}`, 20000);
+            if (load.code !== 0) throw new Error(`Güvenlik duvarı kuralları yüklenemedi — önceki kurallar geçerli: ${(load.stderr || load.stdout).trim().slice(0, 400)}`);
+            fs.renameSync(tmp, NFT_CONF);
+        } finally {
+            try { fs.unlinkSync(tmp); } catch { /* taşındı */ }
+        }
         await execAsync('systemctl enable nftables 2>/dev/null || true');
-        return { stdout: `nftables yapılandırıldı (WAN=${wanIfs.join('+')}, LAN=${lanIfs.join('+')}${oneArm ? ', tek bacak' : wanMode ? ', internet kartı' : sameNet ? ', Wi-Fi köprüsü (aynı ağ)' : ''}).`, stderr: '' };
+        const mode = b.mode === 'oneArm' ? ', tek bacak' : b.mode === 'wan' ? ', internet kartı' : b.mode === 'sameNet' ? ', Wi-Fi köprüsü (aynı ağ)' : '';
+        return { stdout: `nftables yapılandırıldı (WAN=${b.wanIfs.join('+')}, LAN=${b.lanIfs.join('+')}${mode}).`, stderr: '' };
     },
 
     // Kalıcı aç/kapa (enable --now / disable --now): eskiden yalnız start/stop — kapatılan servis açılışta geri geliyordu.

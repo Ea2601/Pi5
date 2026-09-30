@@ -5,6 +5,8 @@ import rateLimit from 'express-rate-limit';
 import { initDb, dbAll, dbRun, dbGet, dbInsert } from './db';
 import { setupWireGuardVPS, testSSHConnection, executeSetupStep, addWireGuardClient, connectPi5ToVps, disconnectPi5FromVps, removeWireGuardClient, removeWireGuardClients } from './ssh';
 import { readVpsTunnels, validVpsId, staleTunnels, setTunnelStale } from './vpsTunnel';
+import { validateFwRule, fwRuleToNft, accessCheck, isPanelLockoutForAll, blocksWholeLan, describeRule } from './firewall';
+import { fail2banSettingsView, validateFail2banSettings, applyFail2banSettings, ensureFail2ban, recentBans, unbanIp, lanNetworks } from './fail2ban';
 import { normFallback } from './routeMarks';
 import { systemServices } from './services';
 import { startHealthMonitor, getHealthStatus } from './monitor';
@@ -271,25 +273,72 @@ app.post('/api/services/toggle', async (req, res) => {
   }
 });
 
-// Özel firewall kurallarını (routing_rules) GÜVENLİ nft satırlarına çevirir.
-// KRİTİK: target kullanıcı girdisidir → nft dosyasına girmeden önce katı doğrulama (enjeksiyon önleme).
-function buildCustomFwRules(rows: any[]): string[] {
+// Uygulanmayan kural: panele herkesin (TCP 80) ya da tüm ev ağının erişimini keser (eski sürümde kaydedilmiş olabilir).
+const fwRuleIgnored = (r: any, lan: string[]) => isPanelLockoutForAll(r) || blocksWholeLan(r, lan);
+// Özel firewall kurallarını (routing_rules) GÜVENLİ nft satırlarına çevirir (firewall.ts: katı doğrulama — target / port
+// kullanıcı girdisidir; enjeksiyon önleme). Yalnız etkin kurallar, eklenme sırasıyla; uygulanmayan kurallar atlanır.
+function buildCustomFwRules(rows: any[], lan: string[]): string[] {
   const out: string[] = [];
-  const ACTIONS: Record<string, string> = { accept: 'accept', drop: 'drop', reject: 'reject' };
   for (const r of rows || []) {
-    const action = ACTIONS[String(r.action || '').toLowerCase()];
-    if (!action) continue;
-    const type = String(r.type || '').toLowerCase();
-    const target = String(r.target || '').trim();
-    if (type === 'tcp' || type === 'udp') {
-      const n = Number(target);
-      if (/^\d{1,5}$/.test(target) && n >= 1 && n <= 65535) out.push(`${type} dport ${n} ${action}`);
-    } else if (type === 'ip') {
-      // IPv4 veya IPv4/CIDR — yalnızca rakam, nokta, /; başka karakter kabul edilmez
-      if (/^\d{1,3}(\.\d{1,3}){3}(\/\d{1,2})?$/.test(target)) out.push(`ip saddr ${target} ${action}`);
+    if (fwRuleIgnored(r, lan)) {
+      console.warn(`[firewall] panele herkesin / tüm ev ağının erişimini kesen kural uygulanmadı: ${JSON.stringify({ type: r.type, target: r.target, port: r.port, action: r.action })}`);
+      continue;
     }
+    const line = fwRuleToNft(r);
+    if (line) out.push(line);
   }
   return out;
+}
+const FW_RULES_SQL = 'SELECT id, type, target, port, proto, action, enabled FROM routing_rules ORDER BY id';
+// Güvenlik duvarı değişiklikleri sırayla: iki uygulama aynı anda yapılandırma yazmasın, bir isteğin "DB değişikliği →
+// uygula → başarısızsa geri al" adımları başka bir uygulamayla iç içe geçmesin.
+let fwQueue: Promise<unknown> = Promise.resolve();
+function withFwLock<T>(fn: () => Promise<T>): Promise<T> {
+  const next = fwQueue.then(fn, fn);
+  fwQueue = next.catch(() => {});
+  return next;
+}
+// Panelin güvenlik duvarı: DB'deki arayüzler + özel kurallar → doğrulamalı uygulama (services.ts); pi5_filter yeniden
+// kurulduğu için Ev VPN'i izin zincirleri (ve ona bağlı kancalar) geri eklenir. Kilitsiz (withFwLock içinden çağrılır).
+async function applyPanelFirewallNow() {
+  const cfg = await dbAll("SELECT key, value FROM service_config WHERE service = 'nftables' AND key IN ('lan_iface', 'wan_iface')");
+  const m: Record<string, string> = {};
+  (cfg as any[]).forEach(r => { m[r.key] = r.value; });
+  const lan = await lanNetworks();
+  const result = await systemServices.configureNftables({ lan: m.lan_iface, wan: m.wan_iface }, buildCustomFwRules(await dbAll(FW_RULES_SQL), lan));
+  await reapplyWgServer(); // pi5_filter yeniden kuruldu: Ev VPN'i izin zincirleri (politika drop) geri eklensin
+  return result;
+}
+const applyPanelFirewall = () => withFwLock(applyPanelFirewallNow);
+// Panelin güvenlik duvarı bu Pi'de kurulu mu (Deploy Et en az bir kez yapıldı)? Kurulu değilse "yeniden uygula" ilk kurulum
+// yapmaz (politika drop'lu duvarı kullanıcı bilmeden açmasın).
+const panelFirewallDeployed = () => {
+  try { return require('fs').readFileSync('/etc/nftables.conf', 'utf8').includes('table inet pi5_filter'); } catch { return false; }
+};
+const fwClientIp = (req: express.Request) => String(req.ip || '').replace(/^::ffff:/, '');
+// Değişiklikten SONRAKİ kural kümesiyle (ekle / aç / kapat / sil / yeniden uygula): isteği yapan cihaz panele erişebilecek
+// mi (hayırsa hata), SSH'ı kaybedecek mi (uyarı). IPv6 ile bağlanan cihazın IPv4 adresi bilinmez → IP kuralında uyarı.
+// Pi evin DHCP sunucusuyken UDP 67'yi kapatmak tüm evin adresini keser (hata); DNS'i kapatmak uyarı.
+const blocking = (r: any) => Number(r?.enabled ?? 1) !== 0 && String(r?.action) !== 'accept';
+async function fwAccessVerdict(rows: any[], req: express.Request): Promise<{ error?: string; warning?: string }> {
+  const ip = fwClientIp(req);
+  const lan = await lanNetworks();
+  const live = rows.filter(r => !fwRuleIgnored(r, lan)); // uygulanmayacak kurallar hesaba katılmaz
+  const a = accessCheck(live, ip);
+  if (a.panel) return { error: `Bu kural panele eriştiğiniz cihazı (${ip}) dışarıda bırakır: ${describeRule(a.panel)} — değişiklik uygulanmadı. Başka bir cihazı engellemek için onun adresini girin.` };
+  if (live.some(r => blocking(r) && r.type === 'udp' && Number(r.target) === 67) && await piDhcpActive()) {
+    return { error: "Pi evin DHCP sunucusu: UDP 67'yi kapatmak tüm cihazların adres almasını keser — değişiklik uygulanmadı." };
+  }
+  const warnings: string[] = [];
+  if (a.ssh) warnings.push(`Bu cihaz (${ip}) SSH'a (22) bağlanamayacak: ${describeRule(a.ssh)}. Panel ve terminali açık kalır.`);
+  if (live.some(r => blocking(r) && (r.type === 'udp' || r.type === 'tcp') && Number(r.target) === 53)) {
+    warnings.push("DNS (53) kapalı: Pi-hole'u kullanan cihazların interneti gider.");
+  }
+  const loopback = ip === '' || ip === '::1' || ip.startsWith('127.');
+  if (!loopback && !/^\d{1,3}(\.\d{1,3}){3}$/.test(ip) && live.some(r => blocking(r) && r.type === 'ip')) {
+    warnings.push(`Bu cihaz IPv6 ile bağlı (${ip}): IPv4 adresi denetlenemedi — engellediğiniz adres bu cihazınsa panele IPv4 ile erişemezsiniz.`);
+  }
+  return warnings.length ? { warning: warnings.join(' ') } : {};
 }
 
 app.post('/api/services/setup', async (req, res) => {
@@ -321,14 +370,10 @@ app.post('/api/services/setup', async (req, res) => {
       status = await recordState('zapret');
     }
     if (action === 'firewall') {
-      const cfg = await dbAll("SELECT key, value FROM service_config WHERE service = 'nftables' AND key IN ('lan_iface', 'wan_iface')");
-      const m: Record<string, string> = {};
-      (cfg as any[]).forEach(r => { m[r.key] = r.value; });
-      // Özel kuralları DB'den al, doğrula, nftables input zincirine uygula
-      const customRows = await dbAll('SELECT type, target, action FROM routing_rules');
-      const custom = buildCustomFwRules(customRows);
-      result = await systemServices.configureNftables({ lan: m.lan_iface, wan: m.wan_iface }, custom);
-      await reapplyWgServer(); // pi5_filter yeniden kuruldu: Ev VPN'i izin zincirleri (politika drop) geri eklensin
+      // Özel kurallar artık sabit izinlerden önce: kuralları uygulayan cihaz panele erişimini kaybedecekse uygulanmaz.
+      const verdict = await fwAccessVerdict(await dbAll(FW_RULES_SQL), req);
+      if (verdict.error) return res.status(409).json({ success: false, error: verdict.error });
+      result = await applyPanelFirewall();
       status = await recordState('nftables');
     }
     res.json({ success: true, message: `Action ${action} executed.`, log: result, status });
@@ -660,19 +705,29 @@ app.post('/api/services/:name/restart', async (req, res) => {
     await dbRun("UPDATE service_status SET status='restarting', last_check=CURRENT_TIMESTAMP WHERE name=?", [name]);
     let actionError = '';
     try {
-      await systemServices.restartService(name);
+      // nftables: `systemctl restart` /etc/nftables.conf'u yükler ve Debian'ın dosyası `flush ruleset` ile başlar — Fail2Ban
+      // yasakları, Zapret ve panelin tüm tabloları silinir (kısa süre VPS kuralları ISP'ye düşer). Artık yeniden
+      // başlatılmaz: panelin güvenlik duvarı kuruluysa doğrulamalı yeniden uygulanır, öbür panel kuralları aşağıda yüklenir.
+      if (name === 'nftables') {
+        if (panelFirewallDeployed()) {
+          const verdict = await fwAccessVerdict(await dbAll(FW_RULES_SQL), req);
+          if (verdict.error) throw new Error(verdict.error);
+          await applyPanelFirewall();
+        }
+      } else {
+        await systemServices.restartService(name);
+      }
     } catch (e: any) {
       actionError = e.message;
     }
-    // nftables restart `nft flush ruleset` çalıştırır (routing zinciri ve NAT silinir); tünel yeniden kurulunca tablo
-    // rotaları kaybolur → başarısızlıkta da yeniden uygulanır (idempotent, sıralı kuyruk).
+    // WireGuard yeniden başlayınca tünel arayüzleri yeniden kurulur, tablo rotaları kaybolur → routing yeniden uygulanır;
+    // nftables "yeniden uygula"da da (idempotent, sıralı kuyruk).
     if (name === 'nftables' || name === 'wireguard') {
       await applyAllRoutingRules().catch((e: any) => console.error('Routing yeniden uygulanamadı:', e.message));
     }
-    // nftables restart `flush ruleset` ile cihaz engeli tablosunu da siler → yeniden uygula.
+    // nftables "yeniden uygula": cihaz engeli, Ev VPN'i, internet kartı güvenlik duvarı ve port yönlendirmeleri de yüklenir.
     if (name === 'nftables') await reapplyBlockedDevices();
     if (name === 'nftables') await reapplyWgServer();
-    // İnternet kartı güvenlik duvarı ve port yönlendirmeleri de silindi (flush ruleset) → hemen geri yüklenir.
     if (name === 'nftables') { await wanFirewallReload(); await applyPortForwards(); }
     const st = await waitServiceSettled(name, 'running', actionError ? 3000 : name === 'pihole' ? FTL_SETTLE_TIMEOUT : 15000);
     await dbRun('UPDATE service_status SET enabled = ?, status = ?, last_check = CURRENT_TIMESTAMP WHERE name = ?',
@@ -1863,47 +1918,124 @@ app.put('/api/voip/rules/:id', async (req, res) => {
 });
 
 // ─── Firewall Rules ───
+// Özel kurallar + GERÇEK önizleme: yüklenecek yapılandırmayla aynı üreticiden (services.ts buildNftables); kuralların
+// yüklü olup olmadığı ve diskteki dosyanın güncel olup olmadığı (pending: Deploy Et gerekli).
 app.get('/api/firewall/rules', async (_req, res) => {
   try {
-    const rules = await dbAll('SELECT * FROM routing_rules ORDER BY id');
-    res.json({
-      rules,
-      nftablesPreview: {
-        inputRules: [
-          { port: 22, protocol: 'tcp', action: 'accept', label: 'SSH' },
-          { port: 53, protocol: 'tcp/udp', action: 'accept', label: 'DNS' },
-          { port: 80, protocol: 'tcp', action: 'accept', label: 'HTTP' },
-          { port: 51820, protocol: 'udp', action: 'accept', label: 'WireGuard' },
-          { port: 3000, protocol: 'tcp', action: 'accept', label: 'Web UI' },
-        ],
-        forwardRules: [
-          { from: 'wg0', to: '*', action: 'accept', label: 'WireGuard Forward' },
-          { from: 'eth0', to: 'wlan0', action: 'accept', label: 'LAN to WAN' },
-        ],
-        natRules: [
-          { interface: 'wlan0', action: 'masquerade', label: 'NAT Masquerade' },
-        ],
-      },
-    });
+    const rules = await dbAll(FW_RULES_SQL);
+    const lan = await lanNetworks().catch(() => [] as string[]);
+    let preview: any = null;
+    if (isLinux) {
+      try {
+        const cfg = await dbAll("SELECT key, value FROM service_config WHERE service = 'nftables' AND key IN ('lan_iface', 'wan_iface')");
+        const m: Record<string, string> = {};
+        (cfg as any[]).forEach(r => { m[r.key] = r.value; });
+        const b = await systemServices.buildNftables({ lan: m.lan_iface, wan: m.wan_iface }, buildCustomFwRules(rules as any[], lan));
+        const loaded = (await execFileP('nft', ['list', 'table', 'inet', 'pi5_filter'], { timeout: 10000 }).then(() => true, () => false));
+        let onDisk = '';
+        try { onDisk = require('fs').readFileSync('/etc/nftables.conf', 'utf8'); } catch { /* yok */ }
+        preview = { input: b.input, forward: b.forward, nat: b.nat, mode: b.mode, lanIfs: b.lanIfs, wanIfs: b.wanIfs,
+          deployed: onDisk.includes('table inet pi5_filter'), loaded, pending: onDisk !== b.config };
+      } catch (e: any) {
+        preview = { error: String(e?.message || e) };
+      }
+    }
+    // ignored: panele herkesin / tüm ev ağının erişimini kestiği için uygulanmayan (eski sürümde kaydedilmiş) kural.
+    res.json({ rules: (rules as any[]).map(r => ({ ...r, ignored: fwRuleIgnored(r, lan) })), preview });
   } catch (e: any) {
     res.status(500).json({ error: e.message });
   }
 });
 
+// Kural ekle: doğrulanır, isteği yapan cihazın panel erişimi denetlenir, kaydedilir ve (panelin güvenlik duvarı kuruluysa)
+// hemen uygulanır — uygulanamazsa kayıt geri alınır (DB ile yüklü kurallar ayrışmasın).
 app.post('/api/firewall/rules', async (req, res) => {
   try {
-    const { type, target, action } = req.body;
-    await dbRun('INSERT INTO routing_rules (type, target, action) VALUES (?, ?, ?)', [type, target, action]);
-    res.json({ success: true });
+    const v = validateFwRule(req.body);
+    if ('error' in v) return res.status(400).json({ error: v.error });
+    if (isPanelLockoutForAll(v.rule)) return res.status(400).json({ error: 'Bu kural panele herkesin erişimini keser (TCP 80) — eklenmedi' });
+    if (blocksWholeLan(v.rule, await lanNetworks())) return res.status(400).json({ error: 'Bu kural panele tüm ev ağının erişimini keser — eklenmedi' });
+    const out = await withFwLock(async () => {
+      const verdict = await fwAccessVerdict([...(await dbAll(FW_RULES_SQL) as any[]), v.rule], req);
+      if (verdict.error) return { code: 409, body: { error: verdict.error } };
+      const id = await dbInsert('INSERT INTO routing_rules (type, target, port, proto, action, enabled) VALUES (?, ?, ?, ?, ?, 1)',
+        [v.rule.type, v.rule.target, v.rule.port, v.rule.proto, v.rule.action]);
+      let applied = false;
+      if (isLinux && panelFirewallDeployed()) {
+        try {
+          await applyPanelFirewallNow();
+          applied = true;
+        } catch (e: any) {
+          await dbRun('DELETE FROM routing_rules WHERE id = ?', [id]);
+          return { code: 500, body: { error: `Kural uygulanamadı, eklenmedi: ${e?.message || e}` } };
+        }
+      }
+      await recordEvent('firewall', `Güvenlik duvarı kuralı eklendi: ${describeRule(v.rule)} → ${v.rule.action}${applied ? '' : ' (güvenlik duvarı henüz uygulanmadı)'}`);
+      return { code: 200, body: { success: true, id, applied, warning: verdict.warning } };
+    });
+    res.status(out.code).json(out.body);
   } catch (e: any) {
     res.status(500).json({ error: e.message });
   }
 });
 
+// Kuralı aç / kapat (aynı denetim ve geri alma).
+// Aç / kapat: kapatmak da denetlenir (ör. yöneticinin "izin" kuralını kapatmak arkasındaki "engelle"yi açığa çıkarır).
+app.put('/api/firewall/rules/:id', async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    const enabled = req.body?.enabled ? 1 : 0;
+    const out = await withFwLock(async () => {
+      const row: any = await dbGet('SELECT id, type, target, port, proto, action, enabled FROM routing_rules WHERE id = ?', [id]);
+      if (!row) return { code: 404, body: { error: 'Kural bulunamadı' } };
+      const rows = (await dbAll(FW_RULES_SQL) as any[]).map(r => (r.id === id ? { ...r, enabled } : r));
+      const verdict = await fwAccessVerdict(rows, req);
+      if (verdict.error) return { code: 409, body: { error: verdict.error } };
+      await dbRun('UPDATE routing_rules SET enabled = ? WHERE id = ?', [enabled, id]);
+      let applied = false;
+      if (isLinux && panelFirewallDeployed()) {
+        try {
+          await applyPanelFirewallNow();
+          applied = true;
+        } catch (e: any) {
+          await dbRun('UPDATE routing_rules SET enabled = ? WHERE id = ?', [row.enabled, id]);
+          return { code: 500, body: { error: `Kural uygulanamadı, değişmedi: ${e?.message || e}` } };
+        }
+      }
+      return { code: 200, body: { success: true, applied, warning: verdict.warning } };
+    });
+    res.status(out.code).json(out.body);
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Sil: silme de denetlenir (izin kuralını silmek arkasındaki "engelle"yi açığa çıkarabilir); uygulanamazsa geri eklenir.
 app.delete('/api/firewall/rules/:id', async (req, res) => {
   try {
-    await dbRun('DELETE FROM routing_rules WHERE id = ?', [req.params.id]);
-    res.json({ success: true });
+    const id = Number(req.params.id);
+    const out = await withFwLock(async () => {
+      const row: any = await dbGet('SELECT id, type, target, port, proto, action, enabled FROM routing_rules WHERE id = ?', [id]);
+      if (!row) return { code: 404, body: { error: 'Kural bulunamadı' } };
+      const verdict = await fwAccessVerdict((await dbAll(FW_RULES_SQL) as any[]).filter(r => r.id !== id), req);
+      if (verdict.error) return { code: 409, body: { error: verdict.error } };
+      await dbRun('DELETE FROM routing_rules WHERE id = ?', [id]);
+      let applied = false;
+      if (isLinux && panelFirewallDeployed()) {
+        try {
+          await applyPanelFirewallNow();
+          applied = true;
+        } catch (e: any) {
+          await dbRun('INSERT INTO routing_rules (id, type, target, port, proto, action, enabled) VALUES (?, ?, ?, ?, ?, ?, ?)',
+            [row.id, row.type, row.target, row.port ?? '', row.proto ?? '', row.action, row.enabled]);
+          return { code: 500, body: { error: `Kural silinemedi (güvenlik duvarı yeniden uygulanamadı): ${e?.message || e}` } };
+        }
+      }
+      const d = validateFwRule(row);
+      await recordEvent('firewall', `Güvenlik duvarı kuralı silindi: ${'rule' in d ? describeRule(d.rule) : `${row.type} ${row.target}`}`);
+      return { code: 200, body: { success: true, applied, warning: verdict.warning } };
+    });
+    res.status(out.code).json(out.body);
   } catch (e: any) {
     res.status(500).json({ error: e.message });
   }
@@ -2412,6 +2544,14 @@ if (isLinux) {
         }
       } catch (e: any) {
         console.error('[health] DHCP/sabit adres kontrolü başarısız:', e?.message || e);
+      }
+
+      // Fail2Ban: ev ağı değiştiyse (sabit adres, internet kartı, Wi-Fi köprüsü) muaf liste yeniden yazılır — kendi try'ı.
+      try {
+        const f2b = await ensureFail2ban();
+        if (f2b && !f2b.ok) await recordEventOnce('fail2ban', `Fail2Ban ayarları uygulanamadı: ${f2b.error || 'bilinmeyen hata'}`, 'warning', 360);
+      } catch (e: any) {
+        console.error('[fail2ban] denetim başarısız:', e?.message || e);
       }
 
       // Olay geçmişi: arka planda gerçekleşen hatalar (Cron görevi, panel güncellemesi) — kendi try'ı.
@@ -3024,12 +3164,7 @@ async function firewallCoversBridge(): Promise<string | null> {
   const fwd = await execFileP('nft', ['list', 'chain', 'inet', 'pi5_filter', 'forward'], { timeout: 10000 }).then(r => r.stdout, () => '');
   if (!/policy drop/.test(fwd) || fwd.includes(`"${HOME_BRIDGE}"`)) return null;
   try {
-    const cfg = await dbAll("SELECT key, value FROM service_config WHERE service = 'nftables' AND key IN ('lan_iface', 'wan_iface')");
-    const m: Record<string, string> = {};
-    (cfg as any[]).forEach(r => { m[r.key] = r.value; });
-    const custom = buildCustomFwRules(await dbAll('SELECT type, target, action FROM routing_rules'));
-    await systemServices.configureNftables({ lan: m.lan_iface, wan: m.wan_iface }, custom);
-    await reapplyWgServer(); // pi5_filter yeniden kuruldu: Ev VPN'i izin zincirleri (politika drop) geri eklensin
+    await applyPanelFirewall();
   } catch (e: any) {
     return `Güvenlik duvarı köprüyü kapsayacak şekilde yeniden uygulanamadı: ${String(e?.stderr || e?.message || e).trim().slice(0, 200)}`;
   }
@@ -3121,12 +3256,7 @@ async function firewallFollowsWan(): Promise<void> {
   const fwd = await execFileP('nft', ['list', 'chain', 'inet', 'pi5_filter', 'forward'], { timeout: 10000 }).then(r => r.stdout, () => '');
   if (!/policy drop/.test(fwd)) return;
   try {
-    const cfg = await dbAll("SELECT key, value FROM service_config WHERE service = 'nftables' AND key IN ('lan_iface', 'wan_iface')");
-    const m: Record<string, string> = {};
-    (cfg as any[]).forEach(r => { m[r.key] = r.value; });
-    const custom = buildCustomFwRules(await dbAll('SELECT type, target, action FROM routing_rules'));
-    await systemServices.configureNftables({ lan: m.lan_iface, wan: m.wan_iface }, custom);
-    await reapplyWgServer(); // pi5_filter yeniden kuruldu: Ev VPN'i izin zincirleri (politika drop) geri eklensin
+    await applyPanelFirewall();
   } catch (e: any) {
     console.error('[wan] güvenlik duvarı internet kartına göre yeniden yazılamadı:', String(e?.stderr || e?.message || e).trim());
   }
@@ -4273,33 +4403,47 @@ app.get('/api/fail2ban/status', async (_req, res) => {
   try {
     const status = await getFail2banStatus();
     if (!status) return res.json({ jails: [], recentBans: [] });
-
-    // Get recent bans from fail2ban log
-    const recentBans: { ip: string; jail: string; time: string }[] = [];
-    if (isLinux) {
-      const exec = require('util').promisify(require('child_process').exec);
-      try {
-        const { stdout } = await exec(
-          "grep 'Ban ' /var/log/fail2ban.log 2>/dev/null | tail -20 | awk '{print $1\" \"$2, $6, $NF}'",
-          { timeout: 5000 }
-        );
-        stdout.trim().split('\n').filter(Boolean).reverse().forEach((line: string) => {
-          const parts = line.trim().split(/\s+/);
-          if (parts.length >= 3) {
-            const time = parts[0] || '';
-            const jail = (parts[1] || '').replace(/[[\]]/g, '');
-            const ip = parts[parts.length - 1] || '';
-            if (ip.match(/^\d+\.\d+\.\d+\.\d+$/)) {
-              recentBans.push({ ip, jail, time });
-            }
-          }
-        });
-      } catch { /* log may not exist */ }
-    }
-
-    res.json({ ...status, recentBans });
+    // Son yasaklar Fail2Ban'ın kendi günlüğünden (dosya ya da journal; fail2ban.ts). Eskiden saat jail adı, tarih saat
+    // olarak gösteriliyordu ve IPv6 yasakları düşüyordu.
+    res.json({ ...status, recentBans: await recentBans(20).catch(() => []) });
   } catch (e: any) {
     res.json({ jails: [], recentBans: [], error: e.message });
+  }
+});
+
+// Ayarlar (fail2ban.ts): /etc/fail2ban/jail.d/klyrix-panel.local'e yazılır, sınanır, yeniden yüklenir; ev ağı muaf listesi.
+app.get('/api/fail2ban/settings', async (_req, res) => {
+  try {
+    res.json(await fail2banSettingsView());
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+app.post('/api/fail2ban/settings', async (req, res) => {
+  try {
+    const s = validateFail2banSettings(req.body?.settings);
+    if (typeof s === 'string') return res.status(400).json({ error: s });
+    const r = await applyFail2banSettings(s);
+    if (!r.ok) {
+      await recordEvent('fail2ban', `Fail2Ban ayarları uygulanamadı${r.rolledBack ? ' — eski ayarlar geçerli' : ''}: ${r.error || 'bilinmeyen hata'}`, 'warning');
+      return res.status(500).json({ error: r.error, rolledBack: !!r.rolledBack });
+    }
+    const on = (b: boolean) => (b ? 'açık' : 'kapalı');
+    await recordEvent('fail2ban', `Fail2Ban ayarları uygulandı: SSH koruması ${on(s.sshd_enabled)} (${s.sshd_maxretry} deneme, ${s.sshd_bantime} sn), varsayılan ${s.maxretry} deneme / ${s.findtime} sn → ${s.bantime} sn, ev ağı muaf ${on(s.lan_exempt)}, tekrarlayanlara 1 hafta ${on(s.recidive)}${s.extra_ignore.length ? `, ek muaf: ${s.extra_ignore.join(' ')}` : ''}`);
+    res.json({ success: true, ...(await fail2banSettingsView()) });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+app.post('/api/fail2ban/unban', async (req, res) => {
+  try {
+    const ip = String(req.body?.ip || '').trim();
+    const r = await unbanIp(ip);
+    if (!r.ok) return res.status(400).json({ error: r.error });
+    await recordEvent('fail2ban', `Fail2Ban yasağı kaldırıldı: ${ip}`);
+    res.json({ success: true });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
   }
 });
 
@@ -5138,6 +5282,9 @@ const server = app.listen(Number(port), bindHost, () => {
         if (r.code !== 0) console.error(`[${tag}]`, kvError(r, 'ensure başarısız'));
         else if (r.kv.warning) console.error(`[${tag}] uyarı:`, r.kv.warning);
       }
+      // Fail2Ban panel dosyası (ev ağı muaf): eski kurulumlarda güncellemeyle gelir; ağ modu ensure'dan sonra (güncel ağ).
+      const f2b = await ensureFail2ban().catch((e: any) => ({ ok: false, changed: false, error: String(e?.message || e) }));
+      if (f2b && !f2b.ok) await recordEventOnce('fail2ban', `Fail2Ban ayarları uygulanamadı: ${f2b.error || 'bilinmeyen hata'}`, 'warning', 360);
     }
     if (!isSatellite()) {
       await restoreTunnelsAndRouting();

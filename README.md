@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/Ea2601/klyrix-gate/releases"><img src="https://img.shields.io/badge/version-2.24.57-38bdf8.svg?style=for-the-badge&logo=git&logoColor=white" alt="Version 2.24.57"></a>
+  <a href="https://github.com/Ea2601/klyrix-gate/releases"><img src="https://img.shields.io/badge/version-2.24.58-38bdf8.svg?style=for-the-badge&logo=git&logoColor=white" alt="Version 2.24.58"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-22c55e.svg?style=for-the-badge" alt="License MIT"></a>
   <img src="https://img.shields.io/badge/100%25-Free%20%26%20Open%20Source-ef4444.svg?style=for-the-badge&logo=opensourceinitiative&logoColor=white" alt="Free & Open Source">
   <img src="https://img.shields.io/badge/Telemetry-Zero-10b981.svg?style=for-the-badge" alt="Zero Telemetry">
@@ -107,7 +107,7 @@ flowchart TD
 ### 🛡️ 1. Cyber Defense & Kernel Firewall
 - **nftables L3/L4 Firewall:** Persistent rulesets surviving reboots, automatic masquerading/NAT, and ICMP redirect suppression to prevent clients from bypassing gateway rules.
 - **Zapret DPI Engine:** Circumvents deep packet inspection and SNI blocking techniques employed by restrictive ISPs.
-- **Fail2Ban Intrusion Prevention:** Protects SSH and administration endpoints by dynamically banning abusive IPs.
+- **Fail2Ban Intrusion Prevention:** Protects SSH by dynamically banning abusive IPs; repeat offenders are banned for a week, and the home network is exempt so you cannot lock yourself out. Settings are applied to Fail2Ban from the panel.
 
 ### 🌐 2. DNS Sovereignty & Ad Sinkhole
 - **Pi-hole Integration:** Network-wide telemetry, tracker, and malicious domain blocking with live query logs and custom blocklists.

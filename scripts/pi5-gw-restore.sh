@@ -45,4 +45,27 @@ if [ -s "$IN" ] && nft list chain inet filter input >/dev/null 2>&1; then
     nft insert rule inet filter input jump pi5_in 2>/dev/null || log "input → pi5_in atlaması eklenemedi"
   fi
 fi
+# nftables yeniden başlatıldı / yüklendiyse `flush ruleset` Fail2Ban'ın ve Zapret'in kurallarını da sildi (panelinkiler
+# yukarıda geri yüklendi). Fail2Ban: yasaklı IP var ama hiçbiri kurallarda yoksa yeniden başlatılır (yasakları kendi
+# veritabanından geri yükler). Zapret: nftables'tan ÖNCE başlamış ve çalışıyorsa yeniden başlatılır. Açılışta ikisi de
+# nftables'tan sonra başlar → dokunulmaz. --no-block: oneshot birimden beklemeli systemctl çağrısı kilitlenmesin.
+if [ "$(systemctl is-active fail2ban 2>/dev/null)" = active ] && command -v fail2ban-client >/dev/null 2>&1; then
+  banned=$(fail2ban-client banned 2>/dev/null | grep -oE '[0-9]{1,3}(\.[0-9]{1,3}){3}' | sort -u)
+  if [ -n "$banned" ]; then
+    ruleset=$(nft list ruleset 2>/dev/null)
+    lost=1
+    for ip in $banned; do
+      if printf '%s' "$ruleset" | grep -qwF -- "$ip"; then lost=0; break; fi  # tam adres (11.2.3.45 içindeki 1.2.3.4 sayılmaz)
+    done
+    if [ "$lost" = 1 ]; then
+      systemctl --no-block restart fail2ban && log "fail2ban yeniden başlatıldı (yasakları nftables yüklemesiyle silinmişti)"
+    fi
+  fi
+fi
+nft_at=$(systemctl show -p ActiveEnterTimestampMonotonic --value nftables 2>/dev/null)
+z_at=$(systemctl show -p ActiveEnterTimestampMonotonic --value zapret 2>/dev/null)
+if [ "$(systemctl is-active zapret 2>/dev/null)" = active ] && [[ $nft_at =~ ^[0-9]+$ ]] && [[ $z_at =~ ^[0-9]+$ ]] \
+  && [ "$z_at" -gt 0 ] && [ "$z_at" -lt "$nft_at" ]; then
+  systemctl --no-block restart zapret && log "zapret yeniden başlatıldı (kuralları nftables yeniden başlatılınca silinmişti)"
+fi
 exit 0

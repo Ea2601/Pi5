@@ -1,10 +1,91 @@
-import { ShieldAlert, Settings, Activity, Lock, Ban, Users, AlertTriangle, RefreshCw, Loader2 } from 'lucide-react';
+import { ShieldAlert, Settings, Activity, Lock, Ban, Users, RefreshCw, Loader2, Save, Home, Repeat } from 'lucide-react';
 import { useApi, postApi } from '../hooks/useApi';
 import { useState } from 'react';
 import { Panel, StatCard, Badge } from './ui';
-import { ServiceSettings } from './ui/ServiceSettings';
 import type { ServiceStatus } from '../types';
 import { toast } from '../toast';
+
+// Ayarlar Fail2Ban'a gerçekten uygulanır (backend fail2ban.ts: /etc/fail2ban/jail.d/klyrix-panel.local, sınama + yeniden
+// yükleme; başarısızsa eski ayarlar kalır). Eskiden yalnız veritabanına yazılıyordu.
+interface F2bSettings {
+  bantime: number; findtime: number; maxretry: number; sshd_enabled: boolean; sshd_maxretry: number; sshd_bantime: number;
+  lan_exempt: boolean; extra_ignore: string[]; recidive: boolean;
+}
+interface F2bView { settings: F2bSettings | null; installed: boolean; lan: string[]; ignore: string[]; applied: boolean }
+const NUM_FIELDS: { key: keyof F2bSettings; label: string; hint: string; min: number; max: number }[] = [
+  { key: 'sshd_maxretry', label: 'SSH: deneme hakkı', hint: 'Bu kadar hatalı girişte yasak', min: 1, max: 20 },
+  { key: 'sshd_bantime', label: 'SSH: yasak süresi (sn)', hint: '7200 = 2 saat', min: 60, max: 604800 },
+  { key: 'findtime', label: 'Hata penceresi (sn)', hint: 'Denemeler bu süre içinde sayılır', min: 60, max: 86400 },
+  { key: 'maxretry', label: 'Öbür jail\'ler: deneme hakkı', hint: 'SSH dışındaki korumalar', min: 1, max: 20 },
+  { key: 'bantime', label: 'Öbür jail\'ler: yasak süresi (sn)', hint: '3600 = 1 saat', min: 60, max: 604800 },
+];
+
+function Fail2banSettingsCard() {
+  const { data, refetch } = useApi<F2bView>('/fail2ban/settings', { settings: null, installed: false, lan: [], ignore: [], applied: false });
+  if (!data.settings) return <div style={{ padding: 20, textAlign: 'center' }}><Loader2 size={18} className="spin" /></div>;
+  if (!data.installed) return <div className="fw-hint">Fail2Ban kurulu değil.</div>;
+  // Sunucudaki ayarlar değişince (kaydetme sonrası) form yeniden kurulur.
+  return <Fail2banForm key={JSON.stringify(data.settings)} initial={data.settings} ignore={data.ignore} onSaved={refetch} />;
+}
+
+function Fail2banForm({ initial, ignore, onSaved }: { initial: F2bSettings; ignore: string[]; onSaved: () => Promise<void> | void }) {
+  const [form, setForm] = useState<F2bSettings>(initial);
+  const [extra, setExtra] = useState(initial.extra_ignore.join(' '));
+  const [saving, setSaving] = useState(false);
+  const set = <K extends keyof F2bSettings>(k: K, v: F2bSettings[K]) => setForm({ ...form, [k]: v });
+  const save = async () => {
+    setSaving(true);
+    try {
+      await postApi('/fail2ban/settings', { settings: { ...form, extra_ignore: extra.split(/[\s,]+/).filter(Boolean) } });
+      toast.success('Fail2Ban ayarları uygulandı.');
+      await onSaved();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Uygulanamadı');
+    }
+    setSaving(false);
+  };
+  return (
+    <div className="glass-panel widget-large f2b-settings">
+      <div className="f2b-toggles">
+        <label className="f2b-toggle">
+          <button type="button" className={`toggle-btn toggle-sm ${form.sshd_enabled ? 'toggle-on' : 'toggle-off'}`} onClick={() => set('sshd_enabled', !form.sshd_enabled)} aria-label="SSH koruması"><div className="toggle-knob" /></button>
+          <span><Lock size={13} /> SSH koruması</span>
+        </label>
+        <label className="f2b-toggle">
+          <button type="button" className={`toggle-btn toggle-sm ${form.lan_exempt ? 'toggle-on' : 'toggle-off'}`} onClick={() => set('lan_exempt', !form.lan_exempt)} aria-label="Ev ağı muaf"><div className="toggle-knob" /></button>
+          <span><Home size={13} /> Ev ağı muaf <span className="f2b-sub">evdeki cihazlardan yanlış şifre SSH'ı kilitlemez</span></span>
+        </label>
+        <label className="f2b-toggle">
+          <button type="button" className={`toggle-btn toggle-sm ${form.recidive ? 'toggle-on' : 'toggle-off'}`} onClick={() => set('recidive', !form.recidive)} aria-label="Tekrarlayanlara uzun yasak"><div className="toggle-knob" /></button>
+          <span><Repeat size={13} /> Tekrarlayanlara 1 hafta <span className="f2b-sub">1 günde 5 kez yasaklanan adres tüm portlardan</span></span>
+        </label>
+      </div>
+      <div className="f2b-grid">
+        {NUM_FIELDS.map(f => (
+          <div key={f.key} className="f2b-field">
+            <label>{f.label}</label>
+            <input className="config-input" type="number" min={f.min} max={f.max} value={String(form[f.key])}
+              onChange={e => set(f.key, Number(e.target.value) as never)} />
+            <span className="f2b-sub">{f.hint}</span>
+          </div>
+        ))}
+        <div className="f2b-field f2b-field-wide">
+          <label>Ek muaf adresler</label>
+          <input className="config-input" value={extra} onChange={e => setExtra(e.target.value)} placeholder="ör. 203.0.113.7 10.0.0.0/24" />
+          <span className="f2b-sub">Boşlukla ayırın (IPv4 / IPv6, önekli olabilir)</span>
+        </div>
+      </div>
+      <div className="fw-hint" style={{ marginTop: 10 }}>
+        Muaf: {ignore.join(' · ')}{form.lan_exempt ? '' : ' (ev ağı muafiyeti kaydedilince kalkar)'}
+      </div>
+      <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 12 }}>
+        <button className="btn-primary btn-sm" onClick={save} disabled={saving}>
+          {saving ? <Loader2 size={13} className="spin" /> : <Save size={13} />} {saving ? 'Uygulanıyor...' : 'Uygula'}
+        </button>
+      </div>
+    </div>
+  );
+}
 
 type F2bTab = 'overview' | 'settings';
 
@@ -31,6 +112,19 @@ export function Fail2banPanel() {
   const isEnabled = f2bSvc?.enabled === 1;
   const [refreshing, setRefreshing] = useState(false);
   const [toggling, setToggling] = useState(false);
+  const [unbanning, setUnbanning] = useState('');
+
+  const handleUnban = async (ip: string) => {
+    setUnbanning(ip);
+    try {
+      await postApi('/fail2ban/unban', { ip });
+      toast.success(`${ip} yasağı kaldırıldı`);
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Yasak kaldırılamadı');
+    }
+    await refetchF2b();
+    setUnbanning('');
+  };
 
   // Anahtar kalıcıdır (açılışta da geçerli); hata artık yutulmuyor.
   const handleToggle = async () => {
@@ -55,20 +149,6 @@ export function Fail2banPanel() {
     { id: 'overview', label: 'Genel Bakış', icon: <Activity size={14} /> },
     { id: 'settings', label: 'Ayarlar', icon: <Settings size={14} /> },
   ];
-
-  const categoryLabels: Record<string, string> = {
-    default: 'Varsayılan Ayarlar',
-    sshd: 'SSH Koruması',
-    webserver: 'Web Sunucu Koruması',
-    recidive: 'Tekrar Cezası (Recidive)',
-  };
-
-  const categoryIcons: Record<string, React.ReactNode> = {
-    default: <Settings size={15} />,
-    sshd: <Lock size={15} />,
-    webserver: <ShieldAlert size={15} />,
-    recidive: <AlertTriangle size={15} />,
-  };
 
   const jails = f2bData.jails || [];
   const recentBans = f2bData.recentBans || [];
@@ -137,9 +217,16 @@ export function Fail2banPanel() {
                         </span>
                       </div>
                       {jail.bannedIps.length > 0 && (
-                        <span style={{ fontSize: 10, color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>
-                          {jail.bannedIps.slice(0, 3).join(', ')}{jail.bannedIps.length > 3 ? ` +${jail.bannedIps.length - 3}` : ''}
-                        </span>
+                        <div className="f2b-banned">
+                          {jail.bannedIps.map(ip => (
+                            <span key={ip} className="f2b-banned-ip">
+                              <span>{ip}</span>
+                              <button className="btn-outline btn-sm" disabled={unbanning === ip} onClick={() => handleUnban(ip)} title="Yasağı kaldır">
+                                {unbanning === ip ? <Loader2 size={11} className="spin" /> : 'Yasağı kaldır'}
+                              </button>
+                            </span>
+                          ))}
+                        </div>
                       )}
                     </div>
                   ))}
@@ -172,7 +259,7 @@ export function Fail2banPanel() {
 
       {activeTab === 'settings' && (
         <div style={{ marginTop: 14 }}>
-          <ServiceSettings service="fail2ban" categoryLabels={categoryLabels} categoryIcons={categoryIcons} />
+          <Fail2banSettingsCard />
         </div>
       )}
     </div>
