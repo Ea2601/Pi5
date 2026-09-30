@@ -348,6 +348,9 @@ mkdir -p /etc/nginx/conf.d
 if [ ! -f /etc/nginx/conf.d/pi5-redirect-map.conf ]; then
   printf 'map $host $pi5_redirect {\n    default "";\n}\n' > /etc/nginx/conf.d/pi5-redirect-map.conf
 fi
+# Yedek geri yükleme 20 MB'a kadar (nginx varsayılanı 1 MB); öbür uçları backend 1 MB'ta tutar. post-update 8f ile aynı.
+printf '%s\n%s\n' '# Klyrix Gate: yedek geri yükleme 20 MB (backend öbür uçlarda 1 MB) — post-update yazar' 'client_max_body_size 20m;' \
+  > /etc/nginx/conf.d/pi5-body.conf
 
 # Nginx reverse proxy (frontend + API)
 cat > /etc/nginx/sites-available/pi5-gateway << 'NGXEOF'
@@ -511,8 +514,9 @@ step "10/10 — Otomatik Bakım Ayarlanıyor"
 # backend ilk açılışta /etc/cron.d/pi5-panel'e yazar (Sistem & Log → Cron'dan açılıp kapatılabilir, bkz. cronSync.ts).
 cat > /etc/cron.d/pi5-maintenance << 'CRONEOF'
 # Pi5 Gateway günlük bakım
-# Güncelleme+build tek scriptte; backend restart YALNIZCA build başarılıysa (&&) yapılır — bozuk build'i canlıya almaz
-30 3 * * * root /bin/bash /opt/pi5-gateway/scripts/update.sh >> /opt/pi5-gateway/core/system.log 2>&1 && systemctl restart pi5-backend >> /opt/pi5-gateway/core/system.log 2>&1
+# Gece güncellemesi panelin güncelleme işiyle (update-job.sh): durum panelde görünür, başarısızlık zile yazılır, backend
+# yalnız derleme başarılıysa yeniden başlar; panelden başlatılmış bir güncelleme sürüyorsa (aynı birim) atlanır.
+30 3 * * * root /usr/bin/systemd-run --quiet --unit=pi5-update --collect --service-type=exec -p RuntimeMaxSec=1800 /bin/bash /opt/pi5-gateway/scripts/update-job.sh >> /opt/pi5-gateway/core/system.log 2>&1
 CRONEOF
 chmod 644 /etc/cron.d/pi5-maintenance
 log "Otomatik bakım cron görevleri ayarlandı"

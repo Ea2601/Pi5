@@ -2701,6 +2701,10 @@ button.user-profile { cursor: pointer; font-family: var(--font-family); transiti
   font-size: 11px;
   color: var(--text-muted);
 }
+/* Cron "Şimdi çalıştır" sonucu: son çıktı (sunucu son 60 satırı tutar) */
+.cron-output { margin-top: 6px; border: 1px solid var(--panel-border); border-radius: var(--radius-sm); overflow: hidden; }
+.cron-output-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 4px 8px; font-size: 11px; color: var(--text-muted); background: rgba(255, 255, 255, 0.02); }
+.cron-output pre { margin: 0; padding: 8px; max-height: 220px; overflow: auto; font-size: 11px; font-family: var(--font-mono); white-space: pre-wrap; overflow-wrap: anywhere; }
 
 .cron-details {
   display: flex;

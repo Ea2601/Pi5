@@ -52,7 +52,7 @@ export function BackupPanel() {
         id: crypto.randomUUID(),
         date: new Date().toLocaleString('tr-TR'),
         size: `${(blob.size / 1024).toFixed(1)} KB`,
-        items: Object.keys(data).length
+        items: Object.keys(data?.data || {}).length
       };
       saveHistory([newItem, ...history].slice(0, 20));
       toast.success('Yedek başarıyla indirildi.');
@@ -69,8 +69,19 @@ export function BackupPanel() {
     try {
       const text = await file.text();
       const data = JSON.parse(text);
-      await postApi('/backup/import', data);
-      toast.success('Yapılandırma başarıyla geri yüklendi.');
+      const when = typeof data?.created_at === 'string' ? new Date(data.created_at).toLocaleString('tr-TR') : 'tarihi bilinmiyor';
+      // Kurallar ve listeler yedektekiyle DEĞİŞİR (yedekten sonra eklenenler silinir), ayarlar birleştirilir; sonra Pi'ye uygulanır.
+      if (!window.confirm(`Bu yedek geri yüklensin mi? (${when})\n\nYedekteki kurallar ve listeler şimdikilerin yerine geçer — yedekten sonra eklediğiniz kurallar silinir. Ayarlar birleştirilir.\n\nArdından yönlendirme kuralları, Cron görevleri, Pi-hole listeleri, Fail2Ban, Unbound ve (kuruluysa) güvenlik duvarı yeniden uygulanır.`)) {
+        setImporting(false);
+        if (fileInputRef.current) fileInputRef.current.value = '';
+        return;
+      }
+      const r = await postApi('/backup/import', data) as { message?: string; applied?: { item: string; ok: boolean; detail?: string }[] };
+      const failed = (r.applied || []).filter(a => !a.ok);
+      const ok = (r.applied || []).filter(a => a.ok).map(a => a.item);
+      toast.success(`${r.message || 'Yedek geri yüklendi.'}${ok.length ? ` Uygulandı: ${ok.join(', ')}.` : ''}`);
+      for (const a of (r.applied || []).filter(a => a.ok && a.detail)) toast.info(`${a.item}: ${a.detail}`);
+      for (const f of failed) toast.error(`${f.item} uygulanamadı: ${f.detail || 'bilinmeyen hata'}`);
     } catch (err: unknown) {
       toast.error(err instanceof Error ? err.message : 'Geri yükleme başarısız.');
     }
@@ -84,10 +95,10 @@ export function BackupPanel() {
 
   const backupSections = [
     { icon: <Settings size={16} />, label: 'Servis Yapılandırmaları', desc: 'Pi-hole, Zapret, Unbound, Fail2Ban ayarları' },
-    { icon: <Globe size={16} />, label: 'Yönlendirme Kuralları', desc: 'Trafik kuralları ve VPS yapılandırmaları' },
-    { icon: <Users size={16} />, label: 'Cihaz Profilleri', desc: 'Kayıtlı cihazlar, gruplar ve engelleme listeleri' },
+    { icon: <Globe size={16} />, label: 'Yönlendirme Kuralları', desc: 'Uygulama ve alan adı kuralları (VPS sunucuları ve anahtarları yedeğe girmez)' },
+    { icon: <Users size={16} />, label: 'Cihaz Kuralları', desc: 'Cihaz grupları, ebeveyn ve hız kuralları, statik DHCP kayıtları (cihaz listesi yedeğe girmez)' },
     { icon: <Calendar size={16} />, label: 'Cron Görevleri', desc: 'Zamanlanmış görevler ve otomatik bakım' },
-    { icon: <Shield size={16} />, label: 'Güvenlik Duvarı', desc: 'UFW kuralları ve port yapılandırmaları' },
+    { icon: <Shield size={16} />, label: 'Güvenlik Duvarı', desc: 'Özel nftables kuralları' },
     { icon: <Database size={16} />, label: 'DNS Listeleri', desc: 'Beyaz liste, kara liste ve yerel DNS kayıtları' },
   ];
 

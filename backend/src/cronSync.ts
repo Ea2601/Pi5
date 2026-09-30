@@ -8,6 +8,7 @@
 //    açılışta o dosyadan çıkarılır (03:30 panel güncellemesi yerinde kalır).
 import fs from 'fs';
 import path from 'path';
+import { execFile } from 'child_process';
 import { dbAll, dbRun } from './db';
 import { isLinux } from './system';
 
@@ -87,9 +88,9 @@ export async function syncCronJobs(): Promise<void> {
     }
     lines.push(`# ${id}: ${oneLine(j.name)}`, `${String(j.schedule).trim()} root /bin/bash ${RUNNER} ${id}`);
   }
-  // Silinmiş görevlerin betik / sonuç / kilit dosyaları
+  // Silinmiş görevlerin betik / sonuç / kilit / çıktı dosyaları
   for (const f of fs.readdirSync(JOB_DIR)) {
-    const m = /^(\d+)\.(sh|status|lock)$/.exec(f);
+    const m = /^(\d+)\.(sh|status|lock|out)$/.exec(f);
     if (m && !keep.has(Number(m[1]))) fs.rmSync(path.join(JOB_DIR, f), { force: true });
   }
   writeAtomic(CRON_FILE, lines.join('\n') + '\n', 0o644);
@@ -110,6 +111,42 @@ export function readJobStatuses(): Map<number, { rc: number; at: number }> {
     } catch { /* yarım yazım: sonraki okumada */ }
   }
   return out;
+}
+
+// Şu an çalışan görevler: süreç tablosundaki cron-run.sh süreçleri (bash …/cron-run.sh <id> [manual]); aynı görevin
+// ikinci çalıştırması kilitte (flock) hemen çıkar. Kilidi denemek (flock -n) o anda başlayan zamanlanmış çalıştırmayı
+// atlatabilirdi; /proc/locks da kullanılmaz (kilidi alan flock(1) süreci hemen çıkar, sahibi ölmüş kilit başka PID ad
+// alanından bakınca listede görünmez). Arka uç ölse de doğru kalır (eskiden "Çalışıyor" veritabanında takılı kalabiliyordu).
+export function runningJobs(): Set<number> {
+  const out = new Set<number>();
+  if (!isLinux) return out;
+  let pids: string[] = [];
+  try { pids = fs.readdirSync('/proc').filter(p => /^\d+$/.test(p)); } catch { return out; }
+  for (const pid of pids) {
+    let argv: string[];
+    try { argv = fs.readFileSync(`/proc/${pid}/cmdline`, 'utf8').split('\0'); } catch { continue; }
+    const i = argv.findIndex(a => a === RUNNER || a.endsWith('/cron-run.sh'));
+    if (i >= 0 && /^\d+$/.test(argv[i + 1] || '')) out.add(Number(argv[i + 1]));
+  }
+  return out;
+}
+
+// Son çalıştırmanın çıktısı (son 60 satır) ve sonucu.
+export function jobOutput(id: number): { output: string; rc: number | null; at: number | null } {
+  let output = '';
+  try { output = fs.readFileSync(path.join(JOB_DIR, `${id}.out`), 'utf8'); } catch { /* henüz yok */ }
+  const st = readJobStatuses().get(id);
+  return { output, rc: st ? st.rc : null, at: st ? st.at : null };
+}
+
+// Panelden "Şimdi çalıştır": zamanlanmış çalıştırmayla aynı betik, kabuk (/bin/bash) ve kilit; panelin dışında (systemd-run)
+// — eskiden istek içinde 60 sn'de öldürülüyordu (apt / dpkg yarıda kalabilirdi). Üst sınır 1 saat.
+export async function startJobNow(id: number): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    execFile('systemd-run', ['--quiet', `--unit=pi5-cron-${id}-${Date.now()}`, '--collect', '--service-type=exec',
+      '-p', 'RuntimeMaxSec=3600', '/bin/bash', RUNNER, String(id), 'manual'], { timeout: 15000 },
+    (err, _out, stderr) => (err ? reject(new Error(String(stderr || err.message).trim() || 'başlatılamadı')) : resolve()));
+  });
 }
 
 export interface SystemCronEntry { source: string; schedule: string; command: string }

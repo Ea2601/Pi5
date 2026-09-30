@@ -203,6 +203,8 @@ async function savedSettings(): Promise<UnboundSettings | null> {
     return v && typeof v === 'object' ? v : null;
   } catch { return null; }
 }
+// Yedekten geri yüklemede kaydedilmiş ayarlar Unbound'a yeniden uygulanır (index.ts).
+export const savedUnboundSettings = savedSettings;
 
 const STAT_KEYS = ['total.num.queries', 'total.num.cachehits', 'total.num.cachemiss', 'total.num.prefetch',
   'total.num.expired', 'total.recursion.time.avg', 'total.recursion.time.median', 'time.up', 'msg.cache.count',

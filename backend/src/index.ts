@@ -41,11 +41,11 @@ import {
   readSatState, MeshError, validSatId,
 } from './mesh';
 import { authGate, registerAuthRoutes } from './auth';
-import { validateSchedule, validateCommand, syncCronJobs, readJobStatuses, readSystemCron, syncCronOnStartup } from './cronSync';
+import { validateSchedule, validateCommand, syncCronJobs, readJobStatuses, readSystemCron, syncCronOnStartup, runningJobs, jobOutput, startJobNow } from './cronSync';
 import { validateListValue, normalizeListValue, syncPiholeLists, lastListSync, externalPiholeEntries } from './piholeLists';
 import { applyZapret, zapretStatus, startBlockcheck, blockcheckRunning, zapretInstalled, cleanDpiDomain } from './zapret';
 import type { ZapretApplyResult } from './zapret';
-import { unboundStatus, applyUnboundSettings, validateUnboundSettings } from './unbound';
+import { unboundStatus, applyUnboundSettings, validateUnboundSettings, savedUnboundSettings } from './unbound';
 import { recordEvent, recordEventOnce, recordVersionChange, serviceLabel } from './events';
 import { wgServerStatus, setServerEnabled, addPeer, updatePeerRole, deletePeer, peerConfig, reapplyWgServer,
   validatePeerName, validRole, WG_PORT, WG_IFACE, reachabilityTest } from './wgServer';
@@ -81,7 +81,10 @@ app.use(cors({
   methods: ['GET', 'POST', 'PUT', 'DELETE'],
   maxAge: 86400,
 }));
-app.use(express.json({ limit: '1mb' }));
+// Gövde sınırı 1 MB; yedek içe aktarma 20 MB (dışa aktarmanın sınırı yok — büyük yedek geri yüklenebilsin).
+const jsonSmall = express.json({ limit: '1mb' });
+const jsonBackup = express.json({ limit: '20mb' });
+app.use((req, res, next) => (req.path === '/api/backup/import' ? jsonBackup : jsonSmall)(req, res, next));
 
 // CSRF: başka bir sitenin tarayıcı üzerinden gövdesiz POST atmasını engeller — CORS yalnız yanıtın okunmasını engeller,
 // form POST'u preflight'a girmez ve tarayıcı kayıtlı Basic kimliğini ekler. Yazma isteklerinde Origin varsa ana makine
@@ -107,7 +110,8 @@ const trustedPanelHost = (hostHeader: string) => {
   if (!h) return false;
   if (/^\d{1,3}(\.\d{1,3}){3}$/.test(h) || h.includes(':')) return true; // IPv4 / IPv6 sabit adres
   const me = require('os').hostname().toLowerCase();
-  return ['localhost', 'pi.hole', me, `${me}.local`, `${me}.lan`, `${me}.home`].includes(h);
+  // klyrix.local: Wi-Fi köprüsünde avahi'nin yayınladığı ad (net-mode.sh REP_MDNS); .local yalnız yerel ağda (mDNS) çözülür.
+  return ['localhost', 'pi.hole', 'klyrix.local', me, `${me}.local`, `${me}.lan`, `${me}.home`].includes(h);
 };
 // trustedPanelHost reddinin mesajı: örnek adres getPi5LanIp (sabit adreste modem tarafı .153 — iki ağdan da ulaşılır), bulunamazsa genel metin.
 const ipPanelHint = async () => {
@@ -138,6 +142,12 @@ app.use('/api/terminal/execute', writeLimiter);
 // Panel giriş ekranı (panel-auth.sh "mode form"): tüm uçlardan önce /api kapısı + giriş uçları (bkz. auth.ts). Mod
 // "basic" ya da tanımsızken kapı hiçbir şey yapmaz — koruma nginx Basic Auth'tadır.
 app.use('/api', authGate);
+// Root komutu çalıştıran ya da sistemi değiştiren uçlar: yazma istekleri yalnız panelin IP adresi / Pi'nin adıyla gelirse
+// (netAdminGuard, DNS rebinding'e karşı — koruma kapalıyken başka bir sitenin sayfası Pi'nin adresine yeniden bağlanıp
+// terminali çalıştıramasın). Ağ uçlarındaki (netmode, wan …) denetimin aynısı; localhost (kiosk) ve IP güvenilir.
+// netAdminGuard aşağıda tanımlı: istek anında çağrılır.
+app.use(['/api/terminal', '/api/cron', '/api/backup', '/api/system', '/api/services', '/api/storage', '/api/firewall',
+  '/api/fail2ban', '/api/unbound'], (req, res, next) => { void netAdminGuard(req, res, next); });
 registerAuthRoutes(app);
 
 // Graceful shutdown
@@ -392,15 +402,19 @@ const syncCronError = async (): Promise<string | null> => {
 app.get('/api/cron/jobs', async (_req, res) => {
   try {
     const jobs = await dbAll('SELECT * FROM cron_jobs ORDER BY id') as any[];
-    // Zamanlayıcının son çalıştırması panelden elle çalıştırmadan yeniyse o gösterilir.
+    // Son çalıştırma (zamanlayıcı ya da "Şimdi çalıştır") cron-run.sh'nin sonuç dosyasından; "Çalışıyor" çalışan cron-run.sh
+    // (runningJobs) — veritabanındaki eski 'running' değeri takılı kalabiliyordu, yok sayılır.
     const statuses = readJobStatuses();
+    const running = runningJobs();
     for (const j of jobs) {
       const st = statuses.get(Number(j.id));
       const manualAt = j.last_run ? Date.parse(String(j.last_run).replace(' ', 'T') + 'Z') : 0;
+      if (j.status === 'running') j.status = 'idle';
       if (st && st.at * 1000 > (Number.isFinite(manualAt) ? manualAt : 0)) {
         j.last_run = new Date(st.at * 1000).toISOString().replace('T', ' ').slice(0, 19);
-        if (j.status !== 'running') j.status = st.rc === 0 ? 'success' : 'error';
+        j.status = st.rc === 0 ? 'success' : 'error';
       }
+      if (running.has(Number(j.id))) j.status = 'running';
     }
     res.json({ jobs, system: readSystemCron() });
   } catch (e: any) {
@@ -460,28 +474,29 @@ app.delete('/api/cron/jobs/:id', async (req, res) => {
   }
 });
 
+// Şimdi çalıştır: panelin dışında başlatılır (cronSync.startJobNow), istek hemen döner; sonuç ve çıktı /output'tan.
+// Komut yeniden doğrulanır (yedekten gelen görev POST denetiminden geçmemiş olabilir).
 app.post('/api/cron/jobs/:id/run', async (req, res) => {
   try {
-    const job: any = await dbGet('SELECT * FROM cron_jobs WHERE id = ?', [req.params.id]);
+    const id = Number(req.params.id);
+    const job: any = await dbGet('SELECT * FROM cron_jobs WHERE id = ?', [id]);
     if (!job) return res.status(404).json({ error: 'Görev bulunamadı' });
-    await dbRun("UPDATE cron_jobs SET status = 'running', last_run = datetime('now') WHERE id = ?", [req.params.id]);
-    if (isLinux) {
-      const exec = require('util').promisify(require('child_process').exec);
-      try {
-        const { stdout } = await exec(job.command, { timeout: 60000 });
-        await dbRun("UPDATE cron_jobs SET status = 'success' WHERE id = ?", [req.params.id]);
-        res.json({ success: true, output: stdout.trim().slice(-500) });
-      } catch (cmdErr: any) {
-        await dbRun("UPDATE cron_jobs SET status = 'error' WHERE id = ?", [req.params.id]);
-        res.json({ success: false, error: cmdErr.message });
-      }
-    } else {
-      await dbRun("UPDATE cron_jobs SET status = 'error' WHERE id = ?", [req.params.id]);
-      res.json({ success: false, error: 'Cron görevleri sadece Pi5 üzerinde çalışır' });
-    }
+    if (!isLinux) return res.status(400).json({ error: 'Cron görevleri sadece Pi5 üzerinde çalışır' });
+    const bad = validateCommand(job.command);
+    if (bad) return res.status(400).json({ error: `Görev komutu geçersiz: ${bad}` });
+    if (runningJobs().has(id)) return res.status(409).json({ error: 'Görev zaten çalışıyor' });
+    const err = await syncCronError(); // görev betiği güncel olsun
+    if (err) return res.status(500).json({ error: err });
+    await startJobNow(id);
+    res.json({ success: true, started: true });
   } catch (e: any) {
-    res.status(500).json({ error: e.message });
+    res.status(500).json({ error: `Görev başlatılamadı: ${e.message}` });
   }
+});
+app.get('/api/cron/jobs/:id/output', (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id) || id <= 0) return res.status(400).json({ error: 'Geçersiz görev' });
+  res.json({ running: runningJobs().has(id), ...jobOutput(id) });
 });
 
 // ─── Service Config ───
@@ -3847,19 +3862,110 @@ const BACKUP_TABLES = [
   'domain_suggestion_dismissed',
 ];
 const BACKUP_TABLE_SET = new Set(BACKUP_TABLES);
+// Ayar tabloları birleştirilir (yedekte olmayan anahtar kalır: rol, eşleştirme, sürüm gibi çalışma anahtarları eski bir
+// yedekle silinmesin); kural ve liste tabloları yedektekiyle DEĞİŞTİRİLİR (yedekten sonra eklenen kural kalmaz — geri
+// yükleme beklenen budur; eskiden birleştiriliyordu). Statik DHCP kayıtlarında yalnız statikler değişir.
+const BACKUP_MERGE_TABLES = new Set(['service_config', 'service_status', 'app_settings']);
+// Yedekten geri gelmeyen çalışma kayıtları (panelin kendi defteri): eski değer geri gelirse ör. panelin Pi-hole'a yazdığı
+// yerel DNS kayıtları "dışarıdan eklenmiş" sayılıp hiç silinmez, "Panel güncellendi" olayı yinelenir, bildirilmiş uyarı
+// yeniden çıkar.
+const BACKUP_SKIP_SETTINGS = new Set(['last_seen_version', 'pihole_hosts_managed', 'storage_job_notified', 'wg_reach_watch',
+  'cron_defaults_seeded', 'accent_gray_migrated']);
 
 async function restoreTable(table: string, rows: any[]): Promise<number> {
-  if (!Array.isArray(rows) || rows.length === 0) return 0;
+  if (!Array.isArray(rows)) return 0;
+  // Bilinmeyen sütunlar atlanır (eski / yeni sürümün yedeği de yüklenir; eskiden tek sütun tüm geri yüklemeyi bozuyordu).
+  const known = new Set((await dbAll(`PRAGMA table_info(${table})`) as any[]).map(c => String(c.name)));
+  if (!BACKUP_MERGE_TABLES.has(table)) {
+    await dbRun(table === 'dhcp_leases' ? 'DELETE FROM dhcp_leases WHERE is_static = 1' : `DELETE FROM ${table}`);
+  }
   let n = 0;
   for (const row of rows) {
     if (!row || typeof row !== 'object') continue;
-    const cols = Object.keys(row).filter(c => /^[a-zA-Z0-9_]+$/.test(c));
+    if (table === 'app_settings' && BACKUP_SKIP_SETTINGS.has(String(row.key))) continue;
+    const cols = Object.keys(row).filter(c => /^[a-zA-Z0-9_]+$/.test(c) && known.has(c));
     if (!cols.length) continue;
     const sql = `INSERT OR REPLACE INTO ${table} (${cols.join(', ')}) VALUES (${cols.map(() => '?').join(', ')})`;
     await dbRun(sql, cols.map(c => row[c]));
     n++;
   }
   return n;
+}
+
+// Güvenlik duvarı kuralları geri yüklenmeden ÖNCE: her satır doğrulanır (geçmeyen atlanır), panele herkesin ya da tüm ev
+// ağının erişimini kesen kural atlanır, port sütunundan önceki yedeğin (v2.24.58 öncesi) "düşür / reddet" kuralları kapalı
+// gelir (db.ts taşımasıyla aynı: eskiden hiç işlemiyorlardı). Kalan küme geri yükleyen cihazı panelden kesecekse kurallar
+// hiç geri yüklenmez, mevcutlar kalır — sonradan başka bir uygulamayla (köprü, internet kartı) denetimsiz devreye girmesinler.
+async function prepareFwRestore(rows: any[], req: express.Request): Promise<{ rows: any[]; skipped: number; disabled: number; error?: string }> {
+  const lan = await lanNetworks();
+  const out: any[] = [];
+  let skipped = 0;
+  let disabled = 0;
+  for (const row of rows) {
+    const v = row && typeof row === 'object' ? validateFwRule(row) : null;
+    if (!v || 'error' in v || fwRuleIgnored(v.rule, lan)) { skipped++; continue; }
+    const on = Number(row.enabled ?? 1) !== 0;
+    const legacyBlock = !('port' in row) && v.rule.action !== 'accept';
+    if (on && legacyBlock) disabled++;
+    out.push({ ...(Number.isInteger(row.id) && row.id > 0 ? { id: row.id } : {}), ...v.rule, enabled: on && !legacyBlock ? 1 : 0 });
+  }
+  const verdict = await fwAccessVerdict(out, req);
+  return { rows: out, skipped, disabled, ...(verdict.error ? { error: verdict.error } : {}) };
+}
+
+// Geri yüklenen ayarlar Pi'ye uygulanır (eskiden yalnız veritabanına yazılıyordu: bir kısmı ancak yeniden başlatmada,
+// güvenlik duvarı ve Unbound hiç uygulanmıyordu). Yalnız yedekte bulunan bölümler; her birinin sonucu ayrı bildirilir.
+async function applyRestored(tables: Set<string>, keys: Set<string>, req: express.Request): Promise<{ item: string; ok: boolean; detail?: string }[]> {
+  const out: { item: string; ok: boolean; detail?: string }[] = [];
+  const step = async (item: string, fn: () => Promise<string | void>) => {
+    try {
+      const d = await fn();
+      out.push({ item, ok: true, ...(d ? { detail: d } : {}) });
+    } catch (e: any) {
+      out.push({ item, ok: false, detail: String(e?.message || e).slice(0, 300) });
+    }
+  };
+  if (!isLinux) return out;
+  if (tables.has('cron_jobs')) {
+    await step('Cron görevleri', async () => {
+      // Eski yedeklerde aynı görevin kopyaları olabilir (tohumlar yinelenirdi): aynı ad + zamanlama + komut teke iner.
+      await dbRun('DELETE FROM cron_jobs WHERE id NOT IN (SELECT MIN(id) FROM cron_jobs GROUP BY name, schedule, command)');
+      const err = await syncCronError();
+      if (err) throw new Error(err);
+    });
+  }
+  if (tables.has('traffic_routing') || tables.has('domain_routing') || tables.has('zapret_domains')) {
+    await step('Yönlendirme kuralları', () => applyAllRoutingRules());
+  }
+  if (tables.has('pihole_lists')) {
+    await step('Pi-hole listeleri', async () => {
+      const r = await syncPiholeLists();
+      if (!r.ok) throw new Error(r.errors.join('; '));
+    });
+  }
+  if (tables.has('routing_rules')) {
+    await step('Güvenlik duvarı', async () => {
+      if (!panelFirewallDeployed()) return 'kurulu değil — kurallar kaydedildi, Deploy Et ile uygulanır';
+      const verdict = await fwAccessVerdict(await dbAll(FW_RULES_SQL), req);
+      if (verdict.error) throw new Error(`uygulanmadı: ${verdict.error}`);
+      await applyPanelFirewall();
+    });
+  }
+  if (keys.has('fail2ban_settings')) {
+    await step('Fail2Ban', async () => {
+      const r = await ensureFail2ban();
+      if (r && !r.ok) throw new Error(r.error || 'uygulanamadı');
+    });
+  }
+  if (keys.has('unbound_settings')) {
+    await step('Unbound', async () => {
+      const s = await savedUnboundSettings();
+      if (!s) return 'kayıtlı ayar yok';
+      const r = await applyUnboundSettings(s);
+      if (!r.ok) throw new Error(r.error || 'uygulanamadı');
+    });
+  }
+  return out;
 }
 
 app.get('/api/backup/export', async (_req, res) => {
@@ -3883,19 +3989,42 @@ app.get('/api/backup/export', async (_req, res) => {
 
 app.post('/api/backup/import', async (req, res) => {
   try {
-    const { data } = req.body;
-    if (!data || typeof data !== 'object') {
+    const { data, backup_version } = req.body || {};
+    if (!data || typeof data !== 'object' || Array.isArray(data)) {
       return res.status(400).json({ error: 'Geçerli bir yedek verisi gerekli' });
     }
+    if (backup_version !== undefined && !(Number.isInteger(backup_version) && backup_version >= 1)) {
+      return res.status(400).json({ error: 'Yedek dosyası tanınmadı (backup_version)' });
+    }
+    let present = BACKUP_TABLES.filter(t => Array.isArray(data[t]));
+    if (!present.length) return res.status(400).json({ error: 'Yedekte geri yüklenecek tablo yok' });
 
-    // Export edilen TÜM tabloları tek transaction içinde geri yükle (kısmi hata = rollback).
+    // Güvenlik duvarı kuralları önce denetlenir (prepareFwRestore); geri yükleyeni panelden keserse tablo geri yüklenmez.
+    const notes: { item: string; ok: boolean; detail?: string }[] = [];
+    if (present.includes('routing_rules')) {
+      const fw = await prepareFwRestore(data.routing_rules, req);
+      if (fw.error) {
+        present = present.filter(t => t !== 'routing_rules');
+        notes.push({ item: 'Güvenlik duvarı kuralları', ok: false, detail: `geri yüklenmedi, mevcut kurallar kaldı — ${fw.error}` });
+      } else {
+        data.routing_rules = fw.rows;
+        const parts = [
+          fw.skipped ? `${fw.skipped} kural atlandı (geçersiz ya da panele herkesin / tüm ev ağının erişimini keser)` : '',
+          fw.disabled ? `eski sürümün ${fw.disabled} engelle kuralı kapalı geldi — Güvenlik Duvarı sayfasında gözden geçirip açın` : '',
+        ].filter(Boolean);
+        if (parts.length) notes.push({ item: 'Güvenlik duvarı kuralları', ok: true, detail: parts.join('; ') });
+      }
+    }
+
+    // Tüm tablolar tek işlemde (kısmi hata = geri alma).
     let restored = 0;
+    const perTable: Record<string, number> = {};
     await dbRun('BEGIN');
     try {
-      for (const table of BACKUP_TABLES) {
+      for (const table of present) {
         if (!BACKUP_TABLE_SET.has(table)) continue; // whitelist güvencesi
-        if (!data[table]) continue;
-        restored += await restoreTable(table, data[table]);
+        perTable[table] = await restoreTable(table, data[table]);
+        restored += perTable[table];
       }
       await dbRun('COMMIT');
     } catch (err) {
@@ -3903,7 +4032,14 @@ app.post('/api/backup/import', async (req, res) => {
       throw err;
     }
 
-    res.json({ success: true, message: `${restored} kayıt geri yüklendi.`, restored_count: restored });
+    const keys = new Set<string>(Array.isArray(data.app_settings) ? data.app_settings.map((r: any) => String(r?.key || '')) : []);
+    const applied = [...notes, ...await applyRestored(new Set(present), keys, req)];
+    const failed = applied.filter(a => !a.ok);
+    await recordEvent('backup', `Yedek geri yüklendi: ${restored} kayıt (${present.length} tablo)${applied.length
+      ? ` — uygulandı: ${applied.filter(a => a.ok).map(a => a.item).join(', ') || 'yok'}${failed.length ? `; uygulanamadı: ${failed.map(a => `${a.item} (${a.detail})`).join(', ')}` : ''}` : ''}`,
+      failed.length ? 'warning' : 'info');
+    res.json({ success: true, message: `${restored} kayıt geri yüklendi.`, restored_count: restored, tables: perTable, applied,
+      ignored: Object.keys(data).filter(k => !BACKUP_TABLE_SET.has(k)) });
   } catch (e: any) {
     res.status(500).json({ error: e.message });
   }

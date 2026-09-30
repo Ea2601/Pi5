@@ -1,6 +1,9 @@
 node_modules/
 dist/
 backend/dist/
+# Güncellemenin geçici / önceki derlemeleri (scripts/update.sh)
+dist.next/
+dist.prev/
 *.sqlite
 *.sqlite-journal
 .env

@@ -1,8 +1,12 @@
 #!/bin/bash
 # Post-update script — runs automatically after git pull
 # Handles: npm install, dependency checks, new script permissions, migrations
+#   post-update.sh [deps | system]
+# update.sh iki parça çağırır: deps (yalnız npm bağımlılıkları, derlemeden önce) ve system (geri kalan her şey, ancak iki
+# derleme de başarılıysa). Argümansız: hepsi (eski update.sh ve elle çalıştırma).
 
 set -e
+MODE=${1:-all}
 BASE="/opt/pi5-gateway"
 LOG="$BASE/core/update.log"
 # Bu dosyayı getiren güncellemede update.sh henüz eski olabilir: HOME ve sistem geneli safe.directory burada da kurulur
@@ -11,7 +15,7 @@ export HOME="${HOME:-/root}"
 git config --system --get-all safe.directory 2>/dev/null | grep -xF "$BASE" >/dev/null \
   || git config --system --add safe.directory "$BASE" 2>/dev/null || true
 
-echo "$(date '+%Y-%m-%d %H:%M:%S') — Post-update başlatıldı" >> "$LOG"
+echo "$(date '+%Y-%m-%d %H:%M:%S') — Post-update başlatıldı ($MODE)" >> "$LOG"
 
 # Sistem paketleri pi5-backend cgroup'unun DIŞINDA kurulur (systemd-run → scripts/pkg-ensure.sh): güncellemenin 300 sn
 # exec sınırı ya da backend yeniden başlatması dpkg'yi yarıda kesemesin ("dpkg was interrupted" — canlıda yaşandı).
@@ -70,8 +74,11 @@ npm_sync() {
     printf '%s\n' "$out" | tail -25 >> "$LOG"
   fi
 }
-npm_sync backend Backend
-npm_sync frontend Frontend
+if [ "$MODE" != system ]; then
+  npm_sync backend Backend
+  npm_sync frontend Frontend
+fi
+[ "$MODE" = deps ] && exit 0
 
 # 3. Make all scripts executable
 chmod +x "$BASE/scripts/"*.py "$BASE/scripts/"*.sh 2>/dev/null || true
@@ -269,6 +276,35 @@ bash "$BASE/scripts/storage.sh" ensure >> "$LOG" 2>&1 || echo "  [depolama] UYAR
 # 8d. Ağ paylaşımı (Samba): açıksa ayarları yeni betik sürümüne göre yeniden üretir, takılı USB paylaşımlarını bağlar.
 #     Kapalıysa hiçbir şey yapmaz; paket kurmaz (kurulum yalnız panelden açılınca).
 bash "$BASE/scripts/share.sh" ensure >> "$LOG" 2>&1 || echo "  [paylaşım] UYARI: ağ paylaşımı denetlenemedi" >> "$LOG"
+
+# 8e. Gece güncellemesi panelin güncelleme işiyle (update-job.sh): durum panelde görünür, başarısızlık zile yazılır; eski
+#     `update.sh && systemctl restart` satırı (ve v2.6 öncesinin koşulsuz 04:00 yeniden başlatması) kalkar. Yalnız etkin
+#     bir güncelleme satırı varsa yazılır: kullanıcı gece güncellemesini kapattıysa (satır yorumda / dosya yok) dokunulmaz.
+MAINT=/etc/cron.d/pi5-maintenance
+if [ -f "$MAINT" ] && grep -qE '^[^#]*(scripts/update\.sh|git pull)' "$MAINT" && ! grep -q 'update-job\.sh' "$MAINT"; then
+  cat > "$MAINT.tmp" << 'CRONEOF'
+# Pi5 Gateway günlük bakım
+# Gece güncellemesi panelin güncelleme işiyle (update-job.sh): durum panelde görünür, başarısızlık zile yazılır, backend
+# yalnız derleme başarılıysa yeniden başlar; panelden başlatılmış bir güncelleme sürüyorsa (aynı birim) atlanır.
+30 3 * * * root /usr/bin/systemd-run --quiet --unit=pi5-update --collect --service-type=exec -p RuntimeMaxSec=1800 /bin/bash /opt/pi5-gateway/scripts/update-job.sh >> /opt/pi5-gateway/core/system.log 2>&1
+CRONEOF
+  chmod 644 "$MAINT.tmp" && mv -f "$MAINT.tmp" "$MAINT" && echo "  [bakım] gece güncellemesi panelin güncelleme işine taşındı" >> "$LOG"
+fi
+
+# 8f. Yedek geri yükleme 20 MB'a kadar (backend /api/backup/import): nginx'in varsayılan istek gövdesi sınırı 1 MB, daha
+#     büyük yedek nginx'te 413 alıyordu. http düzeyinde (conf.d); öbür uçları backend 1 MB'ta tutar. nginx -t geçmezse
+#     dosya kaldırılır (nginx yeniden yüklenemez hâle gelmesin).
+BODY_CONF=/etc/nginx/conf.d/pi5-body.conf
+BODY_WANT=$(printf '%s\n%s' '# Klyrix Gate: yedek geri yükleme 20 MB (backend öbür uçlarda 1 MB) — post-update yazar' 'client_max_body_size 20m;')
+if [ -d /etc/nginx/conf.d ] && command -v nginx >/dev/null 2>&1 && [ "$(cat "$BODY_CONF" 2>/dev/null)" != "$BODY_WANT" ]; then
+  printf '%s\n' "$BODY_WANT" > "$BODY_CONF"
+  if nginx -t >/dev/null 2>&1; then
+    systemctl reload nginx >/dev/null 2>&1 || true
+  else
+    rm -f "$BODY_CONF"
+    echo "  [nginx] yedek gövde sınırı eklenemedi (nginx -t başarısız)" >> "$LOG"
+  fi
+fi
 
 # 9. Hız testi motoru: Ookla Speedtest CLI (sabit sürüm + SHA256; kuruluysa hiçbir şey yapmaz). Kurulamazsa panel
 #    speedtest-cli'ye düşer; hata güncellemeyi durdurmaz.

@@ -1,6 +1,6 @@
 import { RefreshCw, Power, Trash2, Download, Terminal, Zap, Clock, Plus, Play, X, Edit3, Check, Calendar } from 'lucide-react';
 import { useState, useRef, useEffect } from 'react';
-import { useApi, postApi, putApi, deleteApi } from '../hooks/useApi';
+import { useApi, getApi, postApi, putApi, deleteApi } from '../hooks/useApi';
 import { Panel, Badge } from './ui';
 import type { CronJob } from '../types';
 import { toast } from '../toast';
@@ -158,6 +158,11 @@ function CronView() {
   const [editId, setEditId] = useState<number | null>(null);
   const [editData, setEditData] = useState({ name: '', schedule: '', command: '', description: '' });
   const [running, setRunning] = useState<number | null>(null);
+  // "Şimdi çalıştır"ın sonucu: görev satırının altında son çıktı (sunucu son 60 satırı tutar).
+  const [outputs, setOutputs] = useState<Record<number, { output: string; rc: number | null }>>({});
+  // Sayfadan çıkılınca yoklama durur (görev Pi'de sürer; sonucu listede ve Bildirimler'de).
+  const alive = useRef(true);
+  useEffect(() => { alive.current = true; return () => { alive.current = false; }; }, []);
 
   // Her değişiklik Pi'nin zamanlayıcısına yazılır; geçersiz zamanlama ya da yazım hatası sunucudan mesajla döner.
   const guarded = async (fn: () => Promise<unknown>, okMsg?: string) => {
@@ -190,15 +195,39 @@ function CronView() {
     await guarded(() => deleteApi(`/cron/jobs/${id}`), 'Görev silindi');
   };
 
+  // Görev panelin dışında çalışır (zamanlanmış çalıştırmayla aynı betik ve kilit, üst sınır 1 saat); bitene kadar yoklanır.
   const handleRun = async (id: number) => {
     setRunning(id);
     try {
       await postApi(`/cron/jobs/${id}/run`, {});
-    } catch { /* hata durumunda da butonu serbest bırak */ }
-    finally {
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Görev başlatılamadı');
       setRunning(null);
-      await refetch();
+      return;
     }
+    toast.info('Görev başladı — bitince sonucu burada görünecek');
+    await refetch();
+    // Yoklama hatası (ör. panel servisi yeniden başlıyor) görevi etkilemez: süre dolana kadar yeniden denenir.
+    const deadline = Date.now() + 65 * 60 * 1000;
+    let finished = false;
+    while (alive.current && Date.now() < deadline) {
+      await new Promise(r => setTimeout(r, 2000));
+      if (!alive.current) return;
+      let o: { running: boolean; output: string; rc: number | null };
+      try {
+        o = await getApi<{ running: boolean; output: string; rc: number | null }>(`/cron/jobs/${id}/output`);
+      } catch { continue; }
+      if (o.running) continue;
+      finished = true;
+      setOutputs(prev => ({ ...prev, [id]: { output: o.output, rc: o.rc } }));
+      if (o.rc === 0) toast.success('Görev tamamlandı');
+      else toast.error(`Görev hata verdi${o.rc !== null ? ` (çıkış kodu ${o.rc})` : ''}`);
+      break;
+    }
+    if (!alive.current) return;
+    if (!finished) toast.info('Görev hâlâ sürüyor — sonucu listede görünecek');
+    setRunning(null);
+    await refetch();
   };
 
   const startEdit = (job: CronJob) => {
@@ -325,12 +354,21 @@ function CronView() {
                     {job.last_run && (
                       <span className="cron-desc">Son çalışma: {fmtRun(job.last_run)}</span>
                     )}
+                    {outputs[job.id] && (
+                      <div className="cron-output">
+                        <div className="cron-output-head">
+                          <span>Son çıktı{outputs[job.id].rc !== null ? ` · çıkış kodu ${outputs[job.id].rc}` : ''}</span>
+                          <button className="icon-btn icon-btn-sm" onClick={() => setOutputs(prev => { const n = { ...prev }; delete n[job.id]; return n; })} title="Kapat" aria-label="Çıktıyı kapat"><X size={11} /></button>
+                        </div>
+                        <pre>{outputs[job.id].output.trim() || '(çıktı yok)'}</pre>
+                      </div>
+                    )}
                   </div>
                   <div className="cron-actions">
                     <button className="icon-btn icon-btn-sm" onClick={() => handleRun(job.id)}
-                      disabled={running === job.id || !job.enabled}
+                      disabled={running === job.id || job.status === 'running' || !job.enabled}
                       title="Şimdi çalıştır">
-                      <Play size={13} className={running === job.id ? 'spin' : ''} />
+                      <Play size={13} className={running === job.id || job.status === 'running' ? 'spin' : ''} />
                     </button>
                     <button className="icon-btn icon-btn-sm" onClick={() => startEdit(job)} title="Düzenle">
                       <Edit3 size={13} />

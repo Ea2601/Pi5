@@ -41,11 +41,15 @@ export function parseKv(text: string): Record<string, string> {
 const num = (v?: string) => (v && /^\d+$/.test(v) ? Number(v) : undefined);
 
 // update.sh'nin günlük satırlarından o anki adım. Adımlar sırayla ilerler: listedeki ilk eşleşme en ileri adımdır.
+// Bağımlılıklar derlemeden önce, kurulum adımları (post-update system) iki derleme de başarılıysa; eski update.sh
+// post-update'i derlemeden önce tek parça çalıştırır ("Post-update çalıştırılıyor").
 const PHASES: [RegExp, string][] = [
   [/=== Güncelleme tamamlandı ===/, 'Servis yeniden başlatılıyor'],
+  [/Kurulum adımları çalıştırılıyor/, 'Kurulum adımları (paketler, ayarlar)'],
   [/Frontend build\.\.\./, 'Arayüz derleniyor'],
   [/Backend build\.\.\./, 'Backend derleniyor'],
   [/Post-update çalıştırılıyor/, 'Kurulum adımları (paketler, ayarlar)'],
+  [/Bağımlılıklar denetleniyor/, 'Bağımlılıklar denetleniyor'],
   [/Git (fetch|reset)/, 'Kod indiriliyor (git)'],
 ];
 export function updatePhase(output: string): string {
@@ -55,8 +59,9 @@ export function updatePhase(output: string): string {
 
 // update.sh düşülen adımı '@@STEP_FAILED=<adım> rc=N', post-update çıkış kodunu '@@POSTUPDATE_RC=N' ile bildirir
 // (eskiden çıktıdaki kelimelerden tahmin ediliyordu; 'Git OK: unknown' gibi durumlar görünmüyordu).
-const STEP_LABEL: Record<string, string> = { hazirlik: 'Hazırlık', git: 'Git Pull', backend: 'Backend Build', frontend: 'Frontend Build' };
-const STEP_ORDER = ['hazirlik', 'git', 'backend', 'frontend'];
+// Derleme adımları geçici klasöre derler; başarısızsa kaynak önceki sürüme döner (update.sh) — çalışan panel değişmez.
+const STEP_LABEL: Record<string, string> = { hazirlik: 'Hazırlık', git: 'Git Pull', backend: 'Backend Build', frontend: 'Frontend Build', swap: 'Yeni derlemeye geçiş' };
+const STEP_ORDER = ['hazirlik', 'git', 'backend', 'frontend', 'swap'];
 
 // Biten işin adımları (panelin önceki yanıtıyla aynı biçim). kv: durum dosyası (state, rc, reason, restart).
 export function summarizeUpdate(output: string, kv: Record<string, string>): UpdateStep[] {
@@ -66,10 +71,10 @@ export function summarizeUpdate(output: string, kv: Record<string, string>): Upd
     const head = /Git OK: (\S+)/.exec(output)?.[1];
     const viaSudo = /Normal fetch başarısız/.test(output) ? ' — sudo ile' : '';
     steps.push({ step: 'Git Pull', output: head ? `OK (${head})${viaSudo}` : 'OK', success: true });
-    const pu = /@@POSTUPDATE_RC=(\d+)/.exec(output);
-    if (pu) steps.push({ step: 'Post-Update', output: `çıkış kodu ${pu[1]} — ayrıntı: core/update.log`, success: true, warning: true });
     steps.push({ step: 'Backend Build', output: 'OK', success: true });
     steps.push({ step: 'Frontend Build', output: tail, success: true });
+    const pu = /@@POSTUPDATE_RC=(\d+)/.exec(output);
+    if (pu) steps.push({ step: 'Post-Update', output: `çıkış kodu ${pu[1]} — ayrıntı: core/update.log`, success: true, warning: true });
     steps.push(kv.restart === 'failed'
       ? { step: 'Servis Restart', output: 'pi5-backend yeniden başlatılamadı — sudo systemctl restart pi5-backend', success: false }
       : { step: 'Servis Restart', output: 'pi5-backend yeniden başlatıldı', success: true });
