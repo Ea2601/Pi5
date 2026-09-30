@@ -3,6 +3,7 @@
 // birkaç <path> olarak çizilir (binlerce öğe değil). 'login' hareketlidir: ağ üzerinde ilerleyen ışık izleri + yanıp
 // sönen düğümler. 'panel' hareketsizdir: panelde onlarca cam kart (backdrop-filter: blur) var; arkalarında hareket olursa
 // tarayıcı bulanıklığı her karede yeniden hesaplar (telefonda ısınma / takılma). Girişte tek kart olduğu için orada sorun yok.
+import './NetworkBackdrop.css';
 
 const W = 1600, H = 1000, CELL = 66;
 

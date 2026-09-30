@@ -41,5 +41,10 @@ export default defineConfig({
     outDir: 'dist',
     sourcemap: false,
     chunkSizeWarningLimit: 1000,
+    // İki sayfa: panel (index.html) ve HDMI ekranı (kiosk.html — panelin yazı tiplerini, temasını ve bileşenlerini paylaşır;
+    // Pi'deki kiosk tarayıcısı http://localhost/kiosk.html açar).
+    rolldownOptions: {
+      input: { main: 'index.html', kiosk: 'kiosk.html' },
+    },
   },
 })

@@ -1972,66 +1972,8 @@ button.user-profile { cursor: pointer; font-family: var(--font-family); transiti
   padding: max(24px, env(safe-area-inset-top)) 16px max(24px, env(safe-area-inset-bottom));
   overflow: hidden;
 }
-/* ═══ Ortak arka plan (NetworkBackdrop): renk halkaları + ağ çizgileri ═══
-   'login' giriş ekranı (hareketli), 'panel' panel kabuğu (hareketsiz, daha sade — önündeki cam kartların
-   backdrop-filter'ı her karede yeniden hesaplanmasın). Salt süs: dokunma almaz. */
-.net-bg {
-  --net-ink: 148, 163, 184;
-  position: fixed; inset: 0; z-index: 0; pointer-events: none; overflow: hidden;
-  contain: strict;
-}
-:root.light-theme .net-bg { --net-ink: 71, 85, 105; }
-.net-bg::before, .net-bg::after { content: ''; position: absolute; border-radius: 50%; filter: blur(60px); }
-.net-bg::before {
-  width: 70vmax; height: 50vmax; left: -20vmax; top: -18vmax; opacity: 0.22;
-  background: radial-gradient(closest-side, var(--accent-color), transparent);
-}
-.net-bg::after {
-  width: 60vmax; height: 45vmax; right: -20vmax; bottom: -20vmax; opacity: 0.12;
-  background: radial-gradient(closest-side, var(--success-color), transparent);
-}
-.net-bg svg { position: absolute; inset: 0; width: 100%; height: 100%; }
-/* Dijital ağ: üç görünürlük katmanı (kenarlarda belirgin, ortada soluk — içerik okunur kalır) */
-.net-mesh { fill: none; stroke: rgb(var(--net-ink)); stroke-width: 1; stroke-linejoin: round; vector-effect: non-scaling-stroke; }
-.net-mesh-1 { stroke-opacity: 0.06; }
-.net-mesh-2 { stroke-opacity: 0.12; }
-.net-mesh-3 { stroke-opacity: 0.2; }
-.net-node { fill: rgb(var(--net-ink)); }
-.net-node-1 { opacity: 0.14; }
-.net-node-2 { opacity: 0.28; }
-.net-node-3 { opacity: 0.5; }
-.net-glow { fill: var(--accent-color); opacity: 0.08; }
-.net-acc { fill: var(--accent-hover); opacity: 0.8; }
-:root.light-theme .net-acc { fill: var(--accent-color); opacity: 0.55; }
-/* Girişte: ağ üzerinde ilerleyen ışık izleri (pathLength=100; boşluk yoldan uzun → izler arası doğal bekleme) */
-.net-pulse {
-  fill: none; stroke: var(--accent-hover); stroke-width: 1.6; stroke-linecap: round;
-  stroke-dasharray: 8 140; stroke-dashoffset: 148; opacity: 0.85;
-  animation: net-pulse-run 7s linear infinite;
-}
-.net-pulse-b { stroke: var(--success-color); }
-:root.light-theme .net-pulse { stroke: var(--accent-color); }
-:root.light-theme .net-pulse-b { stroke: var(--success-color); }
-.net-twinkle { animation: net-twinkle 4s ease-in-out infinite; }
-@keyframes net-pulse-run { to { stroke-dashoffset: 0; } }
-@keyframes net-twinkle { 0%, 100% { opacity: 0.3; } 50% { opacity: 0.95; } }
-@media (prefers-reduced-motion: reduce) {
-  .net-pulse { animation: none; opacity: 0; }
-  .net-twinkle { animation: none; }
-}
-/* Panel: içeriğin ALTINDA (z-index -1 → kabuk ve çekmece/modal/toast katmanları olduğu gibi kalır), hareketsiz, daha sade.
-   Ayrı katman (will-change): bir kez çizilir, kaydırmada yeniden çizilmez. */
-.net-bg-panel { z-index: -1; will-change: transform; }
-.net-bg-panel::before { opacity: 0.20; }
-.net-bg-panel::after { opacity: 0.11; }
-.net-bg-panel .net-mesh-1 { stroke-opacity: 0.055; }
-.net-bg-panel .net-mesh-2 { stroke-opacity: 0.105; }
-.net-bg-panel .net-mesh-3 { stroke-opacity: 0.175; }
-.net-bg-panel .net-node-1 { opacity: 0.12; }
-.net-bg-panel .net-node-2 { opacity: 0.24; }
-.net-bg-panel .net-node-3 { opacity: 0.44; }
-.net-bg-panel .net-glow { opacity: 0.07; }
-.net-bg-panel .net-acc { opacity: 0.6; }
+/* Ortak arka plan (NetworkBackdrop) stilleri bileşenin kendi dosyasında: components/NetworkBackdrop.css
+   (kiosk da kullanır ve App.css'i yüklemez). */
 
 .login-card { position: relative; z-index: 1; width: 100%; max-width: 400px; padding: 28px 22px 22px; border-radius: 16px; }
 .login-brand { display: flex; align-items: center; gap: 14px; }
@@ -3503,6 +3445,37 @@ button.user-profile { cursor: pointer; font-family: var(--font-family); transiti
 /* Dar ekranda düğme yazısı bölünmesin: düğmeler gerekirse alt alta dizilir. */
 .notif-detail-host .modal-actions { flex-wrap: wrap; }
 .notif-detail-host .modal-actions .btn-sm { white-space: nowrap; }
+
+/* ═══════════════════ HDMI EKRAN ayarları (KioskSettingsPanel; ekranın kendisi src/kiosk/kiosk.css) ═══════════════════ */
+.kiosk-cfg { display: grid; grid-template-columns: minmax(0, 1fr); gap: 16px; margin-top: 14px; }
+.kiosk-cfg-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 8px; }
+.kiosk-cfg-head h4 { display: flex; align-items: center; gap: 6px; font-size: 13px; }
+.kiosk-cfg-head h4 span { font-size: 11px; font-weight: 400; color: var(--text-muted); }
+.kiosk-preview { display: flex; flex-direction: column; gap: 6px; }
+.kiosk-preview-screen {
+  aspect-ratio: 16 / 9; display: grid; grid-template-rows: 8% minmax(0, 1.85fr) minmax(0, 1fr) 9%; gap: 4%;
+  padding: 3.5%; border-radius: 10px; background: var(--bg-color); border: 4px solid var(--panel-border-hover);
+  box-shadow: inset 0 0 0 1px var(--panel-border); font-size: 11px;
+}
+.kiosk-preview-screen:not(:has(.kp-ticker)) { grid-template-rows: 8% minmax(0, 1.85fr) minmax(0, 1fr); }
+.kp-head { border-radius: 4px; background: var(--panel-border); }
+.kp-top { display: grid; grid-template-columns: 7fr 5fr; gap: 3%; min-height: 0; }
+.kp-top[data-solo] { grid-template-columns: 1fr; }
+.kp-top[data-solo] .kp-stack { grid-auto-flow: column; }
+.kp-stack { display: grid; grid-auto-rows: minmax(0, 1fr); gap: 6%; min-height: 0; }
+.kp-bottom { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); gap: 3%; min-height: 0; }
+.kp-box {
+  display: flex; align-items: center; justify-content: center; min-height: 0; overflow: hidden; border-radius: 5px;
+  background: var(--panel-bg); border: 1px solid var(--panel-border); color: var(--text-secondary); font-weight: 600;
+  white-space: nowrap; text-overflow: ellipsis;
+}
+.kp-traffic { color: var(--accent-color); border-color: var(--accent-ring); background: var(--accent-glow); }
+.kiosk-note { margin-top: 14px; padding: 12px 16px; border-radius: var(--radius); background: var(--accent-glow); border: 1px solid var(--panel-border); }
+.kiosk-note h4 { font-size: 13px; margin-bottom: 6px; }
+.kiosk-note p { font-size: 12px; line-height: 1.6; color: var(--text-secondary); }
+@media (min-width: 1024px) {
+  .kiosk-cfg { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); align-items: start; }
+}
 
 /* ═══════════════════ BİLDİRİM ZİLİ (açılır panel; konumu NotificationBell yazar) ═══════════════════ */
 /* Opak yüzey (açılır listelerle aynı): cam saydamlığında arkadaki sayfanın yazıları bildirimlerin arasından okunuyordu.
