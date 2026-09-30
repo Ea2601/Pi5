@@ -28,6 +28,7 @@ import { SshTerminal } from './components/SshTerminal';
 import { DdnsPanel } from './components/DdnsPanel';
 import { CaseControlPanel } from './components/CaseControlPanel';
 import { KioskSettingsPanel } from './components/KioskSettingsPanel';
+import { StoragePanel } from './components/StoragePanel';
 import { PanelAuthBanner } from './components/PanelAuthBanner';
 import { LoginScreen } from './components/LoginScreen';
 import { NetworkBackdrop } from './components/NetworkBackdrop';
@@ -178,6 +179,7 @@ function App() {
       case 'trafficcontrol': return <TrafficControlPanel />;
       case 'casecontrol': return <CaseControlPanel />;
       case 'kiosk': return <KioskSettingsPanel />;
+      case 'storage': return <StoragePanel />;
       case 'backup': return <BackupPanel />;
       case 'settings': return <SettingsPanel />;
       case 'terminal': return <SshTerminal />;

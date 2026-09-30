@@ -45,6 +45,7 @@ import { recordEvent, recordEventOnce, recordVersionChange, serviceLabel } from 
 import { wgServerStatus, setServerEnabled, addPeer, updatePeerRole, deletePeer, peerConfig, reapplyWgServer,
   validatePeerName, validRole, WG_PORT, reachabilityTest } from './wgServer';
 import { startReachWatch, noteReachResult, reachWatchState, REACH_WATCH_INTERVAL_H } from './wgWatch';
+import { storageStatus } from './storage';
 import type { ListSyncResult } from './piholeLists';
 import {
   shq, sedEscape, isValidMac, isValidDomain, isValidTimezone,
@@ -3464,6 +3465,15 @@ app.post('/api/backup/import', async (req, res) => {
     }
 
     res.json({ success: true, message: `${restored} kayıt geri yüklendi.`, restored_count: restored });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ─── Depolama (storage.ts): takılı diskler, bölümler, doluluk ve verilerin hangi diskte durduğu — salt okunur ───
+app.get('/api/storage', async (_req, res) => {
+  try {
+    res.json(await storageStatus());
   } catch (e: any) {
     res.status(500).json({ error: e.message });
   }
