@@ -47,7 +47,7 @@ interface LcdHints {
 }
 
 const DEFAULT_SETTINGS: LcdSettings = {
-  wan_if: 'eth0',
+  wan_if: 'auto',   // varsayılan rotanın arayüzü (lcd_display.py / klyrix_oled.py çözer)
   temp_alarm: 75,
   fps: 10,
   anim: true,
@@ -366,7 +366,7 @@ export function CaseControlPanel() {
               {/* WAN arayüzü — internet sayfasındaki canlı grafik bu arayüzden okunur */}
               <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
                 <span style={{ fontSize: 11, color: 'var(--text-secondary)' }}>
-                  WAN arayüzü {hints.wan && hints.wan !== settings.wan_if && (
+                  WAN arayüzü {hints.wan && settings.wan_if !== 'auto' && hints.wan !== settings.wan_if && (
                     <button onClick={() => updateSetting('wan_if', hints.wan)}
                       title="Tespit edilen arayüzü kullan"
                       style={{
@@ -380,7 +380,8 @@ export function CaseControlPanel() {
                 {hints.interfaces.length > 0 ? (
                   <Select className="config-select-sm" value={settings.wan_if}
                     onChange={e => updateSetting('wan_if', e.target.value)}>
-                    {(hints.interfaces.includes(settings.wan_if)
+                    <option value="auto">{`Otomatik${hints.wan ? ` (şu an ${hints.wan})` : ''}`}</option>
+                    {(hints.interfaces.includes(settings.wan_if) || settings.wan_if === 'auto'
                       ? hints.interfaces : [settings.wan_if, ...hints.interfaces]).map(i => (
                       <option key={i} value={i}>{i}</option>
                     ))}
@@ -390,7 +391,9 @@ export function CaseControlPanel() {
                     onChange={e => updateSetting('wan_if', e.target.value)}
                     style={{ fontSize: 12, padding: '4px 8px' }} />
                 )}
-                <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>İnternet sayfasındaki hız grafiği</span>
+                <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>
+                  İnternet sayfasındaki hız grafiği{settings.wan_if === 'auto' ? ' — hat değişince (yedek hat, Wi-Fi) kendisi izler' : ''}
+                </span>
               </label>
 
               {/* Sıcaklık alarm eşiği */}

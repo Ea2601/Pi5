@@ -9,7 +9,7 @@ scripts/lcd_display.py tarafında yaşar — bu dosya doğrudan çalıştırılm
 Tek bağımlılık Pillow; cihazda ayrıca luma.oled + luma.core.
 
 Env: PI5_LCD_ADDR=0x3C  PI5_LCD_I2C_PORT=1  PI5_LCD_FPS=10  PI5_LCD_DWELL=10
-     PI5_LCD_WAN_IF=eth0  PI5_LCD_CONTROLLER=ssd1306|sh1106
+     PI5_LCD_WAN_IF=auto|eth0  PI5_LCD_CONTROLLER=ssd1306|sh1106
      PI5_LCD_TEMP_ALARM=75
      PI5_LCD_MOUNTS="ROOT=/,BOOT=/boot/firmware,NAS=/mnt/nas,USB=/mnt/usb,DOCKER=/var/lib/docker"
 """
@@ -664,6 +664,41 @@ def _rf(path):
         return ''
 
 
+# Varsayılan rota (en düşük metrik): (arayüz, ağ geçidi). İnternet kartı (R3), Wi-Fi ile internet (R4), yedek hat
+# devreye girince kart değişir; 'auto' ayarı bunu izler. Eskiden sabit 'eth0' okunuyordu: tek bacaklı olmayan
+# düzenlerde internet grafiği ev ağının trafiğini gösteriyordu.
+def _default_route():
+    try:
+        routes = json.loads(_sh('ip -j -4 route show default') or '[]')
+        routes = [r for r in routes if r.get('dev')]
+        if not routes:
+            return '', ''
+        r = min(routes, key=lambda x: int(x.get('metric') or 0))
+        return r.get('dev', ''), r.get('gateway', '')
+    except Exception:
+        return '', ''
+
+
+# Ağda şu an görünen cihaz sayısı: ARP/komşu tablosunda REACHABLE / STALE / DELAY / PROBE, ağ geçidi (modem) ve
+# tünel arayüzleri hariç, MAC başına bir. Panelin cihaz tablosu yalnız Cihazlar sayfası açılınca tazelendiği için
+# oradaki kayıt sayısı "aktif" cihazı göstermez (görülmüş tüm cihazlardır). Okunamazsa None.
+def _lan_neighbors():
+    try:
+        neigh = json.loads(_sh('ip -j -4 neigh show') or '[]')
+    except Exception:
+        return None
+    gw = _default_route()[1]
+    live = {'REACHABLE', 'STALE', 'DELAY', 'PROBE'}
+    macs = set()
+    for n in neigh:
+        dev = str(n.get('dev', ''))
+        if not n.get('lladdr') or n.get('dst') == gw or dev.startswith(('wg', 'tun', 'docker', 'veth', 'lo')):
+            continue
+        if live & set(n.get('state') or []):
+            macs.add(n['lladdr'].lower())
+    return len(macs)
+
+
 def _mounts():
     spec = os.environ.get('PI5_LCD_MOUNTS', 'ROOT=/,BOOT=/boot/firmware,NAS=/mnt/nas,USB=/mnt/usb,DOCKER=/var/lib/docker')
     out = []
@@ -760,7 +795,9 @@ class Live(Source):
 
     def __init__(self):
         super().__init__()
-        self.wan_if = os.environ.get('PI5_LCD_WAN_IF', 'eth0')
+        self.wan_cfg = os.environ.get('PI5_LCD_WAN_IF', 'auto') or 'auto'
+        self.wan_if = self.wan_cfg if self.wan_cfg != 'auto' else (_default_route()[0] or 'eth0')
+        self._ph, self._ph_at = '-', 0.0
         self.lock = threading.Lock()
         self.slow, self.slow_at = {}, 0.0
         self._net = self._disk = None
@@ -786,16 +823,16 @@ class Live(Source):
         return self._mem()[2]
 
     def sample_net(self):
-        now = time.time(); rx = tx = 0
+        now = time.time(); rx = tx = 0; ifc = self.wan_if
         for line in _rf('/proc/net/dev').splitlines():
-            if ':' in line and line.split(':')[0].strip() == self.wan_if:
+            if ':' in line and line.split(':')[0].strip() == ifc:
                 f = line.split(':')[1].split(); rx, tx = int(f[0]), int(f[8])
-        if self._net is None:
-            self._net = (now, rx, tx); return 0.0, 0.0
-        t0, r0, x0 = self._net
+        if self._net is None or self._net[3] != ifc:
+            self._net = (now, rx, tx, ifc); return 0.0, 0.0
+        t0, r0, x0, _ = self._net
         dt = max(1e-3, now - t0)
-        self._net = (now, rx, tx)
-        return (rx - r0) * 8 / dt / 1e6, (tx - x0) * 8 / dt / 1e6
+        self._net = (now, rx, tx, ifc)
+        return max(0, rx - r0) * 8 / dt / 1e6, max(0, tx - x0) * 8 / dt / 1e6
 
     def _mem(self):
         tot = avail = 0
@@ -837,6 +874,10 @@ class Live(Source):
 
     def _collect_slow(self):
         s = {}
+        if self.wan_cfg == 'auto':
+            dev = _default_route()[0]
+            if dev:
+                self.wan_if = dev
         s['host'] = (_sh('hostname') or 'pi5').upper()
         s['lan'] = _sh("hostname -I | awk '{print $1}'") or '-'
         s['gw'] = _sh("ip route | awk '/default/{print $3; exit}'") or '-'
@@ -845,30 +886,42 @@ class Live(Source):
             w = _sh('curl -s --max-time 3 https://api.ipify.org', 5)
             if w: self._wan, self._wan_at = w, time.time()
         s['wan'] = self._wan
-        row = _db("SELECT status FROM ddns_configs ORDER BY rowid DESC LIMIT 1")
-        s['ddns'] = ('OK' if str(row[0]).lower() in ('updated', 'ok', 'idle') else 'ERR') if row else '-'
+        # Backend DDNS durumunu 'active' / 'error' yazar ('idle': henüz güncellenmedi). Eskiden 'updated/ok/idle'
+        # beklendiği için çalışan DDNS hep ERR görünüyordu. Yalnız açık kayıtlar; yoksa '-'.
+        row = _db("SELECT status FROM ddns_configs WHERE enabled = 1 ORDER BY rowid DESC LIMIT 1")
+        st = str(row[0]).lower() if row else ''
+        s['ddns'] = 'OK' if st in ('active', 'updated', 'ok') else 'ERR' if st == 'error' else '-'
         rows = _db("SELECT hostname, ip_address, blocked FROM devices ORDER BY last_seen DESC", one=False)
         if rows is None:
             rows = [(r[0], r[1], 0) for r in (_db("SELECT hostname, ip_address FROM devices ORDER BY last_seen DESC", one=False) or [])]
         s['clients'] = [{'name': str(r[0] or r[1] or '?').upper()[:12], 'blocked': bool(r[2])} for r in rows]
         units = [('PI-HOLE', 'pihole-FTL'), ('UNBOUND', 'unbound'), ('NFTABLES', 'nftables'),
-                 ('FAIL2BAN', 'fail2ban'), ('ZAPRET', 'zapret'), ('TAILSCALE', 'tailscaled')]
+                 ('FAIL2BAN', 'fail2ban'), ('ZAPRET', 'zapret')]
+        # Tailscale projenin parçası değil: yalnız kuruluysa listelenir (yoksa hep "kapalı" görünüyordu)
+        if _sh('systemctl list-unit-files tailscaled.service --no-legend'):
+            units.append(('TAILSCALE', 'tailscaled'))
         layers = [{'name': n, 'up': _sh('systemctl is-active ' + u) == 'active'} for n, u in units]
         for l in layers:  # panelle aynı ölçüt: firewall kurulumu kuralları `nft -f` ile yükler, birim pasif kalabilir
             if l['name'] == 'NFTABLES' and not l['up']:
                 l['up'] = _sh('nft list table inet pi5_filter >/dev/null 2>&1 && echo ok') == 'ok'
         layers.insert(2, {'name': 'WIREGUARD', 'up': _wg_up()})  # eski sırası korunur
-        layers.append({'name': 'DDNS', 'up': s['ddns'] == 'OK'})
+        if s['ddns'] != '-':  # DDNS kurulu değilse (ya da ilk güncellemeyi bekliyorsa) katman listelenmez
+            layers.append({'name': 'DDNS', 'up': s['ddns'] == 'OK'})
         for r in (_db("SELECT location, status FROM vps_servers", one=False) or []):
             layers.append({'name': str(r[0] or 'VPS').upper()[:12], 'up': r[1] == 'connected'})
         s['layers'] = layers
         m = re.search(r'Currently banned:\s*(\d+)', _sh('fail2ban-client status sshd'))
         s['f2b'] = int(m.group(1)) if m else 0
-        try:
-            j = json.loads(_sh('curl -s --max-time 2 "http://127.0.0.1/admin/api.php?summaryRaw"'))
-            s['ph'] = str(int(float(j.get('ads_percentage_today', 0))))
-        except Exception:
-            s['ph'] = '-'
+        # Pi-hole v6'da admin/api.php yok (hep '-' görünüyordu): engelleme oranı backend'den (FTL veritabanı, bugün).
+        # Backend kendi makinesinden gelen isteği oturumsuz kabul eder; dakikada bir yeter.
+        if time.time() - self._ph_at > 60:
+            try:
+                j = json.loads(_sh('curl -s --max-time 3 http://127.0.0.1:3001/api/pihole/stats', 5))
+                self._ph = '-' if j.get('_status') else str(int(round(float(j.get('adsPercentageToday', 0)))))
+            except Exception:
+                self._ph = '-'
+            self._ph_at = time.time()
+        s['ph'] = self._ph
         row = _db("SELECT download_mbps, upload_mbps, ping_ms, jitter_ms FROM speed_tests ORDER BY timestamp DESC LIMIT 1")
         if row is None:
             row = _db("SELECT download_mbps, upload_mbps, ping_ms FROM speed_tests ORDER BY timestamp DESC LIMIT 1")

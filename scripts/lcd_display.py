@@ -65,7 +65,7 @@ MIN_FRAME_SLEEP = 0.005
 # Panelden yönetilen motor ayarları. Değerler klyrix_oled'in okuduğu env'lere yazılır;
 # elle verilmiş bir PI5_LCD_* env'i (systemd/kabuk) her zaman panelin önüne geçer.
 DEFAULT_SETTINGS = {
-    "wan_if": "eth0",          # internet sayfasının canlı DL/UL grafiği bu arayüzden okunur
+    "wan_if": "auto",          # internet sayfasının canlı DL/UL grafiği bu arayüzden; auto = varsayılan rota
     "temp_alarm": 75,          # °C — sıcaklık sayfasındaki alarm eşiği
     "fps": 10,                 # kare/sn — 100 kHz I2C'nin taşıyabildiği üst sınır
     "anim": True,              # False: animasyonsuz statik sayfa döngüsü
@@ -193,7 +193,7 @@ def apply_settings(s):
         if str(m.get("name", "")).strip() and str(m.get("path", "")).strip()
     )
     values = {
-        "wan_if": str(s.get("wan_if") or "eth0"),
+        "wan_if": str(s.get("wan_if") or "auto"),
         "temp_alarm": str(_int_or(s.get("temp_alarm"), 75)),
         "fps": str(FPS),
         "anim": "1" if s.get("anim", True) else "0",
@@ -301,10 +301,14 @@ def _mem():
 
 def _devices():
     rows = _db_query("SELECT hostname, ip_address FROM devices ORDER BY last_seen DESC", one=False) or []
-    cnt = _db_query("SELECT COUNT(*) FROM devices")
-    count = cnt[0] if cnt else len(rows)
     names = [(r[0] or r[1] or "?") for r in rows]
-    return count, names
+    # "Aktif": ağda şu an görünen cihazlar (komşu tablosu). Panelin cihaz tablosu görülmüş tüm cihazları tutar;
+    # komşu tablosu okunamazsa (ko yok / ip yok) eski sayıya düşülür.
+    live = ko._lan_neighbors() if ko else None
+    if live is None:
+        cnt = _db_query("SELECT COUNT(*) FROM devices")
+        live = cnt[0] if cnt else len(rows)
+    return live, names
 
 
 def _speed():

@@ -1,0 +1,19 @@
+[Unit]
+Description=Pi5 Gateway Kiosk Display
+After=pi5-backend.service network-online.target getty@tty1.service
+Wants=pi5-backend.service network-online.target
+Conflicts=getty@tty1.service
+
+# Tek kaynak: install.sh ve post-update.sh bu dosyayı /etc/systemd/system'e kopyalar (içerik farklıysa).
+# X sunucusu ve openbox root'ta; Chromium'u kiosk.sh ayrı kullanıcıyla (klyrix-kiosk) açar.
+[Service]
+Type=simple
+User=root
+Environment=DISPLAY=:0
+ExecStartPre=/bin/sleep 5
+ExecStart=/usr/bin/xinit /usr/bin/openbox --startup "/bin/bash /opt/pi5-gateway/scripts/kiosk.sh" -- :0 vt1 -nocursor
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

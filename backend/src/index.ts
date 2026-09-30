@@ -46,6 +46,7 @@ import { wgServerStatus, setServerEnabled, addPeer, updatePeerRole, deletePeer, 
   validatePeerName, validRole, WG_PORT, reachabilityTest } from './wgServer';
 import { startReachWatch, noteReachResult, reachWatchState, REACH_WATCH_INTERVAL_H } from './wgWatch';
 import { storageStatus, storageJob, noteStorageJob, startArchive, startPrepare, startMigrate, startStorageWatch } from './storage';
+import { applyKiosk } from './kiosk';
 import type { ListSyncResult } from './piholeLists';
 import {
   shq, sedEscape, isValidMac, isValidDomain, isValidTimezone,
@@ -4474,25 +4475,10 @@ async function ensureLcdService(): Promise<void> {
   const fs = require('fs');
   const exec = require('util').promisify(require('child_process').exec);
   const UNIT = '/etc/systemd/system/pi5-lcd.service';
-  const content = `[Unit]
-Description=Pi5 Gateway Case LCD
-After=pi5-backend.service
-Wants=pi5-backend.service
-
-[Service]
-Type=simple
-# SunFounder pironman5 aynı OLED'i / RGB'yi sürerse iki proses çakışır (ekran üst üste
-# biner, LED rengi ezilir). Script modülleri bıraktırır ve gerekiyorsa pironman5'i
-# yeniler; ayrıntı scripts/pironman_release.sh içinde. '-' öneki: script yoksa hata yut.
-ExecStartPre=-/bin/sh /opt/pi5-gateway/scripts/pironman_release.sh
-ExecStart=/usr/bin/python3 /opt/pi5-gateway/scripts/lcd_display.py run
-Restart=always
-RestartSec=5
-
-[Install]
-WantedBy=multi-user.target
-`;
   try {
+    // Tek kaynak: scripts/systemd/pi5-lcd.service (install.sh ve post-update.sh de onu kopyalar). Eskiden burada ayrı
+    // bir kopya vardı; yorum farkı yüzünden her LCD kaydında birim yeniden yazılıp daemon-reload yapılıyordu.
+    const content = fs.readFileSync(require('path').resolve(__dirname, '../../scripts/systemd/pi5-lcd.service'), 'utf8');
     let existing = '';
     try { existing = fs.readFileSync(UNIT, 'utf8'); } catch { /* */ }
     if (existing !== content) {
@@ -4563,7 +4549,7 @@ app.put('/api/case/led', async (req, res) => {
 // Kasa OLED motor ayarları (scripts/lcd_display.py DEFAULT_SETTINGS ile aynı şema).
 // Değerler PI5_LCD_* env'lerine yazılır; panelden gelen her alan burada doğrulanır.
 const LCD_DEFAULT_SETTINGS = {
-  wan_if: 'eth0',
+  wan_if: 'auto',   // 'auto': varsayılan rotanın arayüzü (internet kartı / Wi-Fi / yedek hat değişse de doğru kart)
   temp_alarm: 75,
   fps: 10,   // 100 kHz I2C'nin taşıyabildiği üst sınır; 400 kHz'de yükseltilebilir
   anim: true,
@@ -4611,7 +4597,7 @@ app.get('/api/case/lcd', async (_req, res) => {
     const settings = sanitizeLcdSettings(setRow?.value ? JSON.parse(setRow.value) : null);
     // Panelin arayüz seçimi ve mount önerileri için ipuçları (Pi5 dışında boş döner).
     const hints: { interfaces: string[]; wan: string; mounts: { name: string; path: string }[] } =
-      { interfaces: [], wan: settings.wan_if, mounts: [] };
+      { interfaces: [], wan: settings.wan_if === 'auto' ? '' : settings.wan_if, mounts: [] };
     if (isLinux) {
       try {
         const bw = await getBandwidthLive();
@@ -4691,25 +4677,8 @@ app.put('/api/case/kiosk', async (req, res) => {
   try {
     await dbRun("INSERT OR REPLACE INTO app_settings (key, value) VALUES ('kiosk_config', ?)", [JSON.stringify(req.body)]);
     if (isLinux) {
-      const exec = require('util').promisify(require('child_process').exec);
-      if (req.body.enabled) {
-        try {
-          // Enable and start kiosk systemd service (handles X11 + Chromium)
-          await exec('systemctl enable pi5-kiosk.service 2>/dev/null', { timeout: 5000 });
-          await exec('systemctl start pi5-kiosk.service 2>/dev/null', { timeout: 10000 });
-          res.json({ success: true, applied: true, message: 'Kiosk modu etkinleştirildi. HDMI çıkışında dashboard görünecek.' });
-        } catch (e: any) {
-          res.json({ success: true, applied: false, error: `Kiosk servisi başlatılamadı: ${e.message}. install.sh çalıştırıldığından emin olun.` });
-        }
-      } else {
-        try {
-          await exec('systemctl stop pi5-kiosk.service 2>/dev/null', { timeout: 5000 }).catch(() => {});
-          await exec('systemctl disable pi5-kiosk.service 2>/dev/null', { timeout: 5000 }).catch(() => {});
-          res.json({ success: true, applied: true, message: 'Kiosk modu kapatıldı. HDMI çıkışı terminale dönecek.' });
-        } catch (e: any) {
-          res.json({ success: true, applied: false, error: e.message });
-        }
-      }
+      // kiosk.ts: "açıldı" ancak Chromium gerçekten çalışıyorsa; açılmazsa nedeni (kiosk betiğinin günlüğü)
+      res.json({ success: true, ...(await applyKiosk(!!req.body?.enabled)) });
     } else {
       res.json({ success: true, applied: false, warning: 'Kiosk modu sadece Pi5 üzerinde çalışır' });
     }

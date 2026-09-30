@@ -46,7 +46,7 @@ export function KioskSettingsPanel() {
               <ExternalLink size={13} /> Kiosku aç
             </button>
             <button className="btn-primary btn-sm" onClick={handleSave} disabled={saving}>
-              <Save size={13} /> Kaydet
+              <Save size={13} /> {saving ? (config.enabled ? 'Ekran açılıyor…' : 'Kaydediliyor…') : 'Kaydet'}
             </button>
           </div>
         }>

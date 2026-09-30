@@ -262,24 +262,8 @@ pip3 install --break-system-packages --quiet fanshim spidev luma.oled luma.core 
 log "Pimoroni bağımlılık adımı tamamlandı"
 
 # ─── Kasa LCD servisi (kalıcı döngü daemon'u — fork yerine systemd) ───
-cat > /etc/systemd/system/pi5-lcd.service << 'LCDEOF'
-[Unit]
-Description=Pi5 Gateway Case LCD
-After=pi5-backend.service
-Wants=pi5-backend.service
-
-[Service]
-Type=simple
-# SunFounder pironman5 aynı OLED'i / RGB'yi sürerse iki proses çakışır (ekran üst üste
-# biner, LED rengi ezilir). Script modülleri bıraktırır ve gerekiyorsa pironman5'i yeniler.
-ExecStartPre=-/bin/sh /opt/pi5-gateway/scripts/pironman_release.sh
-ExecStart=/usr/bin/python3 /opt/pi5-gateway/scripts/lcd_display.py run
-Restart=always
-RestartSec=5
-
-[Install]
-WantedBy=multi-user.target
-LCDEOF
+# Birim tek kaynaktan (scripts/systemd/pi5-lcd.service; post-update.sh ve backend de aynısını kullanır)
+install -m 0644 "$INSTALL_DIR/scripts/systemd/pi5-lcd.service" /etc/systemd/system/pi5-lcd.service
 systemctl daemon-reload 2>/dev/null || true
 systemctl enable pi5-lcd.service 2>/dev/null || true
 log "Kasa LCD servisi hazır (pi5-lcd.service). Denetleyici: panelden ssd1306/sh1106 seçilebilir."
@@ -290,66 +274,12 @@ apt install -y -qq xserver-xorg x11-xserver-utils xinit openbox 2>/dev/null || t
 # Bookworm tarayıcıyı "chromium" olarak paketler; eski/türev imajlar "chromium-browser" kullanır.
 apt install -y -qq chromium 2>/dev/null || apt install -y -qq chromium-browser 2>/dev/null || true
 
-# Kiosk başlatma script'i
-cat > /opt/pi5-gateway/scripts/kiosk.sh << 'KIOSKEOF'
-#!/bin/bash
-# Pi5 Gateway Kiosk Mode — minimal X11 + Chromium
-export DISPLAY=:0
-
-# Ekran koruyucu ve güç yönetimini kapat
-xset s off
-xset s noblank
-xset -dpms
-
-# Chromium binary adı dağıtıma göre değişir (Bookworm: chromium, türevler: chromium-browser)
-CHROMIUM_BIN="$(command -v chromium || command -v chromium-browser)"
-if [ -z "$CHROMIUM_BIN" ]; then
-  echo "HATA: chromium bulunamadi (kurulum: apt install chromium)" >&2
-  exit 1
-fi
-
-# Chromium kiosk modunda başlat
-"$CHROMIUM_BIN" \
-  --kiosk \
-  --noerrdialogs \
-  --disable-infobars \
-  --disable-session-crashed-bubble \
-  --disable-translate \
-  --no-first-run \
-  --disable-features=TranslateUI \
-  --check-for-update-interval=31536000 \
-  --disable-component-update \
-  --overscroll-history-navigation=0 \
-  http://localhost/kiosk.html
-KIOSKEOF
+# Kiosk betiği depoda (scripts/kiosk.sh — Chromium'u root değil klyrix-kiosk kullanıcısıyla açar) ve birim tek
+# kaynaktan (scripts/systemd/pi5-kiosk.service: xinit → openbox --startup kiosk.sh). Eskiden ikisi burada ve
+# post-update.sh'de ayrı ayrı yazılıyordu; Chromium root'ta sandbox'sız açılmadığı için kiosk hiç görünmüyordu.
 chmod +x /opt/pi5-gateway/scripts/kiosk.sh /opt/pi5-gateway/scripts/pironman_release.sh 2>/dev/null || true
-
-# Openbox autostart — kiosk script'ini çalıştır
-mkdir -p /root/.config/openbox
-cat > /root/.config/openbox/autostart << 'OBEOF'
-/opt/pi5-gateway/scripts/kiosk.sh &
-OBEOF
-
-# Systemd service: X11 + Openbox + Kiosk otomatik başlat
-cat > /etc/systemd/system/pi5-kiosk.service << 'SVCEOF'
-[Unit]
-Description=Pi5 Gateway Kiosk Display
-After=pi5-backend.service network-online.target getty@tty1.service
-Wants=pi5-backend.service network-online.target
-Conflicts=getty@tty1.service
-
-[Service]
-Type=simple
-User=root
-Environment=DISPLAY=:0
-ExecStartPre=/bin/sleep 5
-ExecStart=/usr/bin/xinit /usr/bin/openbox-session -- :0 vt1 -nocursor
-Restart=on-failure
-RestartSec=10
-
-[Install]
-WantedBy=multi-user.target
-SVCEOF
+install -m 0644 "$INSTALL_DIR/scripts/systemd/pi5-kiosk.service" /etc/systemd/system/pi5-kiosk.service
+systemctl daemon-reload 2>/dev/null || true
 
 # Kiosk servisini aktifleştirme — panelden kontrol edilecek
 # systemctl enable pi5-kiosk ile aktif edilir

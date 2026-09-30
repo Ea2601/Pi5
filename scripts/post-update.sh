@@ -92,22 +92,9 @@ if [ -f "$BASE/scripts/lcd_display.py" ]; then
   }
   # Unit'i tazele: eski kurulumlarda ExecStartPre yoktu, SunFounder pironman5 aynı
   # I2C OLED'ini sürmeye devam edip ekranı üst üste bindiriyordu.
-  cat > /etc/systemd/system/pi5-lcd.service << 'LCDEOF'
-[Unit]
-Description=Pi5 Gateway Case LCD
-After=pi5-backend.service
-Wants=pi5-backend.service
-
-[Service]
-Type=simple
-ExecStartPre=-/bin/sh /opt/pi5-gateway/scripts/pironman_release.sh
-ExecStart=/usr/bin/python3 /opt/pi5-gateway/scripts/lcd_display.py run
-Restart=always
-RestartSec=5
-
-[Install]
-WantedBy=multi-user.target
-LCDEOF
+  # Birim tek kaynaktan (scripts/systemd/pi5-lcd.service — install.sh ve backend ensureLcdService de onu kullanır;
+  # eskiden üç ayrı kopya yorum farkıyla ayrışıyordu, backend her LCD kaydında birimi yeniden yazıyordu).
+  install -m 0644 "$BASE/scripts/systemd/pi5-lcd.service" /etc/systemd/system/pi5-lcd.service || true
   systemctl daemon-reload 2>/dev/null || true
   # Yeni render kodu ancak servis yeniden başlayınca ekrana düşer.
   systemctl restart pi5-lcd.service 2>/dev/null && echo "  pi5-lcd.service yeniden başlatıldı" >> "$LOG" || true
@@ -134,63 +121,30 @@ fi
 raspi-config nonint do_i2c 0 2>/dev/null || true
 raspi-config nonint do_spi 0 2>/dev/null || true
 
-# 6. Kiosk bağımlılıkları (Lite OS için minimal X11 + Chromium). Trixie'de ikili adı `chromium`; eskiden yalnız
-#    chromium-browser arandığı için bu apt her güncellemede boşuna (ve backend cgroup'unda) çalışıyordu.
+# 6. Kiosk bağımlılıkları (Lite OS için minimal X11 + Chromium). Trixie'de tarayıcı paketi `chromium`; eski / türev
+#    imajlar `chromium-browser` kullanır (eskiden yalnız o istendiği için trixie'de kurulum her güncellemede düşüyordu).
 if ! command -v chromium-browser &>/dev/null && ! command -v chromium &>/dev/null; then
   echo "  Kiosk bağımlılıkları kuruluyor (X11 + Chromium)..." >> "$LOG"
-  pkg_ensure xserver-xorg x11-xserver-utils xinit openbox chromium-browser || true
+  pkg_ensure xserver-xorg x11-xserver-utils xinit openbox || true
+  pkg_ensure chromium || pkg_ensure chromium-browser || true
 fi
 
-# 7. Kiosk script ve servis dosyalarını oluştur/güncelle
-cat > "$BASE/scripts/kiosk.sh" << 'KIOSKEOF'
-#!/bin/bash
-export DISPLAY=:0
-xset s off
-xset s noblank
-xset -dpms
-chromium-browser \
-  --kiosk \
-  --noerrdialogs \
-  --disable-infobars \
-  --disable-session-crashed-bubble \
-  --disable-translate \
-  --no-first-run \
-  --disable-features=TranslateUI \
-  --check-for-update-interval=31536000 \
-  --disable-component-update \
-  --overscroll-history-navigation=0 \
-  http://localhost/kiosk.html
-KIOSKEOF
-chmod +x "$BASE/scripts/kiosk.sh"
-
-mkdir -p /root/.config/openbox
-cat > /root/.config/openbox/autostart << 'OBEOF'
-/opt/pi5-gateway/scripts/kiosk.sh &
-OBEOF
-
-# Kiosk systemd service (yoksa oluştur)
-if [ ! -f /etc/systemd/system/pi5-kiosk.service ]; then
-  cat > /etc/systemd/system/pi5-kiosk.service << 'SVCEOF'
-[Unit]
-Description=Pi5 Gateway Kiosk Display
-After=pi5-backend.service network-online.target getty@tty1.service
-Wants=pi5-backend.service network-online.target
-Conflicts=getty@tty1.service
-
-[Service]
-Type=simple
-User=root
-Environment=DISPLAY=:0
-ExecStartPre=/bin/sleep 5
-ExecStart=/usr/bin/xinit /usr/bin/openbox-session -- :0 vt1 -nocursor
-Restart=on-failure
-RestartSec=10
-
-[Install]
-WantedBy=multi-user.target
-SVCEOF
-  systemctl daemon-reload 2>/dev/null || true
-  echo "  pi5-kiosk.service oluşturuldu" >> "$LOG"
+# 7. Kiosk: betik depoda (scripts/kiosk.sh — Chromium'u root değil klyrix-kiosk kullanıcısıyla açar; root'ta sandbox'sız
+#    açılmayı reddeder), birim tek kaynaktan (scripts/systemd/pi5-kiosk.service). Eskiden betik her güncellemede
+#    "chromium-browser" sabitli kopyayla yeniden yazılıyor, birim yalnız yoksa oluşturuluyordu: düzeltmeler mevcut
+#    kurulumlara ulaşmıyordu. Birim ya da betik değiştiyse ve kiosk açıksa yeniden başlatılır.
+KIOSK_UNIT=/etc/systemd/system/pi5-kiosk.service
+KIOSK_STAMP=/etc/pi5-gateway/kiosk.applied
+if ! cmp -s "$BASE/scripts/systemd/pi5-kiosk.service" "$KIOSK_UNIT"; then
+  install -m 0644 "$BASE/scripts/systemd/pi5-kiosk.service" "$KIOSK_UNIT" && systemctl daemon-reload 2>/dev/null || true
+  echo "  pi5-kiosk.service güncellendi" >> "$LOG"
+fi
+KIOSK_SUM=$(cat "$BASE/scripts/systemd/pi5-kiosk.service" "$BASE/scripts/kiosk.sh" 2>/dev/null | sha256sum | cut -d' ' -f1)
+if [ "$(cat "$KIOSK_STAMP" 2>/dev/null)" != "$KIOSK_SUM" ]; then
+  if systemctl is-active --quiet pi5-kiosk.service; then
+    systemctl restart pi5-kiosk.service 2>/dev/null && echo "  pi5-kiosk yeniden başlatıldı (betik / birim değişti)" >> "$LOG" || true
+  fi
+  { mkdir -p /etc/pi5-gateway && echo "$KIOSK_SUM" > "$KIOSK_STAMP"; } 2>/dev/null || true
 fi
 
 # Kiosk config'de enabled=true ise servisi aktifleştir
