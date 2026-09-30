@@ -89,6 +89,8 @@ cmd_configure() {
   if [ "$(kv_get "$NET_STATE" bak_kind)" = wifi ] && [ "$(kv_get "$NET_STATE" bak_stage)" = on ]; then
     busy="$busy $(phy_of_iface "$(kv_get "$NET_STATE" bak_port)")"
   fi
+  # Wi-Fi köprüsünün (aynı ağ) üst Wi-Fi radyosu da kullanılmaz.
+  case "$(kv_get "$NET_STATE" rep_stage)" in trial|on) busy="$busy $(phy_of_iface "$(kv_get "$NET_STATE" rep_port)")" ;; esac
   phy=""
   for p in $(mesh_phys); do
     [ "$p" = "$appHy" ] && continue

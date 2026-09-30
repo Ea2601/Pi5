@@ -121,7 +121,12 @@ fi
 #     ppp: WAN router rolünde PPPoE bağlantısı (NetworkManager'ın PPP eklentisi pppd'yi çalıştırır; hizmet başlatmaz).
 #     Yedek hat: conntrack (geçişte eski hattın NAT kayıtlarını siler), usb-modeswitch (USB 4G modemi CD-ROM kipinden
 #     modem kipine alır; udev ile, hizmet yok), usbmuxd (iPhone USB paylaşımı; yalnız iPhone takılınca udev başlatır).
-if ! pkg_ensure wireguard-tools ipset iptables iputils-arping iw ppp conntrack usb-modeswitch usbmuxd; then
+#     Wi-Fi köprüsü (aynı ağ): parprouted (ARP vekili), dhcp-helper (DHCP aktarma; paketin kendi servisi kurulumdan ÖNCE
+#     maskelenir — yoksa UDP 67'yi tutup Pi DHCP'sini bozardı), dnsmasq-base ("Pi dağıtır" kipi; hizmet kurmaz),
+#     avahi-daemon (http://klyrix.local).
+systemctl mask --now dhcp-helper.service >/dev/null 2>&1 || true
+if ! pkg_ensure wireguard-tools ipset iptables iputils-arping iw ppp conntrack usb-modeswitch usbmuxd \
+     parprouted dhcp-helper dnsmasq-base avahi-daemon; then
   echo "  [pkg] UYARI: sistem paketleri kurulamadı (ayrıntı yukarıda)" >> "$LOG"
 fi
 

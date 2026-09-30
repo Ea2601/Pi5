@@ -4,7 +4,7 @@ import fs from 'fs';
 import {
   isLinux, systemctlAction, detectInterfaces, MANAGED_SERVICE_UNITS, isManagedService, TOGGLEABLE_SERVICES,
   listWireguardTunnels, runResult, FTL_SYSTEMCTL_TIMEOUT, getLanIdentity, readNetModeState, HOME_BRIDGE,
-  wanActive, uplinkIfaces,
+  wanActive, uplinkIfaces, sameNetActive,
 } from './system';
 import { shq, isValidDomain } from './util';
 
@@ -67,9 +67,12 @@ export const systemServices = {
         // İnternet kartı modu (WAN router, R3): iki kart net-mode durumundan gelir (ev ağı eth0 / br0; internet kart +
         // VLAN + PPPoE). DB'deki eski iki kartlı tohumlar (lan=eth0, wan=wlan0) yok sayılır.
         const wanMode = wanActive(ns) && ns.wanLan;
+        // Wi-Fi köprüsü (aynı ağ, R4 C): ev tarafı kartı ve üst Wi-Fi net-mode durumundan; iki yön iletilir (aynı ağ),
+        // istemci trafiği maskelenmez (modem cihazları kendi adresleriyle görür). DB tohumları yok sayılır.
+        const sameNet = !wanMode && !!ns && sameNetActive(ns) ? { lan: ns.repLan, up: ns.repPort } : null;
         // Tek bacaklı ağ geçidi (lan = wan: istemciler ve modem aynı arayüzde) canlıdan tespit edildiyse DB'deki eski
         // iki kartlı tohumlar (lan=eth0, wan=wlan0) yok sayılır — aksi halde NAT yanlış arayüze yazılır.
-        const oneArm = !wanMode && detected.lan === detected.wan;
+        const oneArm = !wanMode && !sameNet && detected.lan === detected.wan;
         const wan = !oneArm && exists(ifaces?.wan) ? ifaces!.wan! : detected.wan;
         const lan = !oneArm && exists(ifaces?.lan) ? ifaces!.lan! : detected.lan;
         // Tek bacakta kurallar yalnız o anki varsayılan rotanın kartına yazılmaz: aynı LAN'daki tüm kartlar (ikinci bacak,
@@ -78,7 +81,9 @@ export const systemServices = {
         // eklenir: ev Wi-Fi'ı açılınca / kapanınca (ya da köprü açılışta kurulamayıp eth0'a dönülünce) istemci trafiği
         // arayüz değiştirir, kurallar yeniden uygulanmadan da eşleşsin.
         const netModeIfs = ns && (ns.stage === 'trial' || ns.stage === 'static') ? [ns.iface, HOME_BRIDGE].filter(Boolean) : [];
-        const lanIfs = wanMode
+        const lanIfs = sameNet
+            ? [sameNet.lan]
+            : wanMode
             ? [...new Set(netModeIfs)]
             : oneArm
             ? [...new Set([detected.wan, ...((await getLanIdentity())?.secondary || []).map(s => s.iface),
@@ -86,10 +91,13 @@ export const systemServices = {
             : [lan];
         // İnternet kartı modunda ana hat + yedek hat (maskeleme, port yönlendirme iletimi); tek kollu modda yedek hattın
         // maskelemesi ve güvenlik duvarı kendi tablolarında (pi5_bak), buraya girmez.
-        const wanIfs = wanMode ? uplinkIfaces(ns) : oneArm ? lanIfs : [wan];
+        const wanIfs = sameNet ? [sameNet.up] : wanMode ? uplinkIfaces(ns) : oneArm ? lanIfs : [wan];
         const nftIfs = (xs: string[]) => (xs.length === 1 ? `"${xs[0]}"` : `{ ${xs.map(x => `"${x}"`).join(', ')} }`);
         // Port yönlendirme (yalnız internet kartı modunda): DNAT'lanan yeni bağlantılar ev ağına iletilir.
         const dnatLine = wanMode ? `\n        iifname ${nftIfs(wanIfs)} oifname ${nftIfs(lanIfs)} ct status dnat accept` : '';
+        // Wi-Fi köprüsü: üst ağdaki cihazlar (ve modemin port yönlendirmeleri) ev tarafındaki cihazlara yeni bağlantı açabilir.
+        const sameNetLine = sameNet ? `\n        iifname ${nftIfs(wanIfs)} oifname ${nftIfs(lanIfs)} accept` : '';
+        const wanMasq = sameNet ? '' : `\n        oifname ${nftIfs(wanIfs)} masquerade`;
 
         // Özel kullanıcı kuralları (index.ts'te doğrulanmış nft satırları olarak gelir).
         const customLines = (customInputRules && customInputRules.length)
@@ -127,7 +135,7 @@ table inet pi5_filter {
         iifname "wg_vps*" accept
         oifname "wg_vps*" accept
         iifname ${nftIfs(lanIfs)} accept
-        iifname ${nftIfs(wanIfs)} oifname ${nftIfs(lanIfs)} ct state related,established accept${dnatLine}
+        iifname ${nftIfs(wanIfs)} oifname ${nftIfs(lanIfs)} ct state related,established accept${dnatLine}${sameNetLine}
     }
 }
 table ip pi5_nat {}
@@ -135,8 +143,7 @@ delete table ip pi5_nat
 table ip pi5_nat {
     chain postrouting {
         type nat hook postrouting priority 100;
-        # WAN çıkışı + VPS tünel çıkışı (Pi5-tarafı SNAT: LAN kaynaklı paketler tünelden doğru dönebilsin)
-        oifname ${nftIfs(wanIfs)} masquerade
+        # WAN çıkışı + VPS tünel çıkışı (Pi5-tarafı SNAT: LAN kaynaklı paketler tünelden doğru dönebilsin)${wanMasq}
         oifname "wg_vps*" masquerade
     }
 }
@@ -148,7 +155,7 @@ include "/etc/nftables.d/*.conf"`;
         fs.writeFileSync('/etc/nftables.conf', nftablesConfig + '\n');
         await execAsync('nft -f /etc/nftables.conf');
         await execAsync('systemctl enable nftables 2>/dev/null || true');
-        return { stdout: `nftables yapılandırıldı (WAN=${wanIfs.join('+')}, LAN=${lanIfs.join('+')}${oneArm ? ', tek bacak' : wanMode ? ', internet kartı' : ''}).`, stderr: '' };
+        return { stdout: `nftables yapılandırıldı (WAN=${wanIfs.join('+')}, LAN=${lanIfs.join('+')}${oneArm ? ', tek bacak' : wanMode ? ', internet kartı' : sameNet ? ', Wi-Fi köprüsü (aynı ağ)' : ''}).`, stderr: '' };
     },
 
     // Kalıcı aç/kapa (enable --now / disable --now): eskiden yalnız start/stop — kapatılan servis açılışta geri geliyordu.

@@ -535,11 +535,15 @@ export async function getNetworkDevices(): Promise<{ ip: string; mac: string }[]
   const out = await run('ip neigh show') || await run('arp -an');
   if (!out) return [];
   // İnternet kartı ve yedek hat tarafındaki komşular (operatörün / 4G modemin ağ geçidi) ev ağının cihazı değildir.
-  const wanIfs = uplinkIfaces(readNetModeState());
+  const ns = readNetModeState();
+  const wanIfs = uplinkIfaces(ns);
+  // Wi-Fi köprüsü (aynı ağ): modem ve üst ağdaki cihazlar (Wi-Fi tarafı) Pi'nin ev tarafı değildir — yalnız ev tarafı kartı.
+  const onlyDev = ns && sameNetActive(ns) ? ns.repLan : '';
   const devices: { ip: string; mac: string }[] = [];
   for (const line of out.split('\n')) {
     const dev = /\bdev\s+(\S+)/.exec(line)?.[1];
     if (dev && wanIfs.includes(dev)) continue;
+    if (onlyDev && dev !== onlyDev) continue;
     const m = line.match(/(\d+\.\d+\.\d+\.\d+).*?([0-9a-f]{2}:[0-9a-f]{2}:[0-9a-f]{2}:[0-9a-f]{2}:[0-9a-f]{2}:[0-9a-f]{2})/i);
     if (m) devices.push({ ip: m[1], mac: m[2].toLowerCase() });
   }
@@ -846,6 +850,9 @@ export interface NetModeState {
   // pppbak), usb (USB 4G modem / telefon paylaşımı: adı değişebilir, arayüz grubu 77), wifi (telefon hotspot'u).
   bakStage: 'none' | 'on'; bakKind: '' | 'eth' | 'usb' | 'wifi'; bakType: '' | 'dhcp' | 'static' | 'pppoe';
   bakPort: string; bakDev: string; bakVlan: string; bakMtu: number;
+  // Wi-Fi köprüsü (aynı ağ, R4 C): Pi üst Wi-Fi'a istemci (repPort), ev tarafı kartı (repLan) üst ağla AYNI ağda — ARP
+  // vekili, NAT yok. Ağ düzeni yalnız kalıcıyken (on) değişir: denemede ev tarafı kartı eski profilindedir.
+  repStage: 'none' | 'trial' | 'on'; repPort: string; repLan: string; repSsid: string; repDhcp: 'relay' | 'pi';
 }
 // Kurulum Wi-Fi'ının Pi adresi ve ağı (net-mode.sh AP_ADDR/AP_NET ile aynı; istemciler 192.168.50.20–200 alır).
 export const AP_ADDR = '192.168.50.1';
@@ -894,12 +901,19 @@ export function readNetModeState(): NetModeState | null {
     bakDev: ifName(kv.bak_dev),
     bakVlan: /^\d{1,4}$/.test(kv.bak_vlan || '') ? kv.bak_vlan : '',
     bakMtu: /^\d{3,4}$/.test(kv.bak_mtu || '') ? Number(kv.bak_mtu) : 0,
+    repStage: (kv.rep_stage === 'trial' || kv.rep_stage === 'on') && !!ifName(kv.rep_port) && !!ifName(kv.rep_lan) ? kv.rep_stage : 'none',
+    repPort: ifName(kv.rep_port),
+    repLan: ifName(kv.rep_lan),
+    repSsid: /^[^\x00-\x1f\x7f]{1,32}$/.test(kv.rep_ssid || '') ? kv.rep_ssid : '',
+    repDhcp: kv.rep_dhcp === 'pi' ? 'pi' : 'relay',
   };
 }
 const netModeActive = (s: NetModeState | null): s is NetModeState => !!s && (s.stage === 'trial' || s.stage === 'static');
 // İnternet kartı deneme ya da kalıcı (kart adı geçerli).
 export const wanActive = (s: NetModeState | null): s is NetModeState =>
   !!s && (s.wanStage === 'trial' || s.wanStage === 'on') && !!s.wanPort && !!s.wanDev;
+// Wi-Fi köprüsü (aynı ağ) kalıcı: ev tarafı kartı NetworkManager dışında, cihazları üst ağla aynı ağda (net-mode.sh rep).
+export const sameNetActive = (s: NetModeState | null): boolean => !!s && s.repStage === 'on' && !!s.repPort && !!s.repLan;
 // İnternet tarafı arayüzleri: kart + (varsa) VLAN + (varsa) PPPoE — net-mode.sh wan_ifset ile aynı küme. Tek portta
 // kart ev ağıdır: listeye girmez (yoksa ev ağı cihazları, NAT'ı ve güvenlik duvarı "internet tarafı" sayılırdı).
 export function wanIfaces(s: NetModeState | null): string[] {
@@ -951,6 +965,24 @@ export function readFailoverStatus(): FailoverStatus | null {
     reason: (kv.reason || '').slice(0, 200), primaryOk: bool(kv.primary_ok), backupOk: bool(kv.backup_ok),
     backupDev: /^[A-Za-z0-9_.-]{1,15}$/.test(kv.backup_dev || '') ? kv.backup_dev : '', checked: num(kv.checked),
     forceUntil: num(kv.force_until),
+  };
+}
+// Wi-Fi köprüsünün (aynı ağ) ev tarafı durumu: izleyicinin (net-mode.sh rep watch) 5 sn'de bir yazdığı dosya. state:
+// active (vekil + DHCP çalışıyor) | modem (eth0 kablosu hâlâ modemde) | no_carrier | no_uplink (üst Wi-Fi'da adres yok) |
+// missing (ev tarafı kartı yok). checked: son tur (eskiyse izleyici çalışmıyor).
+export interface RepLanStatus { state: string; since: number; clients: number; checked: number }
+export function readRepLanStatus(): RepLanStatus | null {
+  let text: string;
+  try { text = fs.readFileSync('/run/pi5-gateway/rep.status', 'utf8'); } catch { return null; }
+  const kv: Record<string, string> = {};
+  for (const line of text.split('\n')) {
+    const i = line.indexOf('=');
+    if (i > 0) kv[line.slice(0, i)] = line.slice(i + 1).trim();
+  }
+  const num = (v: string | undefined) => (/^\d+$/.test(v || '') ? Number(v) : 0);
+  return {
+    state: /^(active|modem|no_carrier|no_uplink|missing)$/.test(kv.state || '') ? kv.state : '',
+    since: num(kv.since), clients: num(kv.clients), checked: num(kv.checked),
   };
 }
 // Ev ağının arayüzü (internet kartı modunda): köprü açıkken br0, değilse sabit adresin kartı.
@@ -1086,6 +1118,8 @@ export async function detectInterfaces(): Promise<{ wan: string; lan: string }> 
   const ns = readNetModeState();
   // İnternet kartı modu: iki ayrı kart — internet tarafı adres/rota arayüzü (kart / VLAN / PPPoE), ev ağı eth0 / br0.
   if (wanActive(ns) && ns.wanLan) return { wan: ns.wanDev, lan: lanIfaceOf(ns) };
+  // Wi-Fi köprüsü (aynı ağ): üst Wi-Fi internet tarafı, ev tarafı kartı (adresi önek rotasız kopyadır) ev ağı.
+  if (ns && sameNetActive(ns)) return { wan: ns.repPort, lan: ns.repLan };
   const id = await getLanIdentity();
   // Yedek hat arayüzleri ne LAN ne "diğer kart" sayılır (tek kollu algı bozulmasın: ikinci ağlı kart = LAN sanılırdı).
   const bakIfs = backupIfaces(ns);
@@ -1750,7 +1784,9 @@ const IN_NFT = '/opt/pi5-gateway/core/pi5-in.nft';
 // İnternet kartı modunda (R3) kart / VLAN / PPPoE arayüzleri ve ağları LAN sayılmaz (wanIfs ayrı döner): internet
 // tarafından gelen trafik ev ağı gibi iletilmez, maskelemesi ve korumasını net-mode.sh'nin pi5_wan tabloları yapar.
 // Modem tarafı ağ (transit) o modda ev ağında değildir: LAN ağlarına eklenmez.
-async function detectGatewayLan(ns: NetModeState | null = readNetModeState()): Promise<{ nets: string[]; ifaces: string[]; selfIps: string[]; wanIfs: string[] }> {
+// Wi-Fi köprüsünde (aynı ağ) ev tarafı kartı da LAN'dır (önek rotası olmadığı için çekirdek rotalarında görünmez);
+// sameNet dolu döner: istemci trafiği maskelenmez (modem cihazları kendi adresleriyle görür), iki yön de iletilir.
+async function detectGatewayLan(ns: NetModeState | null = readNetModeState()): Promise<{ nets: string[]; ifaces: string[]; selfIps: string[]; wanIfs: string[]; sameNet: { lan: string; up: string } | null }> {
   const ipNum = (ip: string) => ip.split('.').reduce((a, o) => a * 256 + Number(o), 0);
   const within = (net: string, outer: string) => {
     const [a, pa] = net.split('/');
@@ -1775,6 +1811,8 @@ async function detectGatewayLan(ns: NetModeState | null = readNetModeState()): P
   }
   for (const m of (await run('ip -4 -o addr show 2>/dev/null')).matchAll(/\sinet\s(\d+\.\d+\.\d+\.\d+)\//g)) selfIps.add(m[1]);
   if (apOn) selfIps.add(AP_ADDR);
+  const sameNet = ns && sameNetActive(ns) ? { lan: ns.repLan, up: ns.repPort } : null;
+  if (sameNet) ifaces.add(sameNet.lan);
   if (netModeActive(ns)) {
     if (ns.iface && !/^(wg|lo)/.test(ns.iface) && !isApIface(ns.iface)) ifaces.add(ns.iface);
     ifaces.add(HOME_BRIDGE);
@@ -1785,7 +1823,7 @@ async function detectGatewayLan(ns: NetModeState | null = readNetModeState()): P
     }
   }
   const all = [...nets];
-  return { nets: all.filter(n => !all.some(o => o !== n && within(n, o))), ifaces: [...ifaces], selfIps: [...selfIps], wanIfs };
+  return { nets: all.filter(n => !all.some(o => o !== n && within(n, o))), ifaces: [...ifaces], selfIps: [...selfIps], wanIfs, sameNet };
 }
 
 export async function applyDomainRouting(domains?: DomainRoute[], ranges: RangeRoute[] = []): Promise<void> {
@@ -2028,7 +2066,8 @@ export async function applyDomainRouting(domains?: DomainRoute[], ranges: RangeR
     '  chain postrouting {',
     '    type nat hook postrouting priority 100; policy accept;',
     '    oifname "wg_vps*" masquerade',
-    ...(lanClient && gw.ifaces.length
+    // Wi-Fi köprüsünde (aynı ağ) istemci trafiği maskelenmez: modem cihazları kendi adresleriyle görür ve onlara döner.
+    ...(lanClient && gw.ifaces.length && !gw.sameNet
       ? gw.nets.map(n => `    oifname ${nftSet(gw.ifaces, true)} ${leavesNet(n)} masquerade`)
       : []),
     '  }',
@@ -2060,6 +2099,13 @@ export async function applyDomainRouting(domains?: DomainRoute[], ranges: RangeR
       // LAN → modem (tek bacak): ct state'e bakılmaz — SNAT kurulamazsa akış asimetrik kalır, sonraki paketler 'invalid' olur.
       // Ağ başına (NAT kuralıyla aynı): 192.168.0.x → modem tarafı da iletilir.
       ...gw.nets.map(n => `add rule inet filter pi5_gw iifname ${lanIfs} ${leavesNet(n)} oifname ${lanIfs} accept`),
+      // Wi-Fi köprüsü (aynı ağ): ev tarafı ↔ üst Wi-Fi iki yönde (aynı ağ içi; üst ağdaki cihazlar da ev tarafına ulaşır).
+      ...(gw.sameNet
+        ? [
+          `add rule inet filter pi5_gw iifname "${gw.sameNet.lan}" oifname "${gw.sameNet.up}" accept`,
+          `add rule inet filter pi5_gw iifname "${gw.sameNet.up}" oifname "${gw.sameNet.lan}" accept`,
+        ]
+        : []),
       // İnternet kartı modu: ev ağı → internet kartı; internetten yalnız panelde açılan port yönlendirmeleri (DNAT).
       ...(gw.wanIfs.length
         ? [

@@ -6,6 +6,7 @@ import { HomeWifiPanel } from './HomeWifiPanel';
 import { MeshPanel } from './MeshPanel';
 import { WanPanel } from './WanPanel';
 import { FailoverPanel } from './FailoverPanel';
+import { RepeaterPanel } from './RepeaterPanel';
 
 // Cihaz Rolleri: Pi'nin takılı donanımına göre hangi ağ rollerini üstlenebileceği (R0). WAN router (R3) "Yönlendirme"
 // grubunun altındaki İnternet bağlantısı panelinden (WanPanel), erişim noktası (R1) "Kablosuz yayın" grubunun altındaki
@@ -179,6 +180,10 @@ export function RolesPanel() {
             {/* Uyduda ev Wi-Fi'ı ana cihazdan gelir (net-mode.sh sat); panel yalnız ana cihazda. */}
             {g.id === 'wireless' && data.net?.role !== 'satellite' && items.some(r => r.id === 'ap' && (r.status === 'available' || r.status === 'active')) && (
               <HomeWifiPanel onChange={refetch} />
+            )}
+            {/* Wi-Fi köprüsü (aynı ağ, R4 C): Wi-Fi'ı istemci olabilen bir radyo varken ana cihazda. */}
+            {g.id === 'wireless' && data.net?.role !== 'satellite' && items.some(r => r.id === 'repeater' && (r.status === 'available' || r.status === 'active')) && (
+              <RepeaterPanel radios={data.radios || []} onChange={refetch} />
             )}
             {g.id === 'mesh' && <MeshPanel onChange={refetch} />}
           </section>

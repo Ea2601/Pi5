@@ -15,7 +15,7 @@ import {
   executeCommand, applyDomainRouting, applyBlockedDevices,
   sampleMetrics, detectInterfaces, recoverInterruptedFtlRestart, VALID_DNSMASQ_DOMAIN, getRoutingApplyStatus,
   getLanIdentity, protectedMacs, getPi5LanIp, readNetModeState, runExclusiveDnsTask, AP_ADDR, AP_NET, HOME_BRIDGE,
-  wanActive, uplinkIfaces, readFailoverStatus, activeUplink,
+  wanActive, uplinkIfaces, readFailoverStatus, activeUplink, sameNetActive, readRepLanStatus,
 } from './system';
 import type { RangeRoute } from './system';
 import { listForwards, addForward, setForwardEnabled, deleteForward, applyPortForwards } from './wan';
@@ -1926,6 +1926,8 @@ app.get('/api/system/hardware', async (_req, res) => {
       wanStage: ns?.wanStage || 'none', wanPort: ns?.wanPort || null, wanDev: ns?.wanDev || null, wanSingle: !!ns?.wanSingle, wanSsid: ns?.wanSsid || '',
       bakStage: ns?.bakStage || 'none', bakDev: ns?.bakStage === 'on' ? (readFailoverStatus()?.backupDev || ns.bakDev || null) : null,
       bakActive: ns?.bakStage === 'on' && readFailoverStatus()?.active === 'backup',
+      repStage: ns?.repStage || 'none', repPort: ns?.repPort || null, repSsid: ns?.repSsid || '', repDhcp: ns?.repDhcp || 'relay',
+      repLanState: ns?.repStage === 'on' ? (readRepLanStatus()?.state || '') : '',
     });
     res.json({ supported: true, ...hw, roles: evaluateRoles(hw) });
   } catch (e: any) {
@@ -2265,7 +2267,7 @@ if (isLinux) {
         // Kurulum Wi-Fi'ı kalıcıyken yayın düşmüşse uyarı (ev için kritik değil; Pi açılışta ve NetworkManager yeniden
         // başlayınca yayını yeniden açmayı dener).
         const ns = readNetModeState();
-        if (fs.existsSync(NET_MODE_SCRIPT) && (ns?.stage === 'static' || ns?.apStage === 'on' || ns?.wanStage === 'on')) {
+        if (fs.existsSync(NET_MODE_SCRIPT) && (ns?.stage === 'static' || ns?.apStage === 'on' || ns?.wanStage === 'on' || ns?.repStage === 'on')) {
           const n = await runKvScript(NET_MODE_SCRIPT, ['status'], 30000);
           if (n.code === 0 && ns?.stage === 'static' && n.kv.guard_result === 'emergency') {
             await addAlert('health', 'critical', 'Sabit IP profili yüklenemedi — Pi adresini acil modda tutuyor (menü → DHCP Ayarları)', 'netmode');
@@ -2299,6 +2301,18 @@ if (isLinux) {
             } else if (n.kv.bak_kind === 'eth' && n.kv.bak_active !== 'backup' && n.kv.bak_backup_ok === '0') {
               // Telefon hotspot'u / USB paylaşımı çoğu zaman kapalı tutulur: yalnız sürekli bağlı Ethernet yedek hatta uyarılır.
               await addAlert('health', 'warning', `Yedek hat yanıt vermiyor (${n.kv.bak_dev || 'arayüz yok'}) — ana hat düşerse geçiş yapılamaz; modemi / telefonu denetleyin`, 'netmode-bak-health');
+            }
+          }
+          // Wi-Fi köprüsü (aynı ağ) kalıcıyken: üst Wi-Fi kopuk (ev tarafının interneti yok), izleyici durmuş ya da eth0
+          // kablosu hâlâ modemde (ev tarafı kapalı).
+          if (n.code === 0 && n.kv.rep_stage === 'on') {
+            const lan = readRepLanStatus();
+            if (n.kv.rep_up !== '1') {
+              await addAlert('health', 'critical', `Wi-Fi köprüsü: üst Wi-Fi'a (${n.kv.rep_ssid || '?'}) bağlı değil — ev tarafındaki cihazların interneti yok; modem açık mı, Pi sinyal alıyor mu (Cihaz Rolleri → Wi-Fi köprüsü)`, 'netmode-rep');
+            } else if (!lan || Date.now() / 1000 - lan.checked > 60) {
+              await addAlert('health', 'warning', 'Wi-Fi köprüsü izleyicisi çalışmıyor — ev tarafı (ARP vekili, DHCP) denetlenmiyor; Pi yeniden başlatılınca açılır', 'netmode-rep');
+            } else if (lan.state === 'modem') {
+              await addAlert('health', 'warning', `Wi-Fi köprüsü: ${n.kv.rep_lan || 'eth0'} kablosu hâlâ modeme bağlı — ev tarafı kapalı; kabloyu arkadaki cihaza / anahtara takın`, 'netmode-rep');
             }
           }
         }
@@ -2705,8 +2719,17 @@ app.get('/api/netmode/status', async (_req, res) => {
 
 // 3 dk'lık deneme: eth0'a tek profilde iki adres (modem tarafı + cihaz tarafı). Başarısız denemede betik eski profili
 // geri getirmiştir; kurallar her iki durumda da güncel adreslere göre yeniden yazılır (idempotent, sıralı kuyruk).
+// Wi-Fi köprüsü (aynı ağ) açıkken Pi modemin ağındadır: sabit adres, kurulum / ev Wi-Fi'ı, internet kartı, yedek hat ve
+// Pi DHCP'si o düzenle çakışır (betikler de reddeder; burada anlaşılır yanıt).
+const repBlocked = (res: express.Response): boolean => {
+  const ns = readNetModeState();
+  if (!ns || ns.repStage === 'none') return false;
+  res.status(409).json({ error: 'Wi-Fi köprüsü (aynı ağ) açık — önce Cihaz Rolleri → Wi-Fi köprüsü\'nden kapatın' });
+  return true;
+};
 app.post('/api/netmode/static', async (_req, res) => {
   if (scriptMissing(NET_MODE_SCRIPT, res)) return;
+  if (repBlocked(res)) return;
   const r = await runKvScript(NET_MODE_SCRIPT, ['static', '--trial', String(NET_TRIAL_S), '--client', NET_CLIENT_CIDR], 120000);
   await routingAfterNetChange(r);
   await kvEvent('netmode', r, `Sabit adres denemesi başladı (${NET_TRIAL_S / 60} dk içinde "Kalıcı yap" gelmezse geri alınır)`, 'Sabit adres verilemedi');
@@ -2776,6 +2799,7 @@ const maskSecret = (msg: string, secret: string) => (secret ? msg.split(secret).
 // ayarını geri getirmiştir; kurallar her iki durumda da yeniden yazılır.
 app.post('/api/netmode/ap', async (req, res) => {
   if (scriptMissing(NET_MODE_SCRIPT, res)) return;
+  if (repBlocked(res)) return;
   const rawSsid = req.body?.ssid;
   const ssid = rawSsid === undefined || rawSsid === null || rawSsid === '' ? AP_DEFAULT_SSID : rawSsid;
   const password = req.body?.password;
@@ -2858,6 +2882,7 @@ async function firewallCoversBridge(): Promise<string | null> {
 
 app.post('/api/netmode/home', async (req, res) => {
   if (scriptMissing(NET_MODE_SCRIPT, res)) return;
+  if (repBlocked(res)) return;
   const { ssid, password } = req.body || {};
   const band = req.body?.band === undefined || req.body?.band === 'bg' ? 'bg' : req.body?.band === 'a' ? 'a' : null;
   const rawCh = req.body?.channel;
@@ -2988,6 +3013,7 @@ app.get('/api/wan', async (_req, res) => {
 
 app.post('/api/wan', async (req, res) => {
   if (scriptMissing(NET_MODE_SCRIPT, res)) return;
+  if (repBlocked(res)) return;
   if (isSatellite()) return res.status(409).json({ error: 'Bu cihaz uydu — internet kartı ana cihaz içindir' });
   const b = req.body || {};
   const str = (v: unknown) => (typeof v === 'string' ? v.trim() : typeof v === 'number' ? String(v) : '');
@@ -3110,6 +3136,7 @@ app.get('/api/failover', async (_req, res) => {
 
 app.post('/api/failover', async (req, res) => {
   if (scriptMissing(NET_MODE_SCRIPT, res)) return;
+  if (repBlocked(res)) return;
   if (isSatellite()) return res.status(409).json({ error: 'Bu cihaz uydu — yedek hat ana cihaz içindir' });
   const b = req.body || {};
   const str = (v: unknown) => (typeof v === 'string' ? v.trim() : typeof v === 'number' ? String(v) : '');
@@ -3182,6 +3209,108 @@ app.post('/api/failover/test', async (req, res) => {
   res.json({ success: true, force_until: Number(r.kv.force_until) || 0 });
 });
 
+// Wi-Fi köprüsü (aynı ağ, R4 C): Pi üst Wi-Fi'a istemci olarak bağlanır; kalıcı yapılınca ev tarafı kartındaki (eth0)
+// cihazlar üst ağla aynı ağda olur (ARP vekili, NAT yok), adresi modem (aktarma) ya da Pi (modem ağında ayrı aralık)
+// dağıtır, DNS Pi-hole'a çekilir. Deneme yalnız üst Wi-Fi'ı sınar (eth0 eski profilinde, panel açık kalır); kalıcı yap
+// Pi'nin YENİ (Wi-Fi) adresinden gelmeli: tarayıcı o adrese ulaşabildiğini böyle kanıtlar, yanıt da kesilmeden döner.
+const REP_TRIAL_S = 600;
+const REP_NUMS = ['rep_trial_ends', 'rep_lan_since', 'rep_clients', 'rep_signal', 'now'];
+const REP_BOOLS = ['rep_up', 'pi_dhcp'];
+app.use('/api/repeater', netAdminGuard);
+// Kalıcı / kapatma sonrası: DNS yönlendirme hedefi ve ağ geçidi NAT'ı (pi5_wgnat) yeni düzene, panel güvenlik duvarı
+// (kuruluysa) ev tarafı / üst Wi-Fi kartlarına, Ev VPN'i izin zincirleri yeniden.
+const repeaterAfterChange = async (r: KvResult) => {
+  const apply = async () => {
+    await applyAllRoutingRules().catch((e: any) => console.error('Routing yeniden uygulanamadı:', e.message));
+    await firewallFollowsWan();
+    await reapplyWgServer();
+  };
+  if (r.code === null && r.exited) { void r.exited.then(apply); return; }
+  await apply();
+};
+
+app.get('/api/repeater', async (_req, res) => {
+  if (!isLinux || !require('fs').existsSync(NET_MODE_SCRIPT)) return res.json({ supported: false });
+  const r = await runKvScript(NET_MODE_SCRIPT, ['status'], 30000);
+  if (r.code !== 0) return res.json({ supported: true, error: kvError(r, 'Wi-Fi köprüsü durumu okunamadı') });
+  const keep = Object.fromEntries(Object.entries(r.kv).filter(([k]) => k.startsWith('rep_')
+    || ['now', 'stage', 'pi_dhcp', 'iface', 'sat_stage', 'ap_stage', 'home_stage', 'wan_stage', 'bak_stage', 'wifi_roles'].includes(k)));
+  // Pi'nin şu anki ağı (modem tarafı): "Pi dağıtır" kipinin aralık önerisi ve kurulum ön koşulu (kablo modemde) için.
+  const id = await getLanIdentity().catch(() => null);
+  res.json({
+    ...kvTyped(keep, REP_NUMS, REP_BOOLS), supported: true, satellite: isSatellite(),
+    lan: id ? { iface: id.iface, ip: id.transit.ip, prefix: id.transit.prefix, network: id.transit.network, gateway: id.gateway } : null,
+  });
+});
+
+app.post('/api/repeater', async (req, res) => {
+  if (scriptMissing(NET_MODE_SCRIPT, res)) return;
+  if (isSatellite()) return res.status(409).json({ error: 'Bu cihaz uydu — Wi-Fi köprüsü ana cihaz içindir' });
+  const b = req.body || {};
+  const port = typeof b.port === 'string' ? b.port.trim() : '';
+  const ssid = typeof b.ssid === 'string' ? b.ssid : '';
+  const password = typeof b.password === 'string' ? b.password : '';
+  const dhcp = b.dhcp === undefined || b.dhcp === 'relay' ? 'relay' : b.dhcp === 'pi' ? 'pi' : '';
+  const range = typeof b.range === 'string' ? b.range.trim() : '';
+  if (!dhcp) return res.status(400).json({ error: 'Adres dağıtımı modemden (aktarma) ya da Pi\'den olmalı' });
+  if (port && !IFNAME_RE.test(port)) return res.status(400).json({ error: 'Wi-Fi kartı geçersiz' });
+  if (!/^[^\x00-\x1f\x7f]{1,32}$/.test(ssid) || Buffer.byteLength(ssid, 'utf8') > 32) return res.status(400).json({ error: "Üst Wi-Fi'ın adı 1-32 karakter olmalı" });
+  if (!/^[ -~]{8,63}$/.test(password) || password.includes('\\') || password !== password.trim()) {
+    return res.status(400).json({ error: 'Wi-Fi parolası 8-63 karakter olmalı: Türkçe harf ve ters bölü (\\) olmadan, başta/sonda boşluk olmadan' });
+  }
+  if (dhcp === 'pi' && !/^\d{1,3}(\.\d{1,3}){3}-\d{1,3}(\.\d{1,3}){3}$/.test(range)) {
+    return res.status(400).json({ error: 'Pi dağıtır kipinde adres aralığı gerekli (ör. 192.168.1.200-192.168.1.249)' });
+  }
+  const args = ['rep', 'on', '--trial', String(REP_TRIAL_S), '--ssid', ssid, '--dhcp', dhcp,
+    ...(port ? ['--port', port] : []), ...(dhcp === 'pi' ? ['--range', range] : [])];
+  const r = await runKvScript(NET_MODE_SCRIPT, args, 240000, `${password}\n`);
+  await kvEvent('netmode', r, `Wi-Fi köprüsü denemesi başladı: "${ssid}" — Pi'nin yeni adresi ${String(r.kv.rep_ip || '?').split('/')[0]}; ${REP_TRIAL_S / 60} dk içinde yeni adresten "Kalıcı yap" gelmezse geri alınır`,
+    'Wi-Fi köprüsü açılamadı', password);
+  if (r.code !== 0) return res.status(500).json({ error: maskSecret(kvError(r, 'Wi-Fi köprüsü açılamadı'), password), rolled_back: r.kv.rolled_back === '1' });
+  res.json({ success: true, rep_trial_ends: Number(r.kv.rep_trial_ends) || 0, rep_ip: r.kv.rep_ip || '', rep_gw: r.kv.rep_gw || '' });
+});
+
+app.post('/api/repeater/confirm', async (req, res) => {
+  if (scriptMissing(NET_MODE_SCRIPT, res)) return;
+  if (isLoopbackClient(req.ip)) {
+    return res.status(403).json({ error: 'Onayı ev ağındaki bir cihazdan (PC/telefon) verin — Pi\'nin kendi ekranı yeni adrese ulaşıldığını kanıtlamaz' });
+  }
+  const st = await runKvScript(NET_MODE_SCRIPT, ['status'], 30000);
+  if (st.kv.rep_stage !== 'trial') return res.status(409).json({ error: 'Wi-Fi köprüsü denemesi sürmüyor (süre dolduysa geri alınmıştır)' });
+  const repIp = String(st.kv.rep_ip || '').split('/')[0];
+  const host = String(req.headers.host || '').replace(/:\d+$/, '').replace(/^\[|\]$/g, '');
+  if (!repIp || host !== repIp) {
+    return res.status(409).json({ error: `Kalıcı yapmayı Pi'nin yeni adresinden yapın: http://${repIp || '?'} — bu sayfa ${host || 'başka bir adres'} üzerinden açık`, rep_ip: repIp });
+  }
+  const r = await runKvScript(NET_MODE_SCRIPT, ['rep', 'confirm'], 90000);
+  const lanTxt = r.kv.rep_lan_state === 'active' ? 'ev tarafı açık'
+    : r.kv.rep_lan_state === 'modem' ? 'kablo hâlâ modemde: arkadaki cihaza takılınca ev tarafı açılır' : `ev tarafı: ${r.kv.rep_lan_state || '?'}`;
+  await kvEvent('netmode', r, `Wi-Fi köprüsü kalıcı: "${st.kv.rep_ssid}" — Pi ${repIp} (${st.kv.rep_lan || 'eth0'}: ${lanTxt})`, 'Wi-Fi köprüsü onaylanamadı');
+  if (r.code !== 0) return res.status(409).json({ error: kvError(r, 'onaylanamadı') });
+  await repeaterAfterChange(r);
+  res.json({ success: true, rep_lan_state: r.kv.rep_lan_state || '', warning: r.kv.warning || undefined });
+});
+
+app.post('/api/repeater/rollback', async (_req, res) => {
+  if (scriptMissing(NET_MODE_SCRIPT, res)) return;
+  const r = await runKvScript(NET_MODE_SCRIPT, ['rep', 'rollback'], 120000);
+  await kvEvent('netmode', r, r.kv.rolled_back === '1' ? 'Wi-Fi köprüsü denemesi geri alındı' : '', 'Wi-Fi köprüsü geri alınamadı');
+  if (r.code !== 0) return res.status(409).json({ error: kvError(r, 'geri alınamadı') });
+  res.json({ success: true, rolled_back: r.kv.rolled_back === '1' });
+});
+
+// Kapatma: ev tarafı kartı eski profiline (modem) döner. Pi yalnız Wi-Fi ile erişiliyorsa kapatınca erişim kesilir:
+// betik eth0 modeme bağlı değilse reddeder; force (panelde "Pi'yi kabloyla modeme bağladım" onayı olmadan) gönderilmez.
+app.post('/api/repeater/off', async (req, res) => {
+  if (scriptMissing(NET_MODE_SCRIPT, res)) return;
+  const force = req.body?.force === true;
+  const r = await runKvScript(NET_MODE_SCRIPT, ['rep', 'off', ...(force ? ['--force'] : [])], 180000);
+  await kvEvent('netmode', r, 'Wi-Fi köprüsü kapatıldı — ev tarafı kartı eski profiline döndü', 'Wi-Fi köprüsü kapatılamadı');
+  if (r.code !== 0) return res.status(409).json({ error: kvError(r, 'kapatılamadı') });
+  await repeaterAfterChange(r);
+  res.json({ success: true, warning: r.kv.warning || undefined });
+});
+
 // Port yönlendirme (wan.ts): kayıtlar her zaman düzenlenebilir, yalnız internet kartı açıkken uygulanır.
 app.get('/api/wan/forwards', async (_req, res) => {
   try { res.json({ forwards: await listForwards() }); } catch (e: any) { res.status(500).json({ error: e.message }); }
@@ -3225,6 +3354,7 @@ app.post('/api/system/role', netAdminGuard, async (req, res) => {
       if (ns && ns.stage !== 'none') return res.status(409).json({ error: 'Önce menü → DHCP Ayarları\'ndan otomatik adrese dönün (sabit adres ana cihaz içindir)' });
       if (ns && ns.homeStage !== 'none') return res.status(409).json({ error: "Önce ev Wi-Fi'ını kapatın (Cihaz Rolleri → Ev Wi-Fi'ı)" });
       if (ns && ns.apStage !== 'none') return res.status(409).json({ error: "Önce kurulum Wi-Fi'ını kapatın (DHCP Ayarları, 3. adım)" });
+      if (ns && ns.repStage !== 'none') return res.status(409).json({ error: 'Önce Wi-Fi köprüsünü kapatın (Cihaz Rolleri → Wi-Fi köprüsü)' });
       if (await piDhcpActive()) return res.status(409).json({ error: PI_DHCP_BUSY_MSG });
       if ((await listSatellites()).length) return res.status(409).json({ error: 'Bu cihaza eşleşmiş uydular var — önce onları kaldırın' });
       const wg = await wgServerStatus().catch(() => null);
@@ -3329,6 +3459,7 @@ app.post('/api/dhcp/pi/probe', async (_req, res) => {
 // 5 dk'lık deneme (kira 5 dk): havuz ve ağ geçidi sabit adresin cihaz tarafından türetilir.
 app.post('/api/dhcp/pi/enable', async (_req, res) => {
   if (scriptMissing(PI_DHCP_SCRIPT, res)) return;
+  if (repBlocked(res)) return;
   try {
     const st = readNetModeState();
     if (!st || st.stage !== 'static') return res.status(409).json({ error: 'Önce Pi\'ye sabit adres verin ve "kalıcı yap" ile onaylayın' });
@@ -4884,6 +5015,22 @@ const server = app.listen(Number(port), bindHost, () => {
       if (ip && lastWanIp && ip !== lastWanIp) void ddnsAutoUpdate();
       if (ip) lastWanIp = ip;
     })();
+  }, 60000);
+  // Wi-Fi köprüsü (aynı ağ): Pi'nin adresi (modemden) değişince DNS yönlendirme hedefi ve ağ geçidi kuralları yeni adrese
+  // yazılır, DDNS güncellenir; panel adresi değiştiği için zile yazılır (modemde Pi'ye adres ayırma önerisiyle).
+  let lastRepIp = '';
+  setInterval(() => {
+    void (async () => {
+      const ns = readNetModeState();
+      if (!ns || !sameNetActive(ns)) { lastRepIp = ''; return; }
+      const ip = (await getLanIdentity().catch(() => null))?.transit.ip || '';
+      if (ip && lastRepIp && ip !== lastRepIp) {
+        await recordEvent('netmode', `Wi-Fi köprüsü: Pi'nin adresi değişti (${lastRepIp} → ${ip}) — panel artık http://${ip} ya da http://klyrix.local; adres değişmesin diye modemde Pi'ye adres ayırın (Ev VPN'i yönlendirmesi de yeni adrese)`, 'warning');
+        await applyAllRoutingRules().catch((e: any) => console.error('Routing yeniden uygulanamadı:', e.message));
+        void ddnsAutoUpdate();
+      }
+      if (ip) lastRepIp = ip;
+    })().catch(() => { /* olay yazılamadı */ });
   }, 60000);
   // Yedek hat: izleyici hat değiştirince (durum dosyasındaki geçiş sayısı) olay geçmişine / zile yazılır ve DDNS etkin
   // hattın dış adresine hemen güncellenir (Ev VPN'i istemcileri yeni adrese ulaşsın — yedek hat açık IP'liyse).

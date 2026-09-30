@@ -37,6 +37,8 @@ export type Hardware = {
     wanSsid?: string; // R4 A: internet kartı Wi-Fi istemci ise üst ağın adı (repeater)
     // Yedek hat (failover): açık mı, arayüzü, şu an etkin mi (ana hat düştü, yedek hattan çıkılıyor).
     bakStage?: string; bakDev?: string | null; bakActive?: boolean;
+    // R4 C: Wi-Fi köprüsü (aynı ağ) aşaması, üst Wi-Fi kartı / adı, DHCP kipi, ev tarafının durumu (izleyici).
+    repStage?: string; repPort?: string | null; repSsid?: string; repDhcp?: string; repLanState?: string;
   };
 };
 
@@ -234,29 +236,45 @@ export function evaluateRoles(hw: Hardware): RoleEval[] {
 
   // Repeater (R4): Pi mevcut bir Wi-Fi'a istemci olarak bağlanır ve kapsamı genişletir. Ayrı ağ (yönlendirmeli, kip A):
   // WAN router panelinde internet kartı olarak Wi-Fi kartı seçilir (net-mode.sh wan --ssid); eth0 ve öbür radyonun
-  // yayını (ev Wi-Fi'ı) ev ağı olur, Klyrix özellikleri arkadaki cihazlara uygulanır. En iyisi iki radyo (biri bağlantı,
-  // biri yayın). Aynı ağ kipleri (4 adresli köprü / ARP vekili) sonraki adımda; 4 adresli köprü üst router'ın da 4
-  // adresli (WDS) istemciyi kabul etmesini ister (ev modemlerinin çoğu etmez).
+  // yayını (ev Wi-Fi'ı) ev ağı olur, Klyrix özellikleri arkadaki cihazlara uygulanır. Aynı ağ (ARP vekili, kip C): Wi-Fi
+  // köprüsü panelinden (net-mode.sh rep); eth0'daki cihazlar modemle aynı ağda olur, DNS Pi-hole'a çekilir. En iyisi iki
+  // radyo (biri bağlantı, biri yayın). 4 adresli köprü (kip B) sonraki adımda: üst router'ın da 4 adresli (WDS) istemciyi
+  // kabul etmesini ister (ev modemlerinin çoğu etmez).
   const staRadios = radios.filter(r => r.sta);
   const twoRadio = staRadios.some(s => apRadios.some(a => a !== s));
   const bridgeCapable = staRadios.some(r => r.fourAddr === true);
   const repStage = hw.net.wanSsid ? (hw.net.wanStage || 'none') : 'none';
+  const sameStage = hw.net.repStage === 'trial' || hw.net.repStage === 'on' ? hw.net.repStage : 'none';
+  const sameLan = hw.net.repLanState || '';
+  const SAME_LAN_TEXT: Record<string, string> = {
+    active: 'ev tarafı açık', modem: 'eth0 kablosu modemde', no_carrier: 'eth0 kablosu takılı değil',
+    no_uplink: 'üst Wi-Fi kopuk', missing: 'ev tarafı kartı yok',
+  };
   const repNotes: Note[] = [];
   if (repStage === 'trial') repNotes.push({ kind: 'info', text: "Deneme sürüyor: internet çalışıyorsa WAN router panelinden 'Kalıcı yap'a basın; basılmazsa Pi eski ayara döner." });
-  if (!unknownRadios && !satRole && repStage === 'none' && staRadios.length) {
+  if (sameStage === 'trial') repNotes.push({ kind: 'info', text: "Wi-Fi köprüsü denemesi sürüyor: Pi'nin yeni adresini açıp Wi-Fi köprüsü panelinden 'Kalıcı yap'a basın; basılmazsa geri alınır." });
+  if (sameStage === 'on' && sameLan === 'modem') repNotes.push({ kind: 'warn', text: 'eth0 kablosu hâlâ modeme bağlı: ev tarafı kapalı. Kabloyu arkadaki cihaza ya da anahtara takın.' });
+  if (!unknownRadios && !satRole && repStage === 'none' && sameStage === 'none' && staRadios.length) {
     repNotes.push({ kind: 'info', text: "Ayrı ağ (yönlendirmeli): WAN router panelinde internet kartı olarak Wi-Fi kartını seçip üst Wi-Fi'ın adını ve parolasını girin. Kurulum kabloyla yapılır; kalıcı yaptıktan sonra kablo çıkarılıp Pi yerine taşınır." });
+    repNotes.push({ kind: 'info', text: "Aynı ağ (ARP vekili): Wi-Fi köprüsü panelinden. eth0'a takılan cihazlar modemle aynı ağda olur (adresi modem ya da Pi verir), Pi-hole ve VPS yönlendirmesi onlara da uygulanır." });
   }
   if (!unknownRadios && staRadios.length && !twoRadio) {
     repNotes.push({ kind: 'info', text: "Tek Wi-Fi radyosu: üst Wi-Fi'a bağlanınca ev ağı yalnız kablodan (eth0) olur; kablosuz yayın için ikinci bir Wi-Fi kartı gerekir." });
   }
   out.push({
     id: 'repeater', group: 'wireless', phase: null,
-    status: unknownRadios ? 'unknown' : repStage === 'on' ? 'active' : staRadios.length ? 'available' : 'needs-hw',
+    status: unknownRadios ? 'unknown' : repStage === 'on' || sameStage === 'on' ? 'active' : staRadios.length ? 'available' : 'needs-hw',
     checks: [
       { ok: unknownRadios ? null : staRadios.length > 0, label: 'Bağlantı radyosu (istemci)', value: unknownRadios ? unk : staRadios.map(radioLabel).join(', ') || 'yok' },
       { ok: unknownRadios ? null : twoRadio, label: 'Ayrı yayın radyosu', value: unknownRadios ? unk : `${radios.length} radyo` },
       ...(repStage !== 'none'
         ? [{ ok: repStage === 'on', label: 'Üst Wi-Fi', value: `${hw.net.wanSsid} · ${hw.net.wanPort || '—'}${repStage === 'on' ? '' : ' (deneme)'}` }]
+        : []),
+      ...(sameStage !== 'none'
+        ? [{
+          ok: sameStage === 'on' && sameLan === 'active', label: 'Wi-Fi köprüsü (aynı ağ)',
+          value: `${hw.net.repSsid || '?'} · ${hw.net.repPort || '—'}${sameStage === 'on' ? ` · ${SAME_LAN_TEXT[sameLan] || 'ev tarafı denetleniyor'}` : ' (deneme)'}`,
+        }]
         : []),
       { ok: unknownRadios ? null : bridgeCapable, label: '4 adresli köprü (aynı ağ kipi)', value: unknownRadios ? unk : bridgeCapable ? 'radyo destekliyor' : 'yok' },
     ],
