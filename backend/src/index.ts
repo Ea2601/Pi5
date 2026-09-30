@@ -1923,7 +1923,7 @@ app.get('/api/system/hardware', async (_req, res) => {
       homeStage: ns?.homeStage || 'none', homeIface: ns?.homeIface || null,
       role: STARTUP_ROLE, satellites: isSatellite() ? 0 : (await listSatellites().catch(() => [])).length,
       paired: isSatellite() && !!readSatState(), meshConfigured: (await mainMeshState().catch(() => null))?.configured || false,
-      wanStage: ns?.wanStage || 'none', wanPort: ns?.wanPort || null, wanDev: ns?.wanDev || null, wanSingle: !!ns?.wanSingle,
+      wanStage: ns?.wanStage || 'none', wanPort: ns?.wanPort || null, wanDev: ns?.wanDev || null, wanSingle: !!ns?.wanSingle, wanSsid: ns?.wanSsid || '',
       bakStage: ns?.bakStage || 'none', bakDev: ns?.bakStage === 'on' ? (readFailoverStatus()?.backupDev || ns.bakDev || null) : null,
       bakActive: ns?.bakStage === 'on' && readFailoverStatus()?.active === 'backup',
     });
@@ -2930,7 +2930,7 @@ app.post('/api/netmode/home/off', async (_req, res) => {
 // adresi hiç kalkmadığı için panel geçiş boyunca açıktır. Her değişiklikten sonra ağ geçidi kuralları (internet kartı
 // artık LAN sayılmaz), port yönlendirmeleri ve — panelin güvenlik duvarı kuruluysa — o da güncel kartlarla yazılır.
 const WAN_TRIAL_S = 300;
-const WAN_NUMS = ['wan_trial_ends', 'now'];
+const WAN_NUMS = ['wan_trial_ends', 'now', 'wan_signal'];
 const WAN_BOOLS = ['wan_lan', 'wan_carrier', 'wan_up', 'wan_fw', 'ppp_ok', 'pi_dhcp', 'wan_single'];
 app.use('/api/wan', netAdminGuard);
 // Panelin güvenlik duvarı (pi5_filter, politika drop) kuruluysa internet kartı arayüzleriyle yeniden yazılır: DB'deki eski
@@ -2980,7 +2980,7 @@ app.get('/api/wan', async (_req, res) => {
   const r = await runKvScript(NET_MODE_SCRIPT, ['status'], 30000);
   if (r.code !== 0) return res.json({ supported: true, error: kvError(r, 'internet kartı durumu okunamadı') });
   const keep = Object.fromEntries(Object.entries(r.kv).filter(([k]) =>
-    k.startsWith('wan_') || ['ppp_ok', 'now', 'stage', 'home_stage', 'sat_stage', 'pi_dhcp', 'iface', 'lan_if', 'client'].includes(k)));
+    k.startsWith('wan_') || ['ppp_ok', 'now', 'stage', 'home_stage', 'sat_stage', 'pi_dhcp', 'iface', 'lan_if', 'client', 'wifi_roles'].includes(k)));
   const id = await getLanIdentity().catch(() => null);
   const forwards = await listForwards().catch(() => []);
   res.json({ ...kvTyped(keep, WAN_NUMS, WAN_BOOLS), supported: true, satellite: isSatellite(), wan_public: !!id?.wan?.public, forwards });
@@ -3026,10 +3026,24 @@ app.post('/api/wan', async (req, res) => {
   if (type === 'pppoe' && (/[\r\n\\]/.test(password) || password.length > 128 || password !== password.trim())) {
     return res.status(400).json({ error: 'PPPoE şifresi 1-128 karakter olmalı: ters bölü (\\) olmadan, başta/sonda boşluk olmadan' });
   }
+  // Repeater (R4 A): Wi-Fi kartı üst Wi-Fi'a istemci olarak bağlanır (ağ adı + WPA parolası; PPPoE / VLAN yok).
+  const fsm = require('fs');
+  const wifiPort = fsm.existsSync(`/sys/class/net/${port}/wireless`) || fsm.existsSync(`/sys/class/net/${port}/phy80211`);
+  const ssid = typeof b.ssid === 'string' ? b.ssid : '';
+  if (wifiPort || ssid) {
+    if (!wifiPort) return res.status(400).json({ error: `${port} bir Wi-Fi kartı değil — Wi-Fi ağ adı yalnız Wi-Fi kartıyla verilir` });
+    if (type === 'pppoe' || b.vlan) return res.status(400).json({ error: 'Wi-Fi bağlantısında PPPoE ve VLAN kullanılmaz — bunları üst modem / router yapar' });
+    if (!/^[^\x00-\x1f\x7f]{1,32}$/.test(ssid) || Buffer.byteLength(ssid, 'utf8') > 32) return res.status(400).json({ error: "Üst Wi-Fi'ın adı 1-32 karakter olmalı" });
+    if (!/^[ -~]{8,63}$/.test(password) || password.includes('\\') || password !== password.trim()) {
+      return res.status(400).json({ error: 'Wi-Fi parolası 8-63 karakter olmalı: Türkçe harf ve ters bölü (\\) olmadan, başta/sonda boşluk olmadan' });
+    }
+    args.push('--ssid', ssid);
+  }
   const single = readNetModeState()?.iface === port; // ev ağı kartı: aynı porttan VLAN ile internet (tek port)
-  const r = await runKvScript(NET_MODE_SCRIPT, args, 240000, type === 'pppoe' ? `${password}\n` : '');
+  const r = await runKvScript(NET_MODE_SCRIPT, args, 240000, type === 'pppoe' || wifiPort ? `${password}\n` : '');
   await wanAfterChange(r);
-  await kvEvent('netmode', r, `İnternet kartı denemesi başladı: ${port}${single ? ' — tek port' : ''} (${type === 'pppoe' ? 'PPPoE' : type === 'static' ? 'sabit adres' : 'DHCP'}${b.vlan ? `, VLAN ${b.vlan}` : ''}) — ${WAN_TRIAL_S / 60} dk içinde "Kalıcı yap" gelmezse geri alınır`, 'İnternet kartı açılamadı', password);
+  const how = wifiPort ? `Wi-Fi: ${ssid}${type === 'static' ? ', sabit adres' : ''}` : `${type === 'pppoe' ? 'PPPoE' : type === 'static' ? 'sabit adres' : 'DHCP'}${b.vlan ? `, VLAN ${b.vlan}` : ''}`;
+  await kvEvent('netmode', r, `İnternet kartı denemesi başladı: ${port}${single ? ' — tek port' : ''} (${how}) — ${WAN_TRIAL_S / 60} dk içinde "Kalıcı yap" gelmezse geri alınır`, 'İnternet kartı açılamadı', password);
   if (r.code !== 0) return res.status(500).json({ error: maskSecret(kvError(r, 'internet kartı açılamadı'), password), rolled_back: r.kv.rolled_back === '1' });
   res.json({ success: true, wan_trial_ends: Number(r.kv.wan_trial_ends) || 0, wan_ip: r.kv.wan_ip || '', wan_gateway: r.kv.wan_gateway || '' });
 });
@@ -3089,7 +3103,7 @@ app.get('/api/failover', async (_req, res) => {
   if (r.code !== 0) return res.json({ supported: true, error: kvError(r, 'yedek hat durumu okunamadı') });
   const keep = Object.fromEntries(Object.entries(r.kv).filter(([k]) => k.startsWith('bak_')
     || ['now', 'stage', 'home_stage', 'sat_stage', 'ap_stage', 'wan_stage', 'wan_dev', 'wan_port', 'wan_ip', 'pi_dhcp', 'iface', 'lan_if',
-      'client', 'wan_lan', 'ap_iface', 'home_iface'].includes(k)));
+      'client', 'wan_lan', 'ap_iface', 'home_iface', 'wifi_roles'].includes(k)));
   const uplink = await activeUplink().catch(() => null);
   res.json({ ...kvTyped(keep, BAK_NUMS, BAK_BOOLS), supported: true, satellite: isSatellite(), uplink });
 });

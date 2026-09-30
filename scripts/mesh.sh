@@ -61,7 +61,7 @@ cmd_status() {
 }
 
 cmd_configure() {
-  local id="" ch="" role="" psk="" phy apif appHy f
+  local id="" ch="" role="" psk="" phy apif appHy f busy p
   while [ $# -gt 0 ]; do
     case "$1" in
       --id) id=${2:-}; shift ;;
@@ -79,14 +79,28 @@ cmd_configure() {
   command -v iw >/dev/null 2>&1 || die "iw kurulu değil"
   command -v wpa_supplicant >/dev/null 2>&1 || die "wpa_supplicant kurulu değil"
   # Radyo seçimi: ev Wi-Fi'ı / uydu yayını yapan kart (net-mode.sh durumu) dışındaki mesh destekli radyo tercih edilir.
+  # Üst Wi-Fi'a bağlı internet kartı (repeater) ve hotspot yedek hattının radyosu hiç kullanılmaz (bağlantı kopardı).
   apif=$(kv_get "$NET_STATE" home_iface); [ -n "$apif" ] || apif=$(kv_get "$NET_STATE" sat_wifi)
   appHy=$( [ -n "$apif" ] && phy_of_iface "$apif")
+  busy=""
+  if [ -n "$(kv_get "$NET_STATE" wan_ssid)" ] && [ "$(kv_get "$NET_STATE" wan_stage)" != none ]; then
+    busy="$busy $(phy_of_iface "$(kv_get "$NET_STATE" wan_port)")"
+  fi
+  if [ "$(kv_get "$NET_STATE" bak_kind)" = wifi ] && [ "$(kv_get "$NET_STATE" bak_stage)" = on ]; then
+    busy="$busy $(phy_of_iface "$(kv_get "$NET_STATE" bak_port)")"
+  fi
   phy=""
   for p in $(mesh_phys); do
     [ "$p" = "$appHy" ] && continue
+    case " $busy " in *" $p "*) continue ;; esac
     phy=$p; break
   done
-  [ -n "$phy" ] || phy=$(mesh_phys | head -1)
+  if [ -z "$phy" ]; then
+    for p in $(mesh_phys); do case " $busy " in *" $p "*) continue ;; esac; phy=$p; break; done
+  fi
+  if [ -z "$phy" ] && [ -n "$(mesh_phys)" ]; then
+    die "mesh destekli radyo başka işte (üst Wi-Fi bağlantısı / hotspot yedek hattı) — kablosuz mesh için ikinci bir mesh destekli radyo gerekir"
+  fi
   [ -n "$phy" ] || die "mesh (802.11s) destekleyen Wi-Fi radyosu yok — ör. ALFA AWUS036ACM (MT7612U) takın"
   mkdir -p "$DIR" && chmod 700 "$DIR"
   printf 'role=%s\nid=%s\nchannel=%s\nphy=%s\n' "$role" "$id" "$ch" "$phy" > "$CONF.tmp" && mv -f "$CONF.tmp" "$CONF" \

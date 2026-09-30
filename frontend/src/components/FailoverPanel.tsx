@@ -23,6 +23,7 @@ interface FailoverState {
   bak_up?: boolean; bak_fw?: boolean; bak_watch?: boolean; bak_active?: 'primary' | 'backup'; bak_since?: number; bak_switches?: number;
   bak_reason?: string; bak_primary_ok?: boolean; bak_backup_ok?: boolean; bak_checked?: number; bak_force_until?: number;
   bak_rx?: number; bak_tx?: number; bak_conntrack?: boolean; bak_usb_candidates?: string; uplink?: Uplink | null;
+  wifi_roles?: string;
 }
 export interface FailoverEthPort { name: string; driver: string; bus: 'usb' | 'onboard'; carrier: boolean | null }
 
@@ -81,8 +82,13 @@ export function FailoverPanel({ ports, onChange }: { ports: FailoverEthPort[]; o
   const isStatic = st.stage === 'static';
   const wanOn = !!st.wan_stage && st.wan_stage !== 'none';
   const lanPort = st.iface || '';
-  const wifiDev = st.home_iface || st.ap_iface || '';
-  const wifiBusy = st.ap_stage !== 'none' || st.home_stage !== 'none';
+  // Hotspot radyosu: başka işte olmayan ilk Wi-Fi kartı (net-mode.sh wifi_roles "kart=rol"; iki radyoda ev Wi-Fi'ı yayını
+  // öbür kartta sürer). Eski durum çıktısında (wifi_roles yok) ilk kart ve yayın aşamaları.
+  const wifiRoles = (st.wifi_roles || '').split(',').filter(Boolean).map(x => ({ dev: x.slice(0, x.indexOf('=')), role: x.slice(x.indexOf('=') + 1) }));
+  const wifiFree = wifiRoles.find(r => !r.role)?.dev || '';
+  const wifiDev = wifiRoles.length ? wifiFree || wifiRoles[0].dev : st.home_iface || st.ap_iface || '';
+  const wifiBusy = wifiRoles.length ? !wifiFree : st.ap_stage !== 'none' || st.home_stage !== 'none';
+  const wifiBusyRole = wifiRoles.length ? wifiRoles[0].role : "kurulum Wi-Fi'ı ya da ev Wi-Fi'ı yayını";
   // Ethernet kartları: ana hattın kartı ve USB modem / telefon sürücülü arayüzler hariç; ev ağı kartı yalnız VLAN ile (sonda).
   const cands = ports.filter(p => p.name !== lanPort && p.name !== st.wan_port && !USB_DRIVERS.includes(p.driver));
   const lanInfo = lanPort ? ports.find(p => p.name === lanPort) : undefined;
@@ -256,7 +262,7 @@ export function FailoverPanel({ ports, onChange }: { ports: FailoverEthPort[]; o
               : <Alert kind="info">USB modem ya da telefon bulunamadı. Modemi takın (web arayüzlü "HiLink" modemler, ör. Huawei E3372h) ya da telefonu USB ile bağlayıp "USB ile internet paylaşımı"nı açın; birkaç saniye sonra bu bölüm yenilenir. SIM'li, arayüzsüz modemler (APN / PIN isteyen) şimdilik desteklenmez.</Alert>)}
             {kind === 'wifi' && (!wifiDev
               ? <Alert kind="err">Pi'de Wi-Fi kartı bulunamadı.</Alert>
-              : wifiBusy ? <Alert kind="err">Wi-Fi kartı ({wifiDev}) kurulum Wi-Fi'ı ya da ev Wi-Fi'ı yayınında — hotspot yedek hattı için Wi-Fi kartı boş olmalı.</Alert>
+              : wifiBusy ? <Alert kind="err">Wi-Fi kartı ({wifiDev}) şu an {wifiBusyRole} için kullanılıyor — hotspot yedek hattı için boş bir Wi-Fi kartı gerekir (ör. ikinci bir USB Wi-Fi).</Alert>
                 : <Alert kind="info">Telefonun hotspot'u açıkken kurun (hemen sınanır). Sonra hotspot kapalı kalabilir: ana hat düşünce hotspot'u açın, Pi birkaç saniyede bağlanır ve geçer.</Alert>)}
             {onLanCard && <Alert kind="info">Ev ağı kartı: yedek hat (ör. 4G router) VLAN destekli yönetilebilir anahtara takılır; anahtar yedek hattı Pi'nin portuna bu VLAN'da etiketli verir, ev ağı etiketsiz kalır.</Alert>}
             {formErr && <span className="hw-form-err" role="alert">{formErr}</span>}

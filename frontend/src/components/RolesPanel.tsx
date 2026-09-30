@@ -170,7 +170,7 @@ export function RolesPanel() {
             <div className="rl-grid">{items.map(r => <RoleCard key={r.id} r={r} />)}</div>
             {/* WAN router (R3): ikinci Ethernet kartı varsa (ya da rol açıksa) ana cihazda. */}
             {g.id === 'routing' && data.net?.role !== 'satellite' && items.some(r => r.id === 'wan-router' && (r.status === 'available' || r.status === 'active')) && (
-              <WanPanel ports={data.eth || []} onChange={refetch} />
+              <WanPanel ports={data.eth || []} radios={data.radios || []} onChange={refetch} />
             )}
             {/* Yedek hat: Pi ağ geçidiyken (LAN router ya da WAN router) ana cihazda; ön koşulları panel kendisi söyler. */}
             {g.id === 'routing' && data.net?.role !== 'satellite' && (

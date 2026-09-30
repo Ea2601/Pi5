@@ -24,8 +24,11 @@ interface WanStatus {
   wan_ip?: string; wan_gateway?: string; wan_carrier?: boolean; wan_up?: boolean; wan_fw?: boolean;
   wan_guard_result?: string; wan_guard_detail?: string; ppp_ok?: boolean; wan_public?: boolean; forwards?: Forward[];
   wan_single?: boolean; wan_dhcp_vendor?: string; wan_dhcp_client_id?: string; wan_dhcp_hostname?: string;
+  wan_ssid?: string; wan_kind?: 'wifi' | 'ethernet' | ''; wan_signal?: number; wifi_roles?: string;
 }
 export interface WanEthPort { name: string; bus: 'usb' | 'onboard'; usbSpeedMbps: number | null; carrier: boolean | null }
+// Repeater (R4 A): Wi-Fi radyosu (Donanım: iw) — istemci (managed) kipindeki kart üst Wi-Fi'a bağlanabilir.
+export interface WanRadio { ifaces: string[]; sta: boolean; bus: 'usb' | 'onboard' }
 
 const EN = ({ children }: { children: ReactNode }) => <span lang="en">{children}</span>;
 const TYPE_TEXT: Record<WanType, string> = { dhcp: 'Otomatik adres (DHCP)', static: 'Sabit IP', pppoe: 'PPPoE' };
@@ -64,7 +67,7 @@ function Alert({ kind, children }: { kind: 'ok' | 'err' | 'info'; children: Reac
   );
 }
 
-export function WanPanel({ ports, onChange }: { ports: WanEthPort[]; onChange?: () => void }) {
+export function WanPanel({ ports, radios = [], onChange }: { ports: WanEthPort[]; radios?: WanRadio[]; onChange?: () => void }) {
   const [st, setSt] = useState<WanStatus | null>(null);
   const [loadErr, setLoadErr] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
@@ -83,6 +86,7 @@ export function WanPanel({ ports, onChange }: { ports: WanEthPort[]; onChange?: 
   const [dVendor, setDVendor] = useState('');
   const [dCid, setDCid] = useState('');
   const [dHost, setDHost] = useState('');
+  const [ssid, setSsid] = useState('');
   // Port yönlendirme formu
   const [fName, setFName] = useState('');
   const [fProto, setFProto] = useState<Proto>('tcp');
@@ -113,12 +117,18 @@ export function WanPanel({ ports, onChange }: { ports: WanEthPort[]; onChange?: 
   // Tek port: ev ağı kartı da seçilebilir (en sonda); ikinci kart yoksa varsayılan odur.
   const lanPortInfo = lanPort ? ports.find(p => p.name === lanPort) : undefined;
   const options = lanPortInfo ? [...candidates, lanPortInfo] : candidates;
-  const chosen = port && options.some(p => p.name === port) ? port
+  // Repeater (R4 A): Wi-Fi kartı üst Wi-Fi'a istemci olarak bağlanır (ayrı ağ). Başka işteki radyo (ev Wi-Fi'ı yayını,
+  // yedek hat, mesh — net-mode.sh wifi_roles) listelenmez.
+  const roleOf = new Map((st.wifi_roles || '').split(',').filter(Boolean).map(x => [x.slice(0, x.indexOf('=')), x.slice(x.indexOf('=') + 1)] as [string, string]));
+  const wifiOpts = radios.filter(r => r.sta && r.ifaces[0] && !roleOf.get(r.ifaces[0])).map(r => ({ name: r.ifaces[0], bus: r.bus }));
+  const isWifi = !!port && wifiOpts.some(w => w.name === port);
+  const chosen = port && (options.some(p => p.name === port) || isWifi) ? port
     : candidates.find(p => p.carrier)?.name || candidates[0]?.name || lanPortInfo?.name || '';
   const chosenPort = options.find(p => p.name === chosen);
-  const single = !!chosen && chosen === lanPort;
+  const single = !isWifi && !!chosen && chosen === lanPort;
   const lanIp = ipOf(st.client);
-  const mtuMax = single ? (type === 'pppoe' ? 1492 : 1500) : type === 'pppoe' ? 1500 : 9000;
+  const mtuMax = single || isWifi ? (type === 'pppoe' ? 1492 : 1500) : type === 'pppoe' ? 1500 : 9000;
+  const onWifi = st.wan_kind === 'wifi';
   const dV = dVendor.trim(), dC = dCid.trim(), dH = dHost.trim();
 
   const act = async (key: string, fn: () => Promise<void>) => {
@@ -130,7 +140,9 @@ export function WanPanel({ ports, onChange }: { ports: WanEthPort[]; onChange?: 
   };
 
   const formErr = !chosen ? '' :
-    type === 'static' && addr && !/^\d{1,3}(\.\d{1,3}){3}\/\d{1,2}$/.test(addr) ? 'Sabit IP adres/önek biçiminde olmalı (ör. 203.0.113.10/24)'
+    isWifi && ssid && new TextEncoder().encode(ssid).length > 32 ? "Üst Wi-Fi'ın adı en çok 32 bayt"
+    : isWifi && pw && (pw.length < 8 || pw.length > 63 || /\\/.test(pw) || pw !== pw.trim() || !/^[ -~]+$/.test(pw)) ? 'Wi-Fi parolası 8-63 karakter; Türkçe harf ve ters bölü (\\) olmaz, başta/sonda boşluk olmaz'
+    : type === 'static' && addr && !/^\d{1,3}(\.\d{1,3}){3}\/\d{1,2}$/.test(addr) ? 'Sabit IP adres/önek biçiminde olmalı (ör. 203.0.113.10/24)'
       : type === 'static' && gw && !IPV4.test(gw) ? 'Ağ geçidi geçersiz'
         : type === 'static' && dns && !dns.split(',').every(d => IPV4.test(d.trim())) ? 'DNS adresleri virgülle ayrılmış IPv4 olmalı'
           : type === 'pppoe' && user && !/^[!-~]{1,64}$/.test(user) ? 'Kullanıcı adında boşluk ve Türkçe harf olmaz'
@@ -142,15 +154,23 @@ export function WanPanel({ ports, onChange }: { ports: WanEthPort[]; onChange?: 
                       : type === 'dhcp' && ((dV && !DHCP_ID.test(dV)) || (dC && !DHCP_ID.test(dC))) ? 'DHCP kimliğinde Türkçe harf ve ters bölü (\\) olmaz, en çok 64 karakter'
                         : type === 'dhcp' && dH && !HOSTNAME.test(dH) ? 'Cihaz adı harf / rakamla başlar; yalnız harf, rakam, nokta, tire'
                           : '';
-  const fieldsOk = (type === 'dhcp' || (type === 'static' ? !!addr && !!gw : !!user && !!pw)) && (!single || !!vlan);
+  const fieldsOk = isWifi
+    ? !!ssid && !!pw && type !== 'pppoe' && (type !== 'static' || (!!addr && !!gw))
+    : (type === 'dhcp' || (type === 'static' ? !!addr && !!gw : !!user && !!pw)) && (!single || !!vlan);
   const blocked = !isStatic ? 'Önce sabit adres' : !st.pi_dhcp ? "Önce Pi DHCP'sini açın" : st.home_stage === 'trial' ? "Ev Wi-Fi'ı denemesi sürüyor"
     : !chosen ? 'Ethernet kartı yok' : chosenPort && chosenPort.carrier === false ? 'Kartta kablo yok'
       : type === 'pppoe' && !st.ppp_ok ? 'PPPoE bileşeni kurulu değil' : single && !vlan ? 'Tek portta internet VLAN numarası gerekli' : '';
   const canStart = !blocked && !formErr && fieldsOk;
 
   const start = () => {
-    if (!window.confirm(
-      (single
+    if (!window.confirm(isWifi
+      ? `İnternet ${chosen} ile "${ssid}" Wi-Fi'ına bağlanarak gelecek — repeater, ayrı ağ (5 dakikalık deneme):\n\n` +
+        `• Bağlantı: Wi-Fi istemci · ${TYPE_TEXT[type]}\n` +
+        `• ${lanPort || 'eth0'} (ve açıksa ev Wi-Fi'ı) yalnız ev ağı olur (${lanIp || '192.168.0.1'} kalır, panel açık kalır)\n` +
+        '• Kalıcı yaptıktan sonra modem kablosunu çıkarıp Pi\'yi yerine taşıyabilirsiniz\n' +
+        '• İnternetten gelen bağlantılar engellenir (Ev VPN\'i ve port yönlendirmeleri hariç)\n\n' +
+        "İnternet çalışıyorsa 5 dakika içinde 'Kalıcı yap'a basın; basılmazsa Pi eski ayara kendiliğinden döner.\n\nDevam edilsin mi?"
+      : (single
         ? `İnternet ${chosen} kartından VLAN ${vlan} ile gelecek — tek port (5 dakikalık deneme):\n\n`
         : `İnternet bağlantısı ${chosen} kartına geçecek (5 dakikalık deneme):\n\n`) +
       `• Bağlantı: ${TYPE_TEXT[type]}${vlan ? ` · VLAN ${vlan}${prio ? ` (öncelik ${prio})` : ''}` : ''}\n` +
@@ -162,20 +182,24 @@ export function WanPanel({ ports, onChange }: { ports: WanEthPort[]; onChange?: 
       'Devam edilsin mi?',
     )) return;
     void act('on', async () => {
-      toast.info('İnternet kartı bağlanıyor — PPPoE bir dakikaya kadar sürebilir');
+      toast.info(isWifi ? `${chosen} "${ssid}" Wi-Fi'ına bağlanıyor — bir dakikaya kadar sürebilir` : 'İnternet kartı bağlanıyor — PPPoE bir dakikaya kadar sürebilir');
       const r = await postApi('/wan', {
-        port: chosen, type, ...(type === 'static' ? { addr, gw, dns } : {}), ...(type === 'pppoe' ? { user, password: pw } : {}),
-        ...(vlan ? { vlan } : {}), ...(vlan && prio ? { prio } : {}), ...(mac ? { mac } : {}), ...(mtu ? { mtu } : {}),
+        port: chosen, type, ...(type === 'static' ? { addr, gw, dns } : {}), ...(type === 'pppoe' && !isWifi ? { user, password: pw } : {}),
+        ...(isWifi ? { ssid, password: pw } : {}),
+        ...(vlan && !isWifi ? { vlan } : {}), ...(vlan && prio && !isWifi ? { prio } : {}), ...(mac ? { mac } : {}), ...(mtu ? { mtu } : {}),
         ...(type === 'dhcp' ? { ...(dV ? { dhcp_vendor: dV } : {}), ...(dC ? { dhcp_client_id: dC } : {}), ...(dH ? { dhcp_hostname: dH } : {}) } : {}),
       });
       setPw('');
-      toast.success(`İnternet ${single ? `${chosen} · VLAN ${vlan}` : chosen} üzerinden (${r?.wan_ip || 'adres alındı'}) — çalışıyorsa kalıcı yapın`);
+      toast.success(`İnternet ${isWifi ? `${chosen} · Wi-Fi ${ssid}` : single ? `${chosen} · VLAN ${vlan}` : chosen} üzerinden (${r?.wan_ip || 'adres alındı'}) — çalışıyorsa kalıcı yapın`);
     });
   };
   const confirm = () => act('confirm', async () => { await postApi('/wan/confirm', {}); toast.success('İnternet kartı kalıcı'); });
   const rollback = () => act('rollback', async () => { await postApi('/wan/rollback', {}); toast.info('İnternet kartı denemesi geri alındı'); });
   const off = () => {
-    if (!window.confirm(st.wan_single
+    if (!window.confirm(onWifi
+      ? `Üst Wi-Fi bağlantısı (${st.wan_port} · ${st.wan_ssid}) kapatılacak; Pi eski (tek kablolu) düzene döner: internet yeniden ${lanPort || 'eth0'} üzerinden modemden gelir.\n\n` +
+        `Pi modeme kabloyla bağlı değilse, kablo takılana kadar Pi'nin interneti olmaz (ev ağı ve panel çalışır).\n\nDevam edilsin mi?`
+      : st.wan_single
       ? `İnternet VLAN'ı (${st.wan_port} · VLAN ${st.wan_vlan}) kapatılacak; Pi eski (tek kablolu) düzene döner: internet yeniden ${st.wan_port} üzerinden etiketsiz, modemden gelir.\n\n` +
         `Anahtar modemi ev ağına etiketsiz vermiyorsa, anahtar ayarı geri alınana kadar Pi'nin interneti olmaz (ev ağı ve panel çalışır).\n\nDevam edilsin mi?`
       : `İnternet kartı (${st.wan_port}) kapatılacak; Pi eski (tek kablolu) düzene döner: internet yeniden ${lanPort || 'eth0'} üzerinden modemden gelir.\n\n` +
@@ -212,20 +236,27 @@ export function WanPanel({ ports, onChange }: { ports: WanEthPort[]; onChange?: 
     ? (st.wan_up && st.wan_fw ? <Badge variant="success">Bağlı</Badge> : <Badge variant="warning">Sorun var</Badge>)
     : stage === 'trial' ? <Badge variant="info">Deneme · {fmtLeft(left)}</Badge> : <Badge variant="neutral">Kapalı</Badge>;
   const forwards = st.forwards || [];
-  const typeLine = st.wan_type ? `${TYPE_TEXT[st.wan_type as WanType]}${st.wan_vlan ? ` · VLAN ${st.wan_vlan}${st.wan_prio ? ` (öncelik ${st.wan_prio})` : ''}` : ''}` : '—';
-  const wanWhere = st.wan_single && st.wan_vlan ? `${st.wan_port} · VLAN ${st.wan_vlan}` : st.wan_port;
+  const typeLine = st.wan_type ? `${onWifi ? 'Wi-Fi istemci (repeater) · ' : ''}${TYPE_TEXT[st.wan_type as WanType]}${st.wan_vlan ? ` · VLAN ${st.wan_vlan}${st.wan_prio ? ` (öncelik ${st.wan_prio})` : ''}` : ''}` : '—';
+  const wanWhere = onWifi ? `${st.wan_port} · ${st.wan_ssid}` : st.wan_single && st.wan_vlan ? `${st.wan_port} · VLAN ${st.wan_vlan}` : st.wan_port;
   const dhcpIds = [st.wan_dhcp_vendor && `üretici sınıfı ${st.wan_dhcp_vendor}`, st.wan_dhcp_client_id && `istemci kimliği ${st.wan_dhcp_client_id}`,
     st.wan_dhcp_hostname && `cihaz adı ${st.wan_dhcp_hostname}`].filter(Boolean).join(' · ');
 
   return (
     <Panel title={title} icon={icon} actions={state} className="wn-panel"
-      subtitle="WAN router rolü: modem ya da ONT ikinci Ethernet kartına bağlanır, ev ağı ayrı kartta kalır — ya da tek port + VLAN anahtarı.">
+      subtitle="WAN router rolü: modem ya da ONT ikinci Ethernet kartına bağlanır, ev ağı ayrı kartta kalır — ya da tek port + VLAN anahtarı, ya da Wi-Fi ile üst ağa (repeater).">
       <div className="hw-body">
         {stage === 'none' && (
           <>
             {!isStatic && <Alert kind="info">Önce menü → DHCP Ayarları sihirbazında Pi'ye sabit adres verip kalıcı yapın.</Alert>}
             {isStatic && !st.pi_dhcp && <Alert kind="info">Önce DHCP Ayarları'ndan Pi DHCP sunucusunu açın: internet kartına geçince ev ağındaki cihazlara adresi yalnız Pi verir.</Alert>}
-            {!candidates.length && !lanPortInfo && <Alert kind="err">Ethernet kartı bulunamadı — USB 3 Gigabit Ethernet adaptörü takın (ör. TP-Link UE300).</Alert>}
+            {!candidates.length && !lanPortInfo && !wifiOpts.length && <Alert kind="err">Ethernet kartı bulunamadı — USB 3 Gigabit Ethernet adaptörü takın (ör. TP-Link UE300).</Alert>}
+            {isWifi && (
+              <Alert kind="info">
+                <strong>Repeater (ayrı ağ):</strong> Pi {chosen} ile üst Wi-Fi'a bağlanır; {lanPort || 'eth0'} ve (açıksa) ev Wi-Fi'ı ev ağı olur, Klyrix
+                özellikleri arkadaki cihazlara uygulanır (modem ile Pi arasında çift NAT). Kurulumu kabloyla yapın; kalıcı yaptıktan sonra modem kablosunu
+                çıkarıp Pi'yi yerine taşıyabilirsiniz. Ev Wi-Fi'ı yayını için ikinci bir Wi-Fi kartı gerekir.
+              </Alert>
+            )}
             {!candidates.length && lanPortInfo && (
               <Alert kind="info">İkinci Ethernet kartı yok: internet tek porttan (VLAN destekli yönetilebilir anahtarla) alınabilir. Daha basit kurulum için USB 3 Gigabit Ethernet adaptörü (ör. TP-Link UE300).</Alert>
             )}
@@ -240,7 +271,9 @@ export function WanPanel({ ports, onChange }: { ports: WanEthPort[]; onChange?: 
               </Alert>
             )}
             <dl className="hw-facts">
-              <div><dt>Nasıl bağlanır</dt><dd>{single
+              <div><dt>Nasıl bağlanır</dt><dd>{isWifi
+                ? <>Pi {chosen} ile modemin / router'ın Wi-Fi'ına bağlanır; {lanPort || 'eth0'} ve ev Wi-Fi'ı ev ağında kalır.</>
+                : single
                 ? <>Modem / ONT ve Pi VLAN destekli yönetilebilir anahtara; internet VLAN {vlan || '…'} ile {chosen} üzerinden, ev ağı aynı kablodan etiketsiz.</>
                 : <>Modem / ONT kablosu internet kartına; {lanPort || 'eth0'} ev ağında (anahtar, erişim noktası) kalır.</>}</dd></div>
               <div><dt>Ev ağı</dt><dd>{lanIp || '192.168.0.1'} değişmez; cihazlar adresini Pi'den almayı sürdürür.</dd></div>
@@ -249,19 +282,29 @@ export function WanPanel({ ports, onChange }: { ports: WanEthPort[]; onChange?: 
             <div className="hw-form">
               <label className="hw-field">
                 <span>İnternet kartı</span>
-                <select value={chosen} onChange={e => setPort(e.target.value)} disabled={!options.length}>
+                <select value={chosen} disabled={!options.length && !wifiOpts.length}
+                  onChange={e => { setPort(e.target.value); if (type === 'pppoe' && wifiOpts.some(w => w.name === e.target.value)) setType('dhcp'); }}>
                   {candidates.map(p => <option key={p.name} value={p.name}>{p.name} · {busText(p)} · {p.carrier ? 'kablo takılı' : p.carrier === false ? 'kablo yok' : '—'}</option>)}
                   {lanPortInfo && <option value={lanPortInfo.name}>{lanPortInfo.name} · tek port (VLAN anahtarı)</option>}
+                  {wifiOpts.map(w => <option key={w.name} value={w.name}>{w.name} · Wi-Fi ({w.bus === 'usb' ? 'USB' : 'dahili'}) · repeater</option>)}
                 </select>
               </label>
               <label className="hw-field">
                 <span>Bağlantı türü</span>
                 <select value={type} onChange={e => setType(e.target.value as WanType)}>
                   <option value="dhcp">Otomatik adres (DHCP) — modem arkası</option>
-                  <option value="pppoe">PPPoE — kullanıcı adı + şifre</option>
+                  {!isWifi && <option value="pppoe">PPPoE — kullanıcı adı + şifre</option>}
                   <option value="static">Sabit IP — operatörün verdiği</option>
                 </select>
               </label>
+              {isWifi && (
+                <>
+                  <label className="hw-field"><span>Üst Wi-Fi'ın adı</span>
+                    <input className="config-input" value={ssid} maxLength={32} onChange={e => setSsid(e.target.value)} placeholder="modemin Wi-Fi adı" spellCheck={false} /></label>
+                  <label className="hw-field"><span>Wi-Fi parolası</span>
+                    <input className="config-input" type="password" value={pw} onChange={e => setPw(e.target.value)} autoComplete="new-password" /></label>
+                </>
+              )}
               {type === 'static' && (
                 <>
                   <label className="hw-field"><span>IP adresi / önek</span>
@@ -272,7 +315,7 @@ export function WanPanel({ ports, onChange }: { ports: WanEthPort[]; onChange?: 
                     <input className="config-input" value={dns} onChange={e => setDns(e.target.value)} placeholder="1.1.1.1,9.9.9.9" spellCheck={false} /></label>
                 </>
               )}
-              {type === 'pppoe' && (
+              {type === 'pppoe' && !isWifi && (
                 <>
                   <label className="hw-field"><span>Kullanıcı adı</span>
                     <input className="config-input" value={user} onChange={e => setUser(e.target.value)} autoComplete="off" spellCheck={false} /></label>
@@ -286,17 +329,19 @@ export function WanPanel({ ports, onChange }: { ports: WanEthPort[]; onChange?: 
               )}
             </div>
             <details className="wn-adv">
-              <summary>Gelişmiş: VLAN, MAC kopyalama, MTU{type === 'dhcp' ? ', DHCP kimlikleri' : ''} (operatör isterse)</summary>
+              <summary>Gelişmiş: {isWifi ? '' : 'VLAN, '}MAC kopyalama, MTU{type === 'dhcp' ? ', DHCP kimlikleri' : ''} (operatör isterse)</summary>
               <div className="hw-form">
-                {!single && (
+                {!single && !isWifi && (
                   <label className="hw-field hw-field-sm"><span>VLAN numarası</span>
                     <input className="config-input" inputMode="numeric" value={vlan} onChange={e => setVlan(e.target.value.trim())} placeholder="ör. 35" /></label>
                 )}
-                <label className="hw-field hw-field-sm"><span>VLAN önceliği</span>
-                  <select value={prio} onChange={e => setPrio(e.target.value)} disabled={!vlan}>
-                    <option value="">—</option>
-                    {[0, 1, 2, 3, 4, 5, 6, 7].map(p => <option key={p} value={p}>{p}</option>)}
-                  </select></label>
+                {!isWifi && (
+                  <label className="hw-field hw-field-sm"><span>VLAN önceliği</span>
+                    <select value={prio} onChange={e => setPrio(e.target.value)} disabled={!vlan}>
+                      <option value="">—</option>
+                      {[0, 1, 2, 3, 4, 5, 6, 7].map(p => <option key={p} value={p}>{p}</option>)}
+                    </select></label>
+                )}
                 <label className="hw-field"><span>MAC adresi (kopyala)</span>
                   <input className="config-input" value={mac} onChange={e => setMac(e.target.value.trim())} placeholder="eski router'ın MAC'i" spellCheck={false} /></label>
                 <label className="hw-field hw-field-sm"><span><EN>MTU</EN></span>
@@ -313,7 +358,7 @@ export function WanPanel({ ports, onChange }: { ports: WanEthPort[]; onChange?: 
                 </div>
               )}
               <span className="dhcp-muted">
-                VLAN'ı operatör fiber hatlarda ister (numarası sözleşmede ya da operatörün modem ayarında yazar). MAC kopyalama, operatör
+                {isWifi ? '' : "VLAN'ı operatör fiber hatlarda ister (numarası sözleşmede ya da operatörün modem ayarında yazar). "}MAC kopyalama, operatör
                 bağlantıyı eski router'ın MAC'ine bağladıysa gerekir. {type === 'pppoe' && !single ? 'Operatör destekliyorsa (RFC 4638) PPPoE MTU 1500 olabilir. ' : ''}
                 {type === 'dhcp' ? 'DHCP kimlikleri: bazı operatörler adresi yalnız belirli bir üretici sınıfı, istemci kimliği ya da cihaz adıyla verir — değerler operatörün modem ayarında yazar. ' : ''}
                 Boş bırakılanlar otomatik.
@@ -349,6 +394,7 @@ export function WanPanel({ ports, onChange }: { ports: WanEthPort[]; onChange?: 
             {!(st.wan_up && st.wan_fw) && (
               <Alert kind="err">
                 {!st.wan_fw ? 'Güvenlik duvarı yüklü değil — internet kartı güvenlik için kapatıldı'
+                  : onWifi ? `Üst Wi-Fi'a (${st.wan_ssid}) bağlanılamadı — modem açık mı, Pi sinyal alıyor mu`
                   : st.wan_carrier === false ? `${st.wan_port} kartında kablo yok`
                     : st.wan_single ? `İnternet VLAN'ı (${wanWhere}) bağlanamadı — anahtar ayarını kontrol edin` : 'İnternet kartı bağlanamadı'}
                 {st.wan_guard_detail ? ` (${st.wan_guard_detail})` : ''}. Ev ağı ve panel çalışıyor.
@@ -362,6 +408,7 @@ export function WanPanel({ ports, onChange }: { ports: WanEthPort[]; onChange?: 
             )}
             <dl className="hw-facts">
               <div><dt>İnternet kartı</dt><dd className="rl-mono">{st.wan_port}{st.wan_dev && st.wan_dev !== st.wan_port ? ` → ${st.wan_dev}` : ''}{st.wan_single ? ' · tek port' : ''}</dd></div>
+              {onWifi && <div><dt>Üst Wi-Fi</dt><dd>{st.wan_ssid}{st.wan_signal ? ` · sinyal %${st.wan_signal}` : ''}{st.wan_signal && st.wan_signal < 40 ? ' (zayıf — Pi\'yi modeme yaklaştırın)' : ''}</dd></div>}
               <div><dt>Bağlantı</dt><dd>{typeLine}{st.wan_user ? ` · ${st.wan_user}` : ''}</dd></div>
               {dhcpIds && <div><dt>DHCP kimlikleri</dt><dd className="rl-mono">{dhcpIds}</dd></div>}
               <div><dt>Adres / ağ geçidi</dt><dd className="rl-mono">{st.wan_ip || '—'} · {st.wan_gateway || '—'}</dd></div>

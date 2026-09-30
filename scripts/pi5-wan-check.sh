@@ -182,6 +182,14 @@ if [ "$WAN_STAGE" != none ]; then
   else miss "İnternet rotası $WAN_DEV üzerinden değil: $(ip -4 route get 1.1.1.1 2>&1 | head -1)"; fi
   if ping -c2 -W3 -I "$WAN_DEV" 1.1.1.1 >/dev/null 2>&1 || ping -c2 -W3 -I "$WAN_DEV" 8.8.8.8 >/dev/null 2>&1; then ok "İnternete ulaşılıyor (ping, $WAN_DEV)"
   else miss "İnternet kartından ping yanıtı yok"; fi
+  # Repeater (R4 A): internet kartı Wi-Fi istemci — üst Wi-Fi ve sinyal gücü.
+  if [ "$(printf '%s\n' "$st" | sed -n 's/^wan_kind=//p')" = wifi ]; then
+    wssid=$(printf '%s\n' "$st" | sed -n 's/^wan_ssid=//p'); sig=$(printf '%s\n' "$st" | sed -n 's/^wan_signal=//p')
+    info "Repeater: internet $WAN_PORT ile üst Wi-Fi'dan (${wssid:-?})"
+    if ! [ "${sig:-0}" -gt 0 ] 2>/dev/null; then warn "Üst Wi-Fi'a (${wssid:-?}) bağlı görünmüyor — modem açık mı, ağ adı / parola doğru mu"
+    elif [ "$sig" -lt 40 ]; then warn "Üst Wi-Fi sinyali zayıf (%$sig) — Pi'yi modeme yaklaştırın ya da antenli USB Wi-Fi kartını daha açık bir yere alın"
+    else ok "Üst Wi-Fi sinyali %$sig"; fi
+  fi
   if [ -n "$LAN_DEV" ] && [ -n "$TRANSIT" ] && ip -4 -o addr show dev "$LAN_DEV" | awk '{print $4}' | grep -qxF "$TRANSIT"; then
     [ "$(kv "$NET_STATE" wan_lan)" = 1 ] && warn "Ev ağı kartında ($LAN_DEV) modem tarafı adres ($TRANSIT) hâlâ duruyor"
   else ok "Ev ağı kartı ($LAN_DEV) yalnız ev ağında ($(addrs "$LAN_DEV"))"; fi

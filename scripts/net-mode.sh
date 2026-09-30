@@ -32,8 +32,11 @@
 #   sat apply --ssid AD [--band] [--channel]  uydunun yayın ayarını değiştirir (parola STDIN'den; köprü kesilmez)
 #   wan on --trial SN --port KART --type dhcp|static|pppoe [--vlan ID [--prio 0-7]] [--mac MAC] [--mtu N]
 #          [--addr IP/ÖNEK --gw IP [--dns IP,IP]] [--user AD] [--dhcp-vendor S] [--dhcp-client-id S] [--dhcp-hostname AD]
+#          [--ssid AD]
 #                                        KART ev ağı kartıysa (tek port) --vlan zorunlu: internet, VLAN destekli
 #                                        anahtardan etiketli gelir, ev ağı aynı porttan etiketsiz akar
+#                                        KART Wi-Fi ise --ssid ile üst Wi-Fi'a istemci olarak bağlanır (repeater, ayrı
+#                                        ağ; DHCP / sabit, VLAN / PPPoE yok); Wi-Fi parolası STDIN'in ilk satırından
 #                                        internet kartı (WAN router rolü, R3): ikinci Ethernet kartı internete bağlanır,
 #                                        eth0 / br0 yalnız ev ağı olur (cihaz adresi kalır, modem tarafı adres ve ağ
 #                                        geçidi kalkar). PPPoE parolası STDIN'in ilk satırından. SN saniye içinde
@@ -152,7 +155,7 @@ BAK_GROUP=77
 BAK_USB_DRIVERS="rndis_host cdc_ether cdc_ncm ipheth"
 BAK_TARGETS="1.1.1.1 8.8.8.8 9.9.9.9"
 SELF=$(readlink -f "$0")
-STATE_KEYS="stage trial_ends iface transit client gw dns old_uuid old_name old_ipv6 wifi_off ap_stage ap_trial_ends ap_iface ap_ssid ap_old_uuid ap_radio_was_off home_stage home_trial_ends home_iface home_ssid home_band home_channel home_radio_was_off lan_if sat_stage sat_trial_ends sat_iface sat_old_uuid sat_old_name sat_wifi sat_ssid sat_band sat_channel sat_radio_was_off sat_backhaul wan_stage wan_trial_ends wan_port wan_dev wan_type wan_vlan wan_prio wan_mac wan_mtu wan_user wan_addr wan_gw wan_dns wan_lan wan_dhcp_vendor wan_dhcp_cid wan_dhcp_host bak_stage bak_kind bak_type bak_port bak_dev bak_vlan bak_mtu bak_user bak_addr bak_gw bak_dns bak_ssid bak_match bak_radio_was_off"
+STATE_KEYS="stage trial_ends iface transit client gw dns old_uuid old_name old_ipv6 wifi_off ap_stage ap_trial_ends ap_iface ap_ssid ap_old_uuid ap_radio_was_off home_stage home_trial_ends home_iface home_ssid home_band home_channel home_radio_was_off lan_if sat_stage sat_trial_ends sat_iface sat_old_uuid sat_old_name sat_wifi sat_ssid sat_band sat_channel sat_radio_was_off sat_backhaul wan_stage wan_trial_ends wan_port wan_dev wan_type wan_vlan wan_prio wan_mac wan_mtu wan_user wan_addr wan_gw wan_dns wan_lan wan_dhcp_vendor wan_dhcp_cid wan_dhcp_host wan_ssid bak_stage bak_kind bak_type bak_port bak_dev bak_vlan bak_mtu bak_user bak_addr bak_gw bak_dns bak_ssid bak_match bak_radio_was_off"
 
 die() { echo "error=$*"; exit 1; }
 log() { logger -t pi5-net-mode "$*" 2>/dev/null || true; }
@@ -162,10 +165,13 @@ csv() { paste -sd, -; }
 
 # Durum dosyası: key=value satırları; kaynak olarak ÇALIŞTIRILMAZ, yalnız bilinen anahtarlar S_<anahtar>'a okunur.
 read_state() {
-  local k v
+  local k v line
   for k in $STATE_KEYS; do printf -v "S_$k" '%s' ""; done
   if [ -f "$STATE_FILE" ]; then
-    while IFS='=' read -r k v || [ -n "$k" ]; do
+    # Satır ilk '=' işaretinden bölünür: IFS='=' read değerin sonundaki tek '='i siler (ör. Wi-Fi ağ adı "Ev=").
+    while IFS= read -r line || [ -n "$line" ]; do
+      k=${line%%=*}; v=""
+      [[ $line == *=* ]] && v=${line#*=}
       [ -n "$k" ] || continue
       case " $STATE_KEYS " in *" $k "*) printf -v "S_$k" '%s' "$v" ;; esac
     done < "$STATE_FILE"
@@ -208,6 +214,8 @@ read_state() {
   { [[ $S_wan_dhcp_vendor =~ ^[\ -~]{1,64}$ ]] && [[ $S_wan_dhcp_vendor != *\\* ]]; } || S_wan_dhcp_vendor=""
   { [[ $S_wan_dhcp_cid =~ ^[\ -~]{1,64}$ ]] && [[ $S_wan_dhcp_cid != *\\* ]]; } || S_wan_dhcp_cid=""
   [[ $S_wan_dhcp_host =~ ^[A-Za-z0-9]([A-Za-z0-9.-]{0,62})$ ]] || S_wan_dhcp_host=""
+  # Repeater (R4 A): internet kartı Wi-Fi istemci — üst ağın adı (1-32 bayt, denetim karakteri yok).
+  { [ "$(printf '%s' "$S_wan_ssid" | wc -c)" -le 32 ] && ! [[ $S_wan_ssid =~ [[:cntrl:]] ]]; } || S_wan_ssid=""
   # Yedek hat: adlar nft kuralına ve profil dosyasına girer; biçim dışıysa boş sayılır.
   [ "$S_bak_stage" = on ] || S_bak_stage=none
   case "$S_bak_kind" in eth|usb|wifi) ;; *) S_bak_kind="" ;; esac
@@ -255,7 +263,7 @@ sat_reset() {
 wan_reset() {
   S_wan_stage=none; S_wan_trial_ends=0; S_wan_port=""; S_wan_dev=""; S_wan_type=""; S_wan_vlan=""; S_wan_prio=""
   S_wan_mac=""; S_wan_mtu=""; S_wan_user=""; S_wan_addr=""; S_wan_gw=""; S_wan_dns=""; S_wan_lan=0
-  S_wan_dhcp_vendor=""; S_wan_dhcp_cid=""; S_wan_dhcp_host=""
+  S_wan_dhcp_vendor=""; S_wan_dhcp_cid=""; S_wan_dhcp_host=""; S_wan_ssid=""
 }
 # Yedek hat alanlarını boşaltır (bak_stage=none).
 bak_reset() {
@@ -628,6 +636,68 @@ valid_ssid() { [[ $1 =~ $AP_SSID_RE ]] && [[ $1 != " "* ]] && [[ $1 != *" " ]]; 
 valid_psk() { [[ $1 =~ $AP_PSK_RE ]] && [[ $1 != *\\* ]] && [[ $1 != " "* ]] && [[ $1 != *" " ]]; }
 # İlk Wi-Fi kartı (TYPE wifi; wifi-p2p sanal aygıtı hariç).
 wifi_dev() { nmcli -t -f DEVICE,TYPE device 2>/dev/null | awk -F: '$2 == "wifi" { print $1; exit }'; }
+# --- Wi-Fi radyoları ve rolleri (iki radyolu cihaz: dahili + USB, ör. ALFA AWUS036ACM) ---
+# Bir radyo aynı anda tek işte kullanılır: kurulum Wi-Fi'ı, ev Wi-Fi'ı / uydu yayını, internet bağlantısı (repeater: üst
+# Wi-Fi'a istemci), yedek hat (telefon hotspot'u) ya da kablosuz mesh. Tek radyoda eski davranış: ilk kart.
+wifi_devs() { nmcli -t -f DEVICE,TYPE device 2>/dev/null | awk -F: '$2 == "wifi" { print $1 }'; }
+phy_of() { basename "$(readlink "/sys/class/net/$1/phy80211" 2>/dev/null)" 2>/dev/null; }
+# İnternet kartı Wi-Fi istemci mi (repeater, R4 A).
+wan_wifi() { [ -n "${S_wan_ssid:-}" ]; }
+# $1 kart → onu kullanan rolün adı (boş: boşta). $2 = soran rol (ap | home | sat | wan | bak | mesh): kendisi sayılmaz.
+radio_user() {
+  local d=$1 me=${2:-} mphy
+  [ -n "$d" ] || return 0
+  if [ "$me" != ap ] && [ "$S_ap_stage" != none ] && [ "$S_ap_iface" = "$d" ]; then echo "kurulum Wi-Fi'ı"; return 0; fi
+  if [ "$me" != home ] && [ "$S_home_stage" != none ] && [ "$S_home_iface" = "$d" ]; then echo "ev Wi-Fi'ı"; return 0; fi
+  if [ "$me" != sat ] && [ "$S_sat_stage" != none ] && [ "$S_sat_wifi" = "$d" ]; then echo "uydu yayını"; return 0; fi
+  if [ "$me" != wan ] && [ "$S_wan_stage" != none ] && wan_wifi && [ "$S_wan_port" = "$d" ]; then echo "internet bağlantısı (repeater)"; return 0; fi
+  if [ "$me" != bak ] && [ "$S_bak_stage" != none ] && [ "$S_bak_kind" = wifi ] && [ "$S_bak_port" = "$d" ]; then echo "yedek hat (hotspot)"; return 0; fi
+  mphy=$(sed -n 's/^phy=//p' /etc/pi5-gateway/mesh/mesh.conf 2>/dev/null | head -1)
+  if [ "$me" != mesh ] && [ -n "$mphy" ] && [ "$(phy_of "$d")" = "$mphy" ]; then echo "kablosuz mesh"; return 0; fi
+  return 0
+}
+# İlk boştaki Wi-Fi kartı ($1 = soran rol; $2 = ap: erişim noktası kipini desteklemeli). Yoksa 1.
+wifi_dev_free() {
+  local d
+  while IFS= read -r d; do
+    [ -n "$d" ] || continue
+    [ -z "$(radio_user "$d" "$1")" ] || continue
+    if [ "${2:-}" = ap ] && ! ap_capable "$d"; then continue; fi
+    echo "$d"; return 0
+  done < <(wifi_devs)
+  return 1
+}
+# Hiçbir rolde olmayan Wi-Fi kartlarında etkin profil varsa bağlantı kesilir: radyo repeater / hotspot için açıkken Pi'nin
+# eski Wi-Fi istemci profili (ör. netplan-wlan0-…) ev modemine bağlanıp ikinci bir bacak açmasın (Faz 2: Pi DHCP'si
+# açıkken Pi'nin Wi-Fi'si modeme bağlanmaz). Yalnız internet kartı ya da yedek hat Wi-Fi iken çağrılır.
+wifi_idle_quiet() {
+  local d ac
+  while IFS= read -r d; do
+    [ -n "$d" ] || continue
+    [ -z "$(radio_user "$d")" ] || continue
+    ac=$(active_conn "$d")
+    [ -n "$ac" ] || continue
+    nmcli device disconnect "$d" >/dev/null 2>&1 && log "Wi-Fi: boştaki $d üzerindeki bağlantı ($ac) kesildi"
+  done < <(wifi_devs)
+  return 0
+}
+# Kart seçilemediğinde neden: boştaki kartın adı biçim dışı ya da kart erişim noktası kipini desteklemiyor; yoksa ilk
+# kartı kim kullanıyor.
+wifi_busy_why() {
+  local d u first=""
+  while IFS= read -r d; do
+    [ -n "$d" ] || continue
+    u=$(radio_user "$d" "$1")
+    if [ -z "$u" ]; then
+      if [[ $d =~ ^[A-Za-z0-9_.-]{1,15}$ ]]; then echo "Wi-Fi kartı ($d) erişim noktası (AP) kipini desteklemiyor"
+      else echo "Wi-Fi kartının adı beklenmedik: $d"; fi
+      return 0
+    fi
+    [ -n "$first" ] || first="Wi-Fi kartı ($d) şu an $u için kullanılıyor — ikinci bir Wi-Fi kartı takın ya da o işi kapatın"
+  done < <(wifi_devs)
+  [ -n "$first" ] || first="Pi'de Wi-Fi kartı bulunamadı"
+  echo "$first"
+}
 ap_capable() { [ -n "$1" ] && [ "$(nmcli -g WIFI-PROPERTIES.AP device show "$1" 2>/dev/null)" = yes ]; }
 # Yayında: pi5-ap bu kartta etkin ve 192.168.50.1/24 kartta.
 ap_up_ok() { [ -n "$1" ] && [ "$(active_conn "$1")" = "$AP_PROFILE" ] && addr_static "$1" "$AP_ADDR"; }
@@ -1450,6 +1520,32 @@ wan_write_keyfiles() {
     if [ -n "$S_wan_mac" ]; then vlan_eth="cloned-mac-address=$S_wan_mac"; fi
     if [ -n "$S_wan_mtu" ] && [ "$l3vlan" = 1 ]; then vlan_eth="${vlan_eth:+$vlan_eth
 }mtu=$S_wan_mtu"; fi
+  elif wan_wifi; then
+    # Repeater (R4 A): kart üst Wi-Fi'a istemci olarak bağlanır; MAC kopyalama ve MTU [wifi] bölümünde. Ağ adı bayt
+    # listesi (Türkçe harf / noktalı virgül olabilir), parola yalnız bu 0600 dosyada.
+    home_put_keyfile "$WAN_KEYFILE" "[connection]
+id=$WAN_PROFILE
+uuid=$u1
+type=wifi
+interface-name=$S_wan_port
+autoconnect=false
+autoconnect-priority=200
+autoconnect-retries=0
+
+[wifi]
+mode=infrastructure
+ssid=$(ssid_bytes "$S_wan_ssid")
+$eth
+
+[wifi-security]
+key-mgmt=wpa-psk
+psk=$1
+
+[ipv4]
+$(wan_ipv4_section 1)
+
+[ipv6]
+method=disabled" || return 1
   else
     home_put_keyfile "$WAN_KEYFILE" "[connection]
 id=$WAN_PROFILE
@@ -1560,11 +1656,13 @@ wan_up() {
   local p out w
   WAN_UP_OUT=""
   for p in $(wan_profiles); do
-    w=30; [ "$p" = "$WAN_PPP_PROFILE" ] && w=60
+    w=30; [ "$p" = "$WAN_PPP_PROFILE" ] && w=60; wan_wifi && w=45
     if ! out=$(nmcli -w "$w" connection up id "$p" 2>&1); then
       WAN_UP_OUT="$p etkinleştirilemedi: $(printf '%s' "$out" | oneline)"
-      # Senaryoya göre anlaşılır neden: adres profili DHCP yanıtı alamadı / PPPoE oturumu açılamadı.
-      if [ "$p" = "$WAN_PPP_PROFILE" ]; then
+      # Senaryoya göre anlaşılır neden: adres profili DHCP yanıtı alamadı / PPPoE oturumu açılamadı / üst Wi-Fi'a bağlanılamadı.
+      if wan_wifi; then
+        WAN_UP_OUT="üst Wi-Fi'a ($S_wan_ssid) bağlanılamadı — ağ adı ve parola doğru mu, Pi sinyal alıyor mu ($WAN_UP_OUT)"
+      elif [ "$p" = "$WAN_PPP_PROFILE" ]; then
         WAN_UP_OUT="PPPoE oturumu açılamadı — kullanıcı adı / şifre, VLAN numarası ya da operatörün PPPoE sunucusu ($WAN_UP_OUT)"
       elif [ "$S_wan_type" = dhcp ] && [[ $out == *Timeout* || $out == *"IP configuration"* ]]; then
         WAN_UP_OUT="operatörden adres gelmedi (DHCP yanıtı yok) — VLAN numarasını, DHCP kimlik seçeneklerini ve kabloyu kontrol edin ($WAN_UP_OUT)"
@@ -1759,6 +1857,8 @@ wan_park_port() {
   [ -n "$S_wan_port" ] || return 1
   # Tek portta kart ev ağıdır: park edilirse (adressiz, öncelik 200) açılışta ev ağı profilinin yerini alırdı.
   wan_single && return 0
+  # Wi-Fi kartı park edilmez (Ethernet park profili Wi-Fi'da geçmez): bağlantısı kesilir (wan_unwind).
+  wan_wifi && return 1
   u=$(new_uuid) || return 1
   delete_named "$WAN_IDLE_PROFILE"
   home_put_keyfile "$WAN_IDLE_KEYFILE" "[connection]
@@ -1798,6 +1898,11 @@ wan_unwind() {
   # Tek portta kart ev ağıdır: park edilmez, bağlantısı kesilmez (wan_park_port hemen döner).
   if ! wan_park_port && ! wan_single && [ -n "$S_wan_port" ] && [ -e "/sys/class/net/$S_wan_port" ]; then
     nmcli device disconnect "$S_wan_port" >/dev/null 2>&1 || true
+  fi
+  # Repeater: Wi-Fi sabit adres kurulumunda kapatılmışsa (Faz 2) ve başka hiçbir iş Wi-Fi kullanmıyorsa yeniden kapatılır.
+  if wan_wifi && [ "$S_wifi_off" = 1 ] && [ "$S_ap_stage" = none ] && [ "$S_home_stage" = none ] && [ "$S_sat_stage" = none ] \
+     && ! { [ "$S_bak_stage" != none ] && [ "$S_bak_kind" = wifi ]; } && [ ! -s /etc/pi5-gateway/mesh/mesh.conf ]; then
+    nmcli radio wifi off >/dev/null 2>&1 || true
   fi
   wan_nft_remove
   wan_fw_unit_remove
@@ -1883,8 +1988,8 @@ wan_guard_routine() {
     sleep 1
   done
   if wan_up_ok; then write_wan_guard ok ""; return 0; fi
-  # 2. Kablo yok: kablo gelince NM kendisi bağlar.
-  if [ "$(carrier "$S_wan_port")" != 1 ]; then
+  # 2. Kablo yok: kablo gelince NM kendisi bağlar. (Wi-Fi'da "kablo" bağlanınca gelir: onarıma geçilir.)
+  if ! wan_wifi && [ "$(carrier "$S_wan_port")" != 1 ]; then
     write_wan_guard no_carrier "internet kartında kablo bağlantısı yok ($S_wan_port)"; return 0
   fi
   # 3. Profil dosyaları yedekten; profiller sırayla etkinleştirilir.
@@ -2419,7 +2524,8 @@ bak_unwind() {
   bak_udev_remove
   # Wi-Fi kartı: sabit adres kurulumunda kapatılmışsa (Faz 2) yeniden kapatılır.
   if [ "$S_bak_kind" = wifi ] && { [ "$S_bak_radio_was_off" = 1 ] || [ "$S_wifi_off" = 1 ]; } \
-     && [ "$S_ap_stage" = none ] && [ "$S_home_stage" = none ] && [ "$S_sat_stage" = none ]; then
+     && [ "$S_ap_stage" = none ] && [ "$S_home_stage" = none ] && [ "$S_sat_stage" = none ] \
+     && ! { [ "$S_wan_stage" != none ] && wan_wifi; }; then
     nmcli radio wifi off >/dev/null 2>&1 || true
   fi
   rm -rf "$BAK_BACKUP_DIR"
@@ -2486,10 +2592,10 @@ cmd_status() {
     fi
     wifi=$(nmcli radio wifi 2>/dev/null)
     keyfile_ok && pok=1
-    [ -n "$wifc" ] || wifc=$(wifi_dev)
+    [ -n "$wifc" ] || wifc=$(wifi_dev_free ap || wifi_dev)
     ap_capable "$wifc" && apc=1
     ap_up_ok "$wifc" && apa=1
-    [ -n "$hifc" ] || hifc=$(wifi_dev)
+    [ -n "$hifc" ] || hifc=$(wifi_dev_free home ap || wifi_dev)
     ap_capable "$hifc" && hc=1
     if [ "$S_home_stage" != none ]; then
       home_ap_ok "$hifc" && ha=1
@@ -2600,6 +2706,10 @@ cmd_status() {
   echo "wan_dhcp_vendor=$S_wan_dhcp_vendor"
   echo "wan_dhcp_client_id=$S_wan_dhcp_cid"
   echo "wan_dhcp_hostname=$S_wan_dhcp_host"
+  # Repeater (R4 A): internet kartı Wi-Fi istemci ise üst ağın adı ve sinyal gücü (%, NM'nin son taraması).
+  echo "wan_ssid=$S_wan_ssid"
+  echo "wan_kind=$( if wan_wifi; then echo wifi; elif [ -n "$S_wan_port" ]; then echo ethernet; fi )"
+  echo "wan_signal=$( if [ "$S_wan_stage" != none ] && wan_wifi && [ "$nm" = 1 ]; then nmcli -t -f IN-USE,SIGNAL device wifi list ifname "$S_wan_port" --rescan no 2>/dev/null | awk -F: '$1 == "*" { print $2; exit }'; fi )"
   echo "wan_ip=$( [ "$S_wan_stage" != none ] && wan_ip)"
   echo "wan_gateway=$( [ "$S_wan_stage" != none ] && wan_gateway)"
   echo "wan_carrier=$( if [ -n "$S_wan_port" ]; then carrier "$S_wan_port"; else echo 0; fi )"
@@ -2667,6 +2777,8 @@ cmd_status() {
   echo "bak_tx=$btx"
   echo "bak_conntrack=$bct"
   echo "bak_usb_candidates=$bcand"
+  # Wi-Fi radyoları ve rolleri ("kart=rol", boş rol = boşta): arayüz hangi radyonun seçilebileceğini gösterir.
+  echo "wifi_roles=$( if [ "$nm" = 1 ]; then wifi_devs | while IFS= read -r d; do printf '%s=%s\n' "$d" "$(radio_user "$d")"; done | csv; fi )"
 }
 
 cmd_static() {
@@ -2876,6 +2988,9 @@ cmd_wifi() {
   if [ "$S_bak_stage" != none ] && [ "$S_bak_kind" = wifi ]; then
     die "Wi-Fi kartı yedek hat (telefon hotspot'u) olarak kullanılıyor — önce Cihaz Rolleri → Yedek hat'tan kapatın"
   fi
+  if [ "$S_wan_stage" != none ] && wan_wifi; then
+    die "Pi'nin interneti Wi-Fi'dan geliyor (repeater, $S_wan_port) — Wi-Fi kapatılamaz; önce WAN router'ı kapatın"
+  fi
   case "${1:-}" in
     off)
       [ "$S_ap_stage" = none ] || die "Kurulum Wi-Fi'ı açık — önce onu kapatın"
@@ -2934,17 +3049,15 @@ cmd_ap_on() {
     LOCAL|ALL) ;;
     *) die "Pi-hole DNS dinleme modu (${lm:-?}) kurulum Wi-Fi'ına uygun değil — Pi-hole → Ayarlar → DNS'te 'yerel' ya da 'tüm arayüzler' seçin" ;;
   esac
-  ifc=$(wifi_dev)
-  [ -n "$ifc" ] || die "Pi'de Wi-Fi kartı bulunamadı"
-  [[ $ifc =~ ^[A-Za-z0-9_.-]{1,15}$ ]] || die "Wi-Fi kartının adı beklenmedik: $ifc"
-  ap_capable "$ifc" || die "Wi-Fi kartı ($ifc) erişim noktası (AP) kipini desteklemiyor"
-  if [ "$S_bak_stage" != none ] && [ "$S_bak_kind" = wifi ]; then
-    die "Wi-Fi kartı yedek hat (telefon hotspot'u) olarak kullanılıyor — önce Cihaz Rolleri → Yedek hat'tan kapatın"
-  fi
   [ "$S_ap_stage" = on ] && die "kurulum Wi-Fi'ı zaten açık"
   [ "$S_ap_stage" = trial ] && die "kurulum Wi-Fi'ı denemesi sürüyor"
   [ "$S_home_stage" = none ] || die "ev Wi-Fi'ı açık — kurulum Wi-Fi'ı aynı kartı kullanır; önce ev Wi-Fi'ını kapatın"
   [ "$S_sat_stage" = none ] || die "bu cihaz uydu olarak yayın yapıyor — kurulum Wi-Fi'ı açılamaz"
+  # Radyo: başka işte (internet bağlantısı / yedek hat / mesh) olmayan ilk kart; tek radyoda ilk kart.
+  [ -n "$(wifi_dev)" ] || die "Pi'de Wi-Fi kartı bulunamadı"
+  ifc=$(wifi_dev_free ap) || die "$(wifi_busy_why ap)"
+  [[ $ifc =~ ^[A-Za-z0-9_.-]{1,15}$ ]] || die "Wi-Fi kartının adı beklenmedik: $ifc"
+  ap_capable "$ifc" || die "Wi-Fi kartı ($ifc) erişim noktası (AP) kipini desteklemiyor"
   dr=$(default_route)
   [ "${dr%% *}" = "$ifc" ] && die "Pi'nin interneti Wi-Fi'dan geliyor — önce kabloyla bağlayın"
   # 192.168.50.0/24 başka bir kartta (ör. ev ağı bu aralıktaysa) kullanılıyorsa rota karışır.
@@ -3123,8 +3236,9 @@ cmd_home_on() {
       *) die "Pi-hole DNS dinleme modu (${lm:-?}) köprüye uygun değil — Pi-hole → Ayarlar → DNS'te 'yerel' ya da 'tüm arayüzler' seçin" ;;
     esac
   fi
-  wifi=$(wifi_dev)
-  [ -n "$wifi" ] || die "Pi'de Wi-Fi kartı bulunamadı"
+  # Radyo: başka işte (internet bağlantısı / yedek hat / mesh) olmayan, erişim noktası destekleyen ilk kart.
+  [ -n "$(wifi_dev)" ] || die "Pi'de Wi-Fi kartı bulunamadı"
+  wifi=$(wifi_dev_free home ap) || die "$(wifi_busy_why home)"
   [[ $wifi =~ ^[A-Za-z0-9_.-]{1,15}$ ]] || die "Wi-Fi kartının adı beklenmedik: $wifi"
   ap_capable "$wifi" || die "Wi-Fi kartı ($wifi) erişim noktası (AP) kipini desteklemiyor"
   dr=$(default_route)
@@ -3301,8 +3415,8 @@ cmd_sat_on() {
   [ "$S_ap_stage" = none ] || die "kurulum Wi-Fi'ı açık — önce kapatın"
   [ "$S_home_stage" = none ] || die "ev Wi-Fi'ı (ana cihaz) açık — önce kapatın"
   [ -e "/sys/class/net/$BR_IF" ] && die "$BR_IF arayüzü zaten var — önce kaldırın"
-  wifi=$(wifi_dev)
-  [ -n "$wifi" ] || die "Pi'de Wi-Fi kartı bulunamadı"
+  [ -n "$(wifi_dev)" ] || die "Pi'de Wi-Fi kartı bulunamadı"
+  wifi=$(wifi_dev_free sat ap) || die "$(wifi_busy_why sat)"
   [[ $wifi =~ ^[A-Za-z0-9_.-]{1,15}$ ]] || die "Wi-Fi kartının adı beklenmedik: $wifi"
   ap_capable "$wifi" || die "Wi-Fi kartı ($wifi) erişim noktası (AP) kipini desteklemiyor"
   # İlk bağlantı kabloyla: ana cihaza ulaşım ve eşleştirme eth üzerinden (kablosuz mesh sonradan eklenir).
@@ -3485,7 +3599,7 @@ cmd_sat() {
 # çıktıya girmez (yalnız 0600 profil dosyasına).
 cmd_wan_on() {
   local trial="" port="" type="" vlan="" prio="" mac="" mtu="" addr="" gw="" dns="" user="" pw="" d
-  local dvendor="" dcid="" dhost="" single=0
+  local dvendor="" dcid="" dhost="" single=0 ssid="" wifi=0
   local ip pfx n m net bc lan end out why="" wait_ip i dev a
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -3503,13 +3617,16 @@ cmd_wan_on() {
       --dhcp-vendor) dvendor=${2:-}; shift ;;
       --dhcp-client-id) dcid=${2:-}; shift ;;
       --dhcp-hostname) dhost=${2:-}; shift ;;
+      --ssid) ssid=${2:-}; shift ;;
       *) die "bilinmeyen seçenek: $1" ;;
     esac
     shift
   done
-  if [ "$type" = pppoe ]; then
+  # Repeater (R4 A): --ssid verilirse kart Wi-Fi istemcidir; Wi-Fi parolası da (PPPoE gibi) STDIN'in ilk satırından.
+  [ -n "$ssid" ] && wifi=1
+  if [ "$type" = pppoe ] || [ "$wifi" = 1 ]; then
     if [ -t 0 ]; then
-      printf "PPPoE parolası: " >&2
+      printf "Parola: " >&2
       IFS= read -r -s -t 120 pw || true
       echo >&2
     else
@@ -3582,7 +3699,16 @@ cmd_wan_on() {
     { [[ $pw =~ ^[!-~]([\ -~]{0,126}[!-~])?$ ]] && [[ $pw != *\\* ]]; } \
       || die "geçersiz PPPoE parolası: 1-128 karakter; Türkçe harf ve ters bölü (\\) olmaz, başta / sonda boşluk olmaz"
   else
-    user=""; pw=""
+    user=""
+    [ "$wifi" = 1 ] || pw=""
+  fi
+  # Repeater (R4 A): Wi-Fi istemci — DHCP ya da sabit adres (PPPoE ve VLAN üst modemin işidir), WPA2/WPA3 kişisel parola.
+  if [ "$wifi" = 1 ]; then
+    [ "$type" != pppoe ] || die "Wi-Fi bağlantısında PPPoE kullanılmaz — PPPoE'yi üst modem / router yapar"
+    [ -z "$vlan" ] || die "Wi-Fi bağlantısında VLAN kullanılmaz"
+    { [ "$(printf '%s' "$ssid" | wc -c)" -le 32 ] && ! [[ $ssid =~ [[:cntrl:]] ]]; } \
+      || die "geçersiz Wi-Fi ağ adı: 1-32 bayt, denetim karakteri olmadan"
+    valid_psk "$pw" || die "geçersiz Wi-Fi parolası: 8-63 karakter; Türkçe harf ve ters bölü (\\) olmaz, başta / sonda boşluk olmaz"
   fi
   # 2. Ön koşullar
   read_state
@@ -3623,11 +3749,20 @@ cmd_wan_on() {
     fi
     single=1
   fi
-  [ "$(dev_type "$port")" = ethernet ] || die "$port bir Ethernet kartı değil"
+  if [ "$wifi" = 1 ]; then
+    [ "$(dev_type "$port")" = wifi ] || die "$port bir Wi-Fi kartı değil — Wi-Fi ağ adı yalnız Wi-Fi kartıyla verilir"
+    i=$(radio_user "$port" wan)
+    [ -z "$i" ] || die "$port şu an $i için kullanılıyor — üst Wi-Fi bağlantısı için başka bir Wi-Fi kartı seçin"
+  else
+    [ "$(dev_type "$port")" = ethernet ] || die "$port bir Ethernet kartı değil"
+  fi
   if [ "$single" = 0 ] && [ -e "/sys/class/net/$port/master" ]; then
     die "$port bir köprünün ($(basename "$(readlink "/sys/class/net/$port/master")")) portu"
   fi
-  [ "$(carrier "$port")" = 1 ] || die "$port kartında kablo bağlantısı yok — modemi / ONT'yi bu karta bağlayın"
+  # Wi-Fi'da "kablo" bağlanınca gelir: burada denetlenmez (bağlanamazsa deneme anlaşılır nedenle geri alınır).
+  if [ "$wifi" = 0 ]; then
+    [ "$(carrier "$port")" = 1 ] || die "$port kartında kablo bağlantısı yok — modemi / ONT'yi bu karta bağlayın"
+  fi
   if [ "$type" = pppoe ]; then
     { command -v pppd >/dev/null 2>&1 && compgen -G '/usr/lib/*/NetworkManager/*/libnm-ppp-plugin.so' >/dev/null; } \
       || die "PPPoE bileşeni (ppp) kurulu değil — panelden güncelleyin ya da: sudo apt install ppp"
@@ -3635,11 +3770,19 @@ cmd_wan_on() {
   if [ -n "$vlan" ] && [ ! -d /sys/module/8021q ]; then
     modprobe 8021q >/dev/null 2>&1 || die "VLAN desteği (8021q çekirdek modülü) yüklenemedi"
   fi
+  # Wi-Fi: radyo kapalıysa (Faz 2'de kapatılmış olabilir) açılır; kartta ve boştaki öbür kartlarda başka profil (Pi'nin
+  # eski Wi-Fi istemci profili) etkinse bağlantısı kesilir — üst ağa yalnız bu kurulumun profili bağlansın.
+  if [ "$wifi" = 1 ]; then
+    if [ "$(nmcli radio wifi 2>/dev/null)" = disabled ]; then
+      nmcli radio wifi on >/dev/null 2>&1 && wait_dev_ready "$port" 15 || true
+    fi
+    wifi_idle_quiet
+  fi
   # 3. Profiller (önceki denemeden kalmış kopyalar silinir; yalnız bu dosyalar yüklenir). Durum alanları profil
   #    yazımından önce doldurulur (yazıcılar onları okur); durum dosyası zamanlayıcıyla birlikte yazılır.
   S_wan_port=$port; S_wan_type=$type; S_wan_vlan=$vlan; S_wan_prio=$prio; S_wan_mac=$mac; S_wan_mtu=$mtu
   S_wan_user=$user; S_wan_addr=$addr; S_wan_gw=$gw; S_wan_dns=$dns; S_wan_lan=0
-  S_wan_dhcp_vendor=$dvendor; S_wan_dhcp_cid=$dcid; S_wan_dhcp_host=$dhost
+  S_wan_dhcp_vendor=$dvendor; S_wan_dhcp_cid=$dcid; S_wan_dhcp_host=$dhost; S_wan_ssid=$ssid
   S_wan_dev=$(wan_l3_of "$port" "$type" "$vlan")
   # Aynı kart daha önce park edildiyse park profili kalkar (ikisi de öncelik 200: NM hangisini seçeceğini bilemez).
   [ "$(nmcli -g connection.interface-name connection show id "$WAN_IDLE_PROFILE" 2>/dev/null)" = "$port" ] && wan_unpark
@@ -3932,11 +4075,12 @@ cmd_backup_on() {
         case " $S_bak_match " in *" $drv "*) die "$p ($( [ "$p" = "$S_iface" ] && echo 'ev ağı kartı' || echo 'ana hattın kartı' )) da USB modem sürücüsünü ($drv) kullanıyor — yedek hat için Ethernet türünü seçin" ;; esac
       done ;;
     wifi)
-      [ -n "$port" ] || port=$(wifi_dev)
+      # Radyo: verilmezse başka işte olmayan ilk kart (iki radyoda ev Wi-Fi'ı yayını öbür kartta sürer).
+      if [ -z "$port" ]; then port=$(wifi_dev_free bak) || die "$(wifi_busy_why bak)"; fi
       [[ $port =~ ^[A-Za-z0-9_.-]{1,15}$ ]] || die "Wi-Fi kartı bulunamadı"
       [ "$(dev_type "$port")" = wifi ] || die "$port bir Wi-Fi kartı değil"
-      [ "$S_ap_stage" = none ] || die "kurulum Wi-Fi'ı açık — Wi-Fi kartı yayında; önce kurulum Wi-Fi'ını kapatın"
-      [ "$S_home_stage" = none ] || die "ev Wi-Fi'ı açık — Wi-Fi kartı yayında; hotspot yedek hattı için Wi-Fi kartı boş olmalı"
+      p=$(radio_user "$port" bak)
+      [ -z "$p" ] || die "Wi-Fi kartı ($port) şu an $p için kullanılıyor — hotspot yedek hattı için boş bir Wi-Fi kartı gerekir"
       { [ -n "$ssid" ] && [ "$(printf '%s' "$ssid" | wc -c)" -le 32 ] && ! [[ $ssid =~ [[:cntrl:]] ]]; } \
         || die "geçersiz ağ adı: 1-32 bayt, denetim karakteri olmadan"
       valid_psk "$secret" || die "geçersiz hotspot parolası: 8-63 karakter; Türkçe harf ve ters bölü (\\) olmaz, başta / sonda boşluk olmaz" ;;
@@ -4128,8 +4272,13 @@ cmd_ensure() {
       [ "$S_home_stage" = trial ] && home_trial_check
       [ "$S_wan_stage" = trial ] && wan_trial_check
       # Kurulum Wi-Fi'ı ya da ev Wi-Fi'ı açıkken Wi-Fi kapatılmaz (yayın Wi-Fi kartından yapılır).
-      if [ "$S_wifi_off" = 1 ] && [ "$S_ap_stage" = none ] && [ "$S_home_stage" = none ] && [ "$S_bak_kind" != wifi ] && nm_running; then
+      # İnternet kartı (repeater) ya da yedek hat Wi-Fi ise radyo açık kalır; boştaki kartlarda başka profil bağlanmaz.
+      if [ "$S_wifi_off" = 1 ] && [ "$S_ap_stage" = none ] && [ "$S_home_stage" = none ] && [ "$S_bak_kind" != wifi ] \
+         && ! { [ "$S_wan_stage" != none ] && wan_wifi; } && nm_running; then
         nmcli radio wifi off >/dev/null 2>&1
+      fi
+      if { [ "$S_wan_stage" != none ] && wan_wifi; } || { [ "$S_bak_stage" != none ] && [ "$S_bak_kind" = wifi ]; }; then
+        nm_running && wifi_idle_quiet
       fi
       # Ev Wi-Fi'ı denemesi sürerken eth0 bilerek köprüdedir, internet kartı denemesi sürerken ev ağı profilleri bilerek
       # değişir: sabit profil denetimi onları "onarıp" denemeyi bozmasın.
@@ -4160,7 +4309,11 @@ cmd_guard() {
       # kendiliğinden bağlanmaz). NetworkManager yeniden başlatıldıysa zamanlayıcı yerindedir: deneme sürer.
       [ "$S_home_stage" = trial ] && home_trial_check
       [ "$S_wan_stage" = trial ] && wan_trial_check
-      if [ "$S_wifi_off" = 1 ] && [ "$S_ap_stage" = none ] && [ "$S_home_stage" = none ] && [ "$S_bak_kind" != wifi ]; then nmcli radio wifi off >/dev/null 2>&1; fi
+      if [ "$S_wifi_off" = 1 ] && [ "$S_ap_stage" = none ] && [ "$S_home_stage" = none ] && [ "$S_bak_kind" != wifi ] \
+         && ! { [ "$S_wan_stage" != none ] && wan_wifi; }; then nmcli radio wifi off >/dev/null 2>&1; fi
+      if { [ "$S_wan_stage" != none ] && wan_wifi; } || { [ "$S_bak_stage" != none ] && [ "$S_bak_kind" = wifi ]; }; then
+        wifi_idle_quiet
+      fi
       if [ "$S_wan_stage" != trial ]; then
         case "$S_home_stage" in
           on) home_guard_routine 40 ;;

@@ -831,6 +831,8 @@ export interface NetModeState {
   // Tek port (R3b): internet ev ağı kartının üzerindeki VLAN'dan (wanPort = iface) — kartın kendisi EV AĞIDIR.
   wanSingle: boolean;
   wanMtu: number; // kayıtlı MTU (0 = varsayılan); PPPoE'de Ev VPN'i tünel MTU'su buna göre
+  // Repeater (R4 A): internet kartı Wi-Fi istemci ise üst ağın adı (boş = kablolu kart).
+  wanSsid: string;
   // Yedek hat (failover; aynı dosyada bak_*): ikinci internet bağlantısı. bakKind: eth (kart / VLAN bak.<ID>, PPPoE
   // pppbak), usb (USB 4G modem / telefon paylaşımı: adı değişebilir, arayüz grubu 77), wifi (telefon hotspot'u).
   bakStage: 'none' | 'on'; bakKind: '' | 'eth' | 'usb' | 'wifi'; bakType: '' | 'dhcp' | 'static' | 'pppoe';
@@ -875,6 +877,7 @@ export function readNetModeState(): NetModeState | null {
     wanLan: kv.wan_lan === '1',
     wanSingle: !!kv.wan_port && kv.wan_port === kv.iface && ifName(kv.wan_port) !== '',
     wanMtu: /^\d{3,4}$/.test(kv.wan_mtu || '') ? Number(kv.wan_mtu) : 0,
+    wanSsid: /^[^\x00-\x1f\x7f]{1,32}$/.test(kv.wan_ssid || '') ? kv.wan_ssid : '',
     bakStage: kv.bak_stage === 'on' && ['eth', 'usb', 'wifi'].includes(kv.bak_kind) ? 'on' : 'none',
     bakKind: kv.bak_kind === 'eth' || kv.bak_kind === 'usb' || kv.bak_kind === 'wifi' ? kv.bak_kind : '',
     bakType: kv.bak_type === 'dhcp' || kv.bak_type === 'static' || kv.bak_type === 'pppoe' ? kv.bak_type : '',

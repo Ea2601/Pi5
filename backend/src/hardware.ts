@@ -34,6 +34,7 @@ export type Hardware = {
     // R3: internet kartı (WAN router) aşaması, kartı ve adres/rota arayüzü (kart / VLAN / PPPoE).
     wanStage?: string; wanPort?: string | null; wanDev?: string | null;
     wanSingle?: boolean; // R3b: tek port (internet ev ağı kartının üzerindeki VLAN'dan)
+    wanSsid?: string; // R4 A: internet kartı Wi-Fi istemci ise üst ağın adı (repeater)
     // Yedek hat (failover): açık mı, arayüzü, şu an etkin mi (ana hat düştü, yedek hattan çıkılıyor).
     bakStage?: string; bakDev?: string | null; bakActive?: boolean;
   };
@@ -231,25 +232,36 @@ export function evaluateRoles(hw: Hardware): RoleEval[] {
     notes: apNotes,
   });
 
-  // Repeater: bir radyo mevcut Wi-Fi'a bağlanır, yeniden yayınlar. En iyisi iki radyo (biri bağlantı, biri yayın);
-  // gerçek köprü için bağlantı radyosu 4 adres desteklemeli, yoksa ARP vekiliyle (L3) köprü kurulur.
+  // Repeater (R4): Pi mevcut bir Wi-Fi'a istemci olarak bağlanır ve kapsamı genişletir. Ayrı ağ (yönlendirmeli, kip A):
+  // WAN router panelinde internet kartı olarak Wi-Fi kartı seçilir (net-mode.sh wan --ssid); eth0 ve öbür radyonun
+  // yayını (ev Wi-Fi'ı) ev ağı olur, Klyrix özellikleri arkadaki cihazlara uygulanır. En iyisi iki radyo (biri bağlantı,
+  // biri yayın). Aynı ağ kipleri (4 adresli köprü / ARP vekili) sonraki adımda; 4 adresli köprü üst router'ın da 4
+  // adresli (WDS) istemciyi kabul etmesini ister (ev modemlerinin çoğu etmez).
   const staRadios = radios.filter(r => r.sta);
   const twoRadio = staRadios.some(s => apRadios.some(a => a !== s));
   const bridgeCapable = staRadios.some(r => r.fourAddr === true);
-  const singleApSta = radios.some(r => r.apSta);
+  const repStage = hw.net.wanSsid ? (hw.net.wanStage || 'none') : 'none';
   const repNotes: Note[] = [];
-  if (!unknownRadios && !twoRadio && singleApSta) repNotes.push({ kind: 'info', text: 'Tek radyoyla çalışır ama bağlantı ve yayın aynı radyoyu paylaştığı için hız yarıya düşer.' });
-  if (!unknownRadios && !bridgeCapable && (twoRadio || singleApSta)) repNotes.push({ kind: 'info', text: '4 adres desteği olmadan köprü ARP vekiliyle (L3) kurulur; cihazlar yine aynı ağda görünür.' });
+  if (repStage === 'trial') repNotes.push({ kind: 'info', text: "Deneme sürüyor: internet çalışıyorsa WAN router panelinden 'Kalıcı yap'a basın; basılmazsa Pi eski ayara döner." });
+  if (!unknownRadios && !satRole && repStage === 'none' && staRadios.length) {
+    repNotes.push({ kind: 'info', text: "Ayrı ağ (yönlendirmeli): WAN router panelinde internet kartı olarak Wi-Fi kartını seçip üst Wi-Fi'ın adını ve parolasını girin. Kurulum kabloyla yapılır; kalıcı yaptıktan sonra kablo çıkarılıp Pi yerine taşınır." });
+  }
+  if (!unknownRadios && staRadios.length && !twoRadio) {
+    repNotes.push({ kind: 'info', text: "Tek Wi-Fi radyosu: üst Wi-Fi'a bağlanınca ev ağı yalnız kablodan (eth0) olur; kablosuz yayın için ikinci bir Wi-Fi kartı gerekir." });
+  }
   out.push({
-    id: 'repeater', group: 'wireless', phase: 'R4',
-    status: unknownRadios ? 'unknown' : twoRadio || singleApSta ? 'hw-ready' : 'needs-hw',
+    id: 'repeater', group: 'wireless', phase: null,
+    status: unknownRadios ? 'unknown' : repStage === 'on' ? 'active' : staRadios.length ? 'available' : 'needs-hw',
     checks: [
-      { ok: unknownRadios ? null : twoRadio, label: 'Ayrı bağlantı ve yayın radyosu', value: unknownRadios ? unk : `${radios.length} radyo` },
-      { ok: unknownRadios ? null : singleApSta, label: 'Tek radyoda bağlantı + yayın', value: unknownRadios ? unk : singleApSta ? 'var' : 'yok' },
-      { ok: unknownRadios ? null : bridgeCapable, label: '4 adresli köprü', value: unknownRadios ? unk : bridgeCapable ? 'var' : 'yok' },
+      { ok: unknownRadios ? null : staRadios.length > 0, label: 'Bağlantı radyosu (istemci)', value: unknownRadios ? unk : staRadios.map(radioLabel).join(', ') || 'yok' },
+      { ok: unknownRadios ? null : twoRadio, label: 'Ayrı yayın radyosu', value: unknownRadios ? unk : `${radios.length} radyo` },
+      ...(repStage !== 'none'
+        ? [{ ok: repStage === 'on', label: 'Üst Wi-Fi', value: `${hw.net.wanSsid} · ${hw.net.wanPort || '—'}${repStage === 'on' ? '' : ' (deneme)'}` }]
+        : []),
+      { ok: unknownRadios ? null : bridgeCapable, label: '4 adresli köprü (aynı ağ kipi)', value: unknownRadios ? unk : bridgeCapable ? 'radyo destekliyor' : 'yok' },
     ],
-    need: !unknownRadios && !(twoRadio && bridgeCapable) ? [HW_SUGGEST.wifiMesh] : [],
-    notes: repNotes,
+    need: !unknownRadios && !twoRadio ? [HW_SUGGEST.wifiMesh] : [],
+    notes: satRole ? [satNote] : repNotes,
   });
 
   // Kablolu mesh uydusu: ikinci Klyrix cihazı kabloyla ağa bağlanır, ana cihazın ev Wi-Fi'ını aynı ağ adı ve şifreyle
