@@ -53,6 +53,8 @@ import { startReachWatch, noteReachResult, reachWatchState, REACH_WATCH_INTERVAL
 import { storageStatus, storageJob, noteStorageJob, startArchive, startPrepare, startMigrate, startStorageWatch } from './storage';
 import { applyKiosk } from './kiosk';
 import { shareStatus, enableShare, disableShare, setSharePassword, addUsbShare, removeUsbShare, startShareWatch } from './share';
+import { rulesWithStatus as parentalRulesWithStatus, createRule as createParentalRule, updateRule as updateParentalRule,
+  deleteRule as deleteParentalRule, startParental, CATEGORIES as PARENTAL_CATEGORIES } from './parental';
 import type { ListSyncResult } from './piholeLists';
 import {
   shq, isValidMac, isValidDomain, isValidTimezone,
@@ -4112,10 +4114,14 @@ app.post('/api/storage/share/usb/remove', shareRoute(req => removeUsbShare(req.b
 startShareWatch();
 
 // ─── Parental Controls ───
+// Ebeveyn kontrolleri (parental.ts): kural = kime (cihaz / grup) × neyi (tüm internet | kategori + site) × ne zaman. Kurallar
+// uygulanır (nft inet pi5_parental + Pi-hole grupları), zamanlayıcı 30 sn'de bir. Liste yanıtı her kuralın şu anki durumunu
+// ve sıradaki değişim zamanını taşır. Bir cihazın internetini kesebildiği için yazma istekleri netAdminGuard'dan geçer.
+app.use('/api/parental', netAdminGuard);
 app.get('/api/parental/rules', async (_req, res) => {
   try {
-    const rules = await dbAll('SELECT * FROM parental_rules ORDER BY id');
-    res.json({ rules });
+    const catalog = Object.entries(PARENTAL_CATEGORIES).map(([id, c]) => ({ id, label: c.label, desc: c.desc, list: !!c.lists }));
+    res.json({ ...(await parentalRulesWithStatus()), catalog });
   } catch (e: any) {
     res.status(500).json({ error: e.message });
   }
@@ -4123,49 +4129,30 @@ app.get('/api/parental/rules', async (_req, res) => {
 
 app.post('/api/parental/rules', async (req, res) => {
   try {
-    const { device_mac_or_group, rule_type, value, schedule_start, schedule_end, days_of_week, enabled } = req.body;
-    if (!device_mac_or_group || !rule_type || !value) {
-      return res.status(400).json({ error: 'device_mac_or_group, rule_type ve value gerekli' });
-    }
-    await dbRun(
-      'INSERT INTO parental_rules (device_mac_or_group, rule_type, value, schedule_start, schedule_end, days_of_week, enabled) VALUES (?, ?, ?, ?, ?, ?, ?)',
-      [device_mac_or_group, rule_type, value, schedule_start || '', schedule_end || '', days_of_week || '', enabled !== undefined ? (enabled ? 1 : 0) : 1]
-    );
-    res.json({ success: true });
+    res.json({ success: true, rule: await createParentalRule(req.body) });
   } catch (e: any) {
-    res.status(500).json({ error: e.message });
+    res.status(400).json({ error: e.message });
   }
 });
 
 app.put('/api/parental/rules/:id', async (req, res) => {
   try {
-    const { device_mac_or_group, rule_type, value, schedule_start, schedule_end, days_of_week, enabled } = req.body;
-    const updates: string[] = [];
-    const params: any[] = [];
-    if (device_mac_or_group !== undefined) { updates.push('device_mac_or_group = ?'); params.push(device_mac_or_group); }
-    if (rule_type !== undefined) { updates.push('rule_type = ?'); params.push(rule_type); }
-    if (value !== undefined) { updates.push('value = ?'); params.push(value); }
-    if (schedule_start !== undefined) { updates.push('schedule_start = ?'); params.push(schedule_start); }
-    if (schedule_end !== undefined) { updates.push('schedule_end = ?'); params.push(schedule_end); }
-    if (days_of_week !== undefined) { updates.push('days_of_week = ?'); params.push(days_of_week); }
-    if (enabled !== undefined) { updates.push('enabled = ?'); params.push(enabled ? 1 : 0); }
-    if (updates.length === 0) return res.json({ success: true });
-    params.push(req.params.id);
-    await dbRun(`UPDATE parental_rules SET ${updates.join(', ')} WHERE id = ?`, params);
+    await updateParentalRule(Number(req.params.id), req.body);
     res.json({ success: true });
   } catch (e: any) {
-    res.status(500).json({ error: e.message });
+    res.status(400).json({ error: e.message });
   }
 });
 
 app.delete('/api/parental/rules/:id', async (req, res) => {
   try {
-    await dbRun('DELETE FROM parental_rules WHERE id = ?', [req.params.id]);
+    await deleteParentalRule(Number(req.params.id));
     res.json({ success: true });
   } catch (e: any) {
     res.status(500).json({ error: e.message });
   }
 });
+startParental({ protectedMacs: blockProtectedMacs });
 
 // ─── Traffic Schedules ───
 app.get('/api/routing/schedules', async (_req, res) => {

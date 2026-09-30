@@ -68,10 +68,12 @@ const markComment = (c: string) => (c ? `${MARK}: ${c}` : MARK).slice(0, 200);
 const isManaged = (c: unknown) => typeof c === 'string' && (c === MARK || c.startsWith(`${MARK}:`));
 
 // ─── FTL API istemcisi ───
-interface Ftl { call: (method: string, path: string, body?: unknown) => Promise<{ status: number; json: any }>; close: () => Promise<void> }
+export interface Ftl { call: (method: string, path: string, body?: unknown) => Promise<{ status: number; json: any }>; close: () => Promise<void> }
 
 // FTL'in API adresleri (local.api.ftl: dinlediği her port, FTL'in verdiği sırayla; http ve https) + eski varsayılan 8080.
 export async function apiCandidates(): Promise<string[]> {
+  // Yalnız test: sahte / kapsayıcıdaki Pi-hole'a yönlendirme (üretimde tanımsız)
+  if (process.env.PI5_FTL_API) return [process.env.PI5_FTL_API];
   let urls: string[] = [];
   try {
     const port = (await execFileP('pihole-FTL', ['--config', 'dns.port'], { timeout: 5000 })).stdout.trim() || '53';
@@ -115,9 +117,9 @@ async function ftlCall(base: string, sid: string | null, method: string, path: s
 
 // Oturum açar: adaylar sırayla denenir, bağlanılamayan atlanır (Pi-hole CLI'si gibi). waitMs > 0 ise (açılış: FTL henüz
 // kalkmamış ya da yeniden başlıyor) hiçbirine bağlanılamadığında 5 sn arayla bu süre boyunca yeniden denenir.
-async function openFtl(waitMs = 0): Promise<Ftl> {
-  let password = '';
-  try { password = fs.readFileSync('/etc/pihole/cli_pw', 'utf8').trim(); } catch { /* parolasız API ya da CLI parolası kapalı */ }
+export async function openFtl(waitMs = 0): Promise<Ftl> {
+  let password = process.env.PI5_FTL_PASSWORD || '';
+  try { if (!password) password = fs.readFileSync('/etc/pihole/cli_pw', 'utf8').trim(); } catch { /* parolasız API ya da CLI parolası kapalı */ }
   const deadline = Date.now() + waitMs;
   let tried: string[] = [];
   let lastErr = '';
@@ -267,7 +269,19 @@ async function doSync(waitMs: number): Promise<ListSyncResult> {
   return result;
 }
 
-// Pi-hole'da panelin yönetmediği kayıtlar (salt okunur gösterim için). Ulaşılamazsa null.
+// Liste indirme (gravity) arka planda; aynı anda tek (birim zaten varsa false: sonra yeniden denenir). Ebeveyn kontrolünün
+// hazır listeleri (parental.ts) de bunu kullanır.
+export async function startGravity(): Promise<boolean> {
+  try {
+    await execFileP('systemd-run', ['--quiet', '--collect', '--unit=pi5-gravity', 'pihole', '-g'], { timeout: 10000 });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// Pi-hole'da panelin yönetmediği kayıtlar (salt okunur gösterim için). Ulaşılamazsa null. Ebeveyn kontrolünün kayıtları
+// ("klyrix-ebeveyn", parental.ts) de panelindir: listelenmez.
 export async function externalPiholeEntries(): Promise<{ whitelist: string[]; blacklist: string[]; adlist: string[]; localdns: string[] } | null> {
   if (!isLinux) return null;
   let ftl: Ftl | null = null;
@@ -277,11 +291,12 @@ export async function externalPiholeEntries(): Promise<{ whitelist: string[]; bl
     const prevRow = await dbGet('SELECT value FROM app_settings WHERE key = ?', [HOSTS_KEY]) as any;
     let prev: string[] = [];
     try { prev = JSON.parse(prevRow?.value || '[]'); } catch { prev = []; }
-    const doms = (d.json?.domains || []).filter((x: any) => !isManaged(x.comment));
+    const ours = (x: any) => isManaged(x.comment) || String(x.comment || '').startsWith('klyrix-ebeveyn');
+    const doms = (d.json?.domains || []).filter((x: any) => !ours(x));
     return {
       whitelist: doms.filter((x: any) => x.type === 'allow').map((x: any) => x.domain),
       blacklist: doms.filter((x: any) => x.type === 'deny').map((x: any) => x.domain),
-      adlist: (l.json?.lists || []).filter((x: any) => x.type === 'block' && !isManaged(x.comment)).map((x: any) => x.address),
+      adlist: (l.json?.lists || []).filter((x: any) => x.type === 'block' && !ours(x)).map((x: any) => x.address),
       localdns: (Array.isArray(c.json?.config?.dns?.hosts) ? c.json.config.dns.hosts : [])
         .filter((h: string) => !prev.includes(h.trim().replace(/\s+/g, ' '))),
     };
