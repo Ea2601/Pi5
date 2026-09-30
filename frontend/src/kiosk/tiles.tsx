@@ -1,16 +1,17 @@
-// Kiosk panoları. Her pano kendi verisini ortak yoklamadan alır (data.ts usePoll: aynı uç tek istek). Aralıklar ucun
+// Kiosk panoları (büyük pano: ölçülmüş hız testleri; anlık kullanım İnternet panosunda). Her pano kendi verisini ortak yoklamadan alır (data.ts usePoll: aynı uç tek istek). Aralıklar ucun
 // maliyetine göre: ucuzlar 5-15 sn, pahalılar (Unbound 17 süreç, Fail2Ban istemcisi, donanım) dakikalarca.
 import { useEffect, useState } from 'react';
 import {
-  Activity, Cpu, ShieldCheck, Globe, Waypoints, MonitorSmartphone, Shield, ArrowDown, ArrowUp,
+  Gauge, Cpu, ShieldCheck, Globe, Waypoints, MonitorSmartphone, Shield, ArrowDown, ArrowUp,
+  ShieldBan, Zap, ShieldAlert, Flame, Server, Home,
 } from 'lucide-react';
 import { AreaChart, Ring } from './charts';
 import {
-  usePoll, feedHistory, useNow, bitRate, bitRateText, num, ago, duration, parseTime,
-  type TopologyLive, type TopoExit, type SystemStats, type MetricPoint, type ServiceRow, type AlertRow,
+  usePoll, useNow, bitRateText, num, ago, duration, parseTime,
+  type TopologyLive, type TopoExit, type SystemStats, type ServiceRow, type AlertRow,
 } from './data';
 import { sourceLabel, severityMeta } from '../alerts';
-import { TOPO, SERVICES, ALERTS, UNREAD, HEALTH, WG, HW, SERVICE_LABEL } from './status';
+import { TOPO, SERVICES, ALERTS, UNREAD, HEALTH, WG, HW } from './status';
 
 function Tile({ icon, title, aside, className = '', children }: {
   icon: React.ReactNode; title: string; aside?: React.ReactNode; className?: string; children: React.ReactNode;
@@ -26,63 +27,68 @@ function Tile({ icon, title, aside, className = '', children }: {
   );
 }
 
-// ── Ağ trafiği: internete giden/gelen trafik (çıkış bazında: ISS, DPI, VPS tünelleri) ──
-export function TrafficTile() {
-  const topo = usePoll<TopologyLive>(TOPO, 5000);
-  const acct = topo?.accounting !== false;
-  // Sayaç (nft accounting) yoksa yedek: tüm arayüzlerin toplamı (yaklaşık, çift sayabilir)
-  const mh = usePoll<{ history: MetricPoint[] }>(acct ? null : '/system/metrics/history?minutes=10', 10000);
-  let down: number[];
-  let up: number[];
-  if (acct) {
-    const hist = feedHistory<TopologyLive>(TOPO).filter(t => t.accounting !== false);
-    const sum = (t: TopologyLive, k: 'downBps' | 'upBps') => (t.exits || []).reduce((a, e) => a + (e[k] || 0) * 8, 0);
-    down = hist.map(t => sum(t, 'downBps'));
-    up = hist.map(t => sum(t, 'upBps'));
-  } else {
-    const h = mh?.history || [];
-    down = h.map(p => p.networkIn * 1e6);
-    up = h.map(p => p.networkOut * 1e6);
-  }
-  const [dNow, dUnit] = bitRate(down.at(-1) ?? 0);
-  const [uNow, uUnit] = bitRate(up.at(-1) ?? 0);
-  const peak = Math.max(0, ...down, ...up);
-  const minutes = Math.max(1, Math.round((down.length * 5) / 60));
-  const exits = (topo?.exits || []).slice().sort((a, b) => order(a) - order(b));
+// ── İnternet hızı: ölçülmüş hız testleri (son test + son 7 günün grafiği + özet). Anlık kullanım İnternet panosunda. ──
+interface Speed { download_mbps: number; upload_mbps: number; ping_ms: number; jitter_ms: number | null; packet_loss?: number | null; isp?: string; server?: string; timestamp: string }
+export function SpeedTile() {
+  const week = usePoll<{ tests: Speed[] }>('/speedtest/history?period=7d', 60000);
+  // Son 7 günde 2'den az test varsa (ör. aralık uzun) grafik için 30 güne bakılır
+  const month = usePoll<{ tests: Speed[] }>(week && (week.tests || []).length < 2 ? '/speedtest/history?period=30d' : null, 300000);
+  const settings = usePoll<{ settings?: Record<string, string> }>('/settings', 60000);
+  const useMonth = !!week && (week.tests || []).length < 2 && (month?.tests || []).length >= 2;
+  const tests = ((useMonth ? month?.tests : week?.tests) || []).slice().reverse(); // eskiden yeniye
+  const last = tests.at(-1);
+  const everyMin = Number(settings?.settings?.speedtest_interval_min ?? 360);
+  const auto = !Number.isFinite(everyMin) || everyMin <= 0 ? 'otomatik test kapalı'
+    : everyMin % 60 === 0 ? `otomatik: ${everyMin / 60} saatte bir` : `otomatik: ${everyMin} dk'da bir`;
+  const downs = tests.map(t => t.download_mbps);
+  const ups = tests.map(t => t.upload_mbps);
+  const avg = (v: number[]) => (v.length ? v.reduce((a, b) => a + b, 0) / v.length : null);
+  const pings = tests.map(t => t.ping_ms).filter(v => Number.isFinite(v));
+  const span = useMonth ? 'son 30 gün' : 'son 7 gün';
   return (
-    <Tile icon={<Activity />} title="Ağ trafiği" className="k-traffic"
-      aside={<span className="k-legend"><span><i style={{ background: 'var(--k-down)' }} />İndirme</span><span><i style={{ background: 'var(--k-up)' }} />Yükleme</span></span>}>
-      <div className="k-traffic-now">
-        <div><span className="k-label"><ArrowDown size={12} /> İndirme</span><span className="k-big k-down">{dNow}<span className="k-unit">{dUnit}</span></span></div>
-        <div><span className="k-label"><ArrowUp size={12} /> Yükleme</span><span className="k-big k-up">{uNow}<span className="k-unit">{uUnit}</span></span></div>
-        <div className="k-hide-sm"><span className="k-label">Tepe (son {minutes} dk)</span><span className="k-mid">{bitRateText(peak)}</span></div>
-        {!acct && <span className="k-chip k-chip-warn">yaklaşık: tüm arayüzler</span>}
-      </div>
-      <div className="k-traffic-chart">
-        {down.length >= 2
-          ? <AreaChart series={[{ values: down, color: 'var(--k-down)' }, { values: up, color: 'var(--k-up)' }]} />
-          : <div className="k-empty">Grafik birkaç saniye içinde oluşacak…</div>}
-      </div>
-      {exits.length > 0 && (
-        <div className="k-ifaces k-hide-xs">
-          {exits.slice(0, 4).map(e => (
-            <div key={e.id} className="k-iface">
-              <div className="k-iface-name">
-                {e.kind === 'vps' && <span className={`k-dot ${exitDot(e)}`} style={{ display: 'inline-block', marginRight: 6 }} />}
-                {e.label}{e.devices ? ` · ${e.devices} cihaz` : ''}
-              </div>
-              <div className="k-iface-rate">
-                <span className="k-down">↓ {bitRateText((e.downBps || 0) * 8)}</span>
-                <span className="k-up">↑ {bitRateText((e.upBps || 0) * 8)}</span>
-              </div>
-            </div>
-          ))}
+    <Tile icon={<Gauge />} title="İnternet hızı" className="k-traffic"
+      aside={<span className="k-legend">
+        <span><i style={{ background: 'var(--k-down)' }} />İndirme</span><span><i style={{ background: 'var(--k-up)' }} />Yükleme</span>
+      </span>}>
+      {!week ? <div className="k-empty">Hız testleri okunuyor…</div> : !last ? (
+        <div className="k-empty">
+          Henüz hız testi yok. {everyMin > 0 ? `İlk otomatik ölçüm ${auto.replace('otomatik: ', '')} yapılır` : 'Otomatik test kapalı'};
+          panelde <strong>Hız Testi</strong> sayfasından hemen başlatılabilir.
         </div>
+      ) : (
+        <>
+          <div className="k-traffic-now">
+            <div><span className="k-label"><ArrowDown size={12} /> İndirme</span><span className="k-big k-down">{num(last.download_mbps, 1)}<span className="k-unit">Mbps</span></span></div>
+            <div><span className="k-label"><ArrowUp size={12} /> Yükleme</span><span className="k-big k-up">{num(last.upload_mbps, 1)}<span className="k-unit">Mbps</span></span></div>
+            <div><span className="k-label">Gecikme</span><span className="k-mid">{num(last.ping_ms)}<span className="k-unit">ms</span></span></div>
+            {last.jitter_ms != null && last.jitter_ms > 0 && (
+              <div className="k-hide-sm"><span className="k-label">Dalgalanma</span><span className="k-mid">{num(last.jitter_ms, 1)}<span className="k-unit">ms</span></span></div>
+            )}
+          </div>
+          <div className="k-speed-meta">
+            son ölçüm {ago(parseTime(last.timestamp))}{last.isp ? ` · ${last.isp}` : ''}{last.server ? <span className="k-hide-sm"> · {last.server}</span> : null}
+          </div>
+          <div className="k-traffic-chart">
+            {tests.length >= 2
+              ? <AreaChart series={[{ values: downs, color: 'var(--k-down)' }, { values: ups, color: 'var(--k-up)' }]} />
+              : <div className="k-empty">Grafik için en az iki ölçüm gerekiyor</div>}
+          </div>
+          <div className="k-ifaces k-hide-xs">
+            <div className="k-iface"><div className="k-iface-name">Ortalama ({span})</div>
+              <div className="k-iface-rate"><span className="k-down">↓ {num(avg(downs), 1)}</span><span className="k-up">↑ {num(avg(ups), 1)}</span><span className="k-muted">Mbps</span></div></div>
+            <div className="k-iface"><div className="k-iface-name">En düşük / en yüksek indirme</div>
+              <div className="k-iface-rate"><span>{num(Math.min(...downs), 1)} / {num(Math.max(...downs), 1)}</span><span className="k-muted">Mbps</span></div></div>
+            <div className="k-iface"><div className="k-iface-name">Ortalama gecikme</div>
+              <div className="k-iface-rate"><span>{num(avg(pings))}</span><span className="k-muted">ms</span></div></div>
+            <div className="k-iface"><div className="k-iface-name">{tests.length} ölçüm</div>
+              <div className="k-iface-rate"><span className="k-muted">{auto}</span></div></div>
+          </div>
+        </>
       )}
     </Tile>
   );
 }
-const order = (e: TopoExit) => (e.kind === 'local' ? 0 : e.kind === 'dpi' ? 1 : 2);
+
 const exitDot = (e: TopoExit) => (!e.up ? 'k-dot-bad' : e.handshakeAgeS != null && e.handshakeAgeS > 180 ? 'k-dot-warn' : 'k-dot-ok');
 
 // ── Sistem: işlemci, sıcaklık, bellek, disk ──
@@ -154,17 +160,17 @@ export function DnsTile() {
   );
 }
 
-// ── İnternet: dış IP, hat (ana / yedek), DDNS, son hız testi ──
+// ── İnternet: dış IP, hat (ana / yedek), DDNS, anlık kullanım ──
 interface Hardware { board?: string; net?: { uplinkIface?: string; bakActive?: boolean; bakDev?: string; bakStage?: string } }
 interface WgServer { enabled?: boolean; running?: boolean; endpoint?: { host: string; source: string }; peers?: { id: number; name: string; handshake: number }[] }
-interface Speed { download_mbps: number; upload_mbps: number; ping_ms: number; timestamp: string }
 export function InternetTile() {
   const ip = usePoll<{ ip: string }>('/ddns/current-ip', 600000); // her çağrı internete sorar: 10 dk
   const hw = usePoll<Hardware>(HW, 120000); // ~1 sn süren birkaç süreç: 2 dk
   const wg = usePoll<WgServer>(WG, 15000);
-  const sp = usePoll<{ tests: Speed[] }>('/speedtest/history?period=30d', 60000);
+  const topo = usePoll<TopologyLive>(TOPO, 5000);
   const health = usePoll<{ uptimePercent?: number }>(HEALTH, 10000);
-  const t = sp?.tests?.[0];
+  const acct = !!topo && topo.accounting !== false;
+  const rate = (k: 'downBps' | 'upBps') => (topo?.exits || []).reduce((a, e) => a + (e[k] || 0) * 8, 0);
   const backup = !!hw?.net?.bakActive;
   const ddns = wg?.endpoint?.source === 'ddns' ? wg.endpoint.host : '';
   return (
@@ -184,14 +190,13 @@ export function InternetTile() {
         <dt>DNS denetimi</dt><dd>%{num(health?.uptimePercent, 1)} başarılı</dd>
       </dl>
       <div className="k-stat" style={{ marginTop: 'auto' }}>
-        <span className="k-label">Son hız testi{t ? ` · ${ago(parseTime(t.timestamp))}` : ''}</span>
-        {t ? (
+        <span className="k-label">Anlık kullanım (tüm ev)</span>
+        {acct ? (
           <span className="k-iface-rate" style={{ fontSize: '0.95rem' }}>
-            <span className="k-down">↓ {num(t.download_mbps, 1)}</span>
-            <span className="k-up">↑ {num(t.upload_mbps, 1)}</span>
-            <span className="k-muted">Mbps · {num(t.ping_ms)} ms</span>
+            <span className="k-down">↓ {bitRateText(rate('downBps'))}</span>
+            <span className="k-up">↑ {bitRateText(rate('upBps'))}</span>
           </span>
-        ) : <span className="k-muted">henüz yok</span>}
+        ) : <span className="k-muted">—</span>}
       </div>
     </Tile>
   );
@@ -278,46 +283,64 @@ export function DevicesTile() {
   );
 }
 
-// ── Güvenlik ve servisler ──
+// ── Güvenlik uygulamaları: her biri durumu ve kısa ayrıntısıyla (panelin menüsündeki simgelerle) ──
 interface F2b { jails?: { name: string; currentlyBanned: number; totalBanned: number }[] }
 interface Zapret { installed?: boolean; service?: boolean; nfqws?: boolean; processes?: number; userEntries?: number }
+type AppTone = 'ok' | 'warn' | 'bad' | 'off';
+const APP_STATUS: Record<ServiceRow['status'] | 'off', [string, AppTone]> = {
+  running: ['Çalışıyor', 'ok'], error: ['Hatalı', 'bad'], restarting: ['Geçişte', 'warn'], stopped: ['Durmuş', 'warn'],
+  not_installed: ['Kurulu değil', 'off'], off: ['Kapalı', 'off'],
+};
 export function SecurityTile() {
-  const f2b = usePoll<F2b>('/fail2ban/status', 60000); // fail2ban-client her hapishane için ayrı çalışır
   const svc = usePoll<{ services: ServiceRow[] }>(SERVICES, 15000);
   const unread = usePoll<{ count: number }>(UNREAD, 15000);
+  const f2b = usePoll<F2b>('/fail2ban/status', 60000); // fail2ban-client her hapishane için ayrı çalışır
   const zp = usePoll<Zapret>('/zapret/status', 30000);
-  const jails = f2b?.jails || [];
-  const banned = jails.reduce((a, j) => a + (j.currentlyBanned || 0), 0);
-  const total = jails.reduce((a, j) => a + (j.totalBanned || 0), 0);
-  const dpi = !!(zp?.service && zp.nfqws && (zp.processes || 0) > 0);
-  const services = (svc?.services || []).filter(s => s.status !== 'not_installed');
-  const cls = (s: ServiceRow) => (s.status === 'running' ? 'k-chip-ok' : s.status === 'error' ? 'k-chip-bad'
-    : s.status === 'stopped' && !s.boot_enabled ? '' : 'k-chip-warn');
+  const ph = usePoll<Pihole>('/pihole/stats', 30000);
+  const ub = usePoll<Unbound>('/unbound/status', 180000);
+  const vps = usePoll<{ servers: { id: number }[] }>('/vps/list', 30000);
+  const topo = usePoll<TopologyLive>(TOPO, 5000);
+  const wg = usePoll<WgServer>(WG, 15000);
+  const now = useNow(15000) / 1000;
+  const find = (name: string) => (svc?.services || []).find(s => s.name === name);
+  // Durmuş ama açılışta başlamayan servis bilerek kapatılmıştır: "Kapalı"
+  const state = (s?: ServiceRow): ServiceRow['status'] | 'off' | null =>
+    !s ? null : s.status === 'stopped' && !s.boot_enabled ? 'off' : s.status;
+  const banned = (f2b?.jails || []).reduce((a, j) => a + (j.currentlyBanned || 0), 0);
+  const vpsUp = (topo?.exits || []).filter(e => e.kind === 'vps' && e.up).length;
+  const peers = wg?.peers || [];
+  const peersOn = peers.filter(p => p.handshake && now - p.handshake < 180).length;
+  const apps: { key: string; icon: React.ReactNode; name: string; role: string; st: ServiceRow['status'] | 'off' | null; detail: string }[] = [
+    { key: 'pihole', icon: <ShieldBan />, name: 'Pi-hole', role: 'reklam ve izleyici engelleme', st: state(find('pihole')),
+      detail: ph && !ph._status ? `%${num(ph.adsPercentageToday, 1)} engellendi` : '' },
+    { key: 'unbound', icon: <Globe />, name: 'Unbound', role: 'özel DNS çözücü', st: state(find('unbound')),
+      detail: ub?.stats?.hitRate != null ? `%${num(ub.stats.hitRate)} önbellek isabeti` : '' },
+    { key: 'zapret', icon: <Zap />, name: 'Zapret', role: 'DPI atlatma', st: state(find('zapret')),
+      detail: zp?.installed && zp.userEntries ? `${num(zp.userEntries)} alan adı` : '' },
+    { key: 'fail2ban', icon: <ShieldAlert />, name: 'Fail2Ban', role: 'saldırı engelleme', st: state(find('fail2ban')),
+      detail: f2b ? (banned ? `${num(banned)} yasaklı IP` : 'yasaklı IP yok') : '' },
+    { key: 'nftables', icon: <Flame />, name: 'Güvenlik duvarı', role: 'nftables', st: state(find('nftables')), detail: '' },
+    { key: 'wireguard', icon: <Server />, name: 'VPS tünelleri', role: 'WireGuard', st: state(find('wireguard')),
+      detail: vps?.servers?.length ? `${vpsUp}/${vps.servers.length} bağlı` : 'tünel yok' },
+    { key: 'homevpn', icon: <Home />, name: "Ev VPN'i", role: 'uzaktan erişim', st: !wg ? null : !wg.enabled ? 'off' : wg.running ? 'running' : 'error',
+      detail: wg?.enabled ? `${peersOn}/${peers.length} istemci bağlı` : '' },
+  ];
+  const shown = apps.filter(a => a.st !== 'not_installed' || a.key === 'pihole');
   return (
-    <Tile icon={<Shield />} title="Güvenlik">
-      <div className="k-dns-stats">
-        <div className="k-stat">
-          <span className="k-label">Yasaklı IP</span>
-          <span className={`k-mid ${banned ? 'k-bad' : ''}`}>{f2b ? num(banned) : '—'}</span>
-          <span className="k-row-meta">toplam {num(total)}</span>
-        </div>
-        <div className="k-stat">
-          <span className="k-label">Uyarı</span>
-          <span className={`k-mid ${unread?.count ? 'k-warn' : 'k-ok'}`}>{unread ? num(unread.count) : '—'}</span>
-          <span className="k-row-meta">{unread?.count ? 'okunmamış' : 'temiz'}</span>
-        </div>
-      </div>
-      {zp?.installed && (
-        <div className="k-row k-hide-sm" style={{ fontSize: '0.8rem' }}>
-          <span className={`k-dot ${dpi ? 'k-dot-ok' : ''}`} />
-          <span className="k-row-main">DPI atlatma {dpi ? 'açık' : 'kapalı'}</span>
-          {dpi && <span className="k-row-meta">{num(zp.userEntries)} alan adı</span>}
-        </div>
-      )}
-      <div className="k-svcs" style={{ marginTop: 'auto' }}>
-        {services.map(s => (
-          <span key={s.name} className={`k-chip ${cls(s)}`}>{SERVICE_LABEL[s.name] || s.name}</span>
-        ))}
+    <Tile icon={<Shield />} title="Güvenlik"
+      aside={unread ? (unread.count ? <span className="k-warn">{unread.count} okunmamış uyarı</span> : <span className="k-ok">uyarı yok</span>) : null}>
+      <div className="k-apps">
+        {shown.map(a => {
+          const [label, tone] = a.st ? APP_STATUS[a.st] : ['—', 'off' as AppTone];
+          return (
+            <div key={a.key} className={`k-app-row k-app-${tone}`}>
+              <span className="k-app-icon">{a.icon}</span>
+              <span className="k-app-name">{a.name}<span className="k-app-role k-hide-sm"> · {a.role}</span></span>
+              {a.detail && <span className="k-app-detail k-hide-xs">{a.detail}</span>}
+              <span className="k-app-status">{label}</span>
+            </div>
+          );
+        })}
       </div>
     </Tile>
   );

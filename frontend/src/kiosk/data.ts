@@ -43,10 +43,9 @@ async function getJson<T>(path: string): Promise<T | null> {
 // Ortak yoklama: aynı uç birden çok panoda kullanılsa da tek istek gider (en kısa aralık geçerli). Hata olursa son iyi
 // veri korunur (ekran boşalmaz). Sekme gizliyken istek atılmaz. null = henüz hiç gelmedi.
 interface Feed {
-  data: unknown; history: unknown[]; subs: Map<symbol, number>; timer: ReturnType<typeof setTimeout> | null;
+  data: unknown; subs: Map<symbol, number>; timer: ReturnType<typeof setTimeout> | null;
   listeners: Set<() => void>; busy: boolean;
 }
-const HISTORY_MAX = 150; // 5 sn aralıkta ~12 dk
 const feeds = new Map<string, Feed>();
 const interval = (f: Feed) => Math.min(...f.subs.values());
 function schedule(path: string, f: Feed, delay: number) {
@@ -57,12 +56,7 @@ function schedule(path: string, f: Feed, delay: number) {
       f.busy = true;
       const d = await getJson<unknown>(path);
       f.busy = false;
-      if (d != null) {
-        f.data = d;
-        f.history.push(d);
-        if (f.history.length > HISTORY_MAX) f.history.splice(0, f.history.length - HISTORY_MAX);
-        f.listeners.forEach(l => l());
-      }
+      if (d != null) { f.data = d; f.listeners.forEach(l => l()); }
     }
     if (f.subs.size) schedule(path, f, interval(f));
   }, delay);
@@ -74,7 +68,7 @@ export function usePoll<T>(path: string | null, ms: number): T | null {
   useEffect(() => {
     if (!path) return;
     let f = feeds.get(path);
-    if (!f) { f = { data: null, history: [], subs: new Map(), timer: null, listeners: new Set(), busy: false }; feeds.set(path, f); }
+    if (!f) { f = { data: null, subs: new Map(), timer: null, listeners: new Set(), busy: false }; feeds.set(path, f); }
     const fresh = !f.subs.size;
     f.subs.set(key.current, ms);
     const l = () => force(n => n + 1);
@@ -90,9 +84,6 @@ export function usePoll<T>(path: string | null, ms: number): T | null {
   }, [path, ms]);
   return (path ? feeds.get(path)?.data ?? null : null) as T | null;
 }
-
-// Bu kioskun açıldığından beri gelen yanıtlar (en çok ~12 dk; eskiden yeniye). usePoll ile aynı uç için kullanılır.
-export const feedHistory = <T,>(path: string): T[] => (feeds.get(path)?.history ?? []) as T[];
 
 // Dakikalık/saniyelik yenilenen "şimdi" (render içinde Date.now çağrılmasın)
 export function useNow(ms = 1000): number {

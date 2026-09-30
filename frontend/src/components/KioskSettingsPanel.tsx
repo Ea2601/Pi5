@@ -39,7 +39,7 @@ export function KioskSettingsPanel() {
   return (
     <div className="fade-in">
       <Panel title="HDMI Ekran" icon={<Monitor size={20} style={{ marginRight: 8 }} />}
-        subtitle="Pi'nin HDMI çıkışında tek ekranlı gösterge paneli: canlı trafik, sistem, DNS, internet, tüneller, cihazlar ve güvenlik"
+        subtitle="Pi'nin HDMI çıkışında tek ekranlı gösterge paneli: internet hızı, sistem, DNS, internet, tüneller, cihazlar ve güvenlik"
         actions={
           <div style={{ display: 'flex', gap: 6 }}>
             <button className="btn-outline btn-sm" onClick={() => window.open('/kiosk.html', '_blank')}>
@@ -120,7 +120,7 @@ export function KioskSettingsPanel() {
             <div className="kiosk-preview-screen">
               <div className="kp-head" />
               <div className="kp-top" data-solo={!on('traffic') || !(on('system') || on('dns')) ? '1' : undefined}>
-                {on('traffic') && <div className="kp-box kp-traffic">Trafik</div>}
+                {on('traffic') && <div className="kp-box kp-traffic">Hız testi</div>}
                 {(on('system') || on('dns')) && (
                   <div className="kp-stack">
                     {on('system') && <div className="kp-box">Sistem</div>}

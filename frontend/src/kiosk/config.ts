@@ -1,6 +1,7 @@
 // Kiosk (HDMI ekran) yapılandırması — kiosk sayfası ve paneldeki "HDMI Ekran" ayarları ortak kullanır.
 // Backend /api/case/kiosk bu nesneyi olduğu gibi saklar. v2: tek ekranlı gösterge paneli; eski (v1, döngülü sayfalar)
 // kayıtların pano seçimleri anlamını yitirdiği için yok sayılır ve varsayılanlar kullanılır.
+// 'traffic' kimliği tarihsel: pano artık hız testlerini gösterir (kayıtlı seçim bozulmasın diye kimlik aynı).
 export type KioskTileId = 'traffic' | 'system' | 'dns' | 'internet' | 'tunnels' | 'devices' | 'security' | 'alerts';
 export type KioskThemeMode = 'panel' | 'dark' | 'light';
 
@@ -14,13 +15,13 @@ export interface KioskConfig {
 }
 
 export const TILES: KioskTile[] = [
-  { id: 'traffic', label: 'Ağ trafiği (canlı grafik, arayüzler)', enabled: true },
+  { id: 'traffic', label: 'İnternet hızı (son hız testi, 7 günlük ölçüm grafiği)', enabled: true },
   { id: 'system', label: 'Sistem (işlemci, sıcaklık, bellek, disk)', enabled: true },
   { id: 'dns', label: 'DNS kalkanı (Pi-hole engelleme, Unbound önbellek, DNSSEC)', enabled: true },
-  { id: 'internet', label: 'İnternet (dış IP, hat, DDNS, son hız testi)', enabled: true },
+  { id: 'internet', label: 'İnternet (dış IP, ana / yedek hat, DDNS, anlık kullanım)', enabled: true },
   { id: 'tunnels', label: 'Tüneller (VPS bağlantıları, Ev VPN istemcileri)', enabled: true },
   { id: 'devices', label: 'Cihazlar (çevrimiçi sayısı, son görülenler)', enabled: true },
-  { id: 'security', label: 'Güvenlik ve servisler (Fail2Ban, güvenlik duvarı, servis durumları)', enabled: true },
+  { id: 'security', label: 'Güvenlik uygulamaları ve durumları (Pi-hole, Unbound, Zapret, Fail2Ban, güvenlik duvarı, VPN)', enabled: true },
   { id: 'alerts', label: 'Bildirim şeridi (son uyarılar, alt satırda)', enabled: true },
 ];
 

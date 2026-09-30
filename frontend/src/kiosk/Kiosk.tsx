@@ -10,7 +10,7 @@ import { applyThemeClass } from '../theme';
 import { normalizeConfig, type KioskConfig, type KioskTileId } from './config';
 import { usePoll, useOffline } from './data';
 import { useStatus, useHostname } from './status';
-import { TrafficTile, SystemTile, DnsTile, InternetTile, TunnelsTile, DevicesTile, SecurityTile, AlertTicker } from './tiles';
+import { SpeedTile, SystemTile, DnsTile, InternetTile, TunnelsTile, DevicesTile, SecurityTile, AlertTicker } from './tiles';
 
 const ACCENTS = ['blue', 'green', 'purple', 'orange'];
 const SHIFTS: [number, number][] = [[0, 0], [2, 1], [-1, 2], [-2, -1], [1, -2], [2, -2], [-2, 1]];
@@ -118,7 +118,7 @@ export function Kiosk() {
         <main className={`k-main ${!hasTop || !bottom.length ? 'k-one' : ''}`}>
           {hasTop && (
             <section className={`k-top ${!on('traffic') || !topTiles ? 'k-top-solo' : ''}`}>
-              {on('traffic') && <TrafficTile />}
+              {on('traffic') && <SpeedTile />}
               {topTiles > 0 && (
                 <div className="k-stack">
                   {on('system') && <SystemTile />}
