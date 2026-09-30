@@ -15,6 +15,7 @@ const STATE_DIR = '/run/pi5-update';
 const STATE_FILE = `${STATE_DIR}/state`;
 const OUTPUT_FILE = `${STATE_DIR}/output`;
 export const UPDATE_MAX_RUNTIME_S = 1800;
+const STORAGE_BUSY_MSG = 'Depolama işi sürüyor (disk hazırlama / veri taşıma) — bitince yeniden deneyin; gece güncellemesi ertesi gece yeniden dener';
 // Backend durumu systemd-run'dan ÖNCE yazar: bu süre içinde birim henüz görünmüyorsa iş "yarıda kesildi" sayılmaz.
 const START_GRACE_S = 15;
 
@@ -84,6 +85,7 @@ export function summarizeUpdate(output: string, kv: Record<string, string>): Upd
     return [{ step: 'Güncelleme durduruldu', output: `${UPDATE_MAX_RUNTIME_S / 60} dk sınırı aşıldı ya da iş durduruldu — ayrıntı: core/update.log`, success: false }];
   }
   if (kv.reason === 'start') return [{ step: 'Güncelleme başlatılamadı', output: tail, success: false }];
+  if (kv.reason === 'storage') return [{ step: 'Güncelleme ertelendi', output: STORAGE_BUSY_MSG, success: false }];
   const failed = /@@STEP_FAILED=(\w+) rc=(\d+)/.exec(output);
   if (failed && STEP_ORDER.includes(failed[1])) {
     for (const s of STEP_ORDER.slice(1, STEP_ORDER.indexOf(failed[1]))) steps.push({ step: STEP_LABEL[s], output: 'OK', success: true });
@@ -115,9 +117,9 @@ function readOutput(): string {
 }
 
 // systemctl okunamazsa 'unknown': süren bir işi yanlışlıkla "yarıda kesildi" saymayalım, ikinci iş de başlatmayalım.
-async function unitState(): Promise<'active' | 'inactive' | 'unknown'> {
+async function unitState(unit = UPDATE_UNIT): Promise<'active' | 'inactive' | 'unknown'> {
   try {
-    const { stdout } = await execFileP('systemctl', ['show', '-p', 'ActiveState', '--value', `${UPDATE_UNIT}.service`], { timeout: 5000 });
+    const { stdout } = await execFileP('systemctl', ['show', '-p', 'ActiveState', '--value', `${unit}.service`], { timeout: 5000 });
     return /^(active|activating|deactivating|reloading)$/.test(stdout.trim()) ? 'active' : 'inactive';
   } catch {
     return 'unknown';
@@ -142,6 +144,9 @@ async function launch(): Promise<UpdateStart> {
   const unit = await unitState();
   if (unit === 'unknown') throw new Error('Güncelleme durumu okunamadı (systemctl) — birazdan yeniden deneyin');
   if (unit === 'active') return { started: false, running: true, id: readState()?.id };
+  // Depolama işi (disk hazırlama / veri taşıma) sürerken güncelleme başlamaz — bitince backend'i yeniden başlatırdı
+  // (update-job.sh de denetler: gece çalıştırması için).
+  if ((await unitState('pi5-storage')) === 'active') throw new Error(STORAGE_BUSY_MSG);
   const id = String(Date.now());
   const started = Math.floor(Date.now() / 1000);
   fs.mkdirSync(STATE_DIR, { recursive: true });

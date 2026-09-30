@@ -27,6 +27,13 @@ put_state() {
 # systemd durdurursa (30 dk sınırı ya da systemctl stop) sonuç "sürüyor" diye kalmasın.
 trap 'put_state failed rc=143 reason=stopped; exit 143' TERM
 
+# Depolama işi (pi5-storage: disk hazırlama / veri taşıma — panel servisini durdurur) sürerken güncelleme başlamaz: bitince
+# pi5-backend'i yeniden başlatır, iş ortasında panel verisini açabilirdi. Gece çalıştırması ertesi geceye kalır.
+if systemctl is-active --quiet pi5-storage.service 2>/dev/null; then
+  put_state failed rc=0 reason=storage
+  exit 0
+fi
+
 put_state running
 bash "$BASE/scripts/update.sh" > "$DIR/output" 2>&1 < /dev/null
 rc=$?
