@@ -104,6 +104,18 @@
 .st-layout-data { background: var(--accent-glow); border: 1px solid var(--accent-ring); }
 .st-layout-share { background: var(--input-bg-soft); border: 1px solid var(--panel-border); }
 .st-help { font-size: 12px; color: var(--text-secondary); line-height: 1.55; margin: 10px 0 0; }
+
+/* Ağ paylaşımı (SharePanel) ve USB bölümü paylaşım düğmeleri */
+.st-part-share { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; font-size: 12px; }
+.sh-connect, .sh-shares { margin-top: 14px; display: flex; flex-direction: column; gap: 6px; }
+.sh-connect h4, .sh-shares h4 { display: flex; align-items: center; gap: 6px; font-size: 13px; margin-bottom: 2px; }
+.sh-row {
+  display: flex; align-items: flex-start; gap: 8px; padding: 8px 10px; border-radius: var(--radius-sm);
+  background: var(--input-bg-soft); font-size: 13px; line-height: 1.5;
+}
+.sh-row > svg { flex-shrink: 0; margin-top: 3px; color: var(--accent-color); }
+.sh-row span { min-width: 0; overflow-wrap: anywhere; }
+.sh-row code, .sh-shares code { user-select: all; }
 .st-list { margin: 6px 0 0; padding-left: 18px; font-size: 13px; }
 
 @media (min-width: 640px) {

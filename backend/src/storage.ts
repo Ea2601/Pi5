@@ -21,6 +21,7 @@ const DATA_LABEL = 'klyrix-data';
 const SHARE_LABEL = 'klyrix-share';
 const DATA_MNT = '/mnt/klyrix-data';
 const SHARE_MNT = '/mnt/klyrix-share';
+const USB_SHARE_MNT = '/mnt/klyrix-usb';   // share.sh: panelden ağda paylaşılan USB bölümleri
 const SCRIPT = path.resolve(__dirname, '../../scripts/storage.sh');
 
 export type DiskKind = 'sd' | 'nvme' | 'usb' | 'other';
@@ -28,6 +29,7 @@ export interface StoragePart {
   name: string; path: string; size: number; fstype: string; label: string; uuid: string;
   mounts: string[]; fsSize: number | null; fsUsed: number | null; fsAvail: number | null; note: string;
   archivable?: boolean;  // eski bir sistem gibi arşivlenebilir (sistem diskinde değil, bağlı değil, Linux dosya sistemi)
+  shareName?: string;    // ağda paylaşılan USB bölümü: paylaşım adı (/mnt/klyrix-usb/<ad>)
 }
 export interface StorageDisk {
   name: string; path: string; size: number; model: string; tran: string; removable: boolean; kind: DiskKind;
@@ -71,6 +73,7 @@ function partNote(p: { mounts: string[]; fstype: string; label: string }): strin
   if (p.mounts.includes('[SWAP]')) return 'Takas alanı';
   if (p.mounts.includes(DATA_MNT)) return 'Veri bölümü (panel verileri, Pi-hole, günlükler)';
   if (p.mounts.includes(SHARE_MNT)) return 'Paylaşım alanı';
+  if (p.mounts.some(m => m.startsWith(`${USB_SHARE_MNT}/`))) return 'Ağda paylaşılıyor';
   if (p.mounts.some(m => m.startsWith('/mnt/ssd'))) return 'Panel verileri';
   if (p.mounts.length) return `Bağlı: ${p.mounts.join(', ')}`;
   if (p.label === DATA_LABEL) return 'Veri bölümü — bağlı değil';
@@ -154,6 +157,8 @@ export async function storageStatus(): Promise<StorageStatus> {
     disk.preparable = preparable(disk);
     for (const p of parts) {
       p.archivable = role !== 'system' && !p.mounts.length && ARCHIVE_FS.test(p.fstype) && !p.label.startsWith('klyrix');
+      const sm = p.mounts.find(m => m.startsWith(`${USB_SHARE_MNT}/`));
+      if (sm) p.shareName = sm.slice(USB_SHARE_MNT.length + 1);
     }
     disks.push(disk);
     for (const p of parts) partOwner.set(p.path, disk);
@@ -219,13 +224,18 @@ const JOB_MAX_RUNTIME_S = 4 * 3600;   // büyük bir eski sistemin SD karta arş
 const START_GRACE_S = 15;             // bu süre içinde birim henüz görünmüyorsa iş "yarıda kesildi" sayılmaz
 const NOTIFIED_KEY = 'storage_job_notified';
 
-export type StorageCmd = 'archive' | 'prepare' | 'migrate';
+export type StorageCmd = 'archive' | 'prepare' | 'migrate' | 'share';
 export interface StorageJob {
   state: 'idle' | 'running' | 'done' | 'failed';
   id?: string; cmd?: StorageCmd; step?: string; pct?: number; msg?: string; error?: string;
   startedAt?: number; finishedAt?: number; log?: string[];
 }
-const CMD_LABEL: Record<StorageCmd, string> = { archive: 'Eski sistem arşivi', prepare: 'Disk hazırlama', migrate: 'Verileri diske taşıma' };
+const CMD_LABEL: Record<StorageCmd, string> = {
+  archive: 'Eski sistem arşivi', prepare: 'Disk hazırlama', migrate: 'Verileri diske taşıma', share: 'Ağ paylaşımını açma',
+};
+// Biten iş için başka modüllerin işi (ör. share.ts: paylaşım açılınca erişim listesi ve güvenlik duvarı zinciri)
+const doneHooks: ((j: StorageJob) => void)[] = [];
+export function onStorageJobDone(cb: (j: StorageJob) => void): void { doneHooks.push(cb); }
 const numOf = (v?: string) => (v && /^\d+$/.test(v) ? Number(v) : undefined);
 
 function jobStateMtime(): number {
@@ -289,6 +299,7 @@ export async function noteStorageJob(): Promise<void> {
     const row = await dbGet('SELECT value FROM app_settings WHERE key = ?', [NOTIFIED_KEY]);
     if (row?.value === j.id) return;
     await dbRun('INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)', [NOTIFIED_KEY, j.id]);
+    for (const h of doneHooks) { try { h(j); } catch { /* kanca hatası işi bozmaz */ } }
     const label = j.cmd ? CMD_LABEL[j.cmd] : 'Depolama işi';
     if (j.state === 'done') await recordEvent('storage', j.msg || `${label} tamamlandı`, /taşınamadı/.test(j.msg || '') ? 'warning' : 'info');
     else await recordEvent('storage', `${label} başarısız: ${j.error || 'ayrıntı Depolama sayfasında'}`, 'warning');
@@ -322,9 +333,10 @@ export function startStorageWatch(): void {
 }
 
 let launching = false;
-async function launch(cmd: StorageCmd, args: string[], startMsg: string): Promise<{ id: string }> {
+// script / scriptCmd: paylaşım işi (share.ts) aynı birimi ve durum dosyasını scripts/share.sh ile kullanır.
+export async function launchStorageJob(cmd: StorageCmd, args: string[], startMsg: string, script = SCRIPT, scriptCmd: string = cmd): Promise<{ id: string }> {
   if (!isLinux) throw new Error('Depolama işleri yalnız Pi üzerinde çalışır');
-  if (!fs.existsSync(SCRIPT)) throw new Error('scripts/storage.sh bulunamadı — paneli güncelleyin');
+  if (!fs.existsSync(script)) throw new Error(`scripts/${path.basename(script)} bulunamadı — paneli güncelleyin`);
   if (launching) throw new Error('Bir depolama işi başlatılıyor');
   launching = true;
   try {
@@ -347,7 +359,7 @@ async function launch(cmd: StorageCmd, args: string[], startMsg: string): Promis
       await execFileP('systemd-run', [
         '--quiet', '--collect', `--unit=${STORAGE_UNIT}`, '--service-type=exec',
         '--description=Klyrix Gate depolama işi', '-p', `RuntimeMaxSec=${JOB_MAX_RUNTIME_S}`, `--setenv=PI5_STORAGE_ID=${id}`,
-        '/bin/bash', SCRIPT, cmd, ...args,
+        '/bin/bash', script, scriptCmd, ...args,
       ], { timeout: 15000 });
     } catch (e: any) {
       const msg = String(e?.stderr || e?.message || e).trim().split('\n').pop() || 'systemd-run hatası';
@@ -374,7 +386,7 @@ export async function startArchive(src: unknown): Promise<{ id: string }> {
   const part = st.disks.flatMap(d => d.parts).find(p => p.path === src);
   if (!part) throw new Error('Bölüm bulunamadı');
   if (!part.archivable) throw new Error('Bu bölüm arşivlenemez (sistem diskinde, bağlı ya da Linux dosya sistemi değil)');
-  return launch('archive', ['--src', part.path], `Eski sistem arşivi başlatıldı: ${part.name}`);
+  return launchStorageJob('archive', ['--src', part.path], `Eski sistem arşivi başlatıldı: ${part.name}`);
 }
 
 // Onay metni: diskin model adı (yoksa GB cinsinden boyutu) — storage.sh aynı denetimi yeniden yapar.
@@ -399,11 +411,11 @@ export async function startPrepare(body: { disk?: unknown; systemGb?: unknown; s
   } else {
     args.push('--no-share');
   }
-  return launch('prepare', args, `Disk hazırlama başlatıldı: ${disk.path} (${layout})`);
+  return launchStorageJob('prepare', args, `Disk hazırlama başlatıldı: ${disk.path} (${layout})`);
 }
 
 export async function startMigrate(): Promise<{ id: string }> {
   const st = await freshStatus();
   if (!st.layout?.dataMounted) throw new Error('Veri bölümü (klyrix-data) bağlı değil — önce diski hazırlayın');
-  return launch('migrate', [], 'Verileri veri diskine taşıma başlatıldı');
+  return launchStorageJob('migrate', [], 'Verileri veri diskine taşıma başlatıldı');
 }

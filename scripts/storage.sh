@@ -504,6 +504,8 @@ cmd_auto() {
 }
 
 # ── giriş ────────────────────────────────────────────────────────────────────
+# share.sh yardımcıları (günlük, iş durumu, fstab, kilit) buradan alır: STORAGE_LIB=1 ile kaynaklanınca giriş çalışmaz.
+if [ "${STORAGE_LIB:-0}" = 1 ]; then return 0 2>/dev/null || exit 0; fi
 cmd=${1:-status}; shift || true
 case "$cmd" in
   status) cmd_status; exit 0;;

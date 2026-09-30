@@ -50,6 +50,7 @@ import { wgServerStatus, setServerEnabled, addPeer, updatePeerRole, deletePeer, 
 import { startReachWatch, noteReachResult, reachWatchState, REACH_WATCH_INTERVAL_H } from './wgWatch';
 import { storageStatus, storageJob, noteStorageJob, startArchive, startPrepare, startMigrate, startStorageWatch } from './storage';
 import { applyKiosk } from './kiosk';
+import { shareStatus, enableShare, disableShare, setSharePassword, addUsbShare, removeUsbShare, startShareWatch } from './share';
 import type { ListSyncResult } from './piholeLists';
 import {
   shq, isValidMac, isValidDomain, isValidTimezone,
@@ -3813,6 +3814,29 @@ app.post('/api/storage/migrate', async (_req, res) => {
   }
 });
 startStorageWatch();
+
+// Ağ paylaşımı (share.ts → scripts/share.sh): açma paket kurduğu için depolama işi olarak koşar (/api/storage/job ile
+// izlenir); kapatma, şifre ve USB paylaşımları kısa komutlardır. Şifre yanıtta ve günlükte hiç yer almaz.
+app.get('/api/storage/share', async (_req, res) => {
+  try {
+    res.json(await shareStatus());
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+const shareRoute = (fn: (req: express.Request) => Promise<unknown>) => async (req: express.Request, res: express.Response) => {
+  try {
+    res.json({ success: true, ...((await fn(req)) as object || {}) });
+  } catch (e: any) {
+    res.status(400).json({ error: e.message });
+  }
+};
+app.post('/api/storage/share/enable', shareRoute(req => enableShare(req.body || {})));
+app.post('/api/storage/share/disable', shareRoute(() => disableShare().then(() => ({}))));
+app.post('/api/storage/share/password', shareRoute(req => setSharePassword(req.body?.password).then(() => ({}))));
+app.post('/api/storage/share/usb', shareRoute(req => addUsbShare(req.body?.part).then(name => ({ name }))));
+app.post('/api/storage/share/usb/remove', shareRoute(req => removeUsbShare(req.body?.name).then(() => ({}))));
+startShareWatch();
 
 // ─── Parental Controls ───
 app.get('/api/parental/rules', async (_req, res) => {

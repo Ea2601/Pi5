@@ -1,10 +1,12 @@
 import { useEffect, useRef, useState } from 'react';
 import {
   HardDrive, MemoryStick, Usb, Thermometer, AlertTriangle, Info, Database, Loader2, Archive, Eraser, ArrowRightLeft,
-  CheckCircle2, XCircle, FolderOpen, Share2,
+  CheckCircle2, XCircle, FolderOpen, Share2, Unplug,
 } from 'lucide-react';
 import { useApi, getApi, postApi } from '../hooks/useApi';
 import { Modal, Panel } from './ui';
+import { SharePanel, type ShareStatus } from './SharePanel';
+import { toast } from '../toast';
 import './StoragePanel.css';
 
 // Depolama (backend storage.ts): takılı diskler ve bölümleri, doluluk, disk sıcaklığı ve panel verilerinin /
@@ -16,6 +18,7 @@ type DiskKind = 'sd' | 'nvme' | 'usb' | 'other';
 interface Part {
   name: string; path: string; size: number; fstype: string; label: string; uuid: string;
   mounts: string[]; fsSize: number | null; fsUsed: number | null; fsAvail: number | null; note: string; archivable?: boolean;
+  shareName?: string;
 }
 interface Disk {
   name: string; path: string; size: number; model: string; tran: string; removable: boolean; kind: DiskKind;
@@ -27,7 +30,7 @@ interface Status {
   supported?: boolean; disks?: Disk[]; placement?: Placement[]; findings?: { level: 'info' | 'warn'; text: string }[];
   layout?: Layout; archives?: string[];
 }
-type Cmd = 'archive' | 'prepare' | 'migrate';
+type Cmd = 'archive' | 'prepare' | 'migrate' | 'share';
 interface Job {
   state: 'idle' | 'running' | 'done' | 'failed'; id?: string; cmd?: Cmd; step?: string; pct?: number; msg?: string;
   error?: string; startedAt?: number; finishedAt?: number; log?: string[];
@@ -35,7 +38,11 @@ interface Job {
 
 const KIND = { sd: 'SD kart', nvme: 'NVMe SSD', usb: 'USB disk', other: 'Disk' } as const;
 const ROLE = { system: 'Sistem diski', data: 'Veri diski', external: 'Harici disk', unused: 'Kullanılmıyor' } as const;
-const CMD_LABEL: Record<Cmd, string> = { archive: 'Eski sistem arşivi', prepare: 'Disk hazırlama', migrate: 'Verileri diske taşıma' };
+const CMD_LABEL: Record<Cmd, string> = {
+  archive: 'Eski sistem arşivi', prepare: 'Disk hazırlama', migrate: 'Verileri diske taşıma', share: 'Ağ paylaşımını açma',
+};
+// share.sh usb-add'in bağlayabildiği dosya sistemleri
+const SHARE_FS = new Set(['ext2', 'ext3', 'ext4', 'btrfs', 'xfs', 'vfat', 'exfat', 'ntfs']);
 const GIB = 2 ** 30;
 const DISMISS_KEY = 'pi5.storage.jobDismissed';
 
@@ -83,6 +90,8 @@ function useStorageJob() {
 
 export function StoragePanel() {
   const { data, loading, refetch } = useApi<Status>('/storage', {}, 15000);
+  const { data: share, refetch: refetchShare } = useApi<ShareStatus>('/storage/share', {}, 15000);
+  const [usbBusy, setUsbBusy] = useState('');
   const { job, offline, refresh } = useStorageJob();
   const [dismissed, setDismissed] = useState(readDismissed);
   const [prepare, setPrepare] = useState<Disk | null>(null);
@@ -97,16 +106,32 @@ export function StoragePanel() {
   // İş bitince disk listesini hemen yenile (bölümler, bağlama noktaları, verilerin yeri değişti)
   const prevState = useRef<Job['state'] | undefined>(undefined);
   useEffect(() => {
-    if (prevState.current === 'running' && job && job.state !== 'running') void refetch();
+    if (prevState.current === 'running' && job && job.state !== 'running') { void refetch(); void refetchShare(); }
     prevState.current = job?.state;
-  }, [job, refetch]);
+  }, [job, refetch, refetchShare]);
 
   const dismiss = () => {
     const id = job?.id || '';
     setDismissed(id);
     try { localStorage.setItem(DISMISS_KEY, id); } catch { /* yalnız bu oturum */ }
   };
-  const started = () => { refresh(); void refetch(); };
+  const started = () => { refresh(); void refetch(); void refetchShare(); };
+  const partInfo = (pred: (p: Part) => boolean) => {
+    const p = disks.flatMap(d => d.parts).find(pred);
+    return p ? { size: p.fsSize ?? p.size, used: p.fsUsed, avail: p.fsAvail } : null;
+  };
+  // USB bölümünü ağda paylaş / paylaşımı kaldır: kısa komutlar (iş değil); bitince iki listeyi yenile
+  const usbAction = async (key: string, url: string, body: Record<string, unknown>, ok: string) => {
+    setUsbBusy(key);
+    try {
+      await postApi(url, body);
+      toast.success(ok);
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'İşlem başarısız');
+    }
+    setUsbBusy('');
+    void refetch(); void refetchShare();
+  };
   const showJob = job && job.state !== 'idle' && (job.state === 'running' || job.id !== dismissed);
 
   return (
@@ -152,7 +177,7 @@ export function StoragePanel() {
                 <span className="st-place-where">
                   <code>{layout.shareDev}</code>{layout.shareMounted ? <> · <code>/mnt/klyrix-share</code></> : ' · bağlı değil'}
                 </span>
-                <span className="st-chip">ağda paylaşım henüz kapalı</span>
+                <span className={`st-chip ${share.enabled ? 'st-chip-ok' : ''}`}>{share.enabled ? 'ağda paylaşılıyor' : 'ağda paylaşım kapalı'}</span>
               </div>
             )}
           </div>
@@ -166,9 +191,18 @@ export function StoragePanel() {
         )}
       </Panel>
 
+      {data.supported !== false && (
+        <SharePanel st={share} busy={busy} hasShareSpace={!!layout?.shareDev}
+          sharePart={partInfo(p => p.label === 'klyrix-share')} usbPart={dev => partInfo(p => p.path === dev)}
+          onChanged={started} />
+      )}
+
       <div className="st-disks">
         {disks.map(d => (
-          <DiskCard key={d.name} d={d} busy={busy} onPrepare={() => setPrepare(d)} onArchive={p => setArchive(p)} />
+          <DiskCard key={d.name} d={d} busy={busy} onPrepare={() => setPrepare(d)} onArchive={p => setArchive(p)}
+            shareOn={!!share.enabled} usbBusy={usbBusy}
+            onShareUsb={p => usbAction(p.path, '/storage/share/usb', { part: p.path }, `${p.name} ağda paylaşıldı`)}
+            onUnshareUsb={p => usbAction(p.path, '/storage/share/usb/remove', { name: p.shareName }, `${p.shareName} paylaşımı kaldırıldı — disk güvenle çıkarılabilir`)} />
         ))}
       </div>
 
@@ -226,7 +260,10 @@ function JobBanner({ job, offline, onDismiss }: { job: Job; offline: boolean; on
   );
 }
 
-function DiskCard({ d, busy, onPrepare, onArchive }: { d: Disk; busy: boolean; onPrepare: () => void; onArchive: (p: Part) => void }) {
+function DiskCard({ d, busy, onPrepare, onArchive, shareOn, usbBusy, onShareUsb, onUnshareUsb }: {
+  d: Disk; busy: boolean; onPrepare: () => void; onArchive: (p: Part) => void;
+  shareOn: boolean; usbBusy: string; onShareUsb: (p: Part) => void; onUnshareUsb: (p: Part) => void;
+}) {
   const total = d.size || d.parts.reduce((a, p) => a + p.size, 0) || 1;
   return (
     <section className={`glass-panel st-disk st-disk-${d.role}`}>
@@ -283,6 +320,24 @@ function DiskCard({ d, busy, onPrepare, onArchive }: { d: Disk; busy: boolean; o
               ) : (
                 <span className="st-part-usage st-muted">{p.mounts.length ? p.mounts.join(', ') : 'bağlı değil'}</span>
               )}
+              {/* USB diskler silinmeden ağda paylaşılır (share.sh usb-add / usb-remove) */}
+              {d.kind === 'usb' && (p.shareName ? (
+                <div className="st-part-share">
+                  <span className="st-chip st-chip-ok"><Share2 size={12} /> Ağda: {p.shareName}</span>
+                  <button className="btn-outline btn-sm" disabled={busy || !!usbBusy} onClick={() => onUnshareUsb(p)}
+                    title="Paylaşımı kaldırır ve diski güvenle ayırır; içindekiler silinmez">
+                    {usbBusy === p.path ? <Loader2 size={13} className="spin" /> : <Unplug size={13} />} Paylaşımı kaldır
+                  </button>
+                </div>
+              ) : !p.mounts.length && SHARE_FS.has(p.fstype) ? (
+                <div className="st-part-share">
+                  <button className="btn-outline btn-sm" disabled={busy || !!usbBusy || !shareOn} onClick={() => onShareUsb(p)}
+                    title={shareOn ? 'Diski silmeden ağda paylaşır' : 'Önce yukarıdan ağ paylaşımını açın'}>
+                    {usbBusy === p.path ? <Loader2 size={13} className="spin" /> : <Share2 size={13} />} Ağda paylaş
+                  </button>
+                  {!shareOn && <span className="st-muted">önce ağ paylaşımını açın</span>}
+                </div>
+              ) : null)}
             </div>
           );
         })}

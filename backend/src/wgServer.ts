@@ -34,7 +34,8 @@ const UNIT = `wg-quick@${WG_IFACE}`;
 // Misafirin erişemeyeceği yerel ağlar (ev ağı, diğer VPN istemcileri, CGNAT, link-local)
 const PRIVATE_NETS = '10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10, 169.254.0.0/16';
 // Misafirin Pi üzerinde erişemeyeceği yönetim portları (SSH, panel, backend, Pi-hole arayüzü)
-const ADMIN_PORTS = '22, 80, 443, 3001, 8080';
+// Misafirin Pi'de erişemeyeceği TCP portları: SSH, panel, backend; 139/445 ağ paylaşımı (Samba — share.sh / share.ts)
+const ADMIN_PORTS = '22, 80, 139, 443, 445, 3001, 8080';
 const KEY = /^[A-Za-z0-9+/]{42}[AEIMQUYcgkosw048]=$/;
 
 export type PeerRole = 'admin' | 'guest';
@@ -239,6 +240,15 @@ async function syncDropPolicyTables(enable: boolean): Promise<void> {
   }
 }
 
+// Ev VPN'i kuralları yenilenince (istemci eklendi / silindi / rolü değişti, güvenlik duvarı yeniden kuruldu, açılış) başka
+// modüllerin kendi izinlerini yenilemesi: ağ paylaşımı (share.ts) misafir listesini ve güvenlik duvarı zincirini eşitler.
+// Beklenmez: kancanın gecikmesi (ör. depolama kilidi) Ev VPN'ini yavaşlatmaz.
+const rulesHooks: (() => Promise<void>)[] = [];
+export function onWgRulesChanged(cb: () => Promise<void>): void { rulesHooks.push(cb); }
+function runRulesHooks(): void {
+  for (const h of rulesHooks) h().catch(e => console.error('[ev-vpn] kanca:', e?.message || e));
+}
+
 let applying: Promise<WgApplyResult> | null = null;
 export interface WgApplyResult { ok: boolean; running: boolean; error?: string }
 
@@ -246,7 +256,7 @@ export interface WgApplyResult { ok: boolean; running: boolean; error?: string }
 // açılır (ve açılışta etkin); kapalıysa arayüz ve kurallar kaldırılır.
 export function applyWgServer(): Promise<WgApplyResult> {
   if (applying) return applying.then(() => applyWgServer());
-  applying = doApply().finally(() => { applying = null; });
+  applying = doApply().finally(() => { applying = null; runRulesHooks(); });
   return applying;
 }
 
@@ -291,7 +301,7 @@ async function doApply(): Promise<WgApplyResult> {
 export async function reapplyWgServer(): Promise<void> {
   if (!isLinux) return;
   const s = await serverRow().catch(() => null);
-  if (!s?.enabled) return;
+  if (!s?.enabled) { runRulesHooks(); return; }
   const r = await applyWgServer();
   if (!r.ok) console.error("[ev-vpn] uygulanamadı:", r.error);
 }

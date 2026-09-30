@@ -266,6 +266,10 @@ bash "$BASE/scripts/net-mode.sh" ensure >> "$LOG" 2>&1 || echo "  [ağ] UYARI: s
 #     günlükler) onarır. Disk yoksa hiçbir şey yapmaz; veri taşımaz, diski ASLA silmez (hazırlama: Depolama sayfası).
 bash "$BASE/scripts/storage.sh" ensure >> "$LOG" 2>&1 || echo "  [depolama] UYARI: veri diski denetlenemedi" >> "$LOG"
 
+# 8d. Ağ paylaşımı (Samba): açıksa ayarları yeni betik sürümüne göre yeniden üretir, takılı USB paylaşımlarını bağlar.
+#     Kapalıysa hiçbir şey yapmaz; paket kurmaz (kurulum yalnız panelden açılınca).
+bash "$BASE/scripts/share.sh" ensure >> "$LOG" 2>&1 || echo "  [paylaşım] UYARI: ağ paylaşımı denetlenemedi" >> "$LOG"
+
 # 9. Hız testi motoru: Ookla Speedtest CLI (sabit sürüm + SHA256; kuruluysa hiçbir şey yapmaz). Kurulamazsa panel
 #    speedtest-cli'ye düşer; hata güncellemeyi durdurmaz.
 bash "$BASE/scripts/ookla-ensure.sh" >> "$LOG" 2>&1 || echo "  [ookla] UYARI: kurulamadı — hız testi speedtest-cli ile sürer" >> "$LOG"
