@@ -2,6 +2,7 @@ import fs from 'fs';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
 import type { IpCounters } from './bandwidth';
+import type { ContentBadge, ContentStatus } from './contentActivity';
 import { classifyLink, isRandomMac, wirelessHint, type LinkInfo } from './linkProbe';
 import { decodeVpsMark, DPI_ONLY_MARK } from './routeMarks';
 
@@ -77,6 +78,7 @@ export type TopoDevice = {
   downBps: number; upBps: number; bytesDown: number; bytesUp: number; flows: Flow[];
   link: LinkInfo; // kablolu / Wi-Fi / Kurulum Wi-Fi'ı / Ev VPN'i / belirsiz (linkProbe.ts)
   vpn?: { name: string; role: 'admin' | 'guest'; handshakeAgeS: number | null };
+  content?: ContentBadge[]; // son 5 dk'da sorduğu içerik türleri (contentActivity.ts; yalnız harita ?content=1 isterse)
 };
 export type TopoExit = {
   id: ExitId; kind: 'local' | 'dpi' | 'vps'; label: string; detail: string;
@@ -90,6 +92,7 @@ export type Topology = {
   devices: TopoDevice[];
   accounting: boolean;
   sampledAt: string;
+  content?: ContentStatus;
 };
 
 export type TopoInput = {
@@ -115,6 +118,8 @@ export type TopoInput = {
   onPiWifi?: (mac: string) => boolean;
   // Ev VPN'i istemcileri (wg_server_peers + `wg show wg_pi dump`).
   vpnPeers?: VpnPeer[];
+  // Cihazın (güncel IP + MAC) anlık içerik rozetleri (contentActivity.ts).
+  content?: (ip: string, mac: string) => ContentBadge[];
 };
 
 const byExitOrder = (a: ExitId) => (a === 'local' ? 0 : a === 'dpi' ? 1 : 2 + Number(a.slice(4)));
@@ -235,6 +240,12 @@ export function buildTopology(inp: TopoInput): Topology {
     d.online = isOnline(inp.neighbors.get(d.ip), d.downBps + d.upBps > 0 || inp.recentIps.has(d.ip));
     devices.push(d);
   }
+  if (inp.content) {
+    for (const d of devices) {
+      const c = inp.content(d.ip, d.mac);
+      if (c.length) d.content = c;
+    }
+  }
   const ipNum = (ip: string) => ip.split('.').reduce((a, o) => a * 256 + (Number(o) || 0), 0);
   devices.sort((a, b) => Number(b.online) - Number(a.online) || ipNum(a.ip) - ipNum(b.ip) || a.mac.localeCompare(b.mac));
 
@@ -263,6 +274,14 @@ export function inCidr(ip: string, cidr: string): boolean {
 export async function readNeighbors(): Promise<Map<string, Neighbor>> {
   try {
     const { stdout } = await execFileP('ip', ['-j', '-s', '-4', 'neigh', 'show'], { timeout: 5000, maxBuffer: 4 * 1024 * 1024 });
+    return parseNeighbors(stdout);
+  } catch { return new Map(); }
+}
+
+// IPv6 komşuları (adres → MAC): cihaz DNS'i IPv6'dan sorarsa Pi-hole onu IPv6 adresiyle kaydeder.
+export async function readNeighbors6(): Promise<Map<string, Neighbor>> {
+  try {
+    const { stdout } = await execFileP('ip', ['-j', '-6', 'neigh', 'show'], { timeout: 5000, maxBuffer: 4 * 1024 * 1024 });
     return parseNeighbors(stdout);
   } catch { return new Map(); }
 }

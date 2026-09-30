@@ -1,8 +1,9 @@
 import { useMemo, useState } from 'react';
 import {
-  Shield, Clock, Globe, Plus, Trash2, Pencil, Users, Smartphone, X, Moon, BookOpen, ShieldCheck, Wifi, MessageCircle,
-  Gamepad2, Tv, Dices, EyeOff, AlertTriangle, Info, Loader2, CalendarClock, Target, Ban,
+  Shield, Clock, Globe, Plus, Trash2, Pencil, Users, Smartphone, X, Moon, BookOpen, ShieldCheck, Wifi,
+  AlertTriangle, Info, Loader2, CalendarClock, Target, Ban,
 } from 'lucide-react';
+import { CAT_ICON, type ContentCat } from './contentCategories';
 import { useApi, postApi, putApi, deleteApi } from '../hooks/useApi';
 import { Modal, Panel, Badge, Select } from './ui';
 import { toast } from '../toast';
@@ -29,7 +30,6 @@ const DAYS: Day[] = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'];
 const DAY_SHORT: Record<Day, string> = { mon: 'Pzt', tue: 'Sal', wed: 'Çar', thu: 'Per', fri: 'Cum', sat: 'Cmt', sun: 'Paz' };
 const WEEKDAYS: Day[] = ['mon', 'tue', 'wed', 'thu', 'fri'];
 const WEEKEND: Day[] = ['sat', 'sun'];
-const CAT_ICON: Record<string, typeof Globe> = { social: Users, video: Tv, gaming: Gamepad2, messaging: MessageCircle, adult: EyeOff, gambling: Dices };
 const MODE_LABEL: Record<Mode, string> = { always: 'Her zaman', during: 'Bu saatlerde engelle', outside: 'Yalnız bu saatlerde izin ver' };
 
 const EMPTY: RuleBody = { name: '', enabled: true, targets: { devices: [], groups: [] }, blockAll: false, categories: [], sites: [], mode: 'always', windows: [] };
@@ -307,7 +307,7 @@ function RuleEditor({ initial, id, cats, devices, groups, targetsText, onClose, 
         </button>
         <div className={`pc-cats ${r.blockAll ? 'is-disabled' : ''}`}>
           {cats.map(c => {
-            const Icon = CAT_ICON[c.id] || Globe;
+            const Icon = CAT_ICON[c.id as ContentCat] || Globe;
             const on = r.categories.includes(c.id);
             return (
               <button key={c.id} className={`pc-cat ${on ? 'is-on' : ''}`} disabled={r.blockAll} aria-pressed={on}

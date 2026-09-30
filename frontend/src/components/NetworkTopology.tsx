@@ -4,6 +4,8 @@ import { useState, useMemo, useRef, useEffect, useLayoutEffect, useCallback } fr
 import { useApi } from '../hooks/useApi';
 import { Panel, Badge } from './ui';
 import { computeLayout, joinPaths, pointAt, level, type ExitId, type AccessId, type AccessGroup, type Layout, type LayoutMode, type PathGeom, type Box } from './topologyLayout';
+import { CAT_ICON, CAT_LABEL, CONTENT_ORDER, type ContentCat } from './contentCategories';
+import './TopologyContent.css';
 
 // Canlı ağ haritası: cihaz → erişim (kablolu / Wi-Fi) → Pi → çıkış (yerel / DPI / VPS tüneli) → internet. Veri /api/topology/live (3 sn):
 // cihaz başı, bağlantı türü başı gerçek sayaçlar. Hareketli parçacıklar gerçek trafiktir (hızla yoğunlaşır); boştaki
@@ -22,8 +24,13 @@ type TopoDevice = {
   downBps: number; upBps: number; bytesDown: number; bytesUp: number; flows: Flow[];
   link?: LinkInfo;
   vpn?: VpnInfo; // Ev VPN'i istemcisi: panelde verilen ad, rol, son el sıkışma
+  content?: ContentBadge[];
 };
 type VpnInfo = { name: string; role: 'admin' | 'guest'; handshakeAgeS: number | null };
+// Anlık içerik (arka uç contentActivity.ts): cihazın son 5 dk'da sorduğu alan adlarının türü (Ebeveyn Kontrol kategorileri
+// + Genel); o türdeki sorguların hepsi Pi-hole'da engellendiyse blocked. DNS'e dayanır.
+type ContentBadge = { cat: ContentCat; ageS: number; queries: number; blocked: boolean; domains: string[] };
+type ContentStatus = { available: boolean; windowS: number; note: string | null };
 type TopoExit = {
   id: ExitId; kind: 'local' | 'dpi' | 'vps'; label: string; detail: string;
   vpsId?: number; ip?: string; iface?: string; up?: boolean; handshakeAgeS?: number | null; known?: boolean;
@@ -32,6 +39,7 @@ type TopoExit = {
 type Topology = {
   gateway: { lanIp: string; hostname: string }; modem: { ip: string; dev: string } | null;
   exits: TopoExit[]; devices: TopoDevice[]; accounting: boolean; sampledAt: string;
+  content?: ContentStatus;
 };
 type View = { x: number; y: number; k: number };
 type Sel = { kind: 'device'; id: string } | { kind: 'exit'; id: ExitId } | { kind: 'access'; id: AccessId } | null;
@@ -137,6 +145,38 @@ const linkShort = (l?: LinkInfo, v?: VpnInfo) =>
   !l || l.kind === 'unknown' ? '' : l.kind === 'setup' ? "Kurulum Wi-Fi'ı" : l.kind === 'vpn' ? `Ev VPN'i${v ? ` (${roleText(v)})` : ''}`
     : `${l.kind === 'wired' ? 'Kablolu' : 'Wi-Fi'}${l.certain ? '' : ' (tahmini)'}`;
 
+// ─── Anlık içerik rozetleri ───
+const FRESH_S = 90; // bundan eski rozet soluk çizilir (pencere 5 dk)
+const CAT_SHORT: Record<ContentCat, string> = {
+  social: 'Sosyal', video: 'Video', gaming: 'Oyun', messaging: 'Mesaj', adult: 'Yetişkin', gambling: 'Kumar', general: 'Genel',
+};
+const ageText = (s: number) => (s < 60 ? 'şimdi' : `${Math.floor(s / 60)} dk önce`);
+const badgeText = (c: ContentBadge) =>
+  `${CAT_LABEL[c.cat]} · ${c.blocked ? 'engellendi' : ageText(c.ageS)} · ${c.queries} sorgu${c.domains.length ? ` · ${c.domains.join(', ')}` : ''}`;
+const BADGE_GAP = 2.5;
+// Rozetler kartın alt kenarına oturur (sağa yaslı, yarısı satır aralığında): yazıların üstüne binmez. Dönüş: sol sınır.
+const badgeLeft = (b: Box, n: number, r: number) => b.x + b.w - 12 - n * 2 * r - (n - 1) * BADGE_GAP;
+function ContentBadges({ list, b, r }: { list: ContentBadge[]; b: Box; r: number }) {
+  const x0 = badgeLeft(b, list.length, r) + r, cy = b.y + b.h;
+  return (
+    <g className="topo-cbadges">
+      {list.map((c, i) => {
+        const cx = x0 + i * (2 * r + BADGE_GAP), Icon = CAT_ICON[c.cat], s = r * 1.2;
+        return (
+          <g key={c.cat} className={`topo-cb topo-cc-${c.cat}${c.blocked ? ' is-blocked' : c.ageS > FRESH_S ? ' is-old' : ''}`}>
+            <title>{badgeText(c)}</title>
+            <circle cx={cx} cy={cy} r={r} className="topo-cb-bg" />
+            <svg x={cx - s / 2} y={cy - s / 2} width={s} height={s} viewBox="0 0 24 24" className="topo-cb-icon" overflow="visible">
+              <Icon size={24} strokeWidth={2.4} />
+            </svg>
+            {c.blocked && <line x1={cx - r * 0.72} y1={cy + r * 0.72} x2={cx + r * 0.72} y2={cy - r * 0.72} className="topo-cb-slash" />}
+          </g>
+        );
+      })}
+    </g>
+  );
+}
+
 // Cihaz bağlantısının rengi: şu an en çok trafik taşıyan sınıf; boştaysa toplamda en çok kullanılan.
 function dominantCls(d: TopoDevice): Cls {
   let best: Flow | null = null;
@@ -153,7 +193,10 @@ function DeviceNode({ d, b, lod, mode, exitsById, onPick, hl }: DeviceNodeProps)
   const name = deviceName(d);
   const active = d.downBps + d.upBps > 0;
   const big = mode === 'narrow';
-  const label = `${name}, ${d.ip || 'IP yok'}, ${d.online ? 'çevrimiçi' : 'çevrimdışı'}, ${rates(d.downBps, d.upBps)}`;
+  const content = d.content || [];
+  const br = lod === 0 ? 8 : lod === 1 ? 7.5 : 5.5; // uzakta büyük (satır aralığı 12: alttaki karta değmez)
+  const label = `${name}, ${d.ip || 'IP yok'}, ${d.online ? 'çevrimiçi' : 'çevrimdışı'}, ${rates(d.downBps, d.upBps)}`
+    + (content.length ? `, içerik: ${content.map(c => `${CAT_LABEL[c.cat]}${c.blocked ? ' (engellendi)' : ''}`).join(', ')}` : '');
   let body: ReactNode;
   if (lod === 0) {
     body = <text x={b.x + 40} y={cy + 5} className="topo-t-name" fontSize={14}>{fitText(name, b.w - 50, 14)}</text>;
@@ -179,11 +222,13 @@ function DeviceNode({ d, b, lod, mode, exitsById, onPick, hl }: DeviceNodeProps)
       fx += tw;
     }
     const meta = [`Toplam ↓ ${fmtBytes(d.bytesDown)} ↑ ${fmtBytes(d.bytesUp)}`, linkShort(d.link, d.vpn), TYPE_LABEL[d.type], d.blocked ? 'Engelli' : '', !d.online ? 'çevrimdışı' : ''].filter(Boolean).join(' · ');
+    // Alt satır rozetlerin soluna kadar (rozetler alt kenara oturur).
+    const metaW = content.length ? Math.min(w, badgeLeft(b, content.length, br) - 4 - x0) : w;
     body = <>
       <text x={x0} y={b.y + 12.5} className="topo-t-name" fontSize={fn}>{fitText(name, w - 8, fn)}</text>
       <text x={x0} y={b.y + 22} className="topo-t-mono" fontSize={fs}>{fitText(`${d.ip || '—'} · ${d.vpn ? "Ev VPN'i" : d.mac}`, w, fs)}</text>
       {chips.length ? chips : <text x={x0} y={b.y + 31.5} className="topo-t-sub" fontSize={fs}>{d.routed ? 'şu an trafik yok' : 'Pi üzerinden trafik görülmedi'}</text>}
-      <text x={x0} y={b.y + 40.5} className="topo-t-sub" fontSize={fs}>{fitText(meta, w, fs)}</text>
+      <text x={x0} y={b.y + 40.5} className="topo-t-sub" fontSize={fs}>{fitText(meta, metaW, fs)}</text>
     </>;
   }
   const iconR = lod === 2 ? 9 : 13, icx = lod === 2 ? b.x + 16 : b.x + 21, icy = lod === 2 ? b.y + 14 : cy;
@@ -199,6 +244,7 @@ function DeviceNode({ d, b, lod, mode, exitsById, onPick, hl }: DeviceNodeProps)
       </svg>
       <circle cx={b.x + b.w - 9} cy={b.y + 9} r={3} className={`topo-status ${d.blocked ? 'is-blocked' : active ? 'is-active' : d.online ? 'is-on' : 'is-off'}`} />
       {body}
+      {content.length > 0 && <ContentBadges list={content} b={b} r={br} />}
     </g>
   );
 }
@@ -321,7 +367,8 @@ type Particle = { el: SVGCircleElement; route: PathGeom; s: number; dir: 1 | -1;
 const emitRate = (bps: number) => (bps < 64 ? 0 : 0.5 + 6.5 * level(bps));
 
 export function NetworkTopology() {
-  const { data, error, loading, refetch } = useApi<Topology | null>('/topology/live', null, 3000);
+  // content=1: cihaz başına anlık içerik rozetleri (kiosk göndermez; arka uçta Pi-hole okuması yalnız bu istekle uyanır).
+  const { data, error, loading, refetch } = useApi<Topology | null>('/topology/live?content=1', null, 3000);
   const stageRef = useRef<HTMLDivElement>(null);
   const partRef = useRef<SVGGElement>(null);
   const [size, setSize] = useState({ w: 0, h: 0 });
@@ -720,12 +767,15 @@ export function NetworkTopology() {
   const selAccess = sel?.kind === 'access' && accStats.has(sel.id) ? sel.id : undefined;
   const hasSel = !!(selDevice || selExit || selAccess);
   const linkW = (bps: number) => (bps > 0 ? 1.3 + 2.4 * level(bps) : 1);
+  // Açıklamada yalnız haritada şu an görünen içerik türleri.
+  const contentCats = CONTENT_ORDER.filter(c => shown.some(d => d.content?.some(x => x.cat === c)));
+  const contentMin = Math.round((data?.content?.windowS ?? 300) / 60);
   const pi = layout.pi, net = layout.internet;
 
   return (
     <div className="fade-in">
       <Panel title="Canlı Ağ Topolojisi"
-        subtitle="Her cihazın ağa nasıl bağlandığı (kablolu / Wi-Fi) ve internete hangi yoldan çıktığı: yerel, DPI ya da VPS tüneli. Tekerlek ya da iki parmakla yakınlaştırın — ayrıntılar yakınlaştıkça açılır; bir cihaza dokunmak onu büyütür."
+        subtitle="Her cihazın ağa nasıl bağlandığı (kablolu / Wi-Fi) ve internete hangi yoldan çıktığı: yerel, DPI ya da VPS tüneli. Tekerlek ya da iki parmakla yakınlaştırın — ayrıntılar yakınlaştıkça açılır; bir cihaza dokunmak onu büyütür. Kartın altındaki rozetler cihazın son dakikalarda eriştiği içerik türünü (Ebeveyn Kontrol kategorileri + Genel) gösterir."
         badge={<Badge variant="info">{onlineCount} çevrimiçi</Badge>}
         actions={<button className="icon-btn" onClick={refetch} title="Yenile" aria-label="Yenile"><RefreshCw size={14} className={loading ? 'spin' : ''} /></button>}>
 
@@ -839,6 +889,15 @@ export function NetworkTopology() {
                   <span className="topo-c-dpi"><i />DPI (istenen)</span>
                   <span className="topo-c-vps"><i />VPS tüneli</span>
                   <span className="topo-legend-note">{reduced ? 'Kalın çizgi = trafik var' : 'Akan noktalar = gerçek trafik'}{lod < 2 ? ' · ayrıntı için yakınlaştırın' : ''}</span>
+                  {(contentCats.length > 0 || (data.content && !data.content.available)) && (
+                    <span className="topo-legend-content" title={`Cihazın son ${contentMin} dk'da sorduğu alan adlarından (Pi-hole). Çizgili rozet = engellendi, soluk = ${FRESH_S} sn'den eski.`}>
+                      {contentCats.map(c => {
+                        const Icon = CAT_ICON[c];
+                        return <span key={c} className={`topo-legend-cb topo-cc-${c}`}><b><Icon size={9} strokeWidth={2.4} /></b>{CAT_SHORT[c]}</span>;
+                      })}
+                      {data.content && !data.content.available && <span className="topo-legend-note">İçerik: {data.content.note}</span>}
+                    </span>
+                  )}
                 </div>
               )}
 
@@ -854,6 +913,28 @@ export function NetworkTopology() {
                         {' · '}{selDevice.online ? 'çevrimiçi' : 'çevrimdışı'}{selDevice.blocked ? ' · engelli' : ''}
                       </div>
                       <div className="topo-drawer-sub">Bağlantı: {linkText(selDevice.link, selDevice.vpn)}</div>
+                      <div className="topo-content">
+                        <div className="topo-content-title">Anlık içerik<span>son {contentMin} dk · DNS sorgularından</span></div>
+                        {data.content && !data.content.available
+                          ? <div className="topo-drawer-empty">{data.content.note}</div>
+                          : !selDevice.content?.length
+                            ? <div className="topo-drawer-empty">Son {contentMin} dk'da bu cihazdan içerik sorgusu görülmedi.</div>
+                            : (
+                              <ul className="topo-content-list">
+                                {selDevice.content.map(c => {
+                                  const Icon = CAT_ICON[c.cat];
+                                  return (
+                                    <li key={c.cat} className={`topo-cc-${c.cat}${c.blocked ? ' is-blocked' : c.ageS > FRESH_S ? ' is-old' : ''}`}>
+                                      <span className="topo-content-ic"><Icon size={12} strokeWidth={2.2} /></span>
+                                      <span className="topo-content-name">{CAT_LABEL[c.cat]}</span>
+                                      <span className="topo-content-meta">{c.blocked ? 'engellendi' : ageText(c.ageS)} · {c.queries} sorgu</span>
+                                      {c.domains.length > 0 && <span className="topo-content-dom">{c.domains.join(', ')}</span>}
+                                    </li>
+                                  );
+                                })}
+                              </ul>
+                            )}
+                      </div>
                       {selDevice.flows.length === 0
                         ? <div className="topo-drawer-empty">Bu cihazın Pi üzerinden geçen trafiği görülmedi{selDevice.online ? ' (modemin ağında olabilir ya da henüz bağlantı kurmadı)' : ''}.</div>
                         : (

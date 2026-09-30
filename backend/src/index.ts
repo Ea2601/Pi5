@@ -29,7 +29,7 @@ import { ASN_TOKEN, getAsnPrefixes, normalizeCidr, refreshAsnIfStale } from './i
 import { getRoutingSuggestions, MAX_HOURS as SUGGEST_MAX_HOURS } from './domainSuggest';
 import { startUpdate, getUpdateStatus } from './update';
 import { sampleBandwidth, neighborMacs, buildLive } from './bandwidth';
-import { buildTopology, readNeighbors, readHandshakes, readDefaultRoute, readIfaces, readLocalIps, noteActivity, inCidr, readPeerHandshakes } from './topology';
+import { buildTopology, readNeighbors, readNeighbors6, readHandshakes, readDefaultRoute, readIfaces, readLocalIps, noteActivity, inCidr, readPeerHandshakes } from './topology';
 import { startLinkProbe, probeSamples, probeBaseline, noteTopologyView, type ProbeTarget } from './linkProbe';
 import { startTrafficRecorder, usageSummary, appActivity, appDefsFrom } from './trafficHistory';
 import { qosStatus, validateLimit, saveLimit, deleteLimit, resetQuota, normMac, runQos, migrateThrottleRules, startQos, isProtectedMac, normalizeLimitMacs } from './qos';
@@ -56,6 +56,7 @@ import { applyKiosk } from './kiosk';
 import { shareStatus, enableShare, disableShare, setSharePassword, addUsbShare, removeUsbShare, startShareWatch } from './share';
 import { rulesWithStatus as parentalRulesWithStatus, createRule as createParentalRule, updateRule as updateParentalRule,
   deleteRule as deleteParentalRule, startParental, CATEGORIES as PARENTAL_CATEGORIES } from './parental';
+import { noteContentView, contentForClients, contentStatus } from './contentActivity';
 import type { ListSyncResult } from './piholeLists';
 import {
   shq, isValidMac, isValidDomain, isValidTimezone,
@@ -2085,8 +2086,9 @@ app.get('/api/bandwidth/live', async (_req, res) => {
 });
 
 // Ağ haritası: cihaz → Pi → çıkış (yerel / DPI / VPS tüneli) ve her bağlantının canlı hızı (topology.ts). Sayaçlar
-// okunamazsa (nft yok/hata) harita yine çizilir, accounting=false ile hızlar sıfırdır.
-app.get('/api/topology/live', async (_req, res) => {
+// okunamazsa (nft yok/hata) harita yine çizilir, accounting=false ile hızlar sıfırdır. ?content=1 (yalnız panelin haritası;
+// kiosk istemez): cihaz başına anlık içerik rozetleri (contentActivity.ts, Pi-hole sorgu kaydı).
+app.get('/api/topology/live', async (req, res) => {
   try {
     const [devices, vps] = await Promise.all([
       dbAll('SELECT mac_address, ip_address, hostname, device_type, blocked FROM devices'),
@@ -2122,13 +2124,21 @@ app.get('/api/topology/live', async (_req, res) => {
     }));
     const now = Date.now();
     noteTopologyView(); // harita açıkken bağlantı türü ölçümü sıklaşır
-    res.json(buildTopology({
+    // İçerik: Pi-hole istemciyi IP'siyle kaydeder; DNS'i IPv6'dan soran cihazın adresleri MAC'le bulunur.
+    const wantContent = req.query.content === '1';
+    if (wantContent) noteContentView();
+    const v6OfMac = new Map<string, string[]>();
+    if (wantContent && isLinux) for (const [ip, n] of await readNeighbors6()) v6OfMac.set(n.mac, [...(v6OfMac.get(n.mac) || []), ip]);
+    const topo = buildTopology({
       devices: devices as any[], vps: vps as any[], neighbors, markCounters, markRates,
       recentIps: noteActivity(markRates, now), handshakes, ifacesUp: isLinux ? readIfaces() : new Set(),
       lanIp, hostname: require('os').hostname(), modem, localIps, accounting, nowS: Math.floor(now / 1000),
       probe: probeSamples, probeBaseMs: probeBaseline(), onSetupWifi: ip => inCidr(ip, AP_NET),
       onPiWifi: mac => piWifi.has(mac), vpnPeers,
-    }));
+      content: wantContent ? (ip, mac) => contentForClients([ip, ...(v6OfMac.get(mac) || [])], now / 1000) : undefined,
+    });
+    if (wantContent) topo.content = contentStatus();
+    res.json(topo);
   } catch (e: any) {
     res.status(500).json({ error: e.message });
   }
