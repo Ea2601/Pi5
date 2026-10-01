@@ -10,6 +10,7 @@ import { AppLogo } from './AppLogos';
 import { CAT_ICON } from './contentCategories';
 import { toast } from '../toast';
 import type { TrafficRule } from '../types';
+import './RoutingPanel.css';
 
 type RoutingTab = 'apps' | 'domains';
 
@@ -34,10 +35,6 @@ const ruleList = (r: TrafficRule): ListId | null => {
   return m ? (m[1] as ListId) : null;
 };
 const fmtN = (n: number) => n.toLocaleString('tr-TR');
-const listTagStyle = {
-  marginLeft: 6, padding: '1px 7px', borderRadius: 999, fontSize: 10, whiteSpace: 'nowrap',
-  color: 'var(--text-secondary)', border: '1px solid var(--panel-border)',
-} as const;
 
 interface VpsServer { id: number; ip: string; location: string }
 
@@ -52,7 +49,23 @@ function FallbackSelect({ value, onChange }: { value: string | undefined; onChan
     </Select>
   );
 }
-const stackStyle = { display: 'flex', flexDirection: 'column', gap: 4 } as const;
+
+// İki görünümün ortak denetimleri. Telefonda sütun başlığı gösterilmez: DPI düğmesi kendini anlatır, anahtar adıyla okunur.
+function DpiButton({ on, onClick }: { on: boolean; onClick: () => void }) {
+  return (
+    <button type="button" className={`rt-dpi-btn ${on ? 'is-on' : ''}`} onClick={onClick} aria-pressed={on} title="DPI bypass (Zapret)">
+      <Shield size={12} />DPI {on ? 'ON' : 'OFF'}
+    </button>
+  );
+}
+function StateToggle({ on, label, onClick }: { on: boolean; label: string; onClick: () => void }) {
+  return (
+    <button type="button" role="switch" aria-checked={on} aria-label={`${label} kuralı`} title={on ? 'Kural açık' : 'Kural kapalı'}
+      className={`toggle-btn toggle-sm ${on ? 'toggle-on' : 'toggle-off'}`} onClick={onClick}>
+      <div className="toggle-knob" />
+    </button>
+  );
+}
 
 // Uygulama kuralının listesinde alan adları ile IP aralığı girdileri (backend ipRanges.ts) birlikte durur:
 // "@asn:<n>[!443]" bir ağın (AS) IP aralıkları, "a.b.c.d[/nn]" sabit aralık. Aralıklar etiket olarak gösterilir.
@@ -183,7 +196,7 @@ export function RoutingPanel() {
     <div className="fade-in">
       <Panel title="Trafik Yönlendirme" icon={<Route size={20} style={{ marginRight: 8 }} />}
         subtitle="Tüm trafik yönlendirme kuralları — uygulamalar ve özel domain'ler">
-        <div className="service-tabs">
+        <div className="service-tabs rt-tabs">
           <button className={`service-tab ${activeTab === 'apps' ? 'service-tab-active' : ''}`}
             onClick={() => setActiveTab('apps')}>
             <Gamepad2 size={14} /><span>Uygulamalar</span>
@@ -243,142 +256,142 @@ function AppRoutingView({ onApplied }: { onApplied: () => void }) {
           </div>
         </div>
 
-        <div className="routing-filters">
-          <button className={`filter-btn ${filterCat === 'all' ? 'filter-active' : ''}`} onClick={() => setFilterCat('all')}>
-            Tümü ({rules.length})
+        <div className="rt-chips" role="group" aria-label="Kategori">
+          <button type="button" className={`rt-chip ${filterCat === 'all' ? 'is-on' : ''}`} aria-pressed={filterCat === 'all'} onClick={() => setFilterCat('all')}>
+            Tümü <span className="rt-chip-n">{rules.length}</span>
           </button>
           {categories.map(cat => {
             const meta = categoryMeta[cat] || { label: cat, icon: null, color: 'badge-neutral' };
             const count = rules.filter(r => r.category === cat).length;
             return (
-              <button key={cat} className={`filter-btn ${filterCat === cat ? 'filter-active' : ''}`} onClick={() => setFilterCat(cat)}>
-                {meta.icon} {meta.label} ({count})
+              <button type="button" key={cat} className={`rt-chip ${filterCat === cat ? 'is-on' : ''}`} aria-pressed={filterCat === cat} onClick={() => setFilterCat(cat)}>
+                {meta.icon}{meta.label} <span className="rt-chip-n">{count}</span>
               </button>
             );
           })}
         </div>
 
+        {/* Sütun başlıkları yalnız geniş ekranda (telefonda her kural kendi kartında) */}
+        {filtered.length > 0 && (
+          <div className="rt-head rt-cols-app" aria-hidden="true">
+            <span />
+            <span>Uygulama</span>
+            <span>Çıkış Noktası</span>
+            <span className="rt-c">DPI Bypass</span>
+            <span className="rt-c">Durum</span>
+          </div>
+        )}
+
         {Object.entries(grouped).map(([category, catRules]) => {
           const meta = categoryMeta[category] || { label: category, icon: null, color: 'badge-neutral' };
           return (
-            <div key={category} className="routing-category">
-              <div className="routing-category-header">
+            <section key={category} className="rt-group">
+              <div className="rt-group-head">
                 {meta.icon}
                 <span>{meta.label}</span>
                 <Badge variant={meta.color.replace('badge-', '') as any}>{catRules.length}</Badge>
               </div>
 
-              {/* Column header */}
-              <div className="routing-row routing-header-row">
-                <span className="routing-col-icon"></span>
-                <span className="routing-col-name">Uygulama</span>
-                <span className="routing-col-vps">Çıkış Noktası</span>
-                <span className="routing-col-dpi">DPI Bypass</span>
-                <span className="routing-col-toggle">Durum</span>
-              </div>
+              <div className="rt-list">
+                {catRules.map(rule => {
+                  const exitNode = rule.exit_node || 'isp';
+                  const dpi = rule.dpi_bypass || 0;
+                  const isActive = rule.enabled && exitNode !== 'isp';
+                  const isExpanded = expandedId === rule.id;
+                  const list = ruleList(rule);
+                  const ListIcon = list ? CAT_ICON[list] : null;
+                  const info = list ? rulesData.lists?.find(l => l.id === list) : undefined;
 
-              {catRules.map(rule => {
-                const exitNode = rule.exit_node || 'isp';
-                const dpi = rule.dpi_bypass || 0;
-                const isActive = rule.enabled && exitNode !== 'isp';
-                const isExpanded = expandedId === rule.id;
-                const list = ruleList(rule);
-                const ListIcon = list ? CAT_ICON[list] : null;
-                const info = list ? rulesData.lists?.find(l => l.id === list) : undefined;
-
-                return (
-                  <div key={rule.id}>
-                    <div className={`routing-row ${!rule.enabled ? 'routing-row-disabled' : ''} ${isActive ? 'routing-row-active' : ''}`}>
-                      <span className="routing-col-icon">
-                        <div className="app-icon-sm">
-                          {ListIcon ? <ListIcon size={16} strokeWidth={2} /> : <AppLogo name={rule.app_name} />}
+                  return (
+                    <div key={rule.id} className={`rt-item ${!rule.enabled ? 'is-off' : ''} ${isActive ? 'is-vps' : ''}`}>
+                      <div className={`rt-row rt-app ${exitNode !== 'isp' ? 'has-fb' : ''}`}>
+                        <div className="rt-icon">
+                          <div className="app-icon-sm">
+                            {ListIcon ? <ListIcon size={16} strokeWidth={2} /> : <AppLogo name={rule.app_name} />}
+                          </div>
                         </div>
-                      </span>
 
-                      <span className="routing-col-name">
-                        <strong>{rule.app_name}</strong>
-                        {list && <span className="routing-list-tag" style={listTagStyle} title={info ? `${info.source} · ${fmtN(info.count)} alan adı` : 'Hazır liste'}>hazır liste{info?.count ? ` · ${fmtN(info.count)}` : ''}</span>}
-                        <button className="info-btn" onClick={() => setExpandedId(isExpanded ? null : rule.id)} title={list ? 'Listeyi göster' : "Domain'leri göster"}>
-                          <Info size={12} />
-                        </button>
-                      </span>
+                        <div className="rt-name">
+                          <strong>{rule.app_name}</strong>
+                          {list && <span className="rt-tag" title={info ? `${info.source} · ${fmtN(info.count)} alan adı` : 'Hazır liste'}>hazır liste{info?.count ? ` · ${fmtN(info.count)}` : ''}</span>}
+                          <button type="button" className="rt-more" onClick={() => setExpandedId(isExpanded ? null : rule.id)}
+                            title={list ? 'Listeyi göster' : "Domain'leri göster"} aria-expanded={isExpanded}>
+                            <Info size={13} />
+                          </button>
+                        </div>
 
-                      <span className="routing-col-vps" style={exitNode !== 'isp' ? stackStyle : undefined}>
-                        <Select
-                          className="config-select config-select-sm"
-                          value={exitNode}
-                          onChange={e => handleChange(rule.id, 'exit_node', e.target.value)}
-                        >
-                          <option value="isp">ISP (Direkt)</option>
-                          {vpsList.map(v => (
-                            <option key={v.id} value={String(v.id)}>VPS {v.location} ({v.ip})</option>
-                          ))}
-                        </Select>
+                        <div className="rt-exit">
+                          <Select
+                            className="config-select config-select-sm"
+                            value={exitNode}
+                            onChange={e => handleChange(rule.id, 'exit_node', e.target.value)}
+                            aria-label="Çıkış noktası"
+                          >
+                            <option value="isp">ISP (Direkt)</option>
+                            {vpsList.map(v => (
+                              <option key={v.id} value={String(v.id)}>VPS {v.location} ({v.ip})</option>
+                            ))}
+                          </Select>
+                        </div>
                         {exitNode !== 'isp' && (
-                          <FallbackSelect value={rule.vps_fallback} onChange={v => handleChange(rule.id, 'vps_fallback', v)} />
+                          <div className="rt-fb">
+                            <FallbackSelect value={rule.vps_fallback} onChange={v => handleChange(rule.id, 'vps_fallback', v)} />
+                          </div>
                         )}
-                      </span>
 
-                      <span className="routing-col-dpi">
-                        <button
-                          className={`btn-sm ${dpi ? 'btn-primary' : 'btn-outline'}`}
-                          onClick={() => handleChange(rule.id, 'dpi_bypass', dpi ? 0 : 1)}
-                          style={{ fontSize: 11, padding: '2px 8px', display: 'inline-flex', alignItems: 'center', gap: 3 }}
-                        >
-                          <Shield size={11} />
-                          {dpi ? 'ON' : 'OFF'}
-                        </button>
-                      </span>
-
-                      <span className="routing-col-toggle">
-                        <button
-                          className={`toggle-btn toggle-sm ${rule.enabled ? 'toggle-on' : 'toggle-off'}`}
-                          onClick={() => handleChange(rule.id, 'enabled', rule.enabled ? 0 : 1)}
-                        >
-                          <div className="toggle-knob" />
-                        </button>
-                      </span>
-                    </div>
-
-                    {isExpanded && list && (
-                      <div className="routing-domains-info routing-list-info">
-                        <span style={{ color: 'var(--text-muted)', fontSize: 11 }}>Hazır liste:</span>
-                        <span style={{ fontSize: 11 }}>
-                          {info?.count
-                            ? `${info.source} — ${fmtN(info.count)} alan adı, alt alan adlarıyla (tekrarlar ayıklanınca ${fmtN(info.collapsed)})`
-                            : 'Liste yükleniyor…'}
-                          {info?.updatedAt ? ` · güncellendi ${new Date(info.updatedAt).toLocaleDateString('tr-TR')}` : ''}
-                          {' · siteleri tek tek yazmak gerekmez, liste günde bir yenilenir'}
-                        </span>
-                        <span style={{ fontSize: 11, color: 'var(--text-secondary)' }}>
-                          {exitNode !== 'isp'
-                            ? `VPS çıkışı: Pi-hole bu listedeki adları paneldeki çözücüye iletir, adresler yanıt dönmeden tünel yoluna eklenir${rulesData.listDns?.listening ? ` · son açılıştan beri ${fmtN(rulesData.listDns.queries)} sorgu, ${fmtN(rulesData.listDns.added)} adres` : ''}`
-                            : dpi ? "DPI: liste Zapret'in bypass listesine eklendi (Pi-hole'a dokunulmaz)" : 'Çıkış noktası ya da DPI seçilince uygulanır'}
-                        </span>
-                        {info?.error && <span style={{ fontSize: 11, color: 'var(--warning-color)' }}>{info.error}</span>}
-                        {exitNode !== 'isp' && rulesData.listDns?.lastError && <span style={{ fontSize: 11, color: 'var(--warning-color)' }}>{rulesData.listDns.lastError}</span>}
-                      </div>
-                    )}
-                    {isExpanded && !list && rule.domains && (() => {
-                      const { domains: names, ranges } = splitRuleEntries(rule.domains);
-                      return (
-                        <div className="routing-domains-info">
-                          <span style={{ color: 'var(--text-muted)', fontSize: 11 }}>Domain'ler:</span>
-                          <span style={{ fontFamily: 'var(--font-mono, monospace)', fontSize: 11, overflowWrap: 'anywhere' }}>
-                            {names.join(',')}
-                          </span>
-                          {groupRangeEntries(ranges).map(g => (
-                            <span key={g.label} style={{ fontSize: 11 }} title={g.entries.join(', ')}>
-                              <Badge variant="info">{g.label}</Badge>
-                            </span>
-                          ))}
+                        <div className="rt-dpi">
+                          <DpiButton on={!!dpi} onClick={() => handleChange(rule.id, 'dpi_bypass', dpi ? 0 : 1)} />
                         </div>
-                      );
-                    })()}
-                  </div>
-                );
-              })}
-            </div>
+
+                        <div className="rt-state">
+                          <StateToggle on={!!rule.enabled} label={rule.app_name} onClick={() => handleChange(rule.id, 'enabled', rule.enabled ? 0 : 1)} />
+                        </div>
+                      </div>
+
+                      {isExpanded && list && (
+                        <div className="rt-detail">
+                          <span className="rt-detail-label">Hazır liste</span>
+                          <span>
+                            {info?.count
+                              ? `${info.source} — ${fmtN(info.count)} alan adı, alt alan adlarıyla (tekrarlar ayıklanınca ${fmtN(info.collapsed)})`
+                              : 'Liste yükleniyor…'}
+                            {info?.updatedAt ? ` · güncellendi ${new Date(info.updatedAt).toLocaleDateString('tr-TR')}` : ''}
+                            {' · siteleri tek tek yazmak gerekmez, liste günde bir yenilenir'}
+                          </span>
+                          <span>
+                            {exitNode !== 'isp'
+                              ? `VPS çıkışı: Pi-hole bu listedeki adları paneldeki çözücüye iletir, adresler yanıt dönmeden tünel yoluna eklenir${rulesData.listDns?.listening ? ` · son açılıştan beri ${fmtN(rulesData.listDns.queries)} sorgu, ${fmtN(rulesData.listDns.added)} adres` : ''}`
+                              : dpi ? "DPI: liste Zapret'in bypass listesine eklendi (Pi-hole'a dokunulmaz)" : 'Çıkış noktası ya da DPI seçilince uygulanır'}
+                          </span>
+                          {info?.error && <span className="rt-warn">{info.error}</span>}
+                          {exitNode !== 'isp' && rulesData.listDns?.lastError && <span className="rt-warn">{rulesData.listDns.lastError}</span>}
+                        </div>
+                      )}
+                      {isExpanded && !list && rule.domains && (() => {
+                        const { domains: names, ranges } = splitRuleEntries(rule.domains);
+                        return (
+                          <div className="rt-detail">
+                            <span className="rt-detail-label">Domain'ler</span>
+                            {names.length > 0 && (
+                              <div className="rt-chipset">
+                                {names.map((n, i) => <span key={i} className="rt-domain-chip">{n}</span>)}
+                              </div>
+                            )}
+                            {ranges.length > 0 && (
+                              <div className="rt-chipset">
+                                {groupRangeEntries(ranges).map(g => (
+                                  <span key={g.label} className="rt-range" title={g.entries.join(', ')}>{g.label}</span>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })()}
+                    </div>
+                  );
+                })}
+              </div>
+            </section>
           );
         })}
       </div>
@@ -577,7 +590,7 @@ function DomainRoutingView({ onApplied }: { onApplied: () => void }) {
         <div className="widget-header">
           <h3><Link size={18} style={{ marginRight: 8 }} />Özel Domain Yönlendirme</h3>
           <div style={{ display: 'flex', gap: 8 }}>
-            <Badge variant="info">{domains.length} <span lang="en">domain</span></Badge>
+            <Badge variant="info"><span>{domains.length} <span lang="en">domain</span></span></Badge>
             <button className="btn-primary btn-sm" onClick={() => setShowAdd(!showAdd)}>
               <Plus size={14} /> Domain Ekle
             </button>
@@ -652,18 +665,18 @@ function DomainRoutingView({ onApplied }: { onApplied: () => void }) {
           </div>
         )}
 
-        {/* Column header */}
+        {/* Sütun başlıkları yalnız geniş ekranda */}
         {filtered.length > 0 && (
-          <div className="routing-row routing-header-row" style={{ marginTop: 8 }}>
-            <span className="routing-col-toggle">Durum</span>
-            <span className="routing-col-domain">Domain</span>
-            <span className="routing-col-vps">Çıkış Noktası</span>
-            <span className="routing-col-dpi">DPI</span>
-            <span className="routing-col-delete"></span>
+          <div className="rt-head rt-cols-dom" aria-hidden="true">
+            <span className="rt-c">Durum</span>
+            <span>Domain</span>
+            <span>Çıkış Noktası</span>
+            <span className="rt-c">DPI</span>
+            <span />
           </div>
         )}
 
-        <div style={{ marginTop: 4 }}>
+        <div className="rt-list rt-list-dom">
           {filtered.length === 0 && (
             <div className="empty-state" style={{ padding: 30 }}>
               <Link size={32} />
@@ -676,71 +689,55 @@ function DomainRoutingView({ onApplied }: { onApplied: () => void }) {
             // Yalnız öneri üretebilen kural (etkin, redirect değil, VPS ya da DPI) — sunucu yanıtı 2 dk'ya kadar eski olabilir.
             const rs = d.enabled && !d.redirect_url && (exitNode !== 'isp' || dpi) ? sugByRule.get(d.id) : undefined;
             const sugOpen = openSug.has(d.id);
+            const hasFb = exitNode !== 'isp' && !d.redirect_url;
 
             return (
-              <div key={d.id}>
-              <div className={`routing-row ${!d.enabled ? 'routing-row-disabled' : ''} ${d.enabled && exitNode !== 'isp' ? 'routing-row-active' : ''}`}>
-                <span className="routing-col-toggle">
-                  <button
-                    className={`toggle-btn toggle-sm ${d.enabled ? 'toggle-on' : 'toggle-off'}`}
-                    onClick={() => handleChange(d.id, 'enabled', d.enabled ? 0 : 1)}
-                  >
-                    <div className="toggle-knob" />
-                  </button>
-                </span>
+              <div key={d.id} className={`rt-item ${!d.enabled ? 'is-off' : ''} ${d.enabled && exitNode !== 'isp' ? 'is-vps' : ''}`}>
+              <div className={`rt-row rt-dom ${hasFb ? 'has-fb' : ''}`}>
+                <div className="rt-state">
+                  <StateToggle on={!!d.enabled} label={d.domain} onClick={() => handleChange(d.id, 'enabled', d.enabled ? 0 : 1)} />
+                </div>
 
-                <span className="routing-col-domain">
-                  <span style={{ fontWeight: 600, fontSize: 13, fontFamily: 'var(--font-mono, monospace)' }}>
-                    {d.domain}
-                  </span>
-                  {!d.domain.includes('.') && (
-                    <span style={{ marginLeft: 6 }}><Badge variant="warning">kelime</Badge></span>
-                  )}
-                  {d.domain.startsWith('*.') && (
-                    <span style={{ marginLeft: 6 }}><Badge variant="info"><span lang="en">wildcard</span></Badge></span>
-                  )}
-                  {d.redirect_url && (
-                    <span style={{ marginLeft: 6 }}><Badge variant="warning"><span lang="en">redirect</span></Badge></span>
-                  )}
+                <div className="rt-name">
+                  <span className="rt-domain">{d.domain}</span>
+                  {!d.domain.includes('.') && <span className="rt-tag rt-tag-warn">kelime</span>}
+                  {d.domain.startsWith('*.') && <span className="rt-tag rt-tag-info" lang="en">wildcard</span>}
+                  {d.redirect_url && <span className="rt-tag rt-tag-warn" lang="en">redirect</span>}
                   {d.redirect_url ? (
-                    <span style={{ fontSize: 10, color: 'var(--accent-color)', marginLeft: 8, fontFamily: 'var(--font-mono)' }}>→ {d.redirect_url}</span>
+                    <span className="rt-sub rt-sub-link">→ {d.redirect_url}</span>
                   ) : d.description ? (
-                    <span style={{ fontSize: 11, color: 'var(--text-muted)', marginLeft: 8 }}>— {d.description}</span>
+                    <span className="rt-sub">{d.description}</span>
                   ) : null}
-                </span>
+                </div>
 
-                <span className="routing-col-vps" style={exitNode !== 'isp' && !d.redirect_url ? stackStyle : undefined}>
+                <div className="rt-exit">
                   <Select
                     className="config-select config-select-sm"
                     value={exitNode}
                     onChange={e => handleChange(d.id, 'exit_node', e.target.value)}
+                    aria-label="Çıkış noktası"
                   >
                     <option value="isp">ISP (Direkt)</option>
                     {vpsList.map(v => (
                       <option key={v.id} value={String(v.id)}>VPS {v.location} ({v.ip})</option>
                     ))}
                   </Select>
-                  {exitNode !== 'isp' && !d.redirect_url && (
+                </div>
+                {hasFb && (
+                  <div className="rt-fb">
                     <FallbackSelect value={d.vps_fallback} onChange={v => handleChange(d.id, 'vps_fallback', v)} />
-                  )}
-                </span>
+                  </div>
+                )}
 
-                <span className="routing-col-dpi">
-                  <button
-                    className={`btn-sm ${dpi ? 'btn-primary' : 'btn-outline'}`}
-                    onClick={() => handleChange(d.id, 'dpi_bypass', dpi ? 0 : 1)}
-                    style={{ fontSize: 11, padding: '2px 8px', display: 'inline-flex', alignItems: 'center', gap: 3 }}
-                  >
-                    <Shield size={11} />
-                    {dpi ? 'ON' : 'OFF'}
-                  </button>
-                </span>
+                <div className="rt-dpi">
+                  <DpiButton on={!!dpi} onClick={() => handleChange(d.id, 'dpi_bypass', dpi ? 0 : 1)} />
+                </div>
 
-                <span className="routing-col-delete">
-                  <button className="icon-btn icon-btn-sm cron-delete" onClick={() => handleDelete(d.id, d.domain)} title="Sil">
+                <div className="rt-del">
+                  <button className="icon-btn icon-btn-sm cron-delete" onClick={() => handleDelete(d.id, d.domain)} title="Sil" aria-label={`${d.domain} kuralını sil`}>
                     <Trash2 size={13} />
                   </button>
-                </span>
+                </div>
               </div>
 
               {rs && rs.suggestions.length > 0 && (

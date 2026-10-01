@@ -1835,32 +1835,8 @@ select:disabled,
 
 .recharts-tooltip-wrapper { z-index: 10; }
 
-/* ═══════════════════ ROUTING PANEL ═══════════════════ */
-.routing-filters {
-  display: flex;
-  gap: 6px;
-  margin-bottom: 20px;
-  flex-wrap: wrap;
-}
-
-.routing-filters .filter-btn {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-}
-
-.routing-category { margin-bottom: 20px; }
-
-.routing-category-header {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-bottom: 8px;
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--text-primary);
-}
-
+/* ═══════════════════ ROUTING PANEL ═══════════════════
+   Routing sayfasının kural kartları RoutingPanel.css'te (rt-*); buradaki satır kuralları Kiosk ve Hız Testi listelerinde. */
 .rule-disabled { opacity: 0.4; }
 
 /* Routing inline rows */
@@ -1888,29 +1864,13 @@ select:disabled,
   margin-bottom: 2px;
 }
 .routing-row-disabled { opacity: 0.4; }
-.routing-row-active { background: color-mix(in srgb, var(--accent-color) 6%, transparent); }
-.routing-col-icon { width: 32px; flex-shrink: 0; display: flex; align-items: center; justify-content: center; }
-.routing-col-name { flex: 2; display: flex; align-items: center; gap: 6px; font-size: 13px; min-width: 0; }
-.routing-col-domain { flex: 3; display: flex; align-items: center; gap: 4px; min-width: 0; }
-.routing-col-vps { flex: 2; min-width: 140px; }
-.routing-col-dpi { width: 70px; flex-shrink: 0; display: flex; align-items: center; justify-content: center; }
 .routing-col-toggle { width: 50px; flex-shrink: 0; display: flex; align-items: center; justify-content: center; }
-.routing-col-delete { width: 36px; flex-shrink: 0; display: flex; align-items: center; justify-content: center; }
 .app-icon-sm {
   width: 26px; height: 26px; border-radius: 8px; overflow: hidden;
   background: rgba(255, 255, 255, 0.08);
   display: flex; align-items: center; justify-content: center;
 }
 .app-icon-sm img { width: 18px; height: 18px; }
-.info-btn {
-  background: none; border: none; cursor: pointer; padding: 2px;
-  color: var(--text-muted); border-radius: 8px; display: flex; align-items: center;
-}
-.info-btn:hover { color: var(--text-primary); background: rgba(255, 255, 255, 0.08); }
-.routing-domains-info {
-  display: flex; gap: 8px; padding: 4px 12px 8px 52px;
-  align-items: center; flex-wrap: wrap;
-}
 .config-select-sm { font-size: 12px; padding: 3px 8px; }
 
 /* Routing önerileri (yönlendirilen siteyle birlikte açılan alan adları) */
