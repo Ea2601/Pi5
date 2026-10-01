@@ -526,6 +526,8 @@ export const initDb = () => {
     )`);
     // Migrate existing DBs
     db.run(`ALTER TABLE wg_clients ADD COLUMN qr_data TEXT DEFAULT ''`, () => {});
+    // Uzaktan yönetim (remoteAccess.ts): 1 = bu VPS istemcisi paneli tünelden (http://10.66.66.2) açabilir. Varsayılan kapalı.
+    db.run(`ALTER TABLE wg_clients ADD COLUMN panel_access INTEGER DEFAULT 0`, () => {});
 
     // device_routing removed — all routing is now traffic-based (app + domain)
 

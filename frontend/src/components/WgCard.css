@@ -196,6 +196,33 @@
 .wg-client-main .wg-mono { color: var(--text-muted); font-size: 11px; }
 .wg-client-actions { display: flex; flex: none; gap: 2px; }
 
+/* Uzaktan yönetim: istemci başına "Panel erişimi (yönetici)" anahtarı — listede istemcinin altında tam genişlik ikinci satır,
+   Client Yönetimi kartında bilgi satırlarının altında. */
+.wg-client { flex-wrap: wrap; }
+.wg-pa {
+  display: flex; align-items: flex-start; gap: 10px;
+  flex: 1 1 100%; min-width: 0;
+  margin-top: 8px; padding-top: 8px;
+  border-top: 1px dashed color-mix(in srgb, var(--panel-border) 80%, transparent);
+}
+.wg-client .wg-pa { margin: 1px 4px 0 40px; padding-top: 6px; } /* avatarın (30 px + boşluk) hizasında */
+.wg-pa .toggle-btn { margin-top: 1px; }
+.wg-pa .toggle-btn:disabled { opacity: 0.45; cursor: not-allowed; }
+.wg-pa .toggle-btn:focus-visible { outline: 2px solid var(--accent-color); outline-offset: 2px; }
+.wg-pa-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.wg-pa-label { display: inline-flex; align-items: center; gap: 6px; color: var(--text-primary); font-size: 12px; font-weight: 600; }
+.wg-pa-text .wg-sub { line-height: 1.4; overflow-wrap: anywhere; }
+.wg-pa-url { color: var(--success-color); font-family: var(--font-mono); font-weight: 600; text-decoration: none; }
+.wg-pa-url:hover { text-decoration: underline; }
+.wg-pa-warn { display: flex; align-items: flex-start; gap: 5px; color: var(--warning-color); font-size: 11px; line-height: 1.4; }
+.wg-pa-warn svg { flex: none; margin-top: 2px; }
+/* Açık temada küçük punto sarı / yeşil yazı beyazda okunmaz (~2:1) → koyu tonlar (~5:1). */
+:root.light-theme .wg-pa-warn { color: #b45309; }
+:root.light-theme .wg-pa-url { color: #15803d; }
+@media (max-width: 480px) {
+  .wg-client .wg-pa { margin-left: 0; }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .wg-dot.wg-t-wait { animation: none; }
   .wg-chev, .wg-btn, .wg-icon-btn, .wg-card { transition: none; }

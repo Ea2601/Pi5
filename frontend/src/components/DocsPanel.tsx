@@ -1,7 +1,7 @@
 import {
   BookOpen, ShieldBan, Zap, Flame, Globe, Server, ShieldAlert,
   Clock, Network, Route, ChevronDown, ChevronRight, Terminal,
-  AlertTriangle, CheckCircle, Info, Cpu
+  AlertTriangle, CheckCircle, Info, Cpu, Smartphone
 } from 'lucide-react';
 import { useState } from 'react';
 import { Panel, Badge } from './ui';
@@ -66,6 +66,13 @@ export function DocsPanel() {
       icon: <Server size={15} />,
       badge: 'VPN',
       content: <WireguardDoc />,
+    },
+    {
+      id: 'remote',
+      title: 'Uzaktan yönetim (CGNAT arkasından)',
+      icon: <Smartphone size={15} />,
+      badge: 'VPN',
+      content: <RemoteAccessDoc />,
     },
     {
       id: 'fail2ban',
@@ -415,6 +422,67 @@ function WireguardDoc() {
       </DocBlock>
 
       <DocTip>Birden fazla VPS ekleyerek farklı trafik tiplerini farklı tünellerden yönlendirebilirsiniz.</DocTip>
+    </div>
+  );
+}
+
+// Uzaktan yönetim (backend remoteAccess.ts): kendi VPS'inizin VPN istemcileriyle panele ev dışından erişim.
+function RemoteAccessDoc() {
+  return (
+    <div className="doc-page">
+      <h3>Uzaktan yönetim (CGNAT arkasından)</h3>
+      <p>Ev hattı operatörün paylaşımlı IP'sinin (CGNAT) arkasındaysa — ya da arka arkaya iki modemden birinin (ör. operatör
+        modemi) port yönlendirmesine erişemiyorsanız — dışarıdan eve bağlanılamaz ve Ev VPN'i çalışmaz. Pi zaten kendi VPS'inize
+        dışarı doğru bir WireGuard tüneli kurduğu için panel bu tünelden açılabilir: telefonunuz ya da dizüstünüz aynı VPS'e VPN
+        istemcisi olarak bağlanır, panel <code>http://10.66.66.2</code> adresinde açılır. (Eve dışarıdan ulaşılabiliyorsa Ev
+        VPN'inin yönetici cihazları paneli zaten açar; bu yol Ev VPN'i olmadan da çalışır.)</p>
+
+      <DocBlock title="Nasıl çalışır">
+        <table className="doc-table">
+          <tbody>
+            <tr><td>İstek</td><td>Telefon (VPS istemcisi, 10.66.66.X) → VPS (wg0) → Pi (wg_vps tüneli, 10.66.66.2) → panel</td></tr>
+            <tr><td>Yanıt</td><td>Pi → yalnız işaretli istemcinin /32 dönüş rotası → aynı tünel → VPS → telefon</td></tr>
+          </tbody>
+        </table>
+        <p>Açmak: WireGuard → VPS kartı → İstemciler → istemcinin altındaki <strong>Panel erişimi (yönetici)</strong> anahtarı
+          (ya da Client Yönetimi kartı). Telefon VPS'e bağlıyken tarayıcıda <code>http://10.66.66.2</code> açılır.</p>
+      </DocBlock>
+
+      <DocBlock title="Kim neye ulaşır">
+        <table className="doc-table">
+          <thead><tr><th>Kim</th><th>Ulaştığı yer</th></tr></thead>
+          <tbody>
+            <tr><td>Panel erişimi açık istemci</td><td>Panel (şifreyle, 80), Pi'nin SSH'ı (22), DNS'i (53) ve ping. Pi'deki diğer
+              hizmetlere (ağ paylaşımı vb.) ve ev ağındaki cihazlara ulaşmaz — süzgeç düşürür; panelin güvenlik duvarı kurulu
+              olmasa da.</td></tr>
+            <tr><td>Diğer VPS istemcileri</td><td>Pi'ye yeni bağlantı açamaz (süzgeç düşürür); internete VPS üzerinden çıkmaya devam eder.</td></tr>
+            <tr><td>VPS'in kendisi (yöneticisi / sağlayıcısı)</td><td>Kendi adresiyle Pi'ye bağlantı açamaz. Ama VPS'te tam yetkisi olan
+              biri panel erişimi açık bir cihazın adresini kullanabilir ve tünelden geçen panel trafiğini — panel bu yolda şifrelenmemiş
+              HTTP olduğu için panel şifresi dahil — görebilir. Bu yüzden yalnız kendi yönettiğiniz VPS'te açın.</td></tr>
+            <tr><td>Ev ağındaki cihazlar</td><td>Değişmez. Panel erişimi açık istemciye ev ağından bağlantı açılamaz (iki yönde de).</td></tr>
+            <tr><td>İnternet</td><td>Panel internete açılmaz: alan adı, sertifika, açık port, ters vekil yoktur.</td></tr>
+          </tbody>
+        </table>
+      </DocBlock>
+
+      <DocBlock title="Koşullar ve sınırlar">
+        <p><strong>Panel şifresi zorunlu:</strong> panel koruması kalıcı açık değilse anahtar açılmaz; koruma sonradan kapatılırsa
+          erişim 30 sn içinde geri çekilir, koruma açılınca kendiliğinden döner. Tünelden açılan panel de evdeki gibi şifre ister.</p>
+        <p><strong>Tek VPS:</strong> istemci adresleri VPS başına numaralanır (10.66.66.3 iki VPS'te ayrı cihazdır); panel erişimi
+          aynı anda yalnız bir VPS'in istemcilerinde açık olabilir.</p>
+        <p><strong>Tünel gerekir:</strong> Pi ↔ VPS tüneli kapalıyken panele uzaktan ulaşılamaz; tünel yeniden kurulunca dönüş rotası
+          en geç 30 sn içinde geri gelir.</p>
+        <p><strong>Ev ağı çakışması:</strong> ev ağınız (ya da Pi'nin VPS tüneli dışındaki herhangi bir kartının ağı) 10.66.66.0/24
+          ile çakışıyorsa özellik açılmaz; sonradan çakışırsa erişim durdurulur (Bildirimler'e yazılır) ve çakışma kalkınca döner.</p>
+        <p><strong>Uzaktayken dikkat:</strong> panel tünelden açıkken 'Tüneli kes', VPS'i silmek ya da kullandığınız cihazın
+          erişimini kapatmak / istemcisini silmek bağlantınızı keser — panel önce sorar. Kesilen tünel kendiliğinden geri gelmez,
+          ancak ev ağından yeniden bağlanır.</p>
+      </DocBlock>
+
+      <DocTip type="warning">Panel erişimini yalnız kendi cihazlarınızda ve kendi yönettiğiniz VPS'te açın: cihaz Pi'nin SSH ve
+        DNS'ine de ulaşır; VPS'i yöneten panel trafiğini görebilir. Panel şifresini başka yerde kullanmayın, işiniz bitince anahtarı
+        kapatın. Telefon kaybolursa istemciyi WireGuard sayfasından silin — VPS'ten de kaldırılır.</DocTip>
+      <DocTip>Özellik kapalıyken (hiçbir istemcide açık değilken) Pi'de hiçbir rota ya da kural eklenmez.</DocTip>
     </div>
   );
 }

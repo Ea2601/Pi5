@@ -4,7 +4,7 @@ import {
   Home, Plug, Unplug, RefreshCw, ChevronDown, FileKey
 } from 'lucide-react';
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { useApi, getApi, postApi, deleteApi } from '../hooks/useApi';
+import { useApi, getApi, postApi, putApi, deleteApi } from '../hooks/useApi';
 import { ServiceSettings } from './ui/ServiceSettings';
 import { Select } from './ui';
 import { toast } from '../toast';
@@ -48,6 +48,7 @@ interface WgClient {
   config: string;
   qr_data: string;
   created_at: string;
+  panel_access?: number | null; // 1 = paneli tünelden açabilir (uzaktan yönetim)
 }
 
 const SETUP_STEPS: { key: string; label: string }[] = [
@@ -108,7 +109,9 @@ const ruleNames = (xs: string[]) => xs.slice(0, 6).join(', ') + (xs.length > 6 ?
 
 // VPS istemcisini siler. VPS'e ulaşılamaz ya da wg0.conf güncellenemezse sunucu kaydı bırakır (VPS'te eş kalmasın) ve
 // hatayı döner: kullanıcıya sorulur, onaylarsa yalnız listeden silinir (?force=1 — ör. VPS artık yok).
-async function deleteVpsClient(vpsId: number | string, clientId: number, name: string): Promise<boolean> {
+// panelAccess: istemcinin panel erişimi açık — panel şu an tünelden açıksa bu cihazın kendisi olabilir, önce sorulur.
+async function deleteVpsClient(vpsId: number | string, clientId: number, name: string, panelAccess = false): Promise<boolean> {
+  if (panelAccess && !confirmTunnelCut(`${name} istemcisini silmek — paneli şu an bu cihazdan açıyorsanız — bağlantınızı keser; yeniden açmak için ev ağından girmeniz gerekir.`)) return false;
   try {
     const r = await deleteApi(`/vps/${vpsId}/clients/${clientId}`);
     if (r?.warning) toast.info(`${name}: ${r.warning}`); else toast.success(`${name} silindi`);
@@ -130,12 +133,107 @@ async function deleteVpsClient(vpsId: number | string, clientId: number, name: s
   }
 }
 
-function ClientCard({ client, vpsLabel, onShowConfig, onShowQr, onDelete }: {
+// Uzaktan yönetim (backend remoteAccess.ts): VPS istemcisi paneli tünelden (http://10.66.66.2) açabilsin mi. Panel internete
+// açılmaz; şifre yine sorulur. Kapalı anahtar yalnız panel koruması kalıcı açıkken ve başka bir VPS'te açık istemci yokken
+// açılabilir (backend de reddeder); açık anahtar her zaman kapatılabilir.
+const PANEL_TUNNEL_IP = '10.66.66.2';
+const PANEL_TUNNEL_URL = `http://${PANEL_TUNNEL_IP}`;
+// Panel şu an VPS tünelinden mi açık: tüneli ya da bu cihazın erişimini kesen işlem bu bağlantıyı da keser (yanıt gelmeyebilir)
+// — önce açıkça sorulur. Evden açıkken soru yok.
+function confirmTunnelCut(effect: string): boolean {
+  return window.location.hostname !== PANEL_TUNNEL_IP
+    || window.confirm(`Paneli şu an VPS tünelinden (${PANEL_TUNNEL_URL}) açıyorsunuz.\n\n${effect}\n\nDevam edilsin mi?`);
+}
+// Panel koruması (panel-auth.sh durumu) kalıcı açık değilken anahtarın notu: off = kapalı anahtar (kilitli), on = açık
+// anahtar (backend erişimi durdurmuştur). 'error' / null (okunamadı / okunuyor) kilitlemez — karar backend'de.
+const AUTH_HINT: Record<string, { off: string; on: string }> = {
+  pending: {
+    off: 'Panel koruması kapalı — önce üstteki banttan panel şifresini açıp kalıcı yapın; şifresiz panel tünelden açılmaz.',
+    on: 'Panel koruması kapalı — erişim durduruldu; koruma açılınca döner.',
+  },
+  trial: {
+    off: 'Panel koruması deneme süresinde — üstteki banttan kalıcı yapın, sonra açılabilir.',
+    on: 'Panel koruması deneme süresinde — erişim, koruma kalıcı yapılınca döner.',
+  },
+  legacy: {
+    off: 'Panel koruması eski yöntemle (elle yazılmış nginx ayarı) açık — uzaktan yönetim panelden yönetilen korumayı ister.',
+    on: 'Panel koruması eski yöntemle açık — erişim durduruldu; panelden yönetilen koruma gerekir.',
+  },
+};
+function PanelAccess({ vpsId, client, auth, lockedBy, tunnelDown, onChanged }: {
+  vpsId: number | string; client: WgClient;
+  auth: string | null;       // panel-auth durumu (null: okunuyor)
+  lockedBy: string | null;   // panel erişimi başka bir VPS'te açık: onun adı
+  tunnelDown: boolean;       // Pi ↔ VPS tüneli kapalı
+  onChanged: () => void;
+}) {
+  const saved = Number(client.panel_access) === 1;
+  // İstek sonucu, liste yeniden okunana dek gösterilir (anahtar eski konuma sıçramasın); liste değişince kendiliğinden düşer.
+  const [shown, setShown] = useState<{ base: boolean; value: boolean } | null>(null);
+  const on = shown && shown.base === saved ? shown.value : saved;
+  const [busy, setBusy] = useState(false);
+  const authHint = auth ? AUTH_HINT[auth] : undefined;
+  const lockReason = on ? '' : authHint ? authHint.off
+    : lockedBy ? `Panel erişimi ${lockedBy} VPS'inde açık — aynı anda tek VPS (önce onu kapatın).` : '';
+  const toggle = async () => {
+    if (!on && !window.confirm(
+      `${client.name} paneli VPS tünelinden açabilsin mi?\n\n` +
+      `• Bu cihaz VPS'e bağlıyken panel: ${PANEL_TUNNEL_URL} (panel şifresi yine sorulur; panel internete açılmaz)\n` +
+      "• Cihaz Pi'nin SSH (22) ve DNS'ine (53) de ulaşır; Pi'deki diğer hizmetlere ve ev ağına ulaşmaz.\n" +
+      "• Panel bu yolda şifrelenmemiş HTTP'dir: VPS'i yöneten (siz ya da sağlayıcınız) trafiği ve panel şifresini görebilir, " +
+      "bu cihazın adresini kullanabilir. Yalnız kendi yönettiğiniz VPS'te ve kendi cihazlarınız için açın; panel şifresini " +
+      'başka yerde kullanmayın, işiniz bitince kapatın.',
+    )) return;
+    if (on && !confirmTunnelCut(`${client.name} için panel erişimini kapatmak — paneli şu an bu cihazdan açıyorsanız — bağlantınızı hemen keser; yeniden açmak için ev ağından girmeniz gerekir.`)) return;
+    setBusy(true);
+    try {
+      const r = await putApi(`/vps/${vpsId}/clients/${client.id}/panel-access`, { enabled: !on });
+      setShown({ base: saved, value: Number(r?.panel_access) === 1 });
+      toast.success(on ? `${client.name}: panel erişimi kapatıldı` : `${client.name}: panel erişimi açıldı — ${PANEL_TUNNEL_URL}`);
+      onChanged();
+    } catch (e) {
+      toast.error(`${client.name}: ${errText(e, 'kaydedilemedi')}`);
+    }
+    setBusy(false);
+  };
+  const warn = (text: string) => <span className="wg-pa-warn"><AlertTriangle size={11} />{text}</span>;
+  const live = !authHint && !tunnelDown; // açık anahtar şu an gerçekten çalışıyor (koruma açık, tünel ayakta)
+  return (
+    <div className="wg-pa">
+      <button type="button" role="switch" aria-checked={on} aria-label={`${client.name}: panel erişimi (yönetici)`}
+        title={lockReason || (on ? 'Panel erişimini kapat' : 'Panel erişimini aç')}
+        className={`toggle-btn toggle-sm ${on ? 'toggle-on' : 'toggle-off'}`} disabled={busy || !!lockReason} onClick={toggle}>
+        <div className="toggle-knob" />
+      </button>
+      <span className="wg-pa-text">
+        <span className="wg-pa-label">Panel erişimi (yönetici){busy && <Loader2 size={11} className="spin" />}</span>
+        {lockReason ? (
+          <span className="wg-sub">{lockReason}</span>
+        ) : on ? (
+          <>
+            <span className="wg-sub">Bu cihaz VPS'e bağlıyken panel: {live
+              ? <a className="wg-pa-url" href={PANEL_TUNNEL_URL} target="_blank" rel="noreferrer">{PANEL_TUNNEL_URL}</a>
+              : <span className="wg-mono">{PANEL_TUNNEL_URL}</span>}</span>
+            {authHint ? warn(authHint.on)
+              : tunnelDown ? warn('Tünel kapalı — panel şu an bu yoldan açılmaz; tünel bağlanınca (en geç 30 sn) çalışır.')
+                : warn("Bu cihaz Pi'nin SSH ve DNS'ine de ulaşır.")}
+            {auth === 'error' && <span className="wg-sub">Panel koruması durumu okunamadı.</span>}
+          </>
+        ) : (
+          <span className="wg-sub">Kapalı — açılırsa bu cihaz VPS'e bağlıyken panel {PANEL_TUNNEL_URL} adresinde açılır.{auth === 'error' ? ' Panel koruması durumu okunamadı.' : ''}</span>
+        )}
+      </span>
+    </div>
+  );
+}
+
+function ClientCard({ client, vpsLabel, onShowConfig, onShowQr, onDelete, panelAccess }: {
   client: WgClient;
   vpsLabel: string;
   onShowConfig: () => void;
   onShowQr: () => void;
   onDelete: () => void;
+  panelAccess: React.ReactNode;
 }) {
   const [deleting, setDeleting] = useState(false);
   return (
@@ -171,6 +269,7 @@ function ClientCard({ client, vpsLabel, onShowConfig, onShowQr, onDelete }: {
           </span>
         </div>
       </div>
+      {panelAccess}
       <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
         <button className="btn-outline btn-sm" style={{ flex: 1 }} onClick={onShowConfig}>
           <Lock size={12} /> Config
@@ -306,9 +405,9 @@ function InfoRow({ label, tone, title, sub, children }: { label: string; tone?: 
   );
 }
 
-function VpsCard({ server, onConnect, onDisconnect, onDelete, onRefresh, tunnelNonce }: {
+function VpsCard({ server, onConnect, onDisconnect, onDelete, onRefresh, tunnelNonce, panelAuth, panelLockedBy }: {
   server: VpsServer; onConnect: () => Promise<void>; onDisconnect: () => Promise<void>; onDelete: () => void; onRefresh: () => void;
-  tunnelNonce: number;
+  tunnelNonce: number; panelAuth: string | null; panelLockedBy: string | null;
 }) {
   // VPS denetimi (SSH): istenen / biten sıra numarası — farklıysa denetim sürüyor.
   const [checkSeq, setCheckSeq] = useState(1);
@@ -428,7 +527,8 @@ function VpsCard({ server, onConnect, onDisconnect, onDelete, onRefresh, tunnelN
     }
     setConfirmDel(null);
     setDeletingId(c.id);
-    void deleteVpsClient(server.id, c.id, c.name).then(ok => { if (ok) setClientsSeq(s => s + 1); setDeletingId(null); });
+    void deleteVpsClient(server.id, c.id, c.name, Number(c.panel_access) === 1)
+      .then(ok => { if (ok) { setClientsSeq(s => s + 1); onRefresh(); } setDeletingId(null); });
   };
 
   const repair = async () => {
@@ -589,6 +689,8 @@ function VpsCard({ server, onConnect, onDisconnect, onDelete, onRefresh, tunnelN
                       {deletingId === c.id ? <Loader2 size={14} className="spin" /> : confirmDel === c.id ? 'Sil?' : <Trash2 size={14} />}
                     </button>
                   </span>
+                  <PanelAccess vpsId={server.id} client={c} auth={panelAuth} lockedBy={panelLockedBy}
+                    tunnelDown={tunnel?.state === 'down'} onChanged={() => { setClientsSeq(s => s + 1); onRefresh(); }} />
                 </li>
               ))}
             </ul>
@@ -605,6 +707,12 @@ function VpsCard({ server, onConnect, onDisconnect, onDelete, onRefresh, tunnelN
 export function VpsSetup() {
   const [activeTab, setActiveTab] = useState<VpsTab>('overview');
   const { data, refetch } = useApi<{ servers: VpsServer[] }>('/vps/list', { servers: [] });
+  // Uzaktan yönetim anahtarı yalnız panel koruması kalıcı açıkken açılabilir (null: henüz okunmadı / okunamadı).
+  const { data: panelAuthData } = useApi<{ state?: string } | null>('/panel-auth/status', null);
+  const panelAuth = panelAuthData?.state ?? null;
+  // Panel erişimi aynı anda tek VPS'te: açık olan VPS'in adı, öbür VPS'lerin anahtarlarına (kendisine null).
+  const paServer = data.servers.find(s => (s.panel_access || 0) > 0);
+  const panelLockedBy = (id: number) => (paServer && paServer.id !== id ? `${paServer.location || 'VPS'} (${paServer.ip})` : null);
   const [ip, setIp] = useState('');
   const [username, setUsername] = useState('root');
   const [password, setPassword] = useState('');
@@ -618,6 +726,9 @@ export function VpsSetup() {
 
   // Client management state
   const [selectedVpsId, setSelectedVpsId] = useState<number | ''>('');
+  // Seçili VPS'in tüneli (liste okuması; kapalı / bilinmiyor → panel erişimi şu an bu yoldan çalışmaz notu).
+  const selTunnel = data.servers.find(s => s.id === Number(selectedVpsId))?.tunnel;
+  const selTunnelDown = !selTunnel || selTunnel.state === 'down';
   const [clients, setClients] = useState<WgClient[]>([]);
   const [clientsLoading, setClientsLoading] = useState(false);
   const [newClientName, setNewClientName] = useState('');
@@ -625,14 +736,15 @@ export function VpsSetup() {
   const [configClient, setConfigClient] = useState<WgClient | null>(null);
   const [qrClient, setQrClient] = useState<WgClient | null>(null);
 
-  const fetchClients = useCallback(async (vpsId: number) => {
-    setClientsLoading(true);
+  // silent: kartlar yerinde kalır (bekleme simgesi yok) — anahtar değişince / sekmeye dönünce yeniden okuma.
+  const fetchClients = useCallback(async (vpsId: number, silent = false) => {
+    if (!silent) setClientsLoading(true);
     try {
       const res = await fetch(`/api/vps/${vpsId}/clients`);
       const json = await res.json();
       setClients(json.clients || []);
-    } catch { setClients([]); }
-    setClientsLoading(false);
+    } catch { if (!silent) setClients([]); }
+    if (!silent) setClientsLoading(false);
   }, []);
 
   useEffect(() => {
@@ -720,6 +832,8 @@ export function VpsSetup() {
   const handleDelete = async (id: number) => {
     // Silmede bu VPS'e yönlenen kurallar operatöre (ISP) çevrilir, panelden eklenen istemciler VPS'ten de silinir — biri
     // varsa önce sorulur.
+    if ((data.servers.find(s => s.id === id)?.panel_access || 0) > 0
+      && !confirmTunnelCut("VPS'i silmek bu bağlantıyı keser; uzaktan yönetim ancak ev ağından yeniden kurulur.")) return;
     const u = await vpsRuleUsage(id);
     const all = [...u.block, ...u.isp];
     const nClients = await getApi<{ clients?: unknown[] }>(`/vps/${id}/clients`).then(r => r.clients?.length || 0, () => 0);
@@ -809,7 +923,14 @@ export function VpsSetup() {
           {tabs.map(tab => (
             <button key={tab.id}
               className={`service-tab ${activeTab === tab.id ? 'service-tab-active' : ''}`}
-              onClick={() => setActiveTab(tab.id)}>
+              onClick={() => {
+                setActiveTab(tab.id);
+                // Client Yönetimi'ne dönünce güncel liste (Sunucular'da yapılan panel erişimi / silme değişiklikleri).
+                if (tab.id === 'clients' && activeTab !== 'clients') {
+                  void refetch();
+                  if (selectedVpsId) void fetchClients(Number(selectedVpsId), true);
+                }
+              }}>
               {tab.icon}<span>{tab.label}</span>
             </button>
           ))}
@@ -840,6 +961,10 @@ export function VpsSetup() {
                       await refetch();
                     }}
                     onDisconnect={async () => {
+                      // Panel bu tünelden açıksa (uzaktan yönetim) kesmek bağlantıyı da keser; kesilen tünel kendiliğinden dönmez.
+                      if ((server.panel_access || 0) > 0 && !confirmTunnelCut(
+                        'Tüneli kesmek bu bağlantıyı keser ve tünel kendiliğinden geri gelmez: yeniden bağlamak için ev ağından girmeniz gerekir.',
+                      )) return;
                       // Tünel kesilince "engelle" kuralları açılmaz (trafik operatöre sızmaz) — kural varsa önce sorulur.
                       const u = await vpsRuleUsage(server.id);
                       if (u.block.length || u.isp.length) {
@@ -854,7 +979,9 @@ export function VpsSetup() {
                     }}
                     onDelete={() => handleDelete(server.id)}
                     onRefresh={refetch}
-                    tunnelNonce={tunnelNonce} />
+                    tunnelNonce={tunnelNonce}
+                    panelAuth={panelAuth}
+                    panelLockedBy={panelLockedBy(server.id)} />
                 ))}
               </div>
             </div>
@@ -967,8 +1094,15 @@ export function VpsSetup() {
                       onShowConfig={() => setConfigClient(client)}
                       onShowQr={() => setQrClient(client)}
                       onDelete={async () => {
-                        if (await deleteVpsClient(selectedVpsId, client.id, client.name)) await fetchClients(Number(selectedVpsId));
-                      }} />
+                        if (await deleteVpsClient(selectedVpsId, client.id, client.name, Number(client.panel_access) === 1)) {
+                          await fetchClients(Number(selectedVpsId));
+                          void refetch();
+                        }
+                      }}
+                      panelAccess={<PanelAccess vpsId={selectedVpsId} client={client} auth={panelAuth}
+                        lockedBy={panelLockedBy(Number(selectedVpsId))}
+                        tunnelDown={selTunnelDown}
+                        onChanged={() => { void fetchClients(Number(selectedVpsId), true); void refetch(); }} />} />
                   ))}
                 </div>
               )}

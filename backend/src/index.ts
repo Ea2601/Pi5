@@ -5,6 +5,7 @@ import rateLimit from 'express-rate-limit';
 import { initDb, dbAll, dbRun, dbGet, dbInsert } from './db';
 import { setupWireGuardVPS, testSSHConnection, executeSetupStep, addWireGuardClient, connectPi5ToVps, disconnectPi5FromVps, removeWireGuardClient, removeWireGuardClients } from './ssh';
 import { readVpsTunnels, readTunnelTransfer, validVpsId, staleTunnels, setTunnelStale } from './vpsTunnel';
+import { syncRemoteAccess, panelAccessConflict, clientTunnelIp, cidrOverlaps, localNetworks, RELAY_NET, PANEL_TUNNEL_URL, type RelayRow } from './remoteAccess';
 import { validateFwRule, fwRuleToNft, accessCheck, isPanelLockoutForAll, blocksWholeLan, describeRule } from './firewall';
 import { fail2banSettingsView, validateFail2banSettings, applyFail2banSettings, ensureFail2ban, recentBans, unbanIp, lanNetworks } from './fail2ban';
 import { normFallback } from './routeMarks';
@@ -154,6 +155,8 @@ app.use('/api', authGate);
 // netAdminGuard aşağıda tanımlı: istek anında çağrılır.
 app.use(['/api/terminal', '/api/cron', '/api/backup', '/api/system', '/api/services', '/api/storage', '/api/firewall',
   '/api/fail2ban', '/api/unbound', '/api/bandwidth'], (req, res, next) => { void netAdminGuard(req, res, next); });
+// Uzaktan yönetim anahtarı (VPS istemcisine panel erişimi, remoteAccess.ts): yalnız bu yol — /api/vps'in geri kalanı değil.
+app.use('/api/vps/:id/clients/:clientId/panel-access', writeLimiter, (req, res, next) => { void netAdminGuard(req, res, next); });
 registerAuthRoutes(app);
 
 // Graceful shutdown
@@ -777,6 +780,8 @@ app.post('/api/services/:name/restart', async (req, res) => {
     // nftables "yeniden uygula"da da (idempotent, sıralı kuyruk).
     if (name === 'nftables' || name === 'wireguard') {
       await applyAllRoutingRules().catch((e: any) => console.error('Routing yeniden uygulanamadı:', e.message));
+      // Uzaktan yönetim: wg-quick arayüzle birlikte dönüş rotalarını da sildi — izleyicinin turunu (≤30 sn) beklemeden.
+      await syncRelay().catch((e: any) => console.error('[uzaktan yönetim] uygulanamadı:', e.message));
     }
     // nftables "yeniden uygula": cihaz engeli, Ev VPN'i, internet kartı güvenlik duvarı ve port yönlendirmeleri de yüklenir.
     if (name === 'nftables') await reapplyBlockedDevices();
@@ -920,9 +925,12 @@ app.get('/api/vps/list', async (_req, res) => {
   try {
     const servers = await dbAll('SELECT id, ip, username, location, status, created_at FROM vps_servers ORDER BY id') as any[];
     const tunnels = await readVpsTunnels(servers.map(s => Number(s.id))).catch(() => new Map());
+    // Uzaktan yönetim: VPS başına panel erişimi açık istemci sayısı (arayüz öbür VPS'lerin anahtarlarını önceden kilitler).
+    const pa = new Map((await dbAll('SELECT vps_id, COUNT(*) AS n FROM wg_clients WHERE panel_access = 1 GROUP BY vps_id')
+      .catch(() => []) as any[]).map(r => [Number(r.vps_id), Number(r.n)]));
     res.json({ servers: servers.map(s => {
       const t = tunnels.get(Number(s.id));
-      return { ...s, tunnel: t ? { state: t.state, handshakeAge: t.handshakeAge } : null };
+      return { ...s, tunnel: t ? { state: t.state, handshakeAge: t.handshakeAge } : null, panel_access: pa.get(Number(s.id)) || 0 };
     }) });
   } catch (e: any) {
     res.status(500).json({ error: e.message });
@@ -1153,6 +1161,88 @@ app.get('/api/vps/:id/clients', async (req, res) => {
   }
 });
 
+// Uzaktan yönetim (remoteAccess.ts): VPS istemcisi paneli tünelden açabilsin mi. Açmak için panel koruması kalıcı açık
+// olmalı (şifresiz panel tünelden açılmaz), işaretli istemciler tek VPS'te olmalı (adresler VPS başına numaralanır) ve ev
+// ağı 10.66.66.0/24 ile çakışmamalı. Kapatmak her zaman serbest. Yazma: netAdminGuard + yazma sınırı (yukarıda app.use).
+app.put('/api/vps/:id/clients/:clientId/panel-access', async (req, res) => {
+  if (isSatellite()) return res.status(409).json({ error: 'Bu cihaz uydu — uzaktan yönetim ana cihaz içindir' });
+  const enabled = req.body?.enabled;
+  if (typeof enabled !== 'boolean') return res.status(400).json({ error: "'enabled' true ya da false olmalı" });
+  const vpsId = validVpsId(req.params.id);
+  const clientId = validVpsId(req.params.clientId);
+  if (vpsId === null || clientId === null) return res.status(400).json({ error: 'Geçersiz VPS ya da istemci' });
+  try {
+    const client: any = await dbGet('SELECT id, name, ip FROM wg_clients WHERE id = ? AND vps_id = ?', [clientId, vpsId]);
+    if (!client) return res.status(404).json({ error: 'İstemci bulunamadı' });
+    const tunIp = clientTunnelIp(client.ip);
+    if (!tunIp) return res.status(400).json({ error: `Bu istemcinin adresi (${client.ip}) VPS istemci aralığında değil` });
+    if (enabled) {
+      if (!isLinux) return res.status(400).json({ error: 'Yalnız Pi5 üzerinde çalışır' });
+      const pa = await runPanelAuth(['status']);
+      if (pa.code !== 0 || pa.kv.state !== 'on') {
+        return res.status(409).json({ error: 'Önce panel korumasını (panel şifresi) açıp kalıcı yapın — şifresiz panel tünelden açılmaz' });
+      }
+      // Ev ağı (fail2ban.ts lanNetworks) ve Pi'nin VPS tüneli dışındaki her kartı (eski iki kartlı düzenin LAN kartı dahil).
+      const nets = [...await lanNetworks().catch(() => [] as string[]), ...await localNetworks().catch(() => [] as string[])];
+      const clash = nets.find(n => cidrOverlaps(n, RELAY_NET));
+      if (clash) return res.status(409).json({ error: `Ev ağı (${clash}) VPS tünel ağıyla (${RELAY_NET}) çakışıyor — uzaktan yönetim açılamaz` });
+    }
+    const server: any = await dbGet('SELECT ip, location FROM vps_servers WHERE id = ?', [vpsId]).catch(() => null);
+    const vpsLabel = server ? `${server.location || 'VPS'} (${server.ip})` : `#${vpsId}`;
+    // Kapatılan istemci isteği yapan cihazın kendisiyse (panel bu tünelden açık): dönüş rotası kalkınca yanıt ona ulaşamazdı
+    // (istek askıda kalıp zaman aşımına düşüyordu). Kayıt yazılır, yanıt gönderilir, eşitleme yanıt yola çıktıktan sonra.
+    const selfCut = !enabled && fwClientIp(req) === tunIp;
+    // Denetim + yazım + uygulama yönlendirme kuyruğunda tek adımda: iki farklı VPS için eşzamanlı iki istek birlikte
+    // geçemesin ve uygulama bu değişikliği kesin içersin (kuyrukta önceden bekleyen eşitleme yazımdan önce çalışabilir).
+    const out = { otherVps: null as number | null, error: '', responded: false };
+    await runInRoutingQueue(async () => {
+      if (enabled) {
+        const rows = await dbAll('SELECT vps_id, ip, panel_access FROM wg_clients WHERE panel_access = 1') as RelayRow[];
+        out.otherVps = panelAccessConflict(rows, vpsId);
+        if (out.otherVps !== null) return;
+      }
+      await dbRun('UPDATE wg_clients SET panel_access = ? WHERE id = ?', [enabled ? 1 : 0, clientId]);
+      if (selfCut) {
+        await recordEvent('vps', `Panel erişimi kapatıldı: ${client.name} (${tunIp}) — ${vpsLabel} (bu cihazın kendisinden; bağlantısı kesildi)`);
+        res.json({ success: true, panel_access: 0, url: PANEL_TUNNEL_URL, self: true });
+        out.responded = true;
+        await new Promise(r => setTimeout(r, 1500)); // kuyruk tutulur: izleyicinin eşitlemesi de yanıtı kesmesin
+      }
+      try {
+        const plan = await syncRemoteAccess();
+        // Denetimden sonra çakışma doğduysa (ağ tam o an değişti) açma geçersiz: aşağıda geri alınır.
+        if (enabled && plan.blocked) throw new Error(plan.blocked);
+      } catch (e: any) {
+        out.error = String(e?.message || e);
+        // Uygulanamadıysa açma geri alınır (kapalı kalır); kapatmada kayıt kapalıdır, izleyici 30 sn'de bir yeniden dener.
+        if (enabled) {
+          await dbRun('UPDATE wg_clients SET panel_access = 0 WHERE id = ?', [clientId]);
+          await syncRemoteAccess().catch(() => {});
+        }
+      }
+    });
+    if (out.responded) {
+      if (out.error) await recordEvent('vps', `Panel erişimi kapatılırken hata: ${client.name} (${tunIp}) — ${vpsLabel}: ${out.error}`, 'warning');
+      return;
+    }
+    if (out.otherVps !== null) {
+      const o: any = await dbGet('SELECT ip, location FROM vps_servers WHERE id = ?', [out.otherVps]).catch(() => null);
+      const label = o ? `${o.location || 'VPS'} (${o.ip})` : `#${out.otherVps}`;
+      return res.status(409).json({ error: `Panel erişimi başka bir VPS'in istemcisinde açık: ${label} — aynı anda tek VPS (önce onu kapatın)` });
+    }
+    if (out.error) {
+      await recordEvent('vps', `Panel erişimi ${enabled ? 'açılamadı' : 'kapatılırken hata'}: ${client.name} (${tunIp}) — ${vpsLabel}: ${out.error}`, 'warning');
+      return res.status(500).json({ error: `Uygulanamadı: ${out.error}` });
+    }
+    await recordEvent('vps', enabled
+      ? `Panel erişimi açıldı: ${client.name} (${tunIp}) — ${vpsLabel}; bu cihaz VPS'e bağlıyken panel ${PANEL_TUNNEL_URL}`
+      : `Panel erişimi kapatıldı: ${client.name} (${tunIp}) — ${vpsLabel}`);
+    res.json({ success: true, panel_access: enabled ? 1 : 0, url: PANEL_TUNNEL_URL });
+  } catch (e: any) {
+    if (!res.headersSent) res.status(500).json({ error: e.message || 'Kaydedilemedi' });
+  }
+});
+
 // ─── VPS Internet Health Check ───
 app.get('/api/vps/:id/internet-check', async (req, res) => {
   try {
@@ -1358,6 +1448,8 @@ app.delete('/api/vps/:id/clients/:clientId', async (req, res) => {
     }
 
     await dbRun('DELETE FROM wg_clients WHERE id = ?', [req.params.clientId]);
+    // Panel erişimi açık istemciyse dönüş rotası ve süzgeçteki adresi kalkar.
+    await syncRelay().catch((e: any) => console.error('[uzaktan yönetim] uygulanamadı:', e.message));
     await recordEvent('vps', `VPS istemcisi silindi: ${client.name} — ${vpsLabel}${warning ? ` (${warning})` : ''}`, warning ? 'warning' : 'info');
     res.json({ success: true, warning: warning || undefined });
   } catch (e: any) {
@@ -1509,6 +1601,8 @@ app.post('/api/vps/:id/connect', async (req, res) => {
 
     // wg-quick down/up arayüzün tablo rotalarını siler → routing'i yeniden uygula (tünel yoksa rota eklenmez).
     if (tunnelResult) await applyAllRoutingRules().catch((e: any) => console.error('Routing yeniden uygulanamadı:', e.message));
+    // Uzaktan yönetimin dönüş rotaları da arayüzle silindi.
+    await syncRelay().catch((e: any) => console.error('[uzaktan yönetim] uygulanamadı:', e.message));
     await recordEvent('vps', tunnelResult ? `VPS tüneli bağlandı: ${vpsLabel}`
       : `VPS'e ulaşıldı ama Pi tüneli kurulamadı: ${vpsLabel}${tunnelError ? ` — ${tunnelError}` : ''}`, tunnelResult ? 'info' : 'warning');
 
@@ -1525,6 +1619,7 @@ app.post('/api/vps/:id/disconnect', async (req, res) => {
     await disconnectPi5FromVps(Number(req.params.id));
     await dbRun('UPDATE vps_servers SET status = ? WHERE id = ?', ['disconnected', req.params.id]);
     await applyAllRoutingRules().catch((e: any) => console.error('Routing yeniden uygulanamadı:', e.message));
+    await syncRelay().catch((e: any) => console.error('[uzaktan yönetim] uygulanamadı:', e.message));
     const server: any = await dbGet('SELECT ip, location FROM vps_servers WHERE id = ?', [req.params.id]);
     const usage = await vpsRuleUsage(req.params.id).catch(() => null);
     const effect = usage ? routeEffectText(usage) : '';
@@ -1590,6 +1685,7 @@ app.delete('/api/vps/:id', async (req, res) => {
     await dbRun('DELETE FROM wg_clients WHERE vps_id = ?', [req.params.id]);
     await dbRun('DELETE FROM vps_servers WHERE id = ?', [req.params.id]);
     await applyAllRoutingRules().catch((e: any) => console.error('Routing yeniden uygulanamadı:', e.message));
+    await syncRelay().catch((e: any) => console.error('[uzaktan yönetim] uygulanamadı:', e.message));
     const moved = [...usage.block, ...usage.isp];
     if (server) {
       const notes = [
@@ -1627,6 +1723,17 @@ function applyAllRoutingRules(): Promise<void> {
   });
   queuedFullApply = run;
   return run;
+}
+// Uzaktan yönetim (remoteAccess.ts): dönüş rotaları + pi5_relay süzgeci aynı kuyrukta eşitlenir. Sırada bekleyen bir
+// eşitleme varsa yenisi eklenmez (izleyici 30 sn'de bir çağırır; uzun bir yönlendirme uygulaması sırasında birikmesin) —
+// bekleyen çalışma başladığında veritabanını okur, o ana kadarki değişiklikleri içerir.
+let relayQueued: Promise<void> | null = null;
+function syncRelay(): Promise<void> {
+  relayQueued ??= runInRoutingQueue(async () => {
+    relayQueued = null;
+    await syncRemoteAccess();
+  });
+  return relayQueued;
 }
 
 // Bir VPS'e yönlenen etkin kurallar, tünel düşünce ne olacağına göre (uygulama adı / alan adı).
@@ -1797,11 +1904,14 @@ async function restoreTunnelsAndRouting() {
           console.error(`${iface} 20 sn içinde kalkmadı — arka planda bekleniyor`);
           void execFileP('systemctl', ['start', unit], { timeout: 180000 })
             .then(() => applyAllRoutingRules())
+            .then(() => syncRelay()) // uzaktan yönetimin dönüş rotaları da tünel gelince
             .catch((e: any) => console.error(`${iface} başlatılamadı:`, e.message));
         }
       }
     }
     await applyAllRoutingRules();
+    // Uzaktan yönetim: dönüş rotaları kalıcı değildir (açılışta yok) — süzgeçle birlikte yeniden kurulur.
+    await syncRelay().catch((e: any) => console.error('[uzaktan yönetim] uygulanamadı:', e.message));
   } catch (e: any) {
     console.error('Tünel/routing geri yüklenemedi:', e.message);
   }
@@ -2753,6 +2863,7 @@ if (isLinux) {
   const staleTicks = new Map<number, number>();
   let routesDirty = false; // rota senkronu başarısız olduysa sonraki turda yeniden denenir
   let lastWatchError = ''; // aynı hata her 30 sn'de günlüğe yazılmasın
+  let lastRelayError = '';
   const lastTunnelAlert = (source: string) =>
     dbGet(`SELECT severity FROM alerts WHERE type = 'health' AND source = ? ORDER BY id DESC LIMIT 1`, [source]);
   const fmtAge = (s: number) => (s < 120 ? `${s} sn` : s < 7200 ? `${Math.floor(s / 60)} dk` : `${Math.floor(s / 3600)} sa`);
@@ -2802,6 +2913,16 @@ if (isLinux) {
       const msg = String(e?.message || e);
       if (msg !== lastWatchError) console.error('[vps-tunnel] izleyici başarısız:', msg);
       lastWatchError = msg;
+    }
+    // Uzaktan yönetim: wg-quick yeniden başlayınca (WireGuard yeniden başlat, tünel yeniden kuruldu) arayüzün dönüş rotaları
+    // silinir; nftables yeniden yüklenirse süzgeç gider; panel koruması kapatılırsa erişim geri çekilir — her turda eşitlenir.
+    try {
+      await syncRelay();
+      lastRelayError = '';
+    } catch (e: any) {
+      const msg = String(e?.message || e);
+      if (msg !== lastRelayError) console.error('[uzaktan yönetim] eşitlenemedi:', msg);
+      lastRelayError = msg;
     }
   };
   setTimeout(watchVpsTunnels, 20000);

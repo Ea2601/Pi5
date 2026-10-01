@@ -40,6 +40,8 @@ export interface VpsServer {
   created_at: string;
   // Pi ↔ VPS tünelinin canlı durumu (el sıkışma yaşı); Pi dışında (geliştirme) null.
   tunnel?: TunnelInfo | null;
+  // Uzaktan yönetim: panel erişimi açık istemci sayısı (yalnız tek VPS'te > 0 olabilir).
+  panel_access?: number;
 }
 
 export interface TrafficRule {
