@@ -316,23 +316,28 @@ async function doSync(waitMs: number): Promise<ListSyncResult> {
     const norm = (h: string) => h.trim().replace(/\s+/g, ' ');
     const kept = curHosts.filter(h => !prev.includes(norm(h)) || wantHosts.includes(norm(h)));
     const next = [...kept, ...wantHosts.filter(h => !kept.map(norm).includes(h))];
+    // Panelin kayıtları (HOSTS_KEY) yalnız Pi-hole'a gerçekten yazıldıysa güncellenir: yazılamayan bir silme "panelin
+    // değil" sayılıp Pi-hole'da kalıcı kalmasın.
+    let hostsWritten = true;
     if (next.join('\n') !== curHosts.join('\n')) {
-      const r = await ftl.call('PATCH', 'config', { config: { dns: { hosts: next } } });
-      if (r.status >= 300) result.errors.push(apiError(r, 'yerel DNS yazılamadı'));
+      const err = await writeDnsHosts(ftl, next);
+      if (err) { hostsWritten = false; result.errors.push(`yerel DNS yazılamadı: ${err}`); }
       else {
         result.added += wantHosts.filter(h => !curHosts.map(norm).includes(h)).length;
         result.removed += curHosts.filter(h => !next.includes(h)).length;
         syncedSystemHosts = JSON.stringify(sys);
       }
     } else syncedSystemHosts = JSON.stringify(sys);
-    await dbRun('INSERT INTO app_settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value',
-      [HOSTS_KEY, JSON.stringify(wantHosts)]);
+    if (hostsWritten) {
+      await dbRun('INSERT INTO app_settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value',
+        [HOSTS_KEY, JSON.stringify(wantHosts)]);
+    }
 
     // 4) Bloklistesi değiştiyse liste indirme (gravity) arka planda — birkaç dakika sürebilir.
     if (listsChanged) {
-      await execFileP('systemd-run', ['--quiet', '--collect', '--unit=pi5-gravity', 'pihole', '-g'], { timeout: 10000 })
-        .then(() => { result.gravity = true; })
-        .catch(e => { result.errors.push(`liste güncellemesi başlatılamadı: ${e?.message || e}`); });
+      const err = await gravity();
+      if (err) result.errors.push(`liste güncellemesi başlatılamadı: ${err}`);
+      else result.gravity = true;
     }
     result.ok = result.errors.length === 0;
   } catch (e: any) {
@@ -345,15 +350,58 @@ async function doSync(waitMs: number): Promise<ListSyncResult> {
   return result;
 }
 
-// Liste indirme (gravity) arka planda; aynı anda tek (birim zaten varsa false: sonra yeniden denenir). Ebeveyn kontrolünün
-// hazır listeleri (parental.ts) de bunu kullanır.
-export async function startGravity(): Promise<boolean> {
+// Yerel DNS (dns.hosts) Pi-hole'un bir AYARIDIR: panelin CLI parolasıyla (/etc/pihole/cli_pw) açtığı oturum listeleri
+// yönetebilir ama ayar değiştiremez (FTL api/config.c: "CLI session is not allowed to modify Pi-hole config settings" →
+// 403). Önce API (parolasız ya da tam yetkili oturumda çalışır); 403'te Pi-hole'un kendi aracı: pihole-FTL --config
+// pihole.toml'u yazar, çalışan FTL dosya değişikliğini görüp kayıtları yeniden yükler — dns.hosts yeniden başlatma
+// gerektirmez, DNS kesilmez. umask 022: pi-dhcp.sh ftl_cli gibi (FTL dosyaları çağıranın umask'ıyla yeniden yazar).
+// Hata metni ya da null.
+async function writeDnsHosts(ftl: Ftl, hosts: string[]): Promise<string | null> {
+  const r = await ftl.call('PATCH', 'config', { config: { dns: { hosts } } });
+  if (r.status < 300) return null;
+  if (r.status !== 403) return apiError(r, 'Pi-hole API');
   try {
-    await execFileP('systemd-run', ['--quiet', '--collect', '--unit=pi5-gravity', 'pihole', '-g'], { timeout: 10000 });
-    return true;
-  } catch {
-    return false;
+    await execFileP('/bin/sh', ['-c', 'umask 022; exec pihole-FTL --config dns.hosts "$1"', 'sh', JSON.stringify(hosts)],
+      { timeout: 20000 });
+    return null;
+  } catch (e: any) {
+    const out = `${e?.stdout || ''}\n${e?.stderr || ''}`.split('\n').map((l: string) => l.trim()).filter(Boolean);
+    return `pihole-FTL --config: ${(out.pop() || e?.message || String(e)).slice(0, 200)}`;
   }
+}
+
+// Liste indirme (gravity) arka planda (pi5-gravity birimi); aynı anda tek. Birim zaten çalışıyorsa (ör. ebeveyn kontrolü
+// ya da önceki eşitleme başlattı) o bitince BİR KEZ daha çalıştırılır: çalışan gravity listeleri başta okur, sonradan
+// eklenen listeyi indirmez. Eskiden ikinci istek "Unit pi5-gravity.service was already loaded" ile düşüyordu.
+// Hata metni ya da null (başladı / sıraya alındı).
+let gravityQueued = false;
+const gravityRun = () => execFileP('systemd-run', ['--quiet', '--collect', '--unit=pi5-gravity', 'pihole', '-g'], { timeout: 10000 });
+const gravityActive = () => execFileP('systemctl', ['is-active', '--quiet', 'pi5-gravity'], { timeout: 5000 }).then(() => true, () => false);
+const sleepMs = (ms: number) => new Promise(r => setTimeout(r, ms));
+async function gravity(): Promise<string | null> {
+  try {
+    await gravityRun();
+    return null;
+  } catch (e: any) {
+    if (!(await gravityActive())) {
+      // Birim yüklü ama çalışmıyor (başarısız kalmış): temizlenip bir kez daha
+      await execFileP('systemctl', ['reset-failed', 'pi5-gravity'], { timeout: 5000 }).catch(() => undefined);
+      return gravityRun().then(() => null, (e2: any) => String(e2?.message || e2 || e?.message).slice(0, 200));
+    }
+    if (!gravityQueued) {
+      gravityQueued = true;
+      void (async () => {
+        while (await gravityActive()) await sleepMs(5000);
+        gravityQueued = false;
+        await gravityRun().catch(err => console.error('[pihole-lists] sıradaki liste indirme başlatılamadı:', err?.message || err));
+      })();
+    }
+    return null;
+  }
+}
+// Ebeveyn kontrolünün hazır listeleri (parental.ts) de kullanır; false = başlatılamadı (sonra yeniden denenir).
+export async function startGravity(): Promise<boolean> {
+  return (await gravity()) === null;
 }
 
 // Pi-hole'da panelin yönetmediği kayıtlar (salt okunur gösterim için). Ulaşılamazsa null. Ebeveyn kontrolünün kayıtları
