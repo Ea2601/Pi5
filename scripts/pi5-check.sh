@@ -69,7 +69,14 @@ echo "--- FTL ipset hataları:"; grep -i ipset /var/log/pihole/FTL.log 2>/dev/nu
 echo "--- ipset'ler:"; for s in $(ipset list -n 2>/dev/null | grep '^rt_m'); do echo "$s: $(ipset list "$s" | sed '1,/^Members:/d' | grep -c .) IP"; done
 echo "--- ip rule (fwmark, tekrar sayısıyla):"; ip rule show | grep fwmark | sed -E 's/^[0-9]+:\s*//' | sort | uniq -c
 for t in $(ip rule show | grep -o 'lookup [0-9]*' | awk '{print $2}' | sort -u); do echo "tablo $t: $(ip route show table "$t" 2>&1 | tr '\n' ' ')"; done
-echo "--- 05-domain-routing.conf:"; cat /etc/dnsmasq.d/05-domain-routing.conf 2>/dev/null
+# Hazır liste (Yetişkin / Kumar) VPS'e yönlendirilince dosyada ~52 bin `server=/…/127.0.0.1#5390` satırı olur: sayılır,
+# geri kalanı (kurallar, ipset satırları, "# klyrix-list:" yorumları) en çok 200 satır gösterilir.
+DR=/etc/dnsmasq.d/05-domain-routing.conf
+echo "--- 05-domain-routing.conf:"
+if [ -f "$DR" ]; then
+  grep -v '127\.0\.0\.1#5390' "$DR" | head -n 200
+  echo "(hazır liste satırı — server=/…/127.0.0.1#5390: $(grep -c '127\.0\.0\.1#5390' "$DR"); dosya toplam $(wc -l < "$DR") satır)"
+fi
 
 h "Fail2Ban"
 fail2ban-client status 2>/dev/null

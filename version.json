@@ -1,8 +1,9 @@
 {
-  "version": "2.24.67",
-  "build": 144,
+  "version": "2.24.68",
+  "build": 145,
   "date": "2026-10-01",
   "changelog": [
+    "Denetim betiği (pi5-check.sh): hazır liste (Yetişkin / Kumar) VPS'e yönlendirilmişken alan adı yönlendirme dosyasının ~52 bin liste satırı artık çıktıya dökülmez, sayısı yazılır; kurallar ve diğer satırlar (en çok 200) görünmeye devam eder.",
     "Routing'e Yetişkin İçerik ve Kumar ve Bahis satırları: siteleri tek tek yazmak gerekmez, satır hazır listeyi (StevenBlack, günde bir yenilenir) kullanır. VPS çıkışı seçilirse bu listedeki siteler tünelden çıkar — Pi-hole liste adlarını paneldeki küçük çözücüye iletir, adresler yanıt dönmeden tünel yoluna eklenir, böylece ilk bağlantı da tünelden gider; diğer bütün DNS sorguları eskisi gibi çalışır. Yalnız DPI seçilirse liste Zapret'e eklenir. Ebeveyn Kontrol kategorilerinde olup Routing'de olmayan servisler eklendi: Threads, Pinterest, Reddit, Tumblr, Bluesky, VK, Ask.fm, Kick, Disney+, Prime Video, Hulu, Max, Dailymotion, Vimeo, MUBI, Yerli Platformlar (BluTV, Exxen, puhutv, Gain, tabii, TOD), Roblox, Minecraft, PlayStation, Xbox, EA, Riot Games, Battle.net, Supercell, Garena, PUBG Mobile, Miniclip, Tarayıcı Oyunları, Messenger, Viber, LINE, WeChat — hepsi ISP (Direkt) gelir. TikTok, Snapchat, YouTube, Netflix, Steam, Epic Games ve Telegram satırlarına eksik alan adları eklendi",
     "Üst çubuktaki saat ve tarih (ör. 04:32 | 01 Eki 2026 | GMT+4) cyan renkte: koyu temada panelin cyan tonu, açık temada okunaklı kalsın diye koyu cyan.",
     "Ağ haritasında cihaz kartlarının altında anlık içerik rozetleri: cihazın son 5 dakikada eriştiği içerik türü — Ebeveyn Kontrol kategorileri (sosyal medya, video, oyun, mesajlaşma, yetişkin içerik, kumar) ve Genel — her biri Ebeveyn Kontrol sayfasındaki ikonuyla ve kendi rengiyle. Engellenen tür çizgili, 90 saniyeden eski olan soluk görünür; rozetin üstüne gelince tür, ne zaman, kaç sorgu ve hangi siteler yazar. Cihaza dokununca çekmecede 'Anlık içerik' listesi açılır. Açıklama yalnız haritada görünen türleri gösterir. Kaynak Pi-hole'un anlık sorgu kaydı: yalnız harita açıkken 10 sn'de bir okunur, harita kapanınca durur. DNS'e dayandığı için arka planda çalışan uygulamalar da görünür; Pi-hole'u kullanmayan cihaz görünmez",
