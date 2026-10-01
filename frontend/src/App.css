@@ -315,10 +315,12 @@ body.nav-open { overflow: hidden; }
 }
 .topbar-clock {
   display: none;
-  font-size: 12px; color: var(--text-muted); font-family: var(--font-mono);
+  font-size: 12px; color: var(--cyan-color); font-family: var(--font-mono);
   align-items: center; gap: 6px; padding: 0 8px;
   border-right: 1px solid var(--panel-border); margin-right: 4px;
 }
+/* Açık zeminde #06b6d4 soluk kalır (12 px yazı): koyu cyan. */
+:root.light-theme .topbar-clock { color: #0e7490; }
 .notification-badge {
   position: absolute; top: -4px; right: -4px;
   background: var(--danger-color); color: #fff;
