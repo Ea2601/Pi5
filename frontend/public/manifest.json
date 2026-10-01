@@ -1,0 +1,18 @@
+{
+  "id": "/",
+  "name": "Klyrix/gate — Secure Gateway",
+  "short_name": "Klyrix/gate",
+  "description": "Klyrix/gate — Secure Gateway",
+  "lang": "tr",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#0a0e14",
+  "theme_color": "#1E293B",
+  "icons": [
+    { "src": "/icons/klyrix-gate-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "/icons/klyrix-gate-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "/icons/klyrix-gate-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" },
+    { "src": "/klyrix-gate-icon-512.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }
+  ]
+}

@@ -154,6 +154,37 @@ const apiError = (r: { status: number; json: any }, what: string) =>
 const processedErrors = (r: { json: any }) =>
   (Array.isArray(r.json?.processed?.errors) ? r.json.processed.errors : []).map((e: any) => `${e.item}: ${e.error}`);
 
+// Sistem kayıtları: panelin kendi hizmetlerine verdiği yerel adlar (ör. ağ paylaşımı paylasim.lan — share.ts). Paneldeki
+// Yerel DNS listesinde görünmez; eşitleme bunları da panelin kaydı sayar (HOSTS_KEY) ve gerekmeyince siler. Sağlayıcı
+// "IP ad" satırları döner; hata verirse son başarılı sonucu geçerli kalır (geçici bir hata kaydı sildirmesin).
+type HostsProvider = () => Promise<string[]>;
+const hostsProviders: { fn: HostsProvider; last: string[] }[] = [];
+let syncedSystemHosts: string | null = null;
+export function registerHostsProvider(fn: HostsProvider): void { hostsProviders.push({ fn, last: [] }); }
+async function systemHosts(): Promise<string[]> {
+  const out: string[] = [];
+  for (const p of hostsProviders) {
+    try {
+      p.last = (await p.fn()).filter(h => !validateListValue('localdns', h)).map(h => normalizeListValue('localdns', h));
+    } catch (e: any) {
+      console.error('[pihole-lists] sistem kaydı:', e?.message || e);
+    }
+    out.push(...p.last);
+  }
+  return [...new Set(out)];
+}
+// Sistem kayıtları değiştiyse (paylaşım açıldı / kapandı, Pi'nin adresi değişti) dakikada bir eşitler. İlk eşitleme
+// açılıştakidir (index.ts); o başarılı olmadan izleyici bir şey yapmaz (Pi-hole bozuksa her dakika denenmesin).
+export function startSystemHostsWatch(): void {
+  if (!isLinux || !hostsProviders.length) return;
+  setInterval(() => {
+    if (running || syncedSystemHosts === null) return;
+    void systemHosts().then(sys => {
+      if (JSON.stringify(sys) !== syncedSystemHosts) void syncPiholeLists();
+    });
+  }, 60000);
+}
+
 export interface ListSyncResult { ok: boolean; added: number; removed: number; gravity: boolean; errors: string[]; at: number }
 let lastSync: ListSyncResult | null = null;
 export const lastListSync = () => lastSync;
@@ -230,8 +261,12 @@ async function doSync(waitMs: number): Promise<ListSyncResult> {
       else { result.removed += dropLists.length; listsChanged = true; }
     }
 
-    // 3) Yerel DNS (dns.hosts): panelin önceki kayıtları çıkarılır, güncelleri eklenir; diğerleri korunur.
-    const wantHosts = items.filter(i => i.enabled && i.list_type === 'localdns').map(i => normalizeListValue('localdns', i.value));
+    // 3) Yerel DNS (dns.hosts): panelin önceki kayıtları çıkarılır, güncelleri eklenir; diğerleri korunur. Sistem kayıtları
+    //    (registerHostsProvider) kullanıcının kayıtlarıyla birlikte.
+    const sys = await systemHosts();
+    const wantHosts = [...new Set([
+      ...items.filter(i => i.enabled && i.list_type === 'localdns').map(i => normalizeListValue('localdns', i.value)), ...sys,
+    ])];
     const prevRow = await dbGet('SELECT value FROM app_settings WHERE key = ?', [HOSTS_KEY]) as any;
     let prev: string[] = [];
     try { prev = JSON.parse(prevRow?.value || '[]'); } catch { prev = []; }
@@ -247,8 +282,9 @@ async function doSync(waitMs: number): Promise<ListSyncResult> {
       else {
         result.added += wantHosts.filter(h => !curHosts.map(norm).includes(h)).length;
         result.removed += curHosts.filter(h => !next.includes(h)).length;
+        syncedSystemHosts = JSON.stringify(sys);
       }
-    }
+    } else syncedSystemHosts = JSON.stringify(sys);
     await dbRun('INSERT INTO app_settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value',
       [HOSTS_KEY, JSON.stringify(wantHosts)]);
 

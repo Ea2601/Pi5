@@ -1,6 +1,7 @@
 // Merkezi marka tanımı — uygulamanın adı/logosu buradan yönetilir.
 // Marka değişimi için yalnızca bu dosyayı düzenlemek yeterli (statik dosyalar:
-// index.html, kiosk.html, public/favicon.svg ayrıca elle güncellenir).
+// index.html, kiosk.html, public/favicon.svg, public/manifest.json ayrıca elle güncellenir; PWA ikonları public/icons/
+// logonun ikonundan frontend/scripts/pwa-icons.mjs ile yeniden üretilir).
 export const BRAND = {
   // Tam ad — başlıklar, banner, dokümantasyon
   name: 'Klyrix/gate',

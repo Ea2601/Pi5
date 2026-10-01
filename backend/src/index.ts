@@ -44,7 +44,7 @@ import {
 } from './mesh';
 import { authGate, registerAuthRoutes } from './auth';
 import { validateSchedule, validateCommand, syncCronJobs, readJobStatuses, readSystemCron, syncCronOnStartup, runningJobs, jobOutput, startJobNow } from './cronSync';
-import { validateListValue, normalizeListValue, syncPiholeLists, lastListSync, externalPiholeEntries } from './piholeLists';
+import { validateListValue, normalizeListValue, syncPiholeLists, lastListSync, externalPiholeEntries, startSystemHostsWatch } from './piholeLists';
 import { applyZapret, zapretStatus, startBlockcheck, blockcheckRunning, zapretInstalled, zapretInstallIssue, zapretBrief, cleanDpiDomain, removeAutoHost, runDpiCheck, removeSiteStrategy, startAutoMethod } from './zapret';
 import type { ZapretApplyResult } from './zapret';
 import { unboundStatus, applyUnboundSettings, validateUnboundSettings, savedUnboundSettings } from './unbound';
@@ -5827,6 +5827,8 @@ const server = app.listen(Number(port), bindHost, () => {
   // yeniden başlatmasına denk gelirse 2 dk'ya kadar yeniden denenir). Uyduda yok.
   if (!isSatellite()) setTimeout(() => {
     void syncPiholeLists({ waitMs: 120000 }).then(r => {
+      // Sistem kayıtları (ör. paylasim.lan) değişince yeniden eşitle — ilk eşitlemeden sonra
+      startSystemHostsWatch();
       if (r.ok) return;
       console.error('[pihole-lists] eşitleme:', r.errors.join('; '));
       void recordEventOnce('pihole', `Pi-hole listeleri açılışta uygulanamadı: ${r.errors.join('; ')}`, 'warning', 60);

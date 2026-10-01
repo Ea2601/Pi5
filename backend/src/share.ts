@@ -7,6 +7,7 @@
 // Paylaşımı açmak paket kurar (samba, wsdd2, avahi-daemon): depolama işi olarak koşar (storage.ts, pi5-storage birimi).
 import fs from 'fs';
 import os from 'os';
+import dns from 'dns';
 import path from 'path';
 import { execFile, spawn } from 'child_process';
 import { promisify } from 'util';
@@ -15,6 +16,7 @@ import { dbAll } from './db';
 import { recordEvent } from './events';
 import { launchStorageJob, onStorageJobDone } from './storage';
 import { onWgRulesChanged } from './wgServer';
+import { registerHostsProvider } from './piholeLists';
 
 const execFileP = promisify(execFile);
 const SCRIPT = path.resolve(__dirname, '../../scripts/share.sh');
@@ -30,11 +32,15 @@ const FW_RULES = [
 ];
 const FW_TABLES = ['filter', 'pi5_filter'];
 const FW_CHAIN = 'pi5_share_in';
+const CONF = process.env.PI5_SHARE_CONF || '/etc/pi5-gateway/share.conf';
+// Paylaşımın sabit adı (Pi-hole yerel DNS): \\paylasim.lan\Paylasim — Pi'nin adresi değişse de aynı kalır.
+export const SHARE_DNS_NAME = 'paylasim.lan';
 
 export interface ShareUsb { name: string; uuid: string; fstype: string; mounted: boolean; device: string }
 export interface ShareStatus {
   supported: boolean; installed: boolean; enabled: boolean; user: string;
   smbd: boolean; wsdd: boolean; avahi: boolean; shareDir: string; usb: ShareUsb[]; host: string; ip: string;
+  name: string; nameOk: boolean; // nameOk: ad Pi-hole'da gerçekten çözülüyor
 }
 
 // share.sh'yi çalıştırır; çıktı KEY=VALUE satırları (usb birden çok). Betik hata verirse (error=...) fırlatır.
@@ -70,6 +76,7 @@ let cache: { at: number; data: ShareStatus } | null = null;
 export async function shareStatus(fresh = false): Promise<ShareStatus> {
   const empty: ShareStatus = {
     supported: false, installed: false, enabled: false, user: '', smbd: false, wsdd: false, avahi: false, shareDir: '', usb: [], host: '', ip: '',
+    name: SHARE_DNS_NAME, nameOk: false,
   };
   if (!isLinux || !fs.existsSync(SCRIPT)) return empty;
   if (!fresh && cache && Date.now() - cache.at < 3000) return cache.data;
@@ -82,9 +89,32 @@ export async function shareStatus(fresh = false): Promise<ShareStatus> {
       return { name, uuid, fstype, mounted: mounted === '1', device: device || '' };
     }),
     host: os.hostname(), ip: (await getLanIdentity().catch(() => null))?.ip || '',
+    name: SHARE_DNS_NAME, nameOk: kv.enabled === '1' && await nameResolves(),
   };
   cache = { at: Date.now(), data };
   return data;
+}
+
+// ── sabit ad: Pi-hole yerel DNS kaydı ───────────────────────────────────────
+// Paylaşım açıkken paylasim.lan → Pi'nin ev ağı adresi ve (sabit adres modunda ayrıysa) modem tarafı adresi; Pi-hole
+// sorunun geldiği ağdaki adresi döndürür. Kaydı piholeLists eşitlemesi yazar; adres değişince izleyicisi yeniler.
+function confEnabled(): boolean {
+  let txt = '';
+  try { txt = fs.readFileSync(CONF, 'utf8'); } catch { return false; }
+  const vals = txt.split('\n').filter(l => l.startsWith('enabled=')).map(l => l.slice('enabled='.length).trim());
+  return vals.pop() === '1'; // share.sh conf_get gibi son satır geçerli
+}
+async function shareHosts(): Promise<string[]> {
+  if (!confEnabled()) return [];
+  const lan = await getLanIdentity().catch(() => null);
+  if (!lan) throw new Error('Pi\'nin ev ağı adresi okunamadı'); // geçici: önceki kayıt kalır
+  return [...new Set([lan.ip, lan.transit.ip].filter(Boolean))].map(ip => `${ip} ${SHARE_DNS_NAME}`);
+}
+// Ad Pi-hole'da (Pi'nin kendi DNS'i) çözülüyor mu — panel çözülmüyorsa IP'li adresi öne alır.
+async function nameResolves(): Promise<boolean> {
+  const r = new dns.promises.Resolver({ timeout: 1500, tries: 1 });
+  r.setServers(['127.0.0.1']);
+  try { return (await r.resolve4(SHARE_DNS_NAME)).length > 0; } catch { return false; }
 }
 
 // ── erişim: Samba dışlama listesi + güvenlik duvarı zinciri ─────────────────
@@ -248,6 +278,7 @@ function usbNeedsMount(): boolean {
 
 export function startShareWatch(): void {
   if (!isLinux) return;
+  registerHostsProvider(shareHosts);
   onWgRulesChanged(async () => { await applyShareAccess(); });
   onStorageJobDone(j => { if (j.cmd === 'share' && j.state === 'done') void applyShareAccess().catch(e => console.error('[paylaşım]', e?.message || e)); });
   setInterval(() => {

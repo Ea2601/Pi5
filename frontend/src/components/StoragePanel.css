@@ -117,11 +117,26 @@
 .sh-row > svg { flex-shrink: 0; margin-top: 3px; color: var(--accent-color); }
 .sh-row span { min-width: 0; overflow-wrap: anywhere; }
 .sh-row code, .sh-shares code { user-select: all; }
+/* Paylaşım adresi (sabit ad paylasim.lan) + kopyala düğmesi */
+.sh-addr {
+  display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 2px 10px; padding: 8px 10px;
+  border-radius: var(--radius-sm); background: var(--accent-glow); border: 1px solid var(--accent-ring);
+}
+.sh-addr-label { grid-column: 1 / -1; font-size: 12px; color: var(--text-secondary); }
+.sh-addr code { min-width: 0; font-size: 14px; overflow-wrap: anywhere; user-select: all; }
+.sh-copy {
+  display: inline-flex; align-items: center; justify-content: center; width: 26px; height: 26px; padding: 0; flex-shrink: 0;
+  border: 1px solid var(--panel-border); border-radius: var(--radius-sm); background: var(--input-bg-soft);
+  color: var(--text-secondary); cursor: pointer; vertical-align: middle;
+}
+.sh-copy:hover { color: var(--accent-color); border-color: var(--accent-ring); }
 .st-list { margin: 6px 0 0; padding-left: 18px; font-size: 13px; }
 
 @media (min-width: 640px) {
   .st-place-row { grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr) auto; }
   .st-place-label { grid-column: auto; }
+  .sh-addr { grid-template-columns: 96px minmax(0, 1fr) auto; }
+  .sh-addr-label { grid-column: auto; }
   .st-part { flex-direction: row; align-items: center; justify-content: space-between; gap: 16px; }
   .st-part-usage { flex: 0 0 220px; }
 }
