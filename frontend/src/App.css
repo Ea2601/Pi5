@@ -2768,6 +2768,21 @@ button.user-profile { cursor: pointer; font-family: var(--font-family); transiti
 .cron-system { margin-top: 18px; padding-top: 12px; border-top: 1px solid var(--panel-border); }
 /* Pi-hole listeleri: Pi-hole'a panel dışından eklenmiş kayıtlar (salt okunur) */
 .pihole-external { margin-top: 14px; padding-top: 10px; border-top: 1px solid var(--panel-border); display: flex; flex-direction: column; gap: 6px; }
+/* Hazır bloklisteleri (HaGeZi Multi): Kapalı / sürümler — tek seçim */
+.adl-preset {
+  display: flex; flex-direction: column; gap: 8px; margin-bottom: 14px; padding: 12px;
+  border-radius: var(--radius-sm); background: var(--accent-glow); border: 1px solid var(--accent-ring);
+}
+.adl-preset-head { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 8px; color: var(--text-primary); }
+.adl-preset-head svg { color: var(--accent-color); }
+.adl-seg { display: flex; flex-wrap: wrap; gap: 4px; padding: 3px; border-radius: var(--radius-sm); background: var(--input-bg-soft); align-self: flex-start; max-width: 100%; }
+.adl-seg-btn {
+  display: inline-flex; align-items: center; gap: 5px; min-height: 32px; padding: 0 14px; border: 0; border-radius: 6px;
+  background: transparent; color: var(--text-secondary); font-size: 13px; font-weight: 500; cursor: pointer;
+}
+.adl-seg-btn:hover:not(:disabled):not(.is-on) { color: var(--text-primary); }
+.adl-seg-btn.is-on { background: var(--bg-surface); color: var(--text-primary); box-shadow: 0 0 0 1px var(--accent-ring); }
+.adl-seg-btn:disabled:not(.is-on) { opacity: 0.55; cursor: default; }
 .cron-row-system { opacity: 0.8; }
 
 .cron-add-form {

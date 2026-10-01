@@ -154,6 +154,46 @@ const apiError = (r: { status: number; json: any }, what: string) =>
 const processedErrors = (r: { json: any }) =>
   (Array.isArray(r.json?.processed?.errors) ? r.json.processed.errors : []).map((e: any) => `${e.item}: ${e.error}`);
 
+// ─── Hazır bloklisteleri (Pi-hole → Bloklisteleri) ───
+// Bir gruptan (ör. HaGeZi Multi) en çok bir sürüm açık olur; seçim pihole_lists'e sıradan bir adlist kaydı olarak yazılır,
+// eşitleme Pi-hole'a uygular. Adblock biçimi: Pi-hole v6 "||alan^" satırını alt alan adlarıyla birlikte engeller (HaGeZi'nin
+// Pi-hole için önerdiği biçim). Kaynak GitHub (StevenBlack ile aynı sunucu — operatörde açık olduğu biliniyor).
+export interface AdlistPreset { id: string; group: string; groupLabel: string; label: string; url: string; desc: string }
+const HAGEZI = 'https://raw.githubusercontent.com/hagezi/dns-blocklists/main/adblock';
+export const ADLIST_PRESETS: AdlistPreset[] = [
+  { id: 'hagezi-normal', group: 'hagezi', groupLabel: 'HaGeZi Multi', label: 'Normal', url: `${HAGEZI}/multi.txt`,
+    desc: 'Belirgin reklam ve izleyiciler; neredeyse hiç site bozmaz (~200 bin alan adı)' },
+  { id: 'hagezi-pro', group: 'hagezi', groupLabel: 'HaGeZi Multi', label: 'Pro', url: `${HAGEZI}/pro.txt`,
+    desc: 'Reklam, izleme, zararlı yazılım ve kimlik avı geniş kapsamlı; site bozma olasılığı düşük (~230 bin alan adı)' },
+  { id: 'hagezi-proplus', group: 'hagezi', groupLabel: 'HaGeZi Multi', label: 'Pro++', url: `${HAGEZI}/pro.plus.txt`,
+    desc: 'Daha sıkı; bazı sitelerde giriş, ödeme ya da video bozulabilir — beyaz listeye eklemek gerekebilir (~250 bin alan adı)' },
+];
+// Grubun öbür sürümleri silinir; id verilmişse o sürüm eklenir (varsa açılır), null = grup kapalı. Seçilen sürüm döner.
+export async function setAdlistPreset(group: string, id: string | null): Promise<AdlistPreset | null> {
+  const inGroup = ADLIST_PRESETS.filter(p => p.group === group);
+  if (!inGroup.length) throw new Error('Bilinmeyen hazır liste');
+  const pick = id ? inGroup.find(p => p.id === id) : null;
+  if (id && !pick) throw new Error('Bilinmeyen liste sürümü');
+  for (const p of inGroup) if (p !== pick) await dbRun("DELETE FROM pihole_lists WHERE list_type = 'adlist' AND value = ?", [p.url]);
+  if (pick) {
+    await dbRun(`INSERT INTO pihole_lists (list_type, value, comment, enabled) VALUES ('adlist', ?, ?, 1)
+      ON CONFLICT(list_type, value) DO UPDATE SET enabled = 1, comment = excluded.comment`, [pick.url, `${pick.groupLabel} ${pick.label} (hazır liste)`]);
+  }
+  return pick || null;
+}
+// Bir kez (bu özelliği getiren güncellemede ve yeni kurulumda): HaGeZi Pro açılır — kullanıcı kararı 2026-10-02. Sonra
+// kullanıcının seçimi geçerli: kapatılırsa yeniden açılmaz; grup zaten panelde varsa dokunulmaz. Açılan sürüm döner.
+const PRESET_DEFAULT_KEY = 'adlist_preset_default';
+export async function ensureDefaultAdlistPreset(): Promise<AdlistPreset | null> {
+  if (await dbGet('SELECT value FROM app_settings WHERE key = ?', [PRESET_DEFAULT_KEY])) return null;
+  const urls = ADLIST_PRESETS.filter(p => p.group === 'hagezi').map(p => p.url);
+  const have = await dbAll("SELECT value FROM pihole_lists WHERE list_type = 'adlist'") as { value: string }[];
+  const added = have.some(r => urls.includes(r.value)) ? null : await setAdlistPreset('hagezi', 'hagezi-pro');
+  await dbRun('INSERT INTO app_settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value',
+    [PRESET_DEFAULT_KEY, '1']);
+  return added;
+}
+
 // Sistem kayıtları: panelin kendi hizmetlerine verdiği yerel adlar (ör. ağ paylaşımı paylasim.lan — share.ts). Paneldeki
 // Yerel DNS listesinde görünmez; eşitleme bunları da panelin kaydı sayar (HOSTS_KEY) ve gerekmeyince siler. Sağlayıcı
 // "IP ad" satırları döner; hata verirse son başarılı sonucu geçerli kalır (geçici bir hata kaydı sildirmesin).

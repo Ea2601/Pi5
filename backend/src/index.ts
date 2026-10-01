@@ -44,7 +44,8 @@ import {
 } from './mesh';
 import { authGate, registerAuthRoutes } from './auth';
 import { validateSchedule, validateCommand, syncCronJobs, readJobStatuses, readSystemCron, syncCronOnStartup, runningJobs, jobOutput, startJobNow } from './cronSync';
-import { validateListValue, normalizeListValue, syncPiholeLists, lastListSync, externalPiholeEntries, startSystemHostsWatch } from './piholeLists';
+import { validateListValue, normalizeListValue, syncPiholeLists, lastListSync, externalPiholeEntries, startSystemHostsWatch,
+  ADLIST_PRESETS, setAdlistPreset, ensureDefaultAdlistPreset } from './piholeLists';
 import { applyZapret, zapretStatus, startBlockcheck, blockcheckRunning, zapretInstalled, zapretInstallIssue, zapretBrief, cleanDpiDomain, removeAutoHost, runDpiCheck, removeSiteStrategy, startAutoMethod } from './zapret';
 import type { ZapretApplyResult } from './zapret';
 import { unboundStatus, applyUnboundSettings, validateUnboundSettings, savedUnboundSettings } from './unbound';
@@ -558,7 +559,7 @@ app.get('/api/pihole/lists', async (req, res) => {
   try {
     const lists = await dbAll('SELECT * FROM pihole_lists ORDER BY list_type, id');
     const external = req.query.external === '1' ? await externalPiholeEntries() : undefined;
-    res.json({ lists, sync: lastListSync(), external });
+    res.json({ lists, sync: lastListSync(), external, presets: ADLIST_PRESETS });
   } catch (e: any) {
     res.status(500).json({ error: e.message });
   }
@@ -615,6 +616,21 @@ app.delete('/api/pihole/lists/:id', async (req, res) => {
     res.json({ success: true, sync });
   } catch (e: any) {
     res.status(500).json({ error: e.message });
+  }
+});
+
+// Hazır blokliste sürümü (ör. HaGeZi Multi Normal / Pro / Pro++); id null = grup kapalı. Grubun öbür sürümleri kaldırılır.
+app.post('/api/pihole/lists/preset', async (req, res) => {
+  try {
+    const group = String(req.body?.group || '');
+    const id = req.body?.id == null ? null : String(req.body.id);
+    const pick = await setAdlistPreset(group, id);
+    const label = ADLIST_PRESETS.find(p => p.group === group)?.groupLabel || group;
+    const sync = await syncPiholeLists();
+    await piholeEvent(`Bloklisteleri: hazır liste ${label} ${pick ? `→ ${pick.label}` : 'kapatıldı'}`, sync);
+    res.json({ success: true, sync, preset: pick });
+  } catch (e: any) {
+    res.status(/^Bilinmeyen/.test(e?.message || '') ? 400 : 500).json({ error: e.message });
   }
 });
 
@@ -5841,13 +5857,19 @@ const server = app.listen(Number(port), bindHost, () => {
   // Pi-hole listeleri: panel kayıtları Pi-hole'a uygulanır (FTL açılışta geç hazır olabilir → 30 sn sonra; açılıştaki DNS
   // yeniden başlatmasına denk gelirse 2 dk'ya kadar yeniden denenir). Uyduda yok.
   if (!isSatellite()) setTimeout(() => {
-    void syncPiholeLists({ waitMs: 120000 }).then(r => {
+    void (async () => {
+      // Hazır blokliste varsayılanı (HaGeZi Pro) bir kez — açılış eşitlemesi onu da uygular
+      const preset = await ensureDefaultAdlistPreset().catch(e => { console.error('[pihole-lists] hazır liste:', e?.message || e); return null; });
+      if (preset) {
+        void recordEvent('pihole', `Reklam engelleme: hazır liste ${preset.groupLabel} ${preset.label} açıldı — Pi-hole → Bloklisteleri'nden değiştirilebilir`);
+      }
+      const r = await syncPiholeLists({ waitMs: 120000 });
       // Sistem kayıtları (ör. paylasim.lan) değişince yeniden eşitle — ilk eşitlemeden sonra
       startSystemHostsWatch();
       if (r.ok) return;
       console.error('[pihole-lists] eşitleme:', r.errors.join('; '));
       void recordEventOnce('pihole', `Pi-hole listeleri açılışta uygulanamadı: ${r.errors.join('; ')}`, 'warning', 60);
-    });
+    })();
   }, 30000);
   // Olay geçmişi: sürüm değiştiyse (elle ya da gece otomatik güncellemesiyle) "Panel güncellendi" bir kez yazılır.
   void recordVersionChange();

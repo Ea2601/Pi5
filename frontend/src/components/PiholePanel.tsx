@@ -1,4 +1,4 @@
-import { ShieldBan, Search, BarChart3, Globe, Users, Settings, List, Plus, Trash2, Check, X, Server, Lock, Gauge, Radio, RefreshCw, AlertTriangle } from 'lucide-react';
+import { ShieldBan, Search, BarChart3, Globe, Users, Settings, List, Plus, Trash2, Check, X, Server, Lock, Gauge, Radio, RefreshCw, AlertTriangle, Loader2, Sparkles } from 'lucide-react';
 import { useApi, postApi, putApi, deleteApi } from '../hooks/useApi';
 import { useState } from 'react';
 import { Panel, StatCard, Badge } from './ui';
@@ -242,11 +242,19 @@ function QueryBreakdownCard({ stats }: { stats: PiholeStats }) {
 // kayıtlar aşağıda salt okunur gösterilir ve eşitleme onlara dokunmaz.
 interface ListSync { ok: boolean; added: number; removed: number; gravity: boolean; errors: string[]; at: number }
 interface ExternalEntries { whitelist: string[]; blacklist: string[]; adlist: string[]; localdns: string[] }
+// Hazır bloklisteleri (backend piholeLists.ts ADLIST_PRESETS): gruptan en çok bir sürüm açık
+interface AdlistPreset { id: string; group: string; groupLabel: string; label: string; url: string; desc: string }
 
 function PiholeListManager({ listType }: { listType: string }) {
-  const { data, refetch } = useApi<{ lists: PiholeListItem[]; sync?: ListSync | null; external?: ExternalEntries | null }>(
-    '/pihole/lists?external=1', { lists: [] });
-  const items = data.lists.filter(l => l.list_type === listType);
+  const { data, refetch } = useApi<{
+    lists: PiholeListItem[]; sync?: ListSync | null; external?: ExternalEntries | null; presets?: AdlistPreset[];
+  }>('/pihole/lists?external=1', { lists: [] });
+  const presets = listType === 'adlist' ? data.presets || [] : [];
+  const presetUrls = new Set(presets.map(p => p.url));
+  // Hazır liste kaydı yalnız seçicide görünür (alttaki listede ikinci kez değil)
+  const items = data.lists.filter(l => l.list_type === listType && !presetUrls.has(l.value));
+  const activeUrls = new Set(data.lists.filter(l => l.list_type === 'adlist' && l.enabled).map(l => l.value));
+  const [presetBusy, setPresetBusy] = useState<string | null>(null);
   // undefined = henüz yanıt yok, null = Pi-hole okunamadı
   const external = data.external === undefined ? undefined : data.external === null ? null
     : data.external[listType as keyof ExternalEntries] || [];
@@ -306,6 +314,14 @@ function PiholeListManager({ listType }: { listType: string }) {
     setSyncing(false);
   };
 
+  // key: tıklanan düğme (sürüm id'si ya da "<grup>:off") — yalnız onda dönen simge
+  const pickPreset = async (group: string, id: string | null, label: string) => {
+    setPresetBusy(id ?? `${group}:off`);
+    await run(() => postApi('/pihole/lists/preset', { group, id }), id ? `${label} seçildi` : `${label} kapatıldı`);
+    setPresetBusy(null);
+  };
+  const presetGroups = [...new Set(presets.map(p => p.group))].map(g => presets.filter(p => p.group === g));
+
   const sync = data.sync;
   return (
     <Panel title={l.title} icon={<List size={18} style={{ marginRight: 8 }} />}
@@ -321,6 +337,34 @@ function PiholeListManager({ listType }: { listType: string }) {
           <span>Son eşitleme başarısız: {sync.errors.join('; ')}</span>
         </div>
       )}
+      {presetGroups.map(group => {
+        const { group: g, groupLabel } = group[0];
+        const cur = group.find(p => activeUrls.has(p.url)) || null;
+        const options: { id: string | null; label: string }[] = [{ id: null, label: 'Kapalı' }, ...group.map(p => ({ id: p.id, label: p.label }))];
+        return (
+          <div key={g} className="adl-preset">
+            <div className="adl-preset-head">
+              <Sparkles size={14} />
+              <strong>{groupLabel}</strong>
+              <span className="list-item-comment">hazır liste · reklam, izleme, zararlı yazılım, kimlik avı · günde birkaç kez güncellenir</span>
+            </div>
+            <div className="adl-seg" role="radiogroup" aria-label={`${groupLabel} sürümü`}>
+              {options.map(o => {
+                const on = (cur?.id ?? null) === o.id;
+                const key = o.id ?? `${g}:off`;
+                return (
+                  <button key={key} role="radio" aria-checked={on} className={`adl-seg-btn${on ? ' is-on' : ''}`}
+                    disabled={presetBusy !== null} onClick={() => { if (!on) void pickPreset(g, o.id, `${groupLabel} ${o.id ? o.label : ''}`.trim()); }}>
+                    {presetBusy === key && <Loader2 size={12} className="spin" />}{o.label}
+                  </button>
+                );
+              })}
+            </div>
+            <span className="list-item-comment">{cur ? cur.desc : 'Kapalı: yalnız aşağıdaki listeler kullanılır.'}</span>
+          </div>
+        );
+      })}
+
       <div className="list-add-form">
         <div className="list-add-row">
           <input className="config-input list-input-main" type="text" placeholder={l.placeholder}
