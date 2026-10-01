@@ -110,22 +110,22 @@ function ToastCard({ item }: { item: ToastItem }) {
 
   useEffect(() => {
     startTimer();
-    return () => {
-      clearAuto();
-      if (exitTimer.current) clearTimeout(exitTimer.current);
-    };
+    return clearAuto;
   }, [startTimer, clearAuto]);
+  // Çıkış zamanlayıcısı yalnız kart kaldırılırken temizlenir. Eskiden yukarıdaki etkiyle birlikte temizleniyordu: kapanırken
+  // `leaving` değişince `close` → `startTimer` yenilenip etki yeniden kurulurken çıkış iptal oluyor, kart görünmez
+  // (opacity 0) ama sayfada kalıyor ve altındaki düğmeleri (sağ üstteki Kopyala, Temizle …) tıklanamaz yapıyordu.
+  useEffect(() => () => { if (exitTimer.current) clearTimeout(exitTimer.current); }, []);
 
   return (
     <div
       className={`toast-card toast-${item.type} ${leaving ? 'toast-leaving' : ''}`}
       role="status"
-      onMouseEnter={clearAuto}
-      onMouseLeave={startTimer}
     >
       <span className="toast-icon">{ICONS[item.type]}</span>
       <span className="toast-message">{item.message}</span>
-      <button className="toast-close" onClick={close} aria-label="Bildirimi kapat">
+      {/* Kart tıklamaları geçirir (index.css); tek etkileşimli parça ✕: üstünde beklemek kapanmayı durdurur. */}
+      <button className="toast-close" onClick={close} onMouseEnter={clearAuto} onMouseLeave={startTimer} aria-label="Bildirimi kapat">
         <X size={14} />
       </button>
     </div>

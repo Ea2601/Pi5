@@ -315,11 +315,14 @@ h1, h2, h3, h4, h5, h6 {
   border: 1px solid rgba(239, 68, 68, 0.2);
 }
 
-/* ─── Toast bildirimleri ─── */
+/* ─── Toast bildirimleri ───
+   Sağ altta. Eskiden sağ üstteydi (üst çubuğun hemen altı): kart başlıklarının sağındaki düğmelerin (Kopyala, Temizle,
+   Domain Ekle …) tam üstüne oturuyor, fare üstüne gelince kapanma sayacı durduğundan düğmeler tıklanamaz kalıyordu.
+   Kart tıklamaları geçirir (altındaki öğe çalışır); yalnız ✕ tıklanır — onun üstünde beklemek kapanmayı durdurur. */
 .toast-viewport {
   position: fixed;
-  top: 76px;
   right: 24px;
+  bottom: calc(24px + env(safe-area-inset-bottom));
   z-index: 4000;
   display: flex;
   flex-direction: column;
@@ -329,7 +332,7 @@ h1, h2, h3, h4, h5, h6 {
 }
 
 .toast-card {
-  pointer-events: auto;
+  pointer-events: none;
   display: flex;
   align-items: flex-start;
   gap: 10px;
@@ -371,6 +374,7 @@ h1, h2, h3, h4, h5, h6 {
 }
 
 .toast-close {
+  pointer-events: auto;
   flex-shrink: 0;
   display: flex;
   align-items: center;
@@ -407,13 +411,14 @@ h1, h2, h3, h4, h5, h6 {
 
 @media (max-width: 640px) {
   .toast-viewport {
-    top: auto;
-    bottom: 20px;
+    bottom: calc(20px + env(safe-area-inset-bottom));
     right: 16px;
     left: 16px;
     width: auto;
   }
 }
+/* Sürüm bildirimi çubuğu (altta) açıkken bildirimler onun üstünde */
+body:has(.live-version-bar) .toast-viewport { bottom: calc(96px + env(safe-area-inset-bottom)); }
 
 /* Animations */
 .fade-in {
