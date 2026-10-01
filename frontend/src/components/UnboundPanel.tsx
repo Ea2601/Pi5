@@ -21,6 +21,8 @@ interface UnboundStats {
 interface UnboundStatus {
   installed: boolean; running?: boolean; listen?: string; managed?: boolean;
   effective?: UnboundSettings | null; settings?: UnboundSettings | null; recommended: UnboundSettings;
+  profile?: 'lite' | 'standard' | null; // cihazın donanım profili (scripts/platform.sh); öneri buna göre
+  profileForced?: boolean; // profil elle seçildi (/etc/pi5-gateway/profile): uyarı belleği suçlamaz
   options: { num_threads: number[]; cache_mb: number[]; cache_min_ttl: number[] };
   extendedStats?: boolean; stats?: UnboundStats | null; security?: { label: string; status: boolean }[];
   error?: string;
@@ -250,6 +252,22 @@ function UnboundSettingsForm({ st, onApplied }: { st: UnboundStatus; onApplied: 
           Unbound yeni ayarlarla yanıt vermezse eski ayarlar kendiliğinden geri yüklenir.
         </span>
       </div>
+      {st.profile === 'lite' && form.cache_mb > 16 && (
+        <div className="routing-apply routing-apply-err" style={{ marginTop: 0, marginBottom: 12 }}>
+          <AlertTriangle size={14} />
+          {st.profileForced ? (
+            <span>
+              Hafif profil elle seçildi (/etc/pi5-gateway/profile): {form.cache_mb} MB önbellek ({form.cache_mb * 3} MB'a kadar
+              büyür) Pi-hole ve panelle aynı belleği paylaşır. Hafif profil için önerilen {st.recommended.cache_mb} MB.
+            </span>
+          ) : (
+            <span>
+              Bu cihazın belleği az (Hafif profil, 512 MB sınıfı): {form.cache_mb} MB önbellek ({form.cache_mb * 3} MB'a kadar
+              büyür) Pi-hole ve panelle aynı belleği paylaşır. Bu cihaz için önerilen {st.recommended.cache_mb} MB.
+            </span>
+          )}
+        </div>
+      )}
 
       <div className="config-category">
         <div className="config-items">

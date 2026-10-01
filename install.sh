@@ -38,6 +38,21 @@ echo "  ║     Klyrix/gate Kurulum Başlıyor             ║"
 echo "  ╚══════════════════════════════════════════════╝"
 echo -e "${NC}"
 
+# ─── Mimari: Node.js 22 (NodeSource) yalnız amd64 / arm64 / armhf (ARMv7 ve üstü) için var ───
+# Burada satır içi: curl | bash ile çalışırken depo (scripts/platform.sh) henüz yok. Kullanıcı alanı mimarisi dpkg'den
+# (Pi 5'te 32 bit sistem uname'de aarch64 görünür). 32 bit Raspberry Pi OS armv6 kartlarda (Pi Zero W, Pi 1) da "armhf"
+# der: çekirdek armv6 ise Node.js 22 çalışmaz.
+ARCH=$(dpkg --print-architecture 2>/dev/null || true)
+KARCH=$(uname -m 2>/dev/null || true)
+case "$ARCH" in
+  amd64|arm64) ;;
+  armhf)
+    case "$KARCH" in
+      armv6*) err "Bu işlemci (armv6: Pi Zero W / Pi 1) desteklenmiyor — Node.js 22 ARMv7 ya da 64 bit işlemci ister (Pi Zero 2 W, Pi 3/4/5)." ;;
+    esac ;;
+  *) err "Desteklenmeyen mimari: ${ARCH:-bilinmiyor} ($KARCH) — Klyrix Gate amd64 (x86_64), arm64 ya da armhf (32 bit Raspberry Pi OS) ister." ;;
+esac
+
 # ─── Cihaz rolü (R2): ana cihaz ya da mesh uydusu ───
 # Kurulum ikisinde de aynıdır (tam kurulum). Uyduda panel ağ geçidi işlerini (yönlendirme, DNS/DHCP kuralları, tüneller)
 # çalıştırmaz; ana cihazın ev Wi-Fi'ını aynı ağ adı ve şifreyle yayınlar. Soru terminalden (/dev/tty) sorulur: curl | bash
@@ -116,6 +131,50 @@ else
 fi
 log "Proje dosyaları hazır: $INSTALL_DIR"
 
+# ─── Donanım profili (scripts/platform.sh — eşikler tek yerde; panel de aynısını okur) ───
+# Bellek sınıfı (512 MB, 1 GB, 2 GB …), kullanıcı alanı mimarisi, ekran çıkışı ve takas. Profil saklanmaz, her seferinde
+# gerçeklerden çıkar; yalnız KLYRIX_PROFILE=lite|standard verilirse elle seçim olarak /etc/pi5-gateway/profile'a yazılır.
+# Okunamazsa (eski depo / hata) bugünkü davranış sürer: aşağıdaki kapılar yalnız açıkça "hayır" diyen değerde atlar.
+case "${KLYRIX_PROFILE:-}" in
+  lite|standard)
+    if { printf 'profile=%s\n' "$KLYRIX_PROFILE" > /etc/pi5-gateway/profile; } 2>/dev/null; then log "Donanım profili elle seçildi: $KLYRIX_PROFILE"
+    else warn "Donanım profili yazılamadı (/etc/pi5-gateway/profile)"; fi ;;
+  "") ;;
+  *) warn "KLYRIX_PROFILE yalnız lite ya da standard olabilir — yok sayıldı" ;;
+esac
+# KLYRIX_ZRAM=0 kalıcı olsun: gece / panel güncellemesi (post-update.sh) bu ortam değişkenini görmez, dosyaya bakar.
+if [ "${KLYRIX_ZRAM:-}" = 0 ]; then
+  if { : > /etc/pi5-gateway/zram.off; } 2>/dev/null; then log "zram kapalı (KLYRIX_ZRAM=0 → /etc/pi5-gateway/zram.off)"
+  else warn "zram kapatma tercihi yazılamadı (/etc/pi5-gateway/zram.off)"; fi
+fi
+PLAT=$(bash "$INSTALL_DIR/scripts/platform.sh" detect 2>/dev/null) || PLAT=""
+plat() { printf '%s\n' "$PLAT" | sed -n "s/^$1=//p" | head -1; }
+if [ -n "$PLAT" ]; then
+  if [ "$(plat profile)" = lite ]; then PLAT_PROFILE="Hafif"; else PLAT_PROFILE="Standart"; fi
+  if [ "$(plat forced)" = 1 ]; then PLAT_PROFILE="$PLAT_PROFILE (elle seçildi)"; fi
+  log "Donanım: $(plat board) · $(plat mem_mib) MB bellek ($(plat mem_class) MB sınıfı) · $(plat arch) · profil: $PLAT_PROFILE"
+  if [ "$(plat profile)" = lite ] && [ "$(plat forced)" = 1 ]; then
+    warn "Hafif profil elle seçildi (/etc/pi5-gateway/profile): HDMI ekranı (kiosk) kurulmaz"
+  elif [ "$(plat profile)" = lite ]; then
+    warn "Az bellekli cihaz: HDMI ekranı (kiosk) kurulmaz; derleme belleği zorlar (bellek biterse DNS değil derleme durur)"
+  fi
+else
+  warn "Donanım profili okunamadı — tüm adımlar varsayılanla sürüyor"
+fi
+
+# zram: takas alanı hiç yoksa ve işletim sisteminin takas yöneticisi de yoksa (Raspberry Pi OS'ta rpi-swap vardır), 1 GB
+# sınıfı ve altında derlemelerden ÖNCE. Kapatmak: KLYRIX_ZRAM=0 (yukarıda zram.off olarak saklanır) ya da
+# /etc/pi5-gateway/zram.off. Bookworm'da paketin kendi varsayılan ayarı başlatılır (platform.sh swap-ensure).
+if [ "$(plat need_zram)" = 1 ]; then
+  warn "Takas alanı yok ve bellek az: zram (sıkıştırılmış bellek takası) kuruluyor..."
+  if apt install -y -qq systemd-zram-generator; then
+    if ZOUT=$(bash "$INSTALL_DIR/scripts/platform.sh" swap-ensure 2>&1); then log "zram: $(printf '%s\n' "$ZOUT" | tr '\n' ' ')"
+    else warn "zram açılamadı: $(printf '%s\n' "$ZOUT" | tr '\n' ' ') — takassız devam ediliyor"; fi
+  else
+    warn "systemd-zram-generator kurulamadı — takassız devam ediliyor"
+  fi
+fi
+
 # Hız testi motoru: Ookla Speedtest CLI (resmi; en yakın sunucu, çoklu bağlantı). Kurulamazsa speedtest-cli kullanılır.
 if bash "$INSTALL_DIR/scripts/ookla-ensure.sh"; then log "Hız testi: Ookla Speedtest CLI hazır"
 else warn "Ookla Speedtest CLI kurulamadı — hız testi speedtest-cli ile sürer (sonra: sudo bash $INSTALL_DIR/scripts/ookla-ensure.sh)"; fi
@@ -124,7 +183,8 @@ else warn "Ookla Speedtest CLI kurulamadı — hız testi speedtest-cli ile sür
 step "4/10 — Backend Kuruluyor"
 cd "$INSTALL_DIR/backend"
 npm ci --production=false 2>/dev/null || npm install
-npm run build || warn "Backend build hata verdi"
+# Derleme alt kabukta oom_score_adj 500 ile: bellek biterse çekirdek önce derlemeyi öldürür, DNS'i (pihole-FTL, Unbound) değil.
+( { echo 500 > /proc/self/oom_score_adj; } 2>/dev/null || true; npm run build ) || warn "Backend build hata verdi"
 # Build çıktısı yoksa servisi başlatma — dist/index.js olmadan pi5-backend sonsuz crash-loop'a girer
 if [ ! -f "$INSTALL_DIR/backend/dist/index.js" ]; then
   err "Backend build başarısız (dist/index.js yok). Kurulum durduruldu — crash-loop önlendi. Logları kontrol edin."
@@ -135,7 +195,7 @@ log "Backend derlendi"
 step "5/10 — Frontend Kuruluyor"
 cd "$INSTALL_DIR/frontend"
 npm ci --production=false 2>/dev/null || npm install
-npm run build
+( { echo 500 > /proc/self/oom_score_adj; } 2>/dev/null || true; npm run build )
 log "Frontend build tamamlandı"
 
 # ─── 6. Ağ Servislerinin Kurulumu ───
@@ -276,12 +336,17 @@ else warn "Zapret kurulamadı — DPI çalışmaz (sonra: sudo bash $INSTALL_DIR
 
 # ─── Hardware: LED, LCD bağımlılıkları ───
 # Bookworm (PEP 668) externally-managed-environment: --break-system-packages gerekir, yoksa sessiz başarısızlık.
-warn "Pimoroni kasa bağımlılıkları kuruluyor..."
-# Pillow: kasa OLED render motorunun (scripts/klyrix_oled.py) tek zorunlu bağımlılığı.
-pip3 install --break-system-packages --quiet fanshim spidev luma.oled luma.core RPLCD Pillow 2>/dev/null \
-  || pip3 install --quiet fanshim spidev luma.oled luma.core RPLCD Pillow 2>/dev/null \
-  || warn "Pimoroni pip bağımlılıkları kurulamadı (donanım yoksa normal)"
-log "Pimoroni bağımlılık adımı tamamlandı"
+# Kasa (OLED / LED / fan HAT) kütüphaneleri yalnız Raspberry Pi'de (platform.sh rpi=1; okunamazsa da kurulur).
+if [ "$(plat rpi)" != 0 ]; then
+  warn "Pimoroni kasa bağımlılıkları kuruluyor..."
+  # Pillow: kasa OLED render motorunun (scripts/klyrix_oled.py) tek zorunlu bağımlılığı.
+  pip3 install --break-system-packages --quiet fanshim spidev luma.oled luma.core RPLCD Pillow 2>/dev/null \
+    || pip3 install --quiet fanshim spidev luma.oled luma.core RPLCD Pillow 2>/dev/null \
+    || warn "Pimoroni pip bağımlılıkları kurulamadı (donanım yoksa normal)"
+  log "Pimoroni bağımlılık adımı tamamlandı"
+else
+  log "Raspberry Pi değil — kasa (OLED / LED) kütüphaneleri atlandı"
+fi
 
 # ─── Kasa LCD servisi (kalıcı döngü daemon'u — fork yerine systemd) ───
 # Birim tek kaynaktan (scripts/systemd/pi5-lcd.service; post-update.sh ve backend de aynısını kullanır)
@@ -291,10 +356,20 @@ systemctl enable pi5-lcd.service 2>/dev/null || true
 log "Kasa LCD servisi hazır (pi5-lcd.service). Denetleyici: panelden ssd1306/sh1106 seçilebilir."
 
 # ─── Kiosk: Minimal X11 + Chromium (Lite OS için) ───
-warn "Kiosk modu bağımlılıkları kuruluyor (Lite OS)..."
-apt install -y -qq xserver-xorg x11-xserver-utils xinit openbox 2>/dev/null || true
-# Bookworm tarayıcıyı "chromium" olarak paketler; eski/türev imajlar "chromium-browser" kullanır.
-apt install -y -qq chromium 2>/dev/null || apt install -y -qq chromium-browser 2>/dev/null || true
+# Yalnız HDMI ekranı açılabilecek cihazda (platform.sh kiosk: 512 MB sınıfında "no", ekran çıkışı yoksa "no-display").
+# Birim yine kurulur: panel (kiosk.ts) onu arar ve nedeni söyler.
+case "$(plat kiosk)" in
+  no)
+    if [ "$(plat forced)" = 1 ]; then warn "HDMI ekranı (kiosk) atlandı: Hafif profil elle seçildi — X11 / Chromium kurulmadı"
+    else warn "HDMI ekranı (kiosk) atlandı: $(plat mem_mib) MB bellek tarayıcıya yetmez (en az 1 GB) — X11 / Chromium kurulmadı"; fi ;;
+  no-display) warn "HDMI ekranı (kiosk) atlandı: ekran çıkışı bulunamadı — X11 / Chromium kurulmadı" ;;
+  *)
+    if [ "$(plat kiosk)" = warn ]; then warn "1 GB bellek: HDMI ekranı açılabilir ama tarayıcı için dar"; fi
+    warn "Kiosk modu bağımlılıkları kuruluyor (Lite OS)..."
+    apt install -y -qq xserver-xorg x11-xserver-utils xinit openbox 2>/dev/null || true
+    # Bookworm tarayıcıyı "chromium" olarak paketler; eski/türev imajlar "chromium-browser" kullanır.
+    apt install -y -qq chromium 2>/dev/null || apt install -y -qq chromium-browser 2>/dev/null || true ;;
+esac
 
 # Kiosk betiği depoda (scripts/kiosk.sh — Chromium'u root değil klyrix-kiosk kullanıcısıyla açar) ve birim tek
 # kaynaktan (scripts/systemd/pi5-kiosk.service: xinit → openbox --startup kiosk.sh). Eskiden ikisi burada ve

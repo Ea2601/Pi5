@@ -53,7 +53,7 @@ import { wgServerStatus, setServerEnabled, addPeer, updatePeerRole, deletePeer, 
   validatePeerName, validRole, WG_PORT, WG_IFACE, reachabilityTest } from './wgServer';
 import { startReachWatch, noteReachResult, reachWatchState, REACH_WATCH_INTERVAL_H } from './wgWatch';
 import { storageStatus, storageJob, noteStorageJob, startArchive, startPrepare, startMigrate, startStorageWatch } from './storage';
-import { applyKiosk } from './kiosk';
+import { applyKiosk, kioskSupport } from './kiosk';
 import { shareStatus, enableShare, disableShare, setSharePassword, addUsbShare, removeUsbShare, startShareWatch } from './share';
 import { rulesWithStatus as parentalRulesWithStatus, createRule as createParentalRule, updateRule as updateParentalRule,
   deleteRule as deleteParentalRule, startParental, CATEGORIES as PARENTAL_CATEGORIES } from './parental';
@@ -5181,8 +5181,8 @@ async function detectPironmanConflict(): Promise<string> {
 }
 
 // SunFounder pironman5'in tek bir donanım modülünü bırakmasını sağlar; ayar SunFounder
-// config'ine kalıcı yazılır, fan/güç yönetimi pironman5'te kalır. OLED için bunu pi5-lcd
-// unit'i ExecStartPre ile yapıyor; RGB için LED'e yazmadan hemen önce burada yapılır —
+// config'ine kalıcı yazılır, fan/güç yönetimi pironman5'te kalır. pi5-lcd unit'i bunu her
+// başlangıçta (ExecCondition) yapıyor; RGB için LED'e yazmadan hemen önce burada yapılır —
 // yoksa pironman5 bizim yazdığımız rengin üzerine kendi animasyonunu bindirir.
 // pironman5 kurulu değilse / bayrak desteklenmiyorsa false döner (davranış değişmez).
 async function releasePironmanModule(): Promise<boolean> {
@@ -5380,7 +5380,7 @@ app.put('/api/case/lcd', async (req, res) => {
           const out = String(dErr.stdout || '') + String(dErr.message || '');
           if (dErr.code === 2 || /display=console/.test(out)) noDisplay = true;
         }
-        // pi5-lcd servisi ExecStartPre ile SunFounder OLED'ini bıraktığı için restart yeterli;
+        // pi5-lcd servisi başlarken (ExecCondition) SunFounder OLED'ini bıraktığı için restart yeterli;
         // OLED çakışması yapısal olarak önlenir (ayrı bir pironman uyarısına gerek yok).
         await exec('systemctl restart pi5-lcd.service', { timeout: 15000 });
         if (noDisplay) {
@@ -5397,11 +5397,14 @@ app.put('/api/case/lcd', async (req, res) => {
 });
 
 app.get('/api/case/kiosk', async (_req, res) => {
+  // support: bu cihazda HDMI ekranı açılabilir mi (bellek sınıfı / ekran çıkışı / elle profil) ve şu an çalışıyor mu
+  // (kiosk.ts); okunamazsa null
+  const support = isLinux ? await kioskSupport() : null;
   try {
     const row = await dbGet("SELECT value FROM app_settings WHERE key = 'kiosk_config'");
     const config = row?.value ? JSON.parse(row.value) : null;
-    res.json({ config });
-  } catch { res.json({ config: null }); }
+    res.json({ config, support });
+  } catch { res.json({ config: null, support }); }
 });
 
 app.put('/api/case/kiosk', async (req, res) => {

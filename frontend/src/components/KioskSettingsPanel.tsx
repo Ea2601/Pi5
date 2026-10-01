@@ -1,15 +1,36 @@
-import { Monitor, Layout, Save, ExternalLink, Power, RotateCcw, Palette, ScanLine } from 'lucide-react';
+import { Monitor, Layout, Save, ExternalLink, Power, RotateCcw, Palette, ScanLine, TriangleAlert, Info } from 'lucide-react';
 import { useState } from 'react';
 import { useApi, putApi } from '../hooks/useApi';
 import { Panel, Select } from './ui';
 import { toast } from '../toast';
 import { DEFAULT_CONFIG, TILES, normalizeConfig, type KioskConfig, type KioskThemeMode, type KioskTileId } from '../kiosk/config';
+import './KioskSettingsPanel.css';
 
 // HDMI ekranı (kiosk.html → src/kiosk): tek ekranlı gösterge paneli. Burada hangi panoların görüneceği, tema ve ekran
 // koruma seçilir; kiosk ayarı 60 sn içinde kendisi okur. Kiosk modu açılıp kapatılınca pi5-kiosk servisi başlar / durur.
+// support: cihazın HDMI ekranını kaldırıp kaldıramayacağı (backend kiosk.ts ← scripts/platform.sh). no: 512 MB sınıfı ya
+// da elle seçilmiş Hafif profil (forced), no-display: ekran çıkışı yok (backend açmayı reddeder), warn: 1 GB sınıfı
+// (açılır, bellek dar). active: ekran servisi şu an çalışıyor. Eski backend: yok.
+type KioskSupport = { state: 'ok' | 'warn' | 'no' | 'no-display'; memMiB: number; forced?: boolean; active?: boolean } | null;
+
+// Açmayı engelleyen neden — backend kiosk.ts kioskBlockReason ile aynı metin (elle seçilmiş profilde bellek suçlanmaz)
+const blockReasonOf = (s: KioskSupport) => s?.state === 'no'
+  ? (s.forced ? 'HDMI ekranı Hafif profilde kapalı (profil elle seçildi: /etc/pi5-gateway/profile)'
+    : `HDMI ekranı bu cihazda açılamaz: ${s.memMiB} MB bellek (en az 1 GB gerekir)`)
+  : s?.state === 'no-display' ? 'Ekran çıkışı bulunamadı' : '';
+
 export function KioskSettingsPanel() {
-  const { data } = useApi<{ config: unknown }>('/case/kiosk', { config: null });
+  const { data, refetch } = useApi<{ config: unknown; support?: KioskSupport }>('/case/kiosk', { config: null });
+  const support = data.support ?? null;
+  const blockReason = blockReasonOf(support);
+  // Açılamaz ama ekran bu sürümden önce açılmış ve hâlâ çalışıyor: anahtar gerçeği ("açık") gösterir ve kapatılabilir;
+  // kapatıldıktan sonra bu cihazda yeniden açılamaz. Pano / tema kaydı ekranı kapatmaz (backend yalnız ayarı kaydeder).
+  const runningAnyway = !!blockReason && !!support?.active;
+  const locked = !!blockReason && !runningAnyway;
   const [config, setConfig] = useState<KioskConfig>(DEFAULT_CONFIG);
+  // Açılamayan cihazda anahtar kapalı görünür ve kilitlidir; Kaydet "kapalı" gönderir (kayıt yoksa varsayılan "açık"tı,
+  // her kayıtta ret iletisi gelirdi). Yedekten "açık" gelmiş bir ayar da böylece kapanır (kapatma koşulsuzdur).
+  const kioskOn = config.enabled && (!blockReason || runningAnyway);
   const [saving, setSaving] = useState(false);
   // Sunucudan yeni kayıt gelince formu ona göre kur (render sırasında; efekt + setState zincirleme render yapardı)
   const [loadedFrom, setLoadedFrom] = useState<unknown>(undefined);
@@ -27,13 +48,15 @@ export function KioskSettingsPanel() {
     setSaving(true);
     try {
       // Yanıt {success, applied, message, error}: servis gerçekten uygulanmadıysa "kaydedildi" demek yanıltıcı olurdu.
-      const r = await putApi('/case/kiosk', config as unknown as Record<string, unknown>) as
+      const r = await putApi('/case/kiosk', { ...config, enabled: kioskOn } as unknown as Record<string, unknown>) as
         { applied?: boolean; message?: string; error?: string; warning?: string };
       if (r.error) toast.error(r.error);
       else if (r.warning) toast.info(r.warning);
       else toast.success(r.message || 'Kiosk ayarları kaydedildi');
     } catch (e) { toast.error(e instanceof Error ? e.message : 'Kaydetme başarısız'); }
     setSaving(false);
+    // Açılamayan cihazda ekranın çalışıp çalışmadığı kayıttan sonra değişebilir (kapatıldıysa anahtar kilitlenir)
+    if (blockReason) refetch();
   };
 
   return (
@@ -46,7 +69,7 @@ export function KioskSettingsPanel() {
               <ExternalLink size={13} /> Kiosku aç
             </button>
             <button className="btn-primary btn-sm" onClick={handleSave} disabled={saving}>
-              <Save size={13} /> {saving ? (config.enabled ? 'Ekran açılıyor…' : 'Kaydediliyor…') : 'Kaydet'}
+              <Save size={13} /> {saving ? (kioskOn && !blockReason ? 'Ekran açılıyor…' : 'Kaydediliyor…') : 'Kaydet'}
             </button>
           </div>
         }>
@@ -56,11 +79,22 @@ export function KioskSettingsPanel() {
             <div className="config-item-info">
               <span className="config-item-label"><Power size={14} /> Kiosk modu</span>
               <span className="config-item-desc">Kapatılırsa pi5-kiosk servisi durur ve HDMI çıkışı terminale döner</span>
+              {blockReason && (
+                <span className="config-item-desc ks-support ks-support-no">
+                  <TriangleAlert size={12} /> {blockReason}{runningAnyway ? ' — ekran şu an açık (önceki ayar); kapatılırsa bu cihazda yeniden açılamaz' : ''}
+                </span>
+              )}
+              {support?.state === 'warn' && (
+                <span className="config-item-desc ks-support ks-support-warn">
+                  <Info size={12} /> {support.memMiB} MB bellek: tarayıcı için dar — ekran açılır ama panel ve DNS ile aynı belleği paylaşır
+                </span>
+              )}
             </div>
             <div className="config-item-control">
-              <button className={`toggle-btn ${config.enabled ? 'toggle-on' : 'toggle-off'}`}
+              <button className={`toggle-btn ks-toggle ${kioskOn ? 'toggle-on' : 'toggle-off'}`}
                 onClick={() => setConfig(prev => ({ ...prev, enabled: !prev.enabled }))}
-                title={config.enabled ? 'Kiosk modunu kapat' : 'Kiosk modunu aç'}>
+                disabled={locked}
+                title={locked ? blockReason : (kioskOn ? 'Kiosk modunu kapat' : 'Kiosk modunu aç')}>
                 <div className="toggle-knob" />
               </button>
             </div>

@@ -1,0 +1,9 @@
+/* HDMI ekranı (KioskSettingsPanel): cihazın ekranı kaldırıp kaldıramayacağı — bellek sınıfı / ekran çıkışı (platform.sh).
+   Renk metinle karıştırılır: açık temada sarı / kırmızı beyaz zeminde okunur kalsın (11 px yazı: WCAG AA 4.5:1). */
+.ks-support { display: flex; align-items: flex-start; gap: 5px; margin-top: 3px; line-height: 1.45; }
+.ks-support svg { flex-shrink: 0; margin-top: 2px; }
+/* .config-item-desc (App.css, pakette sonra gelir) rengini ezmesin: iki sınıf */
+.ks-support.ks-support-no { color: color-mix(in srgb, var(--danger-color) 75%, var(--text-primary)); }
+.ks-support.ks-support-warn { color: color-mix(in srgb, var(--warning-color) 55%, var(--text-primary)); }
+/* Kilitli anahtar (bu cihazda açılamaz) çalışan "kapalı" anahtardan ayırt edilsin — dokunmatikte title görünmez */
+.ks-toggle.toggle-btn:disabled { opacity: 0.45; cursor: not-allowed; }

@@ -15,6 +15,7 @@ import { execFile } from 'child_process';
 import { promisify } from 'util';
 import { dbGet, dbRun } from './db';
 import { isLinux } from './system';
+import { readPlatform } from './hardware';
 
 const execFileP = promisify(execFile);
 const CONF_D = '/etc/unbound/unbound.conf.d';
@@ -39,6 +40,11 @@ export const UNBOUND_OPTIONS = { num_threads: [1, 2, 4], cache_mb: [4, 16, 32, 6
 export const RECOMMENDED: UnboundSettings = {
   num_threads: 1, cache_mb: 32, cache_min_ttl: 0, prefetch: true, serve_expired: true, hide_identity: true, hide_version: true,
 };
+// Cihaza göre öneri (scripts/platform.sh profili): 512 MB sınıfında (Hafif) 32 + 64 MB önbellek Pi-hole ve panelle aynı
+// belleği paylaşır → 4 MB (Unbound'un kendi varsayılanı). Yalnız öneridir; kullanıcı Uygula'ya basmadan hiçbir şey değişmez.
+export function recommendedFor(profile: 'lite' | 'standard' | null | undefined): UnboundSettings {
+  return profile === 'lite' ? { ...RECOMMENDED, cache_mb: 4 } : RECOMMENDED;
+}
 
 const BOOL_KEYS = ['prefetch', 'serve_expired', 'hide_identity', 'hide_version'] as const;
 export function validateUnboundSettings(v: any): UnboundSettings | string {
@@ -214,7 +220,10 @@ const EFFECTIVE_KEYS = ['interface', 'port', 'num-threads', 'msg-cache-size', 'r
   'aggressive-nsec', 'auto-trust-anchor-file', 'module-config', 'extended-statistics'];
 
 export async function unboundStatus() {
-  if (!isLinux || !fs.existsSync(CONF_D)) return { installed: false, recommended: RECOMMENDED, options: UNBOUND_OPTIONS, lastApply };
+  // profileForced: Hafif profil elle seçildi (/etc/pi5-gateway/profile) — arayüz "belleği az" demesin
+  const plat = await readPlatform();
+  const profile = plat?.profile ?? null, profileForced = !!plat?.forced;
+  if (!isLinux || !fs.existsSync(CONF_D)) return { installed: false, recommended: recommendedFor(profile), profile, profileForced, options: UNBOUND_OPTIONS, lastApply };
   const [running, statsTxt, effList, saved] = await Promise.all([
     execFileP('systemctl', ['is-active', 'unbound'], { timeout: 5000 }).then(r => r.stdout.trim() === 'active', () => false),
     execFileP('unbound-control', ['stats_noreset'], { timeout: 5000 }).then(r => r.stdout, () => ''),
@@ -240,7 +249,9 @@ export async function unboundStatus() {
     managed: fs.existsSync(PANEL_PATH),
     effective,
     settings: saved,
-    recommended: RECOMMENDED,
+    recommended: recommendedFor(profile),
+    profile,
+    profileForced,
     options: UNBOUND_OPTIONS,
     extendedStats: yes('extended-statistics'),
     stats: statsTxt ? {

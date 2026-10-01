@@ -1,4 +1,5 @@
-import { useState, useEffect, useCallback, useMemo } from 'react';
+import { useState, useEffect, useCallback, useMemo, lazy, Suspense } from 'react';
+import { Loader2 } from 'lucide-react';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { Sidebar } from './components/Sidebar';
 import { Topbar } from './components/Topbar';
@@ -13,7 +14,6 @@ import { VpsSetup } from './components/VpsSetup';
 import { UnboundPanel } from './components/UnboundPanel';
 import { Fail2banPanel } from './components/Fail2banPanel';
 import { SystemLogs } from './components/SystemLogs';
-import { DocsPanel } from './components/DocsPanel';
 import { BandwidthPanel } from './components/BandwidthPanel';
 import { DnsQueryLog } from './components/DnsQueryLog';
 import { SpeedTestPanel } from './components/SpeedTestPanel';
@@ -41,6 +41,25 @@ import { seedThemeFromBackend } from './theme';
 import { Toaster } from './toast';
 import './index.css';
 import './App.css';
+
+// Belgeler (büyük, statik metin) ayrı parça olarak yalnız sekme açılınca yüklenir: ana paket Vite'ın 1000 kB uyarı
+// sınırının altında kalsın. Güncellemeden sonra açık kalmış eski sekmede eski adlı parça artık yoktur: sayfa bir kez
+// kendiliğinden yenilenir ve yeni sürümü alır (#docs adreste kalır). React.lazy başarısız yüklemeyi saklar ("Tekrar Dene"
+// yeniden indirmez); yenilemeden sonra da yüklenemezse sekmenin hata sınırı Türkçe nedeni gösterir. Bayrak sekme
+// oturumunda: gerçekten eksik parça yenileme döngüsüne girmez; depolama yoksa yenilenmez.
+const CHUNK_RELOAD_KEY = 'klx-chunk-reload';
+const DocsPanel = lazy(() => import('./components/DocsPanel').then(m => {
+  try { sessionStorage.removeItem(CHUNK_RELOAD_KEY); } catch { /* depolama yok */ }
+  return { default: m.DocsPanel };
+}, () => {
+  let first = false;
+  try { first = !sessionStorage.getItem(CHUNK_RELOAD_KEY); if (first) sessionStorage.setItem(CHUNK_RELOAD_KEY, '1'); } catch { first = false; }
+  if (first) { window.location.reload(); return new Promise<never>(() => {}); }
+  throw new Error('Belgeler sayfası yüklenemedi — sayfayı yenileyin (panel güncellenmiş olabilir)');
+}));
+const tabLoading = (
+  <div style={{ textAlign: 'center', padding: 30, color: 'var(--text-muted)' }}><Loader2 size={20} className="spin" /></div>
+);
 
 function App() {
   // Açılış sekmesi: adres çubuğundaki #sekme (http://<pi>/#dhcp doğrudan DHCP'yi açar), yoksa tarayıcının hatırladığı
@@ -167,7 +186,7 @@ function App() {
       case 'vps': return <VpsSetup />;
       case 'roles': return <RolesPanel />;
       case 'maintenance': return <SystemLogs />;
-      case 'docs': return <DocsPanel />;
+      case 'docs': return <Suspense fallback={tabLoading}><DocsPanel /></Suspense>;
       case 'bandwidth': return <BandwidthPanel />;
       case 'dnslog': return <DnsQueryLog />;
       case 'speedtest': return <SpeedTestPanel />;

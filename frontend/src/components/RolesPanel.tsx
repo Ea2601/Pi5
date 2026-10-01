@@ -28,10 +28,16 @@ type Radio = {
   phy: string; ifaces: string[]; driver: string; bus: 'usb' | 'onboard'; usbSpeedMbps: number | null; modes: string[]; bands: string[];
   ap: boolean; sta: boolean; mesh: boolean; apSta: boolean; apMesh: boolean; fourAddr: boolean | null;
 };
+// Donanım profili (backend hardware.ts Platform ← scripts/platform.sh): bellek sınıfı, mimari, takas.
+type Platform = {
+  board: string; rpi: boolean; arch: string; kernelArch: string; cpus: number; memMiB: number; memClassMiB: number;
+  profile: 'lite' | 'standard'; forced: boolean; display: boolean; kiosk: 'ok' | 'warn' | 'no' | 'no-display';
+  swap: { mib: number; zram: boolean; file: boolean; mgr: string };
+};
 type HardwareResp = {
   supported: boolean; board?: string; kernel?: string; iwMissing?: boolean; eth?: EthPort[]; radios?: Radio[];
   tools?: Record<string, boolean>; modules?: Record<string, boolean>; roles?: RoleEval[];
-  net?: { role?: 'main' | 'satellite' };
+  net?: { role?: 'main' | 'satellite' }; platform?: Platform | null;
 };
 
 const EN = ({ children }: { children: ReactNode }) => <span lang="en">{children}</span>; // büyük harfte "i" → "İ" olmasın
@@ -75,6 +81,16 @@ const COMPONENTS: { key: string; kind: 'tool' | 'module'; purpose: string; roles
 const busText = (bus: 'usb' | 'onboard', usb: number | null) =>
   bus === 'onboard' ? 'Dahili' : usb === null ? 'USB' : usb >= 5000 ? `USB 3 · ${usb / 1000} Gbps` : `USB 2 · ${usb} Mbps`;
 const speedText = (mbps: number | null) => (mbps ? (mbps >= 1000 ? `${mbps / 1000} Gbps` : `${mbps} Mbps`) : '—');
+const sizeText = (mib: number) => (mib >= 1024 ? `${(mib / 1024).toLocaleString('tr-TR', { maximumFractionDigits: 1 })} GB` : `${mib} MB`);
+const memText = (p: Platform) => `${sizeText(p.memMiB)} · ${p.profile === 'lite' ? 'Hafif profil' : 'Standart profil'}${p.forced ? ' (elle)' : ''}`;
+// Mimari: kullanıcı alanı (dpkg). Çekirdek ona uymuyorsa (ör. Pi 5'te 64 bit çekirdek + 32 bit sistem) o da yazılır.
+const KERNEL_OF: Record<string, string[]> = { amd64: ['x86_64'], arm64: ['aarch64'], armhf: ['armv6l', 'armv7l', 'armv8l'], i386: ['i386', 'i586', 'i686'] };
+const archText = (p: Platform) =>
+  !p.kernelArch || KERNEL_OF[p.arch]?.includes(p.kernelArch) ? p.arch || '—' : `${p.arch || '?'} · çekirdek ${p.kernelArch}`;
+const swapText = ({ mib, zram, file, mgr }: Platform['swap']) => {
+  const kind = !mib ? 'yok' : zram && file ? 'zram + dosya' : zram ? 'zram' : file ? 'dosya' : 'bölüm';
+  return `${kind}${mib ? ` ${sizeText(mib)}` : ''}${mgr && mgr !== 'none' ? ` · ${mgr === 'klyrix' ? 'Klyrix' : mgr}` : ''}`;
+};
 
 function Mark({ ok, label }: { ok: boolean | null; label?: string }) {
   const aria = label || (ok === null ? 'bilinmiyor' : ok ? 'var' : 'yok');
@@ -148,6 +164,11 @@ export function RolesPanel() {
             <dl className="rl-ident">
               <div><dt>Cihaz</dt><dd>{data.board || '—'}</dd></div>
               <div><dt>Çekirdek</dt><dd className="rl-mono">{data.kernel || '—'}</dd></div>
+              {data.platform && <>
+                <div><dt>Bellek</dt><dd>{memText(data.platform)}</dd></div>
+                <div><dt>Mimari</dt><dd className="rl-mono">{archText(data.platform)}</dd></div>
+                <div><dt>Takas</dt><dd>{swapText(data.platform.swap)}</dd></div>
+              </>}
               <div><dt>Arayüzler</dt><dd>{data.eth?.length ?? 0} Ethernet · {data.radios?.length ?? 0} <EN>Wi-Fi</EN> radyosu</dd></div>
             </dl>
             <ul className="rl-counts" aria-label="Rol durumları">

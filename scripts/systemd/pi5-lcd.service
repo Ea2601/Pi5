@@ -6,10 +6,14 @@ Wants=pi5-backend.service
 # Tek kaynak: install.sh, post-update.sh ve backend (ensureLcdService) bu dosyayı /etc/systemd/system'e kopyalar.
 [Service]
 Type=simple
-# SunFounder pironman5 aynı OLED'i / RGB'yi sürerse iki proses çakışır (ekran üst üste biner, LED rengi ezilir).
-# Script modülleri bıraktırır ve gerekiyorsa pironman5'i yeniler; ayrıntı scripts/pironman_release.sh içinde.
-# '-' öneki: script yoksa hata yut.
-ExecStartPre=-/bin/sh /opt/pi5-gateway/scripts/pironman_release.sh
+# Önce SunFounder pironman5'e OLED'i ve RGB'yi bıraktırılır: ikisi aynı donanımı sürerse ekran üst üste biner, LED rengi
+# ezilir. Script modülleri bıraktırır ve gerekiyorsa pironman5'i yeniler (ayrıntı scripts/pironman_release.sh). Ekran
+# algılanmasa da her başlangıçta çalışır: pironman5 güncellemesi yamayı silerse RGB yine bırakılır. Çıkış kodu yok sayılır
+# (script yoksa da).
+# Sonra gerçek ekran (OLED / HD44780) algılanmazsa servis başlamaz: systemd birimi hata saymadan atlar (condition),
+# Restart de tetiklenmez. Eskiden ekransız cihazda (x86, kasasız Pi) konsol yedeği sonsuza dek günlüğe yazıyordu. Açılışta
+# I2C geç hazır olabilir: 3 deneme, aralarda 3 sn. detect: 0 gerçek ekran, 2 konsol yedeği. "$$" systemd için düz "$".
+ExecCondition=/bin/sh -c '/bin/sh /opt/pi5-gateway/scripts/pironman_release.sh >/dev/null 2>&1; for i in 1 2 3; do timeout 20 /usr/bin/python3 /opt/pi5-gateway/scripts/lcd_display.py detect >/dev/null 2>&1 && exit 0; [ "$$i" = 3 ] || sleep 3; done; exit 1'
 ExecStart=/usr/bin/python3 /opt/pi5-gateway/scripts/lcd_display.py run
 Restart=always
 RestartSec=5

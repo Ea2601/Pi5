@@ -20,7 +20,7 @@
 # ve boot gecikmesi olmaz. pironman5 paketi güncellenip yama silinirse bir sonraki
 # pi5-lcd başlangıcında kendiliğinden yeniden uygulanır.
 #
-# restart --no-block: bu script pi5-lcd unit'inin ExecStartPre'sinden de çağrılıyor;
+# restart --no-block: bu script pi5-lcd unit'inin ExecCondition'ından da çağrılıyor;
 # oradan senkron "systemctl restart" systemd iş kuyruğunda kilitlenmeye yol açar.
 #
 # Her yoldan 0 ile çıkar: pironman5 kurulu olmayan kasalarda sessizce atlanmalı.

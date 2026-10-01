@@ -3,6 +3,7 @@ import os from 'os';
 import path from 'path';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
+import { parseKv } from './update';
 
 // Cihaz rolleri (R0): Pi'nin takılı donanımı (Ethernet portları, Wi-Fi radyoları ve yetenekleri) okunur ve her ağ rolü
 // (LAN router, WAN router, erişim noktası, repeater, mesh) için "kullanımda / yapılabilir / donanım gerekli" değerlendirilir.
@@ -22,8 +23,18 @@ export type EthPort = {
   name: string; driver: string; bus: Bus; usbSpeedMbps: number | null; speedMbps: number | null;
   carrier: boolean | null; mac: string; uplink: boolean;
 };
+// Donanım profili (scripts/platform.sh detect — eşikler yalnız orada): bellek sınıfı, mimari, ekran çıkışı, takas.
+// rpi: Raspberry Pi kartı; arch: kullanıcı alanı (dpkg), kernelArch: uname -m; memClassMiB: MemTotal'dan büyük ya da eşit
+// ilk 2'nin kuvveti; forced: profil elle verildi (/etc/pi5-gateway/profile ya da KLYRIX_PROFILE).
+export type KioskSupport = 'ok' | 'warn' | 'no' | 'no-display';
+export type Platform = {
+  board: string; rpi: boolean; arch: string; kernelArch: string; cpus: number; memMiB: number; memClassMiB: number;
+  profile: 'lite' | 'standard'; forced: boolean; display: boolean; kiosk: KioskSupport;
+  swap: { mib: number; zram: boolean; file: boolean; mgr: string };
+};
 export type Hardware = {
   board: string; kernel: string; iwMissing: boolean;
+  platform: Platform | null;
   eth: EthPort[]; radios: Radio[];
   tools: Record<string, boolean>; modules: Record<string, boolean>;
   net: {
@@ -332,6 +343,45 @@ export function evaluateRoles(hw: Hardware): RoleEval[] {
   return out;
 }
 
+// ─── Donanım profili (saf ayrıştırma + önbellekli okuma) ───
+
+const KIOSK_STATES: KioskSupport[] = ['ok', 'warn', 'no', 'no-display'];
+// platform.sh detect çıktısı (KEY=VALUE) → Platform. Beklenen anahtarlar yoksa (eski / bozuk çıktı) null.
+export function parsePlatform(kv: Record<string, string>): Platform | null {
+  if (kv.profile !== 'lite' && kv.profile !== 'standard') return null;
+  const n = (v?: string) => (v && /^\d+$/.test(v) ? Number(v) : 0);
+  const kiosk = KIOSK_STATES.includes(kv.kiosk as KioskSupport) ? (kv.kiosk as KioskSupport) : 'ok';
+  return {
+    board: kv.board || '', rpi: kv.rpi === '1', arch: kv.arch || '', kernelArch: kv.kernel_arch || '',
+    cpus: n(kv.cpus), memMiB: n(kv.mem_mib), memClassMiB: n(kv.mem_class),
+    profile: kv.profile, forced: kv.forced === '1', display: kv.display === '1', kiosk,
+    swap: { mib: n(kv.swap_mib), zram: kv.swap_zram === '1', file: kv.swap_file === '1', mgr: kv.swap_mgr || 'none' },
+  };
+}
+
+const PLATFORM_SCRIPT = path.resolve(__dirname, '../../scripts/platform.sh');
+const PLATFORM_TTL_MS = 60000;
+let platformCache: { at: number; value: Platform | null } | null = null;
+let platformRun: Promise<Platform | null> | null = null;
+// Bellek / mimari değişmez, ekran ve takas nadiren: 60 sn önbellek (kiosk, Unbound ve Cihaz Rolleri aynı sonucu paylaşır).
+// Linux dışında ya da betik çalışmazsa null (çağıranlar bugünkü davranışa döner).
+export function readPlatform(): Promise<Platform | null> {
+  if (platformCache && Date.now() - platformCache.at < PLATFORM_TTL_MS) return Promise.resolve(platformCache.value);
+  if (platformRun) return platformRun;
+  platformRun = (async () => {
+    let value: Platform | null = null;
+    if (process.platform === 'linux') {
+      try {
+        const { stdout } = await execFileP('bash', [PLATFORM_SCRIPT, 'detect'], { timeout: 5000 });
+        value = parsePlatform(parseKv(stdout));
+      } catch { /* betik yok / zaman aşımı */ }
+    }
+    platformCache = { at: Date.now(), value };
+    return value;
+  })().finally(() => { platformRun = null; });
+  return platformRun;
+}
+
 // ─── Canlı okuma (Linux) ───
 
 const readText = (p: string) => { try { return fs.readFileSync(p, 'utf8').replace(/\0/g, '').trim(); } catch { return ''; } };
@@ -354,8 +404,8 @@ async function hasModule(name: string): Promise<boolean> {
   try { await execFileP('modinfo', ['-n', name], { timeout: 5000 }); return true; } catch { return false; }
 }
 
-// opts yalnız test içindir: sahte /sys kökü ve hazır `iw list` çıktısı.
-export async function readHardware(net: Omit<Hardware['net'], 'uplinkIface'>, opts: { root?: string; iwText?: string } = {}): Promise<Hardware> {
+// opts yalnız test içindir: sahte /sys kökü, hazır `iw list` çıktısı ve hazır donanım profili.
+export async function readHardware(net: Omit<Hardware['net'], 'uplinkIface'>, opts: { root?: string; iwText?: string; platform?: Platform | null } = {}): Promise<Hardware> {
   const R = opts.root || '';
   let uplinkIface: string | null = null;
   try {
@@ -402,9 +452,14 @@ export async function readHardware(net: Omit<Hardware['net'], 'uplinkIface'>, op
 
   const toolNames = ['iw', 'nmcli', 'wpa_supplicant', 'hostapd', 'batctl', 'pppd'];
   const modNames = ['mac80211', 'batman_adv', '8021q', 'pppoe'];
-  const mods = await Promise.all(modNames.map(hasModule));
+  const [mods, platform] = await Promise.all([
+    Promise.all(modNames.map(hasModule)),
+    opts.platform !== undefined ? Promise.resolve(opts.platform) : readPlatform(),
+  ]);
   return {
-    board: readText(`${R}/proc/device-tree/model`) || os.hostname(), kernel: os.release(), iwMissing,
+    // Kart adı: device-tree (ARM); yoksa DMI üretici + ürün (x86, platform.sh); o da yoksa makine adı.
+    board: readText(`${R}/proc/device-tree/model`) || platform?.board || os.hostname(), kernel: os.release(), iwMissing,
+    platform,
     eth, radios,
     tools: Object.fromEntries(toolNames.map(t => [t, onPath(t)])),
     modules: Object.fromEntries(modNames.map((m, i) => [m, mods[i]])),

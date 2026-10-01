@@ -24,6 +24,9 @@ if { exec 8>/run/lock/pi5-update.lock; } 2>/dev/null && ! flock -n 8; then
   log "Başka bir güncelleme sürüyor — bu çalıştırma atlandı"
   exit 75
 fi
+# Bellek darlığında çekirdek önce güncellemeyi öldürsün, DNS'i (pihole-FTL, Unbound) değil: git, npm, tsc ve vite bu
+# değeri devralır (servisler systemd'den başladığı için devralmaz). Düşen derleme aşağıda geri alınır. Yazılamazsa önemsiz.
+{ echo 500 > /proc/self/oom_score_adj; } 2>/dev/null || true
 
 log "=== Güncelleme başlatıldı ==="
 log "Kullanıcı: $(whoami), UID: $(id -u)"
@@ -54,7 +57,7 @@ log "Git reset..."
 git reset --hard origin/master 2>&1 || sudo git reset --hard origin/master 2>&1
 log "Git OK: $(git rev-parse --short HEAD 2>/dev/null || sudo git rev-parse --short HEAD 2>/dev/null || echo 'unknown')"
 
-# Post-update iki parça: bağımlılıklar (npm) derlemeden önce, sistem değişiklikleri (servis birimleri, kiosk, ağ, cron …)
+# Post-update iki parça: bağımlılıklar (npm; az bellekli cihazda zram) derlemeden önce, sistem değişiklikleri (servis birimleri, kiosk, ağ, cron …)
 # ancak iki derleme de başarılıysa. Derleme düşünce kaynak geri alınır ve yeni sürümün sistem değişiklikleri hiç yapılmamış
 # olur (eskiden derlemeden önce yapılıyordu: geri alınan kaynakta olmayan betiklere işaret eden birimler kalabilirdi).
 # Başarısızlığı güncellemeyi durdurmaz; çıkış kodu işaretlenir.

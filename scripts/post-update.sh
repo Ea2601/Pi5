@@ -2,7 +2,7 @@
 # Post-update script — runs automatically after git pull
 # Handles: npm install, dependency checks, new script permissions, migrations
 #   post-update.sh [deps | system]
-# update.sh iki parça çağırır: deps (yalnız npm bağımlılıkları, derlemeden önce) ve system (geri kalan her şey, ancak iki
+# update.sh iki parça çağırır: deps (npm bağımlılıkları ve az bellekli cihazda zram, derlemeden önce) ve system (geri kalan her şey, ancak iki
 # derleme de başarılıysa). Argümansız: hepsi (eski update.sh ve elle çalıştırma).
 
 set -e
@@ -78,13 +78,37 @@ if [ "$MODE" != system ]; then
   npm_sync backend Backend
   npm_sync frontend Frontend
 fi
+
+# 2b. zram: takas alanı hiç yoksa ve işletim sisteminin takas yöneticisi de yoksa (Raspberry Pi OS'ta rpi-swap var → hiçbir
+#     şey yapılmaz), 1 GB sınıfı ve altında (platform.sh need_zram). Derlemeden ÖNCE (deps parçası): az bellekli cihazda
+#     derleme takassız düşerse system parçası hiç çalışmaz, zram da hiç kurulmazdı. Kodla ilgisiz işletim sistemi ayarı:
+#     derleme düşüp kaynak geri alınsa da kalır. Yalnız işaretli kendi dosyasını yazar (bookworm'da paketin varsayılanını
+#     yalnız başlatır). Kapatmak: /etc/pi5-gateway/zram.off. İdempotent; hata güncellemeyi durdurmaz (set -e: || / if).
+if [ "$MODE" != system ]; then
+  ZRAM_NEED=$(bash "$BASE/scripts/platform.sh" detect 2>/dev/null | sed -n 's/^need_zram=//p' | head -1) || ZRAM_NEED=""
+  if [ "$ZRAM_NEED" = 1 ]; then
+    echo "  [bellek] takas alanı yok — zram kuruluyor" >> "$LOG"
+    if pkg_ensure systemd-zram-generator; then
+      bash "$BASE/scripts/platform.sh" swap-ensure >> "$LOG" 2>&1 || echo "  [bellek] UYARI: zram açılamadı (ayrıntı yukarıda)" >> "$LOG"
+    else
+      echo "  [pkg] UYARI: systemd-zram-generator kurulamadı" >> "$LOG"
+    fi
+  fi
+fi
 [ "$MODE" = deps ] && exit 0
 
 # 3. Make all scripts executable
 chmod +x "$BASE/scripts/"*.py "$BASE/scripts/"*.sh 2>/dev/null || true
 
-# 4. Install Python deps if scripts exist and deps missing
-if [ -f "$BASE/scripts/led_control.py" ]; then
+# 3b. Donanım profili (scripts/platform.sh — eşikler tek yerde): Pi'ye özgü ve belleğe göre adımlar buna bakar. Okunamazsa
+#     (betik yok / hata) bugünkü davranış sürer: kapılar yalnız açıkça "hayır" diyen değerde atlar. set -e: || ile.
+PLAT=$(bash "$BASE/scripts/platform.sh" detect 2>/dev/null) || PLAT=""
+plat() { printf '%s\n' "$PLAT" | sed -n "s/^$1=//p" | head -1; }
+PLAT_RPI=$(plat rpi); PLAT_KIOSK=$(plat kiosk)
+[ -n "$PLAT" ] && echo "  [donanım] $(plat board) · $(plat mem_mib) MB ($(plat mem_class) sınıfı, $(plat profile)) · $(plat arch) · kiosk $PLAT_KIOSK · takas $(plat swap_mib) MB ($(plat swap_mgr))" >> "$LOG" || true
+
+# 4. Install Python deps if scripts exist and deps missing (kasa kütüphaneleri yalnız Raspberry Pi'de)
+if [ -f "$BASE/scripts/led_control.py" ] && [ "$PLAT_RPI" != 0 ]; then
   python3 -c "import fanshim" 2>/dev/null || python3 -c "import spidev" 2>/dev/null || {
     echo "  LED Python bağımlılıkları kuruluyor..." >> "$LOG"
     pip3 install --break-system-packages fanshim spidev 2>/dev/null >> "$LOG" || pip3 install fanshim spidev 2>/dev/null >> "$LOG" || true
@@ -92,11 +116,14 @@ if [ -f "$BASE/scripts/led_control.py" ]; then
 fi
 
 if [ -f "$BASE/scripts/lcd_display.py" ]; then
-  # Pillow: klyrix_oled render motorunun zorunlu bağımlılığı (luma'sız kurulumda da gerekir).
-  python3 -c "from luma.oled.device import ssd1306; import PIL" 2>/dev/null || {
-    echo "  LCD Python bağımlılıkları kuruluyor..." >> "$LOG"
-    pip3 install --break-system-packages luma.oled luma.core RPLCD Pillow 2>/dev/null >> "$LOG" || pip3 install luma.oled luma.core RPLCD Pillow 2>/dev/null >> "$LOG" || true
-  }
+  # Pillow: klyrix_oled render motorunun zorunlu bağımlılığı (luma'sız kurulumda da gerekir). Yalnız Raspberry Pi'de;
+  # birim aşağıda her cihazda tazelenir (gerçek ekran yoksa ExecCondition başlatmaz).
+  if [ "$PLAT_RPI" != 0 ]; then
+    python3 -c "from luma.oled.device import ssd1306; import PIL" 2>/dev/null || {
+      echo "  LCD Python bağımlılıkları kuruluyor..." >> "$LOG"
+      pip3 install --break-system-packages luma.oled luma.core RPLCD Pillow 2>/dev/null >> "$LOG" || pip3 install luma.oled luma.core RPLCD Pillow 2>/dev/null >> "$LOG" || true
+    }
+  fi
   # Unit'i tazele: eski kurulumlarda ExecStartPre yoktu, SunFounder pironman5 aynı
   # I2C OLED'ini sürmeye devam edip ekranı üst üste bindiriyordu.
   # Birim tek kaynaktan (scripts/systemd/pi5-lcd.service — install.sh ve backend ensureLcdService de onu kullanır;
@@ -144,7 +171,9 @@ raspi-config nonint do_spi 0 2>/dev/null || true
 
 # 6. Kiosk bağımlılıkları (Lite OS için minimal X11 + Chromium). Trixie'de tarayıcı paketi `chromium`; eski / türev
 #    imajlar `chromium-browser` kullanır (eskiden yalnız o istendiği için trixie'de kurulum her güncellemede düşüyordu).
-if ! command -v chromium-browser &>/dev/null && ! command -v chromium &>/dev/null; then
+#    HDMI ekranı açılamayan cihazda (512 MB sınıfı / ekran çıkışı yok) her gece Chromium kurmaya çalışılmaz.
+if [ "$PLAT_KIOSK" != no ] && [ "$PLAT_KIOSK" != no-display ] \
+   && ! command -v chromium-browser &>/dev/null && ! command -v chromium &>/dev/null; then
   echo "  Kiosk bağımlılıkları kuruluyor (X11 + Chromium)..." >> "$LOG"
   pkg_ensure xserver-xorg x11-xserver-utils xinit openbox || true
   pkg_ensure chromium || pkg_ensure chromium-browser || true
@@ -181,9 +210,18 @@ try:
     else: print('0')
 except: print('0')
 " 2>/dev/null)
+  # Açılamayan cihazda (512 MB sınıfı / ekran çıkışı yok) ya da paketler eksikken birim başlatılmaz: yedekten gelen
+  # "açık" ayarı, ikili dosyası olmayan birimi sonsuz yeniden başlatma döngüsüne sokardı.
   if [ "$KIOSK_ENABLED" = "1" ]; then
-    systemctl enable --now pi5-kiosk.service 2>/dev/null || true
-    echo "  Kiosk modu aktif (DB'den okunan ayar)" >> "$LOG"
+    if [ "$PLAT_KIOSK" = no ] || [ "$PLAT_KIOSK" = no-display ]; then
+      echo "  Kiosk ayarı açık ama bu cihazda HDMI ekranı açılamaz ($PLAT_KIOSK) — servis başlatılmadı" >> "$LOG"
+    elif ! command -v xinit &>/dev/null || ! command -v openbox &>/dev/null \
+         || { ! command -v chromium &>/dev/null && ! command -v chromium-browser &>/dev/null; }; then
+      echo "  Kiosk ayarı açık ama xinit / openbox / Chromium kurulu değil — servis başlatılmadı" >> "$LOG"
+    else
+      systemctl enable --now pi5-kiosk.service 2>/dev/null || true
+      echo "  Kiosk modu aktif (DB'den okunan ayar)" >> "$LOG"
+    fi
   fi
 fi
 

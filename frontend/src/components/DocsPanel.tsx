@@ -225,6 +225,15 @@ function ArchitectureDoc() {
             <tr><td>Ağ Arayüzleri</td><td>Kart adları cihaza göre değişir (eth0, end0, enp1s0 …); rol verilirken algılanır ve kaydedilir. VPS tünelleri wg_vps*, ev VPN'i wg_pi</td></tr>
           </tbody>
         </table>
+        <p>
+          <strong>Bellek sınıfı otomatik:</strong> kurulum ve panel belleği 512 MB, 1 GB, 2 GB … sınıflarından birine koyar
+          (Cihaz Rolleri sayfasında görünür). 512 MB sınıfında (Pi Zero 2 W, Pi 3A+) HDMI ekranı (kiosk) açılmaz ve X11 /
+          Chromium kurulmaz; Unbound için küçük önbellek önerilir. Bu cihazlarda panelin kendi derlemesi belleği zorlar: hazır
+          paketler önerilir (sıradaki sürümde). 1 GB sınıfında HDMI ekranı yalnız uyarıyla açılır. 1 GB sınıfı ve altında
+          takas alanı hiç yoksa ve işletim sisteminin takas yöneticisi de yoksa (Raspberry Pi OS'ta rpi-swap vardır) kurulum /
+          güncelleme sırasında zram açılır; kapatmak için <code>/etc/pi5-gateway/zram.off</code> dosyası. Elle seçmek
+          için: <code>/etc/pi5-gateway/profile</code> dosyasına <code>profile=lite</code> ya da <code>profile=standard</code>.
+        </p>
       </DocBlock>
 
       <DocBlock title="Yazılım Mimarisi">
