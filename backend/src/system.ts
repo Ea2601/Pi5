@@ -5,7 +5,7 @@ import os from 'os';
 import { promises as dnsPromises } from 'dns';
 import sqlite3 from 'sqlite3';
 import { shq } from './util';
-import { encodeRouteMark, decodeVpsMark, decodeLegacyVpsMark, isManagedRuleMark, normFallback, DPI_ONLY_MARK, LEGACY_DPI_ONLY_MARK, ISP_FALLBACK_BIT, ROUTE_MARK_MASK, type VpsMark } from './routeMarks';
+import { encodeRouteMark, decodeVpsMark, decodeLegacyVpsMark, isManagedRuleMark, normFallback, DPI_ONLY_MARK, LEGACY_DPI_ONLY_MARK, ISP_FALLBACK_BIT, ROUTE_MARK_MASK, LEARN_MARK_BIT, type VpsMark } from './routeMarks';
 import { planListRouting, configureListDns, listSetForName, parseUpstreams, type ListRoute } from './listDns';
 import { collapsedList } from './categoryLists';
 
@@ -2417,6 +2417,16 @@ export function buildRoutingChainRestore(
       ...markRules(name, e.mark),
     );
   }
+  // Öğrenme işareti (routeMarks LEARN_MARK_BIT): ev ağından (ve Pi'den) çıkan, panelin yönlendirmediği web trafiği Zapret'in
+  // otomatik listesine görünsün. Yalnız özel ağ kaynağı: dışarıdan gelen bağlantılar (ör. port yönlendirme) işaretlenmez.
+  // Bağlantı işaretine yazılmaz (CONNMARK maskesi 0xffff); her pakette yeniden konur. 443-hariç blokların RETURN'ü bu
+  // kurallara da gelmez — o aralıklar Zapret'in zaten işlemediği arama trafiğidir.
+  const learn = `0x${LEARN_MARK_BIT.toString(16)}`;
+  const lan = '10.0.0.0/8,172.16.0.0/12,192.168.0.0/16';
+  out.push(
+    `-A PI5_ROUTING -s ${lan} -p tcp -m multiport --dports 80,443 -m mark --mark 0x0/${m} -j MARK --set-xmark ${learn}/${learn}`,
+    `-A PI5_ROUTING -s ${lan} -p udp -m udp --dport 443 -m mark --mark 0x0/${m} -j MARK --set-xmark ${learn}/${learn}`,
+  );
   out.push('COMMIT');
   return out.join('\n') + '\n';
 }

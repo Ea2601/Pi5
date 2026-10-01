@@ -9,6 +9,9 @@
 //     + 0x2000    → tünel yoksa / yanıt vermiyorsa operatörden devam; bit yoksa ENGELLE (tabloda kalıcı unreachable)
 // Panel işaretin yalnız alt 16 bitini yazar (ROUTE_MARK_MASK): üst bitler Zapret'indir (0x40000000 kendi paketleri,
 // 0x20000000 POSTNAT, bağlantı işaretinde de) — tamamını ezmek Zapret'in döngü korumasını bozardı.
+//   0x10000 (LEARN_MARK_BIT, v2.24.80) → alt 16 biti 0 olan (panelin yönlendirmediği, modemden çıkan) web trafiği: Zapret'in
+//                   otomatik listesi (autohostlist) engeli algılayabilsin diye nfqws'e gider; atlatma yalnız listedeki /
+//                   öğrenilen sitelere. Alt 16 bitin dışında: sayaçlar, ip rule'lar ve bağlantı işareti etkilenmez.
 // Eski şema (≤ v2.24.54): 100+id tünel, 300+id tünel + DPI — id ≥ 100'de 200 ve 300+id ile çakışıyordu, tünel düşünce
 // ne olacağını da taşımıyordu. Sayaçlar (topology.ts) ve geçiş (system.ts) için hâlâ çözülür.
 export const VPS_MARK_BIT = 0x8000;
@@ -17,6 +20,9 @@ export const DPI_ONLY_MARK = DPI_MARK_BIT;
 // v2.24.55–74'ün yalnız-DPI işareti: seti (rt_m200) geçişte yenisine kopyalanır, sayaçlarda tanınır.
 export const LEGACY_DPI_ONLY_MARK = 200;
 export const ROUTE_MARK_MASK = 0xffff;
+export const LEARN_MARK_BIT = 0x10000;
+// Zapret config FILTER_MARK: DPI kuralı ya da öğrenme işareti taşıyan paket nfqws'e gider.
+export const ZAPRET_FILTER_MARK = DPI_MARK_BIT | LEARN_MARK_BIT;
 export const ISP_FALLBACK_BIT = 0x2000;
 export const VPS_ID_MAX = 0x1fff;
 

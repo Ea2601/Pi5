@@ -45,7 +45,7 @@ import {
 import { authGate, registerAuthRoutes } from './auth';
 import { validateSchedule, validateCommand, syncCronJobs, readJobStatuses, readSystemCron, syncCronOnStartup, runningJobs, jobOutput, startJobNow } from './cronSync';
 import { validateListValue, normalizeListValue, syncPiholeLists, lastListSync, externalPiholeEntries } from './piholeLists';
-import { applyZapret, zapretStatus, startBlockcheck, blockcheckRunning, zapretInstalled, zapretInstallIssue, zapretBrief, cleanDpiDomain } from './zapret';
+import { applyZapret, zapretStatus, startBlockcheck, blockcheckRunning, zapretInstalled, zapretInstallIssue, zapretBrief, cleanDpiDomain, removeAutoHost, runDpiCheck } from './zapret';
 import type { ZapretApplyResult } from './zapret';
 import { unboundStatus, applyUnboundSettings, validateUnboundSettings, savedUnboundSettings } from './unbound';
 import { recordEvent, recordEventOnce, recordVersionChange, serviceLabel } from './events';
@@ -729,6 +729,30 @@ app.post('/api/zapret/apply', async (_req, res) => {
     const zapret = await applyZapret();
     await zapretEvent(`Zapret yeniden uygulandı (${zapret.dpiRules} DPI kuralı${zapret.manual ? `, ${zapret.manual} ek site` : ''})`, zapret);
     res.json({ success: true, zapret });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Öğrenilen (otomatik listedeki) siteyi çıkar; exclude: Hariç Tutulanlar'a da ekle (bir daha öğrenilmesin).
+app.post('/api/zapret/learned/remove', async (req, res) => {
+  try {
+    const domain = cleanDpiDomain(req.body?.domain);
+    if (!domain) return res.status(400).json({ error: 'Geçersiz alan adı' });
+    const removed = removeAutoHost(domain);
+    if (req.body?.exclude) await dbRun("INSERT OR IGNORE INTO zapret_domains (list_type, domain) VALUES ('exclude', ?)", [domain]);
+    const zapret = await applyZapret();
+    await zapretEvent(`Zapret öğrenilen site çıkarıldı: ${domain}${req.body?.exclude ? ' (hariç tutulanlara eklendi)' : ''}`, zapret);
+    res.json({ success: true, removed, zapret });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Gece denetimini şimdi çalıştır (öğrenilen / DPI'lı sitelerden en çok 4'ü Pi'den denenir).
+app.post('/api/zapret/check', async (_req, res) => {
+  try {
+    res.json(await runDpiCheck());
   } catch (e: any) {
     res.status(500).json({ error: e.message });
   }
@@ -5735,6 +5759,14 @@ const server = app.listen(Number(port), bindHost, () => {
   setInterval(() => { void refreshAsnRanges(); }, 6 * 3600 * 1000);
   setTimeout(() => { void refreshRoutingLists(); }, 180000);
   setInterval(() => { void refreshRoutingLists(); }, 3600 * 1000);
+  // Zapret gece denetimi (zapret.ts runDpiCheck): her gün 04:00–05:00 arasında bir kez — strateji hâlâ işe yarıyor mu.
+  let dpiCheckDay = '';
+  setInterval(() => {
+    const now = new Date();
+    if (now.getHours() !== 4 || now.toDateString() === dpiCheckDay) return;
+    dpiCheckDay = now.toDateString();
+    void runDpiCheck();
+  }, 10 * 60 * 1000);
   // Cihaz engelleri (nft tablosu açılışta yoktur; pi5-gw-restore da yükler — burada DB'deki güncel liste yazılır).
   void reapplyBlockedDevices();
   // Ağ haritası: cihazların kablolu / Wi-Fi ayrımı için arka planda ARP yanıt süresi ölçümü (linkProbe.ts). Taban çizgisi

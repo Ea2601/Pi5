@@ -1,16 +1,16 @@
-import { Zap, Globe, Shield, List, Plus, Trash2, Search, RefreshCw, AlertTriangle, FileText } from 'lucide-react';
+import { Zap, Globe, Shield, List, Plus, Trash2, Search, RefreshCw, AlertTriangle, FileText, ListChecks, ShieldOff, Activity } from 'lucide-react';
 import { useApi, postApi, putApi, deleteApi } from '../hooks/useApi';
 import { useEffect, useState } from 'react';
 import { Panel, Badge } from './ui';
 import type { ServiceStatus, ZapretDomain } from '../types';
 import { toast } from '../toast';
 
-type ZapretTab = 'overview' | 'strategy' | 'hostlist' | 'exclude';
+type ZapretTab = 'overview' | 'strategy' | 'learned' | 'hostlist' | 'exclude';
 
 // Backend zapret.ts: Zapret Routing'in DPI işaretine bakar (FILTER_MARK); hariç liste ve NFQWS_ENABLE / MODE_FILTER /
 // FILTER_MARK / IFACE_WAN Zapret'e gerçekten yazılır.
 interface ZapretApply {
-  ok: boolean; installed: boolean; dpiRules: number; manual: number; exclude: number; fromRouting: number; vpsDpiRules: number;
+  ok: boolean; installed: boolean; dpiRules: number; manual: number; exclude: number; fromRouting: number; vpsDpiRules: number; learned: number;
   methodEnabled: boolean; restarted: boolean; warnings: string[]; error?: string; at: number;
 }
 interface ZapretStatus {
@@ -20,10 +20,21 @@ interface ZapretStatus {
   service?: boolean; processes?: number; nfqws?: boolean; tpws?: boolean; modeFilter?: string; filterMark?: string; iface?: string;
   strategy?: string; unlistedLines?: number; dpiRules?: number; vpsDpiRules?: number; manualEntries?: number;
   excludeEntries?: number; fromRouting?: string[];
+  // Öğrenen liste: Zapret'in engelli olduğunu algılayıp kendisi eklediği siteler (en yeni önce) ve gece denetimi sonucu
+  learned?: string[]; learnedCount?: number; lastCheck?: DpiCheck | null;
   // Routing'in hazır listeli DPI satırları (Yetişkin / Kumar): listeye girer, tek tek gösterilmez — yalnız sayı.
   fromLists?: { id: string; label: string; count: number }[];
   zapretOwnList?: boolean; blockcheck?: { running: boolean; log: string };
 }
+
+type DpiCheck = { at: number; skipped?: string; results: { domain: string; ok: boolean; detail: string }[] };
+const fmtTime = (ms: number) => new Date(ms).toLocaleString('tr-TR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+const checkSummary = (c: DpiCheck | null | undefined) => {
+  if (!c) return 'henüz çalışmadı (her gece 04:00)';
+  if (c.skipped) return `${fmtTime(c.at)} · atlandı: ${c.skipped}`;
+  const ok = c.results.filter(r => r.ok).length;
+  return `${fmtTime(c.at)} · ${ok}/${c.results.length} site açıldı`;
+};
 
 // Uygulama sonucunu bildir: kayıt her durumda saklanır; Zapret'e yazılamadıysa neden, DPI kuralı yoksa uyarı gösterilir.
 function reportApply(z: ZapretApply | undefined, okMsg: string) {
@@ -59,12 +70,13 @@ export function ZapretPanel() {
     { id: 'strategy', label: 'Strateji', icon: <FileText size={14} /> },
     { id: 'hostlist', label: 'Ek Siteler', icon: <List size={14} /> },
     { id: 'exclude', label: 'Hariç Tutulanlar', icon: <Shield size={14} /> },
+    { id: 'learned', label: `Öğrenilen${st?.learnedCount ? ` (${st.learnedCount})` : ''}`, icon: <ListChecks size={14} /> },
   ];
 
   return (
     <div className="fade-in">
       <Panel title="Zapret DPI Bypass Motoru" icon={<Zap size={20} style={{ marginRight: 8 }} />}
-        subtitle="Routing'de DPI'ı açık kuralların trafiğine, modem çıkışında nfqws paket manipülasyonu"
+        subtitle="DPI kurallarına ve engelli olduğu öğrenilen sitelere, modem çıkışında nfqws paket manipülasyonu"
         badge={<Badge variant={isEnabled ? 'success' : 'neutral'}>{isEnabled ? 'Aktif' : 'Pasif'}</Badge>}
         actions={
           <button className={`toggle-btn ${isEnabled ? 'toggle-on' : 'toggle-off'}`} onClick={handleToggle} disabled={toggling}
@@ -92,6 +104,10 @@ export function ZapretPanel() {
 
       {activeTab === 'strategy' && (
         <div style={{ marginTop: 14 }}><StrategyCard st={st} /></div>
+      )}
+
+      {activeTab === 'learned' && (
+        <div style={{ marginTop: 14 }}><LearnedCard st={st} refetch={refetchStatus} /></div>
       )}
 
       {(activeTab === 'hostlist' || activeTab === 'exclude') && (
@@ -129,12 +145,14 @@ function ZapretStatusCard({ st, onApplied }: { st: ZapretStatus | null; onApplie
     ['nfqws', st.nfqws
       ? (st.processes ? `Açık · ${st.processes} süreç` : 'Açık · süreç yok')
       : 'Kapalı'],
-    ['Kapsam', st.filterMark ? `DPI'ı açık kuralların trafiği (işaret ${st.filterMark})` : 'İşaret süzgeci yok — "Zapret\'e uygula" ile yazılır'],
+    ['Kapsam', st.modeFilter === 'autohostlist' ? 'Öğrenen liste: DPI kuralları + engelli olduğu algılanan siteler' : st.filterMark ? `DPI'ı açık kuralların trafiği (işaret ${st.filterMark})` : 'İşaret süzgeci yok — "Zapret\'e uygula" ile yazılır'],
     ['Çıkış arayüzü', st.iface || '—'],
     ['DPI kuralları', `${st.dpiRules ?? 0} kural${st.vpsDpiRules ? ` (${st.vpsDpiRules} VPS'te: tünel düşünce)` : ''}`
       + (st.manualEntries ? ` · ${st.manualEntries} ek site` : '')
       + (st.fromLists?.length ? ` · hazır liste: ${st.fromLists.map(l => `${l.label} ${l.count.toLocaleString('tr-TR')}`).join(', ')}` : '')],
     ['Hariç', `${st.excludeEntries ?? 0} satır`],
+    ['Öğrenilen', `${st.learnedCount ?? 0} site`],
+    ['Gece denetimi', checkSummary(st.lastCheck)],
   ];
   // Eksik kurulum ayrı (kırmızı) bantta; son uygulamanın uyarılarında da geçtiği için orada tekrarlanmaz.
   const warnings = (la?.warnings || []).filter(w => w !== st.installIssue);
@@ -163,10 +181,12 @@ function ZapretStatusCard({ st, onApplied }: { st: ZapretStatus | null; onApplie
         <div key={w} className="routing-apply"><AlertTriangle size={14} /><span>{w}</span></div>
       ))}
       <p className="subtitle" style={{ marginTop: 12 }}>
-        Site listesi gerekmez: Routing'de DPI'ı açtığınız kuralın trafiği (alan adı, hazır liste ya da IP aralığı) işaretlenir ve
-        modemden çıkarken Zapret'ten geçer. VPS çıkışlı kuralda tünel çalışırken DPI kullanılmaz; tünel düşer ve "operatörden + DPI"
-        seçiliyse trafik modemden DPI ile çıkar. Bir kuralda DPI açılınca Zapret kapalıysa kendiliğinden açılır; buradaki
-        anahtar Zapret'i tümden kapatır. Routing'de kuralı olmayan bir site için Ek Siteler'i kullanın.
+        Öğrenen liste: ev ağından modemden çıkan web trafiğini Zapret izler. Bir site engelli davranırsa (bağlantı sıfırlanır,
+        istek yanıtsız kalır) 60 sn'de 3 denemeden sonra Öğrenilen'e kendiliğinden eklenir ve o andan sonra açılır — yeni
+        engellenen bir siteyi ilk ziyarette birkaç kez yenilemeniz gerekebilir. Engelsiz sitelere dokunulmaz. Routing'de DPI'ı
+        açtığınız kuralların siteleri beklemeden her zaman DPI ile çıkar; VPS çıkışlı kuralda tünel düşer ve "operatörden + DPI"
+        seçiliyse trafik modemden DPI ile devam eder. Gece denetimi her gece 04:00'te öğrenilen sitelerle stratejinin hâlâ işe
+        yaradığını dener, yaramıyorsa Bildirimler'e yazar.
       </p>
     </Panel>
   );
@@ -221,15 +241,15 @@ function StrategyCard({ st }: { st: ZapretStatus | null }) {
       {!!st?.unlistedLines && (
         <div className="routing-apply routing-apply-err" style={{ marginTop: 0, marginBottom: 10 }}>
           <AlertTriangle size={14} />
-          <span>{st.unlistedLines} strateji satırında &lt;HOSTLIST&gt; yok: o satırda Hariç Tutulanlar uygulanmaz.</span>
+          <span>{st.unlistedLines} strateji satırında &lt;HOSTLIST&gt; yok: o satır listeye bakmaz, engelsiz siteler dahil tüm web trafiğine uygulanır.</span>
         </div>
       )}
       <pre className="doc-code zapret-log">{st?.strategy || '—'}</pre>
       <p className="subtitle" style={{ marginTop: 12 }}>
         Panel yalnız NFQWS_ENABLE, TPWS_ENABLE, MODE_FILTER, FILTER_MARK ve IFACE_WAN değerlerini yönetir; strateji satırlarına
         dokunmaz. Blockcheck'in önerdiği stratejiyi uygulamak için SSH'ta <code>sudo nano /opt/zapret/config</code> ile NFQWS_OPT'u
-        değiştirip <code> sudo systemctl restart zapret</code> çalıştırın; Hariç Tutulanlar'ın uygulanması için her satırda
-        &lt;HOSTLIST&gt; kalmalı. Özgün dosya ilk uygulamada config.pi5-orig olarak saklandı.
+        değiştirip <code> sudo systemctl restart zapret</code> çalıştırın; her satırda &lt;HOSTLIST&gt; kalmalı — yoksa o satır
+        engelsiz siteler dahil tüm web trafiğine uygulanır. Özgün dosya ilk uygulamada config.pi5-orig olarak saklandı.
       </p>
       <p className="subtitle" style={{ marginTop: 8 }}>
         Yöntem yalnız nfqws: paketleri modem çıkışında işler ve VPS tüneline giden trafiğe dokunmaz. tpws web trafiğini Pi'deki
@@ -276,8 +296,8 @@ function ZapretDomainManager({ listType, fromRouting, onChanged }: {
 
   const title = listType === 'hostlist' ? 'Ek Siteler' : 'Hariç Tutulanlar';
   const subtitle = listType === 'hostlist'
-    ? "İsteğe bağlı: Routing'de kuralı olmayan, modemden DPI atlatmayla çıkacak siteler; alt alan adları dahil (discord.com → cdn.discord.com)"
-    : "DPI'ı açık bir kurala girse bile DPI atlatma uygulanmayacak siteler";
+    ? 'İsteğe bağlı: öğrenmeyi beklemeden her zaman DPI atlatmayla çıkacak siteler; alt alan adları dahil (discord.com → cdn.discord.com)'
+    : 'DPI atlatma uygulanmayacak ve öğrenilmeyecek siteler (DPI\'ı açık bir kurala girse bile)';
 
   return (
     <Panel title={title} subtitle={subtitle} icon={<List size={18} style={{ marginRight: 8 }} />}>
@@ -334,6 +354,101 @@ function ZapretDomainManager({ listType, fromRouting, onChanged }: {
             ))}
           </div>
         </div>
+      )}
+    </Panel>
+  );
+}
+
+// Öğrenilen siteler: Zapret'in engelli olduğunu algılayıp kendisi eklediği siteler (otomatik liste). Yanlış öğrenilen (ör. o an
+// bozuk olan) site çıkarılır; "Hariç tut" bir daha öğrenilmesini de engeller. "Şimdi denetle" gece denetimini hemen çalıştırır.
+function LearnedCard({ st, refetch }: { st: ZapretStatus | null; refetch: () => Promise<void> }) {
+  const [busy, setBusy] = useState<string | null>(null);
+  const [filter, setFilter] = useState('');
+  const [check, setCheck] = useState<DpiCheck | null>(null);
+  const list = st?.learned || [];
+  const shown = filter ? list.filter(d => d.includes(filter.toLowerCase())) : list;
+  const last = check || st?.lastCheck || null;
+
+  const remove = async (domain: string, exclude: boolean) => {
+    setBusy(domain);
+    try {
+      await postApi('/zapret/learned/remove', { domain, exclude });
+      toast.success(exclude ? `${domain} çıkarıldı ve hariç tutuldu` : `${domain} öğrenilenlerden çıkarıldı`);
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Çıkarılamadı');
+    } finally {
+      setBusy(null);
+      await refetch();
+    }
+  };
+  const runCheck = async () => {
+    setBusy('check');
+    try {
+      const r = await postApi('/zapret/check', {}) as DpiCheck;
+      setCheck(r);
+      const bad = r.results.filter(x => !x.ok);
+      if (r.skipped) toast.info(`Denetim atlandı: ${r.skipped}`);
+      else if (bad.length) toast.error(`${bad.length} site açılamadı: ${bad.map(b => b.domain).join(', ')}`);
+      else toast.success(`${r.results.length} sitenin hepsi açıldı`);
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Denetlenemedi');
+    } finally {
+      setBusy(null);
+      await refetch();
+    }
+  };
+
+  if (st && !st.installed) {
+    return <Panel title="Öğrenilen Siteler"><div className="empty-state" style={{ padding: 20 }}>Zapret bu cihazda kurulu değil.</div></Panel>;
+  }
+  return (
+    <Panel title="Öğrenilen Siteler" icon={<ListChecks size={18} style={{ marginRight: 8 }} />}
+      subtitle="Zapret'in engelli olduğunu algılayıp kendisi eklediği siteler — bunlara DPI atlatma uygulanır"
+      actions={
+        <button className="btn-outline btn-sm" onClick={runCheck} disabled={busy !== null} title="Öğrenilen / DPI'lı sitelerden en çok 4'ünü şimdi dene">
+          <Activity size={13} className={busy === 'check' ? 'spin' : ''} /> {busy === 'check' ? 'Denetleniyor…' : 'Şimdi denetle'}
+        </button>
+      }>
+      <div className="zapret-fact" style={{ marginBottom: 10 }}><span>Son denetim</span><strong>{checkSummary(last)}</strong></div>
+      {last && !last.skipped && last.results.length > 0 && (
+        <div className="list-items" style={{ marginBottom: 12 }}>
+          {last.results.map(r => (
+            <div key={r.domain} className="list-item">
+              <div className="list-item-content">
+                <span className="list-item-value">{r.domain}</span>
+                <span className="list-item-comment">{r.ok ? `açıldı · ${r.detail}` : `açılamadı · ${r.detail}`}</span>
+              </div>
+              <Badge variant={r.ok ? 'success' : 'error'}>{r.ok ? 'tamam' : 'hata'}</Badge>
+            </div>
+          ))}
+        </div>
+      )}
+      {list.length > 8 && (
+        <div className="list-filter" style={{ marginBottom: 8 }}>
+          <Search size={13} />
+          <input className="config-input" type="text" placeholder="Alan adı ara..." value={filter} onChange={e => setFilter(e.target.value)} />
+        </div>
+      )}
+      <div className="list-items">
+        {shown.length === 0 && (
+          <div className="empty-state" style={{ padding: 20 }}>
+            {list.length ? 'Aramayla eşleşen site yok.' : 'Henüz öğrenilen site yok. Engelli bir siteyi açmayı denediğinizde birkaç denemeden sonra burada görünür.'}
+          </div>
+        )}
+        {shown.map(d => (
+          <div key={d} className="list-item">
+            <div className="list-item-content"><span className="list-item-value">{d}</span></div>
+            <button className="btn-outline btn-sm" disabled={busy !== null} onClick={() => remove(d, false)} title="Öğrenilenlerden çıkar (engelli davranırsa yeniden öğrenilir)">
+              <Trash2 size={12} /> Çıkar
+            </button>
+            <button className="btn-outline btn-sm" disabled={busy !== null} onClick={() => remove(d, true)} title="Çıkar ve Hariç Tutulanlar'a ekle (bir daha öğrenilmez)">
+              <ShieldOff size={12} /> Hariç tut
+            </button>
+          </div>
+        ))}
+      </div>
+      {(st?.learnedCount ?? 0) > list.length && (
+        <p className="subtitle" style={{ marginTop: 8 }}>En yeni {list.length} site gösteriliyor (toplam {st?.learnedCount}).</p>
       )}
     </Panel>
   );
