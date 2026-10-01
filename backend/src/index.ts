@@ -4,7 +4,7 @@ import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
 import { initDb, dbAll, dbRun, dbGet, dbInsert } from './db';
 import { setupWireGuardVPS, testSSHConnection, executeSetupStep, addWireGuardClient, connectPi5ToVps, disconnectPi5FromVps, removeWireGuardClient, removeWireGuardClients } from './ssh';
-import { readVpsTunnels, validVpsId, staleTunnels, setTunnelStale } from './vpsTunnel';
+import { readVpsTunnels, readTunnelTransfer, validVpsId, staleTunnels, setTunnelStale } from './vpsTunnel';
 import { validateFwRule, fwRuleToNft, accessCheck, isPanelLockoutForAll, blocksWholeLan, describeRule } from './firewall';
 import { fail2banSettingsView, validateFail2banSettings, applyFail2banSettings, ensureFail2ban, recentBans, unbanIp, lanNetworks } from './fail2ban';
 import { normFallback } from './routeMarks';
@@ -1505,14 +1505,17 @@ app.post('/api/vps/:id/disconnect', async (req, res) => {
 });
 
 // connected: wg_vps<ID> arayüzü var (Tünel Kes / Bağla düğmesi buna göre); state: el sıkışmaya göre up / connecting /
-// stale (yanıt yok) / down; handshakeAge: son el sıkışmanın yaşı (sn; null = hiç).
+// stale (yanıt yok) / down; handshakeAge: son el sıkışmanın yaşı (sn; null = hiç). rx / tx: tünelin toplam baytları (kart
+// iki okumanın farkından anlık hızı hesaplar; tünel yoksa null), at: okuma anı (ms).
 app.get('/api/vps/:id/tunnel-status', async (req, res) => {
-  const down = { connected: false, state: 'down', handshakeAge: null };
+  const down = { connected: false, state: 'down', handshakeAge: null, rx: null, tx: null, at: Date.now() };
   const id = validVpsId(req.params.id);
   if (id === null) return res.json(down);
   try {
     const t = (await readVpsTunnels([id])).get(id);
-    res.json(t ? { connected: t.state !== 'down', state: t.state, handshakeAge: t.handshakeAge } : down);
+    if (!t) return res.json(down);
+    const x = t.state !== 'down' ? await readTunnelTransfer(t.iface) : null;
+    res.json({ connected: t.state !== 'down', state: t.state, handshakeAge: t.handshakeAge, rx: x?.rx ?? null, tx: x?.tx ?? null, at: Date.now() });
   } catch { res.json(down); }
 });
 

@@ -1,7 +1,7 @@
 import {
   Server, Lock, Globe, Loader2, CheckCircle, AlertTriangle, Trash2, Plus,
   Wifi, Settings, Activity, Network, Eye, EyeOff, Copy, X, QrCode, Users,
-  Signal, ShieldCheck, Home
+  Home, Plug, Unplug, RefreshCw, ChevronDown, FileKey
 } from 'lucide-react';
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { useApi, getApi, postApi, deleteApi } from '../hooks/useApi';
@@ -11,16 +11,19 @@ import { toast } from '../toast';
 import type { VpsServer } from '../types';
 import { PiVpnServer } from './PiVpnServer';
 import { tunnelBadge, type TunnelInfo, type TunnelState } from '../vpsTunnel';
+import './WgCard.css';
 
-// tunnel-status yanıtı: connected = wg_vps<ID> arayüzü var (Tünel Kes / Bağla düğmesi), state = el sıkışmaya göre durum.
-type TunnelStatus = TunnelInfo & { connected: boolean };
-const TUNNEL_DOWN: TunnelStatus = { connected: false, state: 'down', handshakeAge: null };
+// tunnel-status yanıtı: connected = wg_vps<ID> arayüzü var (Tünel Kes / Bağla düğmesi), state = el sıkışmaya göre durum,
+// rx / tx = tünelin toplam baytları (kart iki okumanın farkından hızı hesaplar), at = okuma anı (ms).
+type TunnelStatus = TunnelInfo & { connected: boolean; rx: number | null; tx: number | null; at: number };
+const TUNNEL_DOWN: TunnelStatus = { connected: false, state: 'down', handshakeAge: null, rx: null, tx: null, at: 0 };
 const TUNNEL_STATES: TunnelState[] = ['up', 'connecting', 'stale', 'down'];
 const parseTunnel = (d: unknown): TunnelStatus => {
-  const o = (d && typeof d === 'object' ? d : {}) as { connected?: unknown; state?: unknown; handshakeAge?: unknown };
+  const o = (d && typeof d === 'object' ? d : {}) as { connected?: unknown; state?: unknown; handshakeAge?: unknown; rx?: unknown; tx?: unknown; at?: unknown };
   const connected = !!o.connected;
   const state = TUNNEL_STATES.includes(o.state as TunnelState) ? o.state as TunnelState : connected ? 'up' : 'down';
-  return { connected, state, handshakeAge: typeof o.handshakeAge === 'number' ? o.handshakeAge : null };
+  const num = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? v : null);
+  return { connected, state, handshakeAge: num(o.handshakeAge), rx: num(o.rx), tx: num(o.tx), at: num(o.at) ?? Date.now() };
 };
 
 type SetupState = 'idle' | 'deploying' | 'success' | 'error';
@@ -257,242 +260,338 @@ interface RepairResult {
   check: string; status: 'ok' | 'fixed' | 'failed'; detail: string;
 }
 
+// ─── WireGuard (VPS) kartı ───
+// Bilgi satırları her zaman yerinde durur (okunurken "okunuyor…"), değerler canlı güncellenir: tünel 10 sn'de bir
+// (bağlanırken 5 sn), VPS denetimi (SSH: internet, DNS, yönlendirme, WireGuard, NAT, çıkış IP'si) açılışta ve 5 dk'da bir,
+// kurallar dakikada bir. Trafik hızı iki tünel okumasının bayt farkından (backend tunnel-status rx / tx).
+const TUNNEL_POLL_MS = 10000;
+const TUNNEL_POLL_FAST_MS = 5000;
+const CHECK_EVERY_MS = 5 * 60000;
+const USAGE_EVERY_MS = 60000;
+type Tone = 'ok' | 'info' | 'warn' | 'bad' | 'off' | 'wait';
+const TUNNEL_TONE: Record<TunnelState, Tone> = { up: 'ok', connecting: 'info', stale: 'warn', down: 'off' };
+const TUNNEL_TEXT: Record<TunnelState, string> = { up: 'Açık', connecting: 'Bağlanıyor…', stale: 'Yanıt vermiyor', down: 'Kapalı' };
+const CHECKS: { key: 'internet' | 'dns' | 'forwarding' | 'wireguard' | 'nat'; label: string; title: string }[] = [
+  { key: 'internet', label: 'İnternet', title: "VPS internete çıkabiliyor (8.8.8.8'e ping)" },
+  { key: 'dns', label: 'DNS', title: 'VPS ad çözebiliyor' },
+  { key: 'forwarding', label: 'Yönlendirme', title: 'VPS IP yönlendirmesi açık (ip_forward)' },
+  { key: 'wireguard', label: 'WireGuard', title: "VPS'te wg0 arayüzü ayakta" },
+  { key: 'nat', label: 'NAT', title: 'VPS çıkışta adres çeviriyor (MASQUERADE)' },
+];
+const fmtAgo = (ms: number) => {
+  const s = Math.max(0, Math.round(ms / 1000));
+  return s < 60 ? `${s} sn önce` : s < 3600 ? `${Math.floor(s / 60)} dk önce` : `${Math.floor(s / 3600)} sa önce`;
+};
+const fmtHs = (s: number | null) =>
+  s === null ? 'el sıkışma yok' : `el sıkışma ${s < 120 ? `${s} sn` : s < 7200 ? `${Math.floor(s / 60)} dk` : `${Math.floor(s / 3600)} sa`} önce`;
+const fmtRate = (Bps: number) => {
+  const b = Bps * 8;
+  return b < 1e3 ? `${Math.round(b)} bps` : b < 1e6 ? `${(b / 1e3).toFixed(b < 1e4 ? 1 : 0)} kbps` : `${(b / 1e6).toFixed(b < 1e7 ? 1 : 0)} Mbps`;
+};
+const fmtBytes = (n: number) =>
+  n >= 1073741824 ? `${(n / 1073741824).toFixed(1)} GB` : n >= 1048576 ? `${(n / 1048576).toFixed(1)} MB` : `${Math.round(n / 1024)} KB`;
+const errText = (e: unknown, fallback: string) => (e instanceof Error && e.message ? e.message : fallback);
+
+// Satır yüksekliği durumdan bağımsız: değer ve (varsa) alt bilgi her zaman ayrı tek satır; alt bilgisi olan satır onu boşken de
+// yer tutar. Denetim satırında çipler ayrı satırda, işaretleri sabit genişlikte.
+function InfoRow({ label, tone, title, sub, children }: { label: string; tone?: Tone; title?: string; sub?: React.ReactNode; children: React.ReactNode }) {
+  return (
+    <div className="wg-row" title={title}>
+      <span className="wg-row-label">{label}</span>
+      <span className="wg-row-main">
+        <span className="wg-row-value">{tone && <i className={`wg-dot wg-t-${tone}`} aria-hidden="true" />}{children}</span>
+        {sub !== undefined && <span className="wg-sub wg-row-sub">{sub || ' '}</span>}
+      </span>
+    </div>
+  );
+}
+
 function VpsCard({ server, onConnect, onDisconnect, onDelete, onRefresh, tunnelNonce }: {
   server: VpsServer; onConnect: () => Promise<void>; onDisconnect: () => Promise<void>; onDelete: () => void; onRefresh: () => void;
   tunnelNonce: number;
 }) {
-  const [netStatus, setNetStatus] = useState<InternetStatus | null>(null);
-  const [checking, setChecking] = useState(false);
+  // VPS denetimi (SSH): istenen / biten sıra numarası — farklıysa denetim sürüyor.
+  const [checkSeq, setCheckSeq] = useState(1);
+  const [check, setCheck] = useState<{ seq: number; at: number; status: InternetStatus | null; error: string }>({ seq: 0, at: 0, status: null, error: '' });
+  const checking = check.seq !== checkSeq;
   const [repairing, setRepairing] = useState(false);
   const [repairResults, setRepairResults] = useState<RepairResult[] | null>(null);
-  // Pi5 tarafındaki wg_vps<ID> tünelinin canlı durumu (status alanı yalnız VPS erişilebilirliğini gösterir).
+  // Pi tarafındaki wg_vps<ID> tünelinin canlı durumu ve trafik hızı.
   const [tunnel, setTunnel] = useState<TunnelStatus | null>(null);
+  const [rate, setRate] = useState<{ down: number; up: number } | null>(null);
   const [tunnelPoll, setTunnelPoll] = useState(0);
+  const lastRead = useRef<TunnelStatus | null>(null);
+  const [usage, setUsage] = useState<{ block: string[]; isp: string[] } | null>(null);
+  const [busy, setBusy] = useState<'connect' | 'disconnect' | null>(null);
+  const [now, setNow] = useState(() => Date.now());
   const refreshTunnel = () => setTunnelPoll(k => k + 1);
 
-  // Client management
+  // İstemciler (açılır liste)
   const [showClients, setShowClients] = useState(false);
   const [clients, setClients] = useState<WgClient[]>([]);
+  const [clientsSeq, setClientsSeq] = useState(0);
   const [newName, setNewName] = useState('');
   const [adding, setAdding] = useState(false);
   const [addError, setAddError] = useState('');
+  const [confirmDel, setConfirmDel] = useState<number | null>(null);
+  const [deletingId, setDeletingId] = useState<number | null>(null);
   const [configClient, setConfigClient] = useState<WgClient | null>(null);
   const [qrClient, setQrClient] = useState<WgClient | null>(null);
 
-  const loadClients = async () => {
-    try {
-      const r = await fetch(`/api/vps/${server.id}/clients`);
-      const data = await r.json();
-      setClients(data.clients || []);
-    } catch { setClients([]); }
-  };
-
-  useEffect(() => { loadClients(); }, [server.id]);
-
-  const handleAdd = async () => {
-    if (!newName.trim()) return;
-    setAdding(true); setAddError('');
-    try {
-      const r = await postApi(`/vps/${server.id}/clients`, { name: newName.trim() });
-      if (r.error) { setAddError(r.error); }
-      else { setNewName(''); await loadClients(); }
-    } catch (e: any) { setAddError(e.message || 'Eklenemedi'); }
-    setAdding(false);
-  };
-
-  const checkInternet = async () => {
-    setChecking(true);
-    refreshTunnel();
-    try {
-      const res = await fetch(`/api/vps/${server.id}/internet-check`);
-      setNetStatus(await res.json());
-      onRefresh(); // DB status updated by backend, refetch VPS list
-    } catch { setNetStatus(null); }
-    setChecking(false);
-  };
-
-  // Auto-check on mount (any status — VPS may still be reachable)
+  // "… önce" metinleri için saat
   useEffect(() => {
-    checkInternet();
-  }, [server.id]);
+    const t = setInterval(() => setNow(Date.now()), 5000);
+    return () => clearInterval(t);
+  }, []);
 
-  // Durum değişince ya da kurulum bitince (tunnelNonce) tünel durumunu yeniden oku; kart yeniden mount
-  // edilmediği için mount'taki okuma tünel kurulmadan önceki değerde kalırdı (internet-check status'u kurulum
-  // sırasında zaten 'connected' yapabildiğinden yalnız status'a bakmak yetmez). Sonra 30 sn'de bir (VPS yanıt vermezse
-  // kart kendiliğinden "yanıt vermiyor"a döner); yeni açılan tünelde el sıkışma birkaç saniyede gelir → 5 sn'de bir.
   useEffect(() => {
-    let cancelled = false;
+    let alive = true;
+    getApi<{ clients?: WgClient[] }>(`/vps/${server.id}/clients`)
+      .then(d => { if (alive) setClients(d.clients || []); }, () => { if (alive) setClients([]); });
+    return () => { alive = false; };
+  }, [server.id, clientsSeq]);
+
+  // VPS denetimi: açılışta, 5 dk'da bir ve "Denetle" ile (checkSeq artar).
+  useEffect(() => {
+    let alive = true;
+    const seq = checkSeq;
+    fetch(`/api/vps/${server.id}/internet-check`)
+      .then(async r => {
+        const d = await r.json().catch(() => ({}));
+        if (!r.ok || d.error) throw new Error(d.error || `HTTP ${r.status}`);
+        return d as InternetStatus;
+      })
+      .then(
+        status => { if (alive) { setCheck({ seq, at: Date.now(), status, error: '' }); onRefresh(); } },
+        e => { if (alive) setCheck({ seq, at: Date.now(), status: null, error: errText(e, 'VPS denetlenemedi') }); },
+      );
+    return () => { alive = false; };
+    // onRefresh her çizimde yeni işlev: yalnız istenen denetim sırasıyla çalışır
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [server.id, checkSeq]);
+  useEffect(() => {
+    const t = setInterval(() => setCheckSeq(s => s + 1), CHECK_EVERY_MS);
+    return () => clearInterval(t);
+  }, []);
+
+  // Tünel: 10 sn'de bir (bağlanırken 5 sn). Durum değişince / kurulum bitince (tunnelNonce) / el ile hemen yeniden okunur.
+  useEffect(() => {
+    let alive = true;
     let timer: ReturnType<typeof setTimeout> | undefined;
     const poll = () => {
       fetch(`/api/vps/${server.id}/tunnel-status`)
         .then(r => r.json())
         .then(parseTunnel, () => TUNNEL_DOWN)
         .then(t => {
-          if (cancelled) return;
+          if (!alive) return;
+          const p = lastRead.current;
+          if (t.rx !== null && t.tx !== null && p && p.rx !== null && p.tx !== null && t.at > p.at) {
+            const dt = (t.at - p.at) / 1000;
+            const down = (t.rx - p.rx) / dt, up = (t.tx - p.tx) / dt;
+            setRate(down >= 0 && up >= 0 ? { down, up } : null);
+          } else if (t.rx === null) setRate(null);
+          lastRead.current = t;
           setTunnel(t);
-          timer = setTimeout(poll, t.state === 'connecting' ? 5000 : 30000);
+          timer = setTimeout(poll, t.state === 'connecting' ? TUNNEL_POLL_FAST_MS : TUNNEL_POLL_MS);
         });
     };
     poll();
-    return () => { cancelled = true; if (timer) clearTimeout(timer); };
+    return () => { alive = false; if (timer) clearTimeout(timer); };
   }, [server.id, server.status, tunnelNonce, tunnelPoll]);
 
-  const StatusDot = ({ ok, label }: { ok: boolean; label: string }) => (
-    <span title={label} style={{ display: 'inline-flex', alignItems: 'center', gap: 3, fontSize: 10, color: ok ? 'var(--success-color)' : 'var(--danger-color)' }}>
-      <span style={{ width: 6, height: 6, borderRadius: 8, background: ok ? 'var(--success-color)' : 'var(--danger-color)', display: 'inline-block' }} />
-      {label}
-    </span>
-  );
+  // Bu VPS'ten çıkan kurallar (dakikada bir)
+  useEffect(() => {
+    let alive = true;
+    const load = () => { void vpsRuleUsage(server.id).then(u => { if (alive) setUsage(u); }); };
+    load();
+    const t = setInterval(load, USAGE_EVERY_MS);
+    return () => { alive = false; clearInterval(t); };
+  }, [server.id, tunnelPoll]);
+
+  const handleAdd = async () => {
+    if (!newName.trim()) return;
+    setAdding(true); setAddError('');
+    try {
+      const r = await postApi(`/vps/${server.id}/clients`, { name: newName.trim() });
+      if (r.error) setAddError(r.error);
+      else { setNewName(''); setClientsSeq(s => s + 1); toast.success(`${newName.trim()} eklendi`); }
+    } catch (e) { setAddError(errText(e, 'Eklenemedi')); }
+    setAdding(false);
+  };
+
+  // Silme iki adımlı: ilk tıklama onay ister (3 sn), ikincisi siler.
+  const askDelete = (c: WgClient) => {
+    if (confirmDel !== c.id) {
+      setConfirmDel(c.id);
+      setTimeout(() => setConfirmDel(x => (x === c.id ? null : x)), 3000);
+      return;
+    }
+    setConfirmDel(null);
+    setDeletingId(c.id);
+    void deleteVpsClient(server.id, c.id, c.name).then(ok => { if (ok) setClientsSeq(s => s + 1); setDeletingId(null); });
+  };
+
+  const repair = async () => {
+    setRepairing(true); setRepairResults(null);
+    try {
+      const r = await fetch(`/api/vps/${server.id}/auto-repair`, { method: 'POST' });
+      const data = await r.json();
+      setRepairResults(data.repairs || []);
+      setTimeout(() => setCheckSeq(s => s + 1), 2000);
+    } catch { setRepairResults([{ check: 'Bağlantı', status: 'failed', detail: 'SSH bağlantısı başarısız' }]); }
+    setRepairing(false);
+  };
+
+  const toggleTunnel = async () => {
+    if (!tunnel) return;
+    const off = tunnel.connected;
+    setBusy(off ? 'disconnect' : 'connect');
+    try { await (off ? onDisconnect() : onConnect()); } catch (e) { toast.error(errText(e, off ? 'Tünel kesilemedi' : 'Bağlantı başarısız')); }
+    setBusy(null);
+    refreshTunnel();
+  };
+
+  const st = tunnel?.state;
+  const headTone: Tone = st ? TUNNEL_TONE[st] : 'wait';
+  const badge = tunnel ? tunnelBadge(tunnel) : null;
+  const ns = check.status;
+  const firstCheck = check.seq === 0;
+  const allGood = !!ns && CHECKS.every(c => ns[c.key]);
+  const vpsTone: Tone = server.status === 'connected' ? 'ok' : server.status === 'installing' ? 'info' : server.status === 'error' ? 'bad' : 'off';
+  const vpsText = server.status === 'connected' ? 'Bağlı' : server.status === 'installing' ? 'Kuruluyor' : server.status === 'error' ? 'Hata' : 'Bağlı değil';
+  const nRules = usage ? usage.block.length + usage.isp.length : 0;
+  const title = server.location?.trim() || server.ip;
 
   return (
-    <div className="vps-card">
-      <div className="vps-card-header">
-        <Server size={18} />
-        <span style={{ flex: 1 }} />
-        <span className={`svc-dot ${server.status === 'connected' ? 'svc-on' : 'svc-off'}`} />
-        <button className="icon-btn icon-btn-sm" onClick={onDelete} title="VPS Sil" style={{ marginLeft: 4, opacity: 0.5 }}>
-          <Trash2 size={11} />
-        </button>
-      </div>
-      <div className="vps-card-body">
-        <span className="vps-ip">{server.ip}</span>
-        <span className="vps-location">{server.location || server.username}</span>
-        <span className={`badge ${server.status === 'connected' ? 'badge-success' : server.status === 'error' ? 'badge-error' : 'badge-neutral'}`}>
-          {server.status === 'connected' ? 'Bağlı' : server.status === 'installing' ? 'Kuruluyor' : server.status === 'error' ? 'Hata' : 'Bağlı Değil'}
+    <div className={`wg-card wg-t-${headTone}`}>
+      <div className="wg-head">
+        <div className="wg-avatar" aria-hidden="true"><Server size={18} /></div>
+        <div className="wg-title">
+          <strong>{title}</strong>
+          <span>{server.ip} · {server.username}</span>
+        </div>
+        <span className={`wg-pill wg-t-${headTone}`} title={badge?.title || 'Tünel durumu okunuyor'}>
+          <i className={`wg-dot wg-t-${headTone}`} aria-hidden="true" />{st ? TUNNEL_TEXT[st] : 'Okunuyor…'}
         </span>
-        {tunnel && (() => {
-          const b = tunnelBadge(tunnel);
-          return <span className={`badge badge-${b.variant}`} title={b.title}>{b.label}</span>;
-        })()}
-      </div>
-
-      {/* Internet status badges */}
-      {netStatus && (() => {
-        const allGood = netStatus.internet && netStatus.dns && netStatus.forwarding && netStatus.wireguard && netStatus.nat;
-        return (
-          <>
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 6, padding: '6px 0', borderTop: '1px solid var(--panel-border)' }}>
-              <StatusDot ok={netStatus.internet} label="Internet" />
-              <StatusDot ok={netStatus.dns} label="DNS" />
-              <StatusDot ok={netStatus.forwarding} label="Forward" />
-              <StatusDot ok={netStatus.wireguard} label="WG" />
-              <StatusDot ok={netStatus.nat} label="NAT" />
-            </div>
-            {allGood ? (
-              <div style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 10, color: 'var(--success-color)', marginTop: 2 }}>
-                <ShieldCheck size={12} /> Trafik aktif{netStatus.publicIp ? ` — ${netStatus.publicIp}` : ''}
-              </div>
-            ) : (
-              <div style={{ marginTop: 2 }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 10, color: 'var(--danger-color)' }}>
-                  <AlertTriangle size={12} /> Bazı kontroller başarısız
-                  <button className="btn-sm btn-primary" style={{ fontSize: 9, padding: '1px 6px', marginLeft: 'auto' }}
-                    onClick={async () => {
-                      setRepairing(true); setRepairResults(null);
-                      try {
-                        const r = await fetch(`/api/vps/${server.id}/auto-repair`, { method: 'POST' });
-                        const data = await r.json();
-                        setRepairResults(data.repairs || []);
-                        setTimeout(checkInternet, 2000);
-                      } catch { setRepairResults([{ check: 'Bağlantı', status: 'failed', detail: 'SSH bağlantısı başarısız' }]); }
-                      setRepairing(false);
-                    }}
-                    disabled={repairing}>
-                    {repairing ? <><Loader2 size={10} className="spin" /> Onarılıyor...</> : 'Otomatik Onar'}
-                  </button>
-                </div>
-                {repairResults && (
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: 3, marginTop: 4 }}>
-                    {repairResults.map((r, i) => (
-                      <div key={i} style={{
-                        display: 'flex', alignItems: 'center', gap: 6, fontSize: 10,
-                        padding: '3px 6px', borderRadius: 8,
-                        background: r.status === 'ok' ? 'rgba(34,197,94,0.06)' : r.status === 'fixed' ? 'rgba(59,130,246,0.06)' : 'rgba(239,68,68,0.06)',
-                        color: r.status === 'ok' ? 'var(--success-color)' : r.status === 'fixed' ? 'var(--accent-color)' : 'var(--danger-color)',
-                      }}>
-                        <span style={{ fontWeight: 600, width: 60 }}>{r.check}</span>
-                        <span style={{ fontWeight: 600 }}>{r.status === 'ok' ? '✓' : r.status === 'fixed' ? '⚡' : '✗'}</span>
-                        <span style={{ color: 'var(--text-muted)', flex: 1 }}>{r.detail}</span>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-            )}
-          </>
-        );
-      })()}
-
-      <div style={{ display: 'flex', gap: 4, marginTop: 6 }}>
-        {tunnel === null ? null : tunnel.connected ? (
-          <button className="btn-outline btn-sm" style={{ flex: 1, fontSize: 11 }} onClick={async () => {
-            try { await onDisconnect(); } catch (e) { toast.error(e instanceof Error ? e.message : 'Tünel kesilemedi'); }
-            refreshTunnel();
-          }}>
-            Tünel Kes
-          </button>
-        ) : server.status !== 'installing' ? (
-          <button className="btn-primary btn-sm" style={{ flex: 1, fontSize: 11 }} onClick={async () => {
-            try { await onConnect(); } catch (e) { toast.error(e instanceof Error ? e.message : 'Bağlantı başarısız'); }
-            refreshTunnel();
-          }}>
-            Tünel Bağla
-          </button>
-        ) : null}
-        <button className="btn-outline btn-sm" style={{ fontSize: 11 }} onClick={checkInternet} disabled={checking} title="VPS internet kontrol">
-          {checking ? <Loader2 size={12} className="spin" /> : <Signal size={12} />}
-        </button>
-        <button className="btn-outline btn-sm" style={{ fontSize: 11 }} onClick={() => setShowClients(!showClients)} title="Client listesi">
-          <Users size={12} /> {clients.length > 0 ? clients.length : ''}
+        <button className="wg-icon-btn is-danger" onClick={onDelete} title="VPS'i sil" aria-label={`${title} VPS'ini sil`}>
+          <Trash2 size={14} />
         </button>
       </div>
 
-      {/* Inline client management */}
-      {showClients && (
-        <div style={{ marginTop: 6, borderTop: '1px solid var(--panel-border)', paddingTop: 6 }}>
-          <div style={{ display: 'flex', gap: 4, alignItems: 'center', marginBottom: 6 }}>
-            <input className="config-input" type="text" placeholder="Client adı..."
-              value={newName} onChange={e => setNewName(e.target.value)}
-              onKeyDown={e => e.key === 'Enter' && handleAdd()}
-              style={{ flex: 1, fontSize: 11, padding: '3px 6px' }} />
-            <button className="btn-primary btn-sm" style={{ fontSize: 10, padding: '2px 6px' }}
-              onClick={handleAdd} disabled={adding || !newName.trim()}>
-              {adding ? <Loader2 size={10} className="spin" /> : <><Plus size={10} /> Ekle</>}
+      <div className="wg-rows">
+        <InfoRow label="Tünel" tone={headTone} title={badge?.title}
+          sub={st && st !== 'down' ? fmtHs(tunnel!.handshakeAge) : st === 'down' ? 'Pi ↔ VPS bağlantısı yok' : ''}>
+          {st ? TUNNEL_TEXT[st] : <span className="wg-sub">okunuyor…</span>}
+        </InfoRow>
+        <InfoRow label="Trafik" title="Pi ↔ VPS tünelinden geçen anlık trafik (son 10 sn)"
+          sub={tunnel?.connected && tunnel.rx !== null && tunnel.tx !== null ? `toplam ↓ ${fmtBytes(tunnel.rx)} ↑ ${fmtBytes(tunnel.tx)}` : ''}>
+          {tunnel?.connected && tunnel.rx !== null && tunnel.tx !== null
+            ? (rate ? <span className="wg-mono">↓ {fmtRate(rate.down)} · ↑ {fmtRate(rate.up)}</span> : <span className="wg-sub">ölçülüyor…</span>)
+            : <span className="wg-sub">{tunnel ? 'tünel kapalı' : 'okunuyor…'}</span>}
+        </InfoRow>
+        <InfoRow label="VPS" tone={vpsTone} title="VPS'e SSH ile erişim (denetim sonucuna göre)">{vpsText}</InfoRow>
+        <InfoRow label="Çıkış IP'si" title="VPS'in internete çıktığı adres — tünelden çıkan trafik bu adresle görünür">
+          {ns?.publicIp ? <span className="wg-mono">{ns.publicIp}</span> : <span className="wg-sub">{firstCheck ? 'denetleniyor…' : '—'}</span>}
+        </InfoRow>
+        <div className="wg-row wg-row-stack" title={check.error || undefined}>
+          <span className="wg-row-head">
+            <span className="wg-row-label">Denetim</span>
+            <span className={`wg-sub${check.error && !ns && !checking ? ' wg-sub-bad' : ''}`}>
+              {checking ? 'denetleniyor…' : check.error && !ns ? "VPS'e bağlanılamadı" : check.at ? fmtAgo(now - check.at) : ''}
+            </span>
+          </span>
+          <span className="wg-chips">
+            {CHECKS.map(c => {
+              const tone: Tone = !ns ? (check.error && !checking ? 'bad' : 'wait') : ns[c.key] ? 'ok' : 'bad';
+              const mark = !ns ? (check.error && !checking ? '?' : '·') : ns[c.key] ? '✓' : '✕';
+              return <span key={c.key} className={`wg-chip wg-t-${tone}`} title={c.title}><b>{mark}</b>{c.label}</span>;
+            })}
+          </span>
+        </div>
+        <InfoRow label="Kurallar" title={usage && nRules ? [...usage.block, ...usage.isp].join(', ') : undefined}
+          sub={usage && nRules ? `tünel düşerse ${usage.block.length} engellenir${usage.isp.length ? `, ${usage.isp.length} operatörden` : ''}` : ''}>
+          {!usage ? <span className="wg-sub">okunuyor…</span> : nRules ? <span>{nRules} kural bu VPS'ten çıkıyor</span>
+            : <span className="wg-sub">yönlendirilen kural yok</span>}
+        </InfoRow>
+      </div>
+
+      {ns && !allGood && (
+        <div className="wg-alert">
+          <div className="wg-alert-head">
+            <AlertTriangle size={14} /> <span>Bazı denetimler başarısız</span>
+            <button className="wg-btn wg-btn-sm" onClick={repair} disabled={repairing}>
+              {repairing ? <><Loader2 size={12} className="spin" /> Onarılıyor…</> : 'Otomatik onar'}
             </button>
           </div>
-          {addError && <div style={{ fontSize: 10, color: 'var(--danger-color)', marginBottom: 4 }}>{addError}</div>}
-          {clients.length === 0 ? (
-            <div style={{ fontSize: 11, color: 'var(--text-muted)', textAlign: 'center', padding: 8 }}>Client yok</div>
-          ) : (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
-              {clients.map(c => (
-                <div key={c.id} style={{
-                  display: 'flex', alignItems: 'center', gap: 6, padding: '4px 6px',
-                  borderRadius: 8, background: 'rgba(255,255,255,0.02)', border: '1px solid var(--panel-border)',
-                  fontSize: 11,
-                }}>
-                  <Users size={10} style={{ color: 'var(--accent-color)', flexShrink: 0 }} />
-                  <span style={{ fontWeight: 500, flex: 1 }}>{c.name}</span>
-                  <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--text-muted)' }}>{c.ip}</span>
-                  <button className="btn-outline btn-sm" style={{ fontSize: 9, padding: '1px 4px' }}
-                    onClick={() => setConfigClient(c)} title="Config">
-                    <Lock size={9} />
-                  </button>
-                  {c.qr_data && (
-                    <button className="btn-outline btn-sm" style={{ fontSize: 9, padding: '1px 4px' }}
-                      onClick={() => setQrClient(c)} title="QR">
-                      <QrCode size={9} />
-                    </button>
-                  )}
-                  <button className="btn-outline btn-sm" style={{ fontSize: 9, padding: '1px 4px', color: 'var(--danger-color)', borderColor: 'var(--danger-color)' }}
-                    onClick={async () => {
-                      if (await deleteVpsClient(server.id, c.id, c.name)) loadClients();
-                    }} title="Sil">
-                    <Trash2 size={9} />
-                  </button>
-                </div>
+          {repairResults && (
+            <ul className="wg-repair">
+              {repairResults.map((r, i) => (
+                <li key={i} className={`wg-t-${r.status === 'ok' ? 'ok' : r.status === 'fixed' ? 'info' : 'bad'}`}>
+                  <strong>{r.check}</strong><span>{r.status === 'ok' ? 'sorun yok' : r.status === 'fixed' ? 'onarıldı' : 'onarılamadı'}</span>
+                  <small>{r.detail}</small>
+                </li>
               ))}
-            </div>
+            </ul>
+          )}
+        </div>
+      )}
+
+      <div className="wg-actions">
+        {server.status === 'installing' && !tunnel?.connected ? null : (
+          <button className={`wg-btn wg-btn-grow ${tunnel?.connected ? 'wg-btn-danger' : 'wg-btn-primary'}`} onClick={toggleTunnel}
+            disabled={!tunnel || busy !== null}>
+            {busy ? <Loader2 size={14} className="spin" /> : tunnel?.connected ? <Unplug size={14} /> : <Plug size={14} />}
+            {busy === 'connect' ? 'Bağlanıyor…' : busy === 'disconnect' ? 'Kesiliyor…' : tunnel?.connected ? 'Tüneli kes' : 'Tüneli bağla'}
+          </button>
+        )}
+        <button className="wg-btn" onClick={() => { setCheckSeq(s => s + 1); refreshTunnel(); }} disabled={checking} title="VPS'i ve tüneli şimdi denetle">
+          <RefreshCw size={14} className={checking ? 'spin' : ''} /> Denetle
+        </button>
+        <button className="wg-btn wg-btn-drawer" onClick={() => setShowClients(v => !v)} aria-expanded={showClients} title="Bu VPS'in VPN istemcileri">
+          <span className="wg-btn-left"><Users size={14} /> İstemciler <span className="wg-count">{clients.length}</span></span>
+          <ChevronDown size={14} className="wg-chev" />
+        </button>
+      </div>
+
+      {showClients && (
+        <div className="wg-clients">
+          <div className="wg-add">
+            <input className="config-input" type="text" placeholder="Yeni istemci adı (örn. iPhone-Ali)" aria-label="Yeni istemci adı"
+              value={newName} onChange={e => setNewName(e.target.value)} onKeyDown={e => e.key === 'Enter' && handleAdd()} />
+            <button className="wg-btn wg-btn-primary" onClick={handleAdd} disabled={adding || !newName.trim()}>
+              {adding ? <Loader2 size={14} className="spin" /> : <Plus size={14} />} Ekle
+            </button>
+          </div>
+          {addError && <div className="wg-err">{addError}</div>}
+          {clients.length === 0 ? (
+            <div className="wg-empty"><Users size={18} /><span>Henüz istemci yok — ad yazıp Ekle'ye basın; telefon için QR kodu oluşur.</span></div>
+          ) : (
+            <ul className="wg-client-list">
+              {clients.map(c => (
+                <li key={c.id} className="wg-client">
+                  <span className="wg-client-av" aria-hidden="true">{c.name.charAt(0).toLocaleUpperCase('tr-TR')}</span>
+                  <span className="wg-client-main">
+                    <strong>{c.name}</strong>
+                    <span className="wg-mono">{c.ip}</span>
+                  </span>
+                  <span className="wg-client-actions">
+                    <button className="wg-icon-btn" onClick={() => setConfigClient(c)} title="Yapılandırma dosyası" aria-label={`${c.name} yapılandırması`}>
+                      <FileKey size={15} />
+                    </button>
+                    {c.qr_data && (
+                      <button className="wg-icon-btn" onClick={() => setQrClient(c)} title="QR kod" aria-label={`${c.name} QR kodu`}>
+                        <QrCode size={15} />
+                      </button>
+                    )}
+                    <button className={`wg-icon-btn is-danger${confirmDel === c.id ? ' is-confirm' : ''}`} onClick={() => askDelete(c)}
+                      disabled={deletingId === c.id} title={confirmDel === c.id ? 'Silmek için yeniden tıklayın' : "İstemciyi sil (VPS'ten de kaldırılır)"}
+                      aria-label={`${c.name} istemcisini sil`}>
+                      {deletingId === c.id ? <Loader2 size={14} className="spin" /> : confirmDel === c.id ? 'Sil?' : <Trash2 size={14} />}
+                    </button>
+                  </span>
+                </li>
+              ))}
+            </ul>
           )}
         </div>
       )}
@@ -697,7 +796,7 @@ export function VpsSetup() {
     <div className="fade-in">
       <div className="glass-panel widget-large">
         <div className="widget-header">
-          <h3><Server size={20} style={{ marginRight: 8 }} />VPS WireGuard Sunuculari</h3>
+          <h3><Server size={20} style={{ marginRight: 8 }} />WireGuard</h3>
           {activeTab === 'overview' && (
             <button className="btn-primary btn-sm" onClick={() => setShowForm(!showForm)}>
               <Plus size={14} />
@@ -705,7 +804,7 @@ export function VpsSetup() {
             </button>
           )}
         </div>
-        <p className="subtitle">Kayitli VPN tunel sunuculari, baglanti durumlari ve WireGuard yapilandirmasi</p>
+        <p className="subtitle">VPS tünelleri ve canlı durumları, VPN istemcileri, Ev VPN'i ve WireGuard ayarları</p>
         <div className="service-tabs">
           {tabs.map(tab => (
             <button key={tab.id}
@@ -731,7 +830,7 @@ export function VpsSetup() {
             </div>
           ) : (
             <div className="glass-panel widget-large" style={{ marginTop: 14 }}>
-              <div className="vps-grid">
+              <div className="wg-grid">
                 {data.servers.map(server => (
                   <VpsCard key={server.id} server={server}
                     onConnect={async () => {

@@ -38,7 +38,7 @@ export const NAV_TABS: NavTab[] = [
   { id: 'trafficcontrol', label: 'Trafik Kontrol', icon: Sliders, mainOnly: true },
   { id: 'nettools', label: 'Ağ Araçları', icon: Wrench },
   { id: 'alerts', label: 'Bildirimler', icon: Bell },
-  { id: 'vps', label: 'VPS WireGuard', icon: Server, group: 'Altyapı', mainOnly: true },
+  { id: 'vps', label: 'WireGuard', icon: Server, group: 'Altyapı', mainOnly: true },
   { id: 'roles', label: 'Cihaz Rolleri', icon: Layers },
   { id: 'maintenance', label: 'Sistem & Log', icon: Terminal },
   { id: 'terminal', label: 'SSH Terminal', icon: TerminalSquare },

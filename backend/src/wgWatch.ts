@@ -56,7 +56,7 @@ function unreachableMessage(r: ReachResult): string {
       : n === 1
         ? `Modemdeki (${r.routers[0]}) UDP ${r.port} → ${r.piLanIp || 'Pi'} yönlendirmesini kontrol edin.`
         : `Modemdeki UDP ${r.port} yönlendirmesini kontrol edin.`;
-  return `Ev VPN'ine dışarıdan ulaşılamıyor (iki denetimde de); ev dışındaki cihazlar bağlanamaz. ${hint} Adım adım: VPS WireGuard → Ev VPN'i (Pi) → Testi başlat.`;
+  return `Ev VPN'ine dışarıdan ulaşılamıyor (iki denetimde de); ev dışındaki cihazlar bağlanamaz. ${hint} Adım adım: WireGuard → Ev VPN'i (Pi) → Testi başlat.`;
 }
 
 // Elle ve otomatik testlerin ortak sonucu. reachabilityTest eşzamanlı çağrılarda aynı sonucu paylaştırır → aynı sonuç bir

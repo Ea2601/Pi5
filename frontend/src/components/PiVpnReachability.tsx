@@ -212,7 +212,7 @@ function GuideCgnat({ r }: { r: ReachResult }) {
       <ol>
         <li>Operatörü arayıp <strong>genel (public) IPv4 adresi</strong> isteyin. Birçok operatör bunu ücretsiz ya da küçük bir ücretle açar.</li>
         <li>Genel IP tanımlanınca (modemi yeniden başlatmanız gerekebilir) burada <strong>Yeniden test et</strong>'e basın; sonuç sizi modem adımlarına götürür.</li>
-        <li>O zamana kadar ev dışında VPN gerekiyorsa <strong>VPS WireGuard → Client Yonetimi</strong>'nden dış VPS istemcisi ekleyebilirsiniz; trafik evden değil VPS'ten çıkar.</li>
+        <li>O zamana kadar ev dışında VPN gerekiyorsa <strong>WireGuard → Client Yonetimi</strong>'nden dış VPS istemcisi ekleyebilirsiniz; trafik evden değil VPS'ten çıkar.</li>
       </ol>
     </div>
   );

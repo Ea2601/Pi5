@@ -1,0 +1,202 @@
+/* WireGuard sayfası — VPS kartları (VpsSetup.tsx VpsCard): sabit bilgi satırları + canlı değerler, düğmeler, açılır istemci
+   listesi. Renk tonu tünel durumundan (ok / info / warn / bad / off / wait). */
+.wg-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(330px, 1fr));
+  align-items: start; /* komşu kartta onarım kutusu / istemci listesi açılınca öbürü uzamasın */
+  gap: 14px;
+  margin-top: 16px;
+}
+@media (max-width: 768px) {
+  .wg-grid { grid-template-columns: 1fr; }
+}
+
+.wg-card {
+  --wg-info: #60a5fa;
+  position: relative;
+  display: flex; flex-direction: column;
+  min-width: 0;
+  border-radius: var(--radius);
+  border: 1px solid var(--panel-border);
+  background: color-mix(in srgb, var(--bg-surface) 55%, transparent);
+  overflow: hidden;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+:root.light-theme .wg-card { --wg-info: #2563eb; }
+.wg-card:hover { border-color: var(--panel-border-hover); }
+.wg-card::before { /* üst kenarda tünel durumu şeridi */
+  content: ''; position: absolute; inset: 0 0 auto 0; height: 3px;
+  background: var(--tone); opacity: 0.85;
+}
+
+.wg-t-ok { --tone: var(--success-color); }
+.wg-t-info { --tone: var(--wg-info); }
+.wg-t-warn { --tone: var(--warning-color); }
+.wg-t-bad { --tone: var(--danger-color); }
+.wg-t-off, .wg-t-wait { --tone: var(--text-muted); }
+
+/* Başlık */
+.wg-head { display: flex; align-items: center; gap: 12px; padding: 16px 12px 12px 14px; }
+.wg-avatar {
+  display: grid; place-items: center; flex: none;
+  width: 38px; height: 38px; border-radius: 10px;
+  color: var(--tone);
+  background: color-mix(in srgb, var(--tone) 14%, transparent);
+}
+.wg-title { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1; }
+.wg-title strong { overflow: hidden; color: var(--text-primary); font-size: 14.5px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.wg-title span { overflow: hidden; color: var(--text-muted); font-family: var(--font-mono); font-size: 11.5px; text-overflow: ellipsis; white-space: nowrap; }
+.wg-pill {
+  display: inline-flex; align-items: center; gap: 6px; flex: none;
+  padding: 3px 10px; border-radius: 999px;
+  color: var(--tone); font-size: 11px; font-weight: 600; white-space: nowrap;
+  background: color-mix(in srgb, var(--tone) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--tone) 30%, transparent);
+}
+.wg-pill.wg-t-off, .wg-pill.wg-t-wait { color: var(--text-secondary); }
+
+.wg-icon-btn {
+  display: inline-grid; place-items: center; flex: none;
+  min-width: 30px; height: 30px; padding: 0;
+  border: 1px solid transparent; border-radius: 8px;
+  background: transparent; color: var(--text-muted);
+  cursor: pointer; transition: background 0.15s, color 0.15s;
+}
+.wg-icon-btn:hover:not(:disabled) { background: var(--accent-glow); color: var(--text-primary); }
+.wg-icon-btn.is-danger:hover:not(:disabled) { background: var(--danger-glow); color: var(--danger-color); }
+.wg-icon-btn.is-confirm { padding: 0 9px; background: var(--danger-color); color: #fff; font-size: 11px; font-weight: 700; }
+.wg-icon-btn.is-confirm:hover:not(:disabled) { background: var(--danger-color); color: #fff; }
+.wg-icon-btn:disabled { opacity: 0.6; cursor: default; }
+.wg-icon-btn:focus-visible, .wg-btn:focus-visible { outline: 2px solid var(--accent-color); outline-offset: 1px; }
+
+/* Bilgi satırları: her zaman yerinde, değer canlı */
+.wg-rows { display: flex; flex-direction: column; margin: 0 14px; border-top: 1px solid var(--panel-border); }
+.wg-row {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  min-height: 36px; padding: 6px 0;
+  border-bottom: 1px dashed color-mix(in srgb, var(--panel-border) 80%, transparent);
+  font-size: 12.5px;
+}
+.wg-row:last-child { border-bottom: 0; }
+.wg-row-label { flex: none; color: var(--text-muted); }
+.wg-row-main { display: flex; flex-direction: column; align-items: flex-end; gap: 1px; min-width: 0; }
+.wg-row-value {
+  display: inline-flex; align-items: center; justify-content: flex-end; gap: 7px;
+  max-width: 100%; min-width: 0; color: var(--text-primary); text-align: right;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  height: 18px; line-height: 18px; /* yer tutucu (küçük punto) ile değer aynı yükseklikte: satır zıplamaz */
+}
+.wg-row-sub { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; height: 15px; line-height: 15px; }
+.wg-sub { color: var(--text-muted); font-size: 11px; }
+.wg-sub-bad { color: var(--danger-color); font-weight: 600; }
+.wg-row-stack { flex-direction: column; align-items: stretch; gap: 6px; padding: 8px 0; }
+.wg-row-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.wg-mono { font-family: var(--font-mono); font-size: 12px; font-variant-numeric: tabular-nums; }
+.wg-dot {
+  display: inline-block; flex: none;
+  width: 8px; height: 8px; border-radius: 50%;
+  background: var(--tone);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--tone) 18%, transparent);
+}
+.wg-dot.wg-t-wait { animation: wg-pulse 1.2s ease-in-out infinite; }
+@keyframes wg-pulse { 50% { opacity: 0.3; } }
+
+.wg-chips { display: flex; flex-wrap: wrap; gap: 4px; }
+.wg-chip {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 2px 8px 2px 6px; border-radius: 999px;
+  color: var(--tone); font-size: 10.5px; font-weight: 600; white-space: nowrap;
+  background: color-mix(in srgb, var(--tone) 12%, transparent);
+}
+.wg-chip b { display: inline-block; width: 9px; text-align: center; font-weight: 700; }
+.wg-chip.wg-t-wait { color: var(--text-muted); }
+
+/* Başarısız denetim + otomatik onarım */
+.wg-alert {
+  display: flex; flex-direction: column; gap: 8px;
+  margin: 10px 14px 0; padding: 9px 10px;
+  border-radius: 10px;
+  border: 1px solid color-mix(in srgb, var(--danger-color) 28%, transparent);
+  background: color-mix(in srgb, var(--danger-color) 8%, transparent);
+  font-size: 12px;
+}
+.wg-alert-head { display: flex; align-items: center; gap: 6px; color: var(--danger-color); font-weight: 600; }
+.wg-alert-head > span { flex: 1; }
+.wg-repair { display: flex; flex-direction: column; gap: 4px; margin: 0; padding: 0; list-style: none; }
+.wg-repair li {
+  display: grid; grid-template-columns: auto auto 1fr; align-items: baseline; gap: 8px;
+  padding: 4px 8px; border-radius: 6px;
+  color: var(--tone); background: color-mix(in srgb, var(--tone) 8%, transparent);
+}
+.wg-repair small { color: var(--text-muted); font-size: 11px; }
+
+/* Düğmeler */
+.wg-actions { display: flex; flex-wrap: wrap; gap: 8px; padding: 12px 14px 14px; }
+.wg-btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  height: 34px; padding: 0 12px;
+  border: 1px solid var(--panel-border); border-radius: 9px;
+  background: transparent; color: var(--text-primary);
+  font-size: 12.5px; font-weight: 600; white-space: nowrap;
+  cursor: pointer; transition: background 0.15s, border-color 0.15s, color 0.15s;
+}
+.wg-btn:hover:not(:disabled) { border-color: var(--panel-border-hover); background: var(--accent-glow); }
+.wg-btn:disabled { opacity: 0.55; cursor: default; }
+.wg-btn-sm { height: 26px; padding: 0 9px; font-size: 11.5px; }
+.wg-btn-grow { flex: 1 1 140px; }
+.wg-btn-primary { border-color: transparent; background: var(--success-color); color: #fff; }
+.wg-btn-primary:hover:not(:disabled) { border-color: transparent; background: color-mix(in srgb, var(--success-color) 85%, #000); }
+.wg-btn-danger { border-color: color-mix(in srgb, var(--danger-color) 40%, transparent); color: var(--danger-color); }
+.wg-btn-danger:hover:not(:disabled) { border-color: var(--danger-color); background: var(--danger-glow); }
+.wg-count {
+  display: inline-grid; place-items: center;
+  min-width: 18px; height: 18px; padding: 0 5px; border-radius: 999px;
+  background: var(--accent-glow); color: var(--text-secondary); font-size: 10.5px;
+}
+.wg-btn-drawer { flex: 1 1 100%; justify-content: space-between; }
+.wg-btn-left { display: inline-flex; align-items: center; gap: 6px; }
+.wg-chev { transition: transform 0.2s; }
+.wg-btn[aria-expanded='true'] .wg-chev { transform: rotate(180deg); }
+.wg-btn[aria-expanded='true'] { border-color: var(--panel-border-hover); background: var(--accent-glow); }
+
+/* Açılır istemci listesi */
+.wg-clients {
+  display: flex; flex-direction: column; gap: 10px;
+  padding: 12px 14px 14px;
+  border-top: 1px solid var(--panel-border);
+  background: color-mix(in srgb, var(--bg-surface) 45%, transparent);
+}
+.wg-add { display: flex; gap: 8px; }
+.wg-add input { flex: 1; min-width: 0; height: 34px; }
+.wg-err { color: var(--danger-color); font-size: 11.5px; }
+.wg-empty {
+  display: flex; align-items: center; gap: 10px;
+  padding: 14px 12px; border-radius: 10px;
+  border: 1px dashed var(--panel-border);
+  color: var(--text-muted); font-size: 12px;
+}
+.wg-empty svg { flex: none; }
+.wg-client-list { display: flex; flex-direction: column; gap: 6px; margin: 0; padding: 0; list-style: none; }
+.wg-client {
+  display: flex; align-items: center; gap: 10px;
+  padding: 7px 6px 7px 10px; border-radius: 10px;
+  border: 1px solid var(--panel-border);
+  background: color-mix(in srgb, var(--bg-surface) 70%, transparent);
+  transition: border-color 0.15s;
+}
+.wg-client:hover { border-color: var(--panel-border-hover); }
+.wg-client-av {
+  display: grid; place-items: center; flex: none;
+  width: 30px; height: 30px; border-radius: 50%;
+  background: color-mix(in srgb, var(--wg-info) 16%, transparent); color: var(--wg-info);
+  font-size: 12.5px; font-weight: 700;
+}
+.wg-client-main { display: flex; flex-direction: column; gap: 1px; min-width: 0; flex: 1; }
+.wg-client-main strong { overflow: hidden; color: var(--text-primary); font-size: 13px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.wg-client-main .wg-mono { color: var(--text-muted); font-size: 11px; }
+.wg-client-actions { display: flex; flex: none; gap: 2px; }
+
+@media (prefers-reduced-motion: reduce) {
+  .wg-dot.wg-t-wait { animation: none; }
+  .wg-chev, .wg-btn, .wg-icon-btn, .wg-card { transition: none; }
+}

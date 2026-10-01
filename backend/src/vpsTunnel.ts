@@ -71,6 +71,24 @@ async function readHandshakesStrict(): Promise<Map<string, number>> {
   }
 }
 
+// `wg show <arayüz> transfer` → tünelden alınan / gönderilen toplam bayt (eş: VPS). Arayüz yoksa ya da okunamazsa null.
+// VPS kartı iki okumanın farkından anlık hızı hesaplar.
+export function parseTransfer(text: string): { rx: number; tx: number } {
+  let rx = 0, tx = 0;
+  for (const line of text.split('\n')) {
+    const f = line.trim().split(/\s+/);
+    if (f.length >= 3 && /^\d+$/.test(f[1]) && /^\d+$/.test(f[2])) { rx += Number(f[1]); tx += Number(f[2]); }
+  }
+  return { rx, tx };
+}
+export async function readTunnelTransfer(iface: string): Promise<{ rx: number; tx: number } | null> {
+  if (!isLinux || !/^wg_vps\d+$/.test(iface)) return null;
+  try {
+    const { stdout } = await execFileP('wg', ['show', iface, 'transfer'], { timeout: 5000 });
+    return parseTransfer(stdout);
+  } catch { return null; }
+}
+
 export async function readVpsTunnels(vpsIds: number[]): Promise<Map<number, VpsTunnel>> {
   const out = new Map<number, VpsTunnel>();
   const ids = vpsIds.filter(id => validVpsId(id) !== null);
