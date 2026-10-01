@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { History, Search, Trash2, Loader2, AlertTriangle, Info, ShieldOff } from 'lucide-react';
+import { History, Search, Trash2, Loader2, AlertTriangle, Info, ShieldOff, ShieldCheck } from 'lucide-react';
 import { useApi, postApi } from '../hooks/useApi';
 import { Panel, Select, Modal } from './ui';
 import { toast } from '../toast';
@@ -26,6 +26,9 @@ const EMPTY: VisitResp = {
   status: { running: false, lastAt: null, cursorAt: null, error: null, note: null },
   lists: { domains: 0, updatedAt: null, error: null }, retentionDays: 30,
 };
+
+// Tüm ağda şifreli DNS engeli (backend parental.ts; /parental/dns-guard — yazma netAdminGuard'dan geçer)
+interface DnsGuard { enabled: boolean; applied: boolean; pihole: boolean | null; error: string | null }
 
 type Range = 'today' | 'yesterday' | '7d' | '30d';
 const RANGES: { id: Range; label: string }[] = [
@@ -102,6 +105,23 @@ export function VisitHistory() {
   }, [data.visits]);
   const devName = data.devices.find(d => d.device === device)?.name || device;
   const st = data.status;
+  const { data: guard, refetch: refetchGuard } = useApi<DnsGuard | null>('/parental/dns-guard', null, 60000);
+  const [guardBusy, setGuardBusy] = useState(false);
+  const [guardAsk, setGuardAsk] = useState(false);
+  const setGuard = async (enabled: boolean) => {
+    setGuardBusy(true);
+    try {
+      const r = await postApi('/parental/dns-guard', { enabled }) as DnsGuard;
+      if (enabled && !r.applied) toast.error(`Şifreli DNS engeli uygulanamadı: ${r.error || 'bilinmeyen hata'}`);
+      else toast.success(enabled ? 'Şifreli DNS engeli açıldı — tüm cihazlar Pi-hole\'dan geçiyor' : 'Şifreli DNS engeli kapatıldı');
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Değiştirilemedi');
+    } finally {
+      setGuardBusy(false);
+      setGuardAsk(false);
+      void refetchGuard();
+    }
+  };
 
   return (
     <Panel title="Ziyaret Geçmişi" icon={<History size={20} style={{ marginRight: 8 }} />} className="vh-panel"
@@ -113,8 +133,26 @@ export function VisitHistory() {
       }>
       <p className="vh-note">
         <Info size={13} /> Site düzeyindedir: HTTPS'te sayfanın tam adresi ağdan görünmez. Süre yaklaşıktır.
-        Geçmiş {data.retentionDays} gün saklanır, yedeğe girmez. Kendi şifreli DNS'ini kullanan cihazlar görünmez.
+        Geçmiş {data.retentionDays} gün saklanır, yedeğe girmez.{guard?.enabled ? '' : ' Kendi şifreli DNS\'ini kullanan cihazlar görünmez.'}
       </p>
+      {guard && (
+        <div className={`vh-guard${guard.enabled ? ' is-on' : ''}`}>
+          <ShieldCheck size={16} />
+          <div className="vh-guard-text">
+            <strong>Şifreli DNS engeli (tüm ağ)</strong>
+            <span>
+              {guard.enabled && guard.applied && 'Açık — tüm cihazların DNS\'i Pi-hole\'dan geçiyor; DoT / DoH kapalı.'}
+              {guard.enabled && !guard.applied && `Açık ama uygulanamadı: ${guard.error || 'güvenlik duvarı kuralı yüklenemedi'}`}
+              {!guard.enabled && 'Kapalı — tarayıcısında ya da telefonunda şifreli DNS açık cihazlar listede görünmez.'}
+            </span>
+          </div>
+          <button className={`toggle-btn${guard.enabled ? ' toggle-on' : ' toggle-off'}`} disabled={guardBusy}
+            aria-label="Şifreli DNS engeli" title={guard.enabled ? 'Kapat' : 'Aç'}
+            onClick={() => (guard.enabled ? void setGuard(false) : setGuardAsk(true))}>
+            {guardBusy ? <Loader2 size={12} className="spin" /> : <div className="toggle-knob" />}
+          </button>
+        </div>
+      )}
       {st.error && <div className="routing-apply routing-apply-err vh-alert"><AlertTriangle size={14} /><span>{st.error}</span></div>}
       {st.note && <div className="routing-apply routing-apply-err vh-alert"><AlertTriangle size={14} /><span>{st.note}</span></div>}
       {!st.running && !loading && (
@@ -187,6 +225,30 @@ export function VisitHistory() {
             </button>
           )}
         </div>
+      )}
+
+      {guardAsk && (
+        <Modal open onClose={() => setGuardAsk(false)} title="Şifreli DNS engelini aç" width={500}
+          actions={
+            <>
+              <button className="btn-outline btn-sm" onClick={() => setGuardAsk(false)} disabled={guardBusy}>Vazgeç</button>
+              <button className="btn-primary btn-sm" onClick={() => void setGuard(true)} disabled={guardBusy}>
+                {guardBusy ? <Loader2 size={13} className="spin" /> : <ShieldCheck size={13} />} Aç
+              </button>
+            </>
+          }>
+          <p className="vh-modal-text">Ev ağındaki her cihazın DNS'i Pi-hole'dan geçer: elle başka DNS'e (ör. 8.8.8.8) ayarlı cihazlar
+            Pi-hole'a yönlendirilir ve çalışmayı sürdürür; şifreli DNS (DoT, DoH) kapatılır. Bu cihazlarda bir ayar değiştirmek gerekebilir:</p>
+          <ul className="vh-modal-list">
+            <li><strong>Android "Özel DNS"</strong> belirli bir sağlayıcıya (ör. dns.google) ayarlıysa telefonun interneti kesilir →
+              Ayarlar → Ağ → Özel DNS → <strong>Otomatik</strong> ya da <strong>Kapalı</strong>.</li>
+            <li><strong>Tarayıcıda "Güvenli DNS"</strong> Cloudflare / Google gibi bir sağlayıcıya ayarlıysa siteler açılmaz →
+              <strong> Kapalı</strong> ya da <strong>"Mevcut servis sağlayıcınız"</strong>.</li>
+            <li>Cloudflare WARP / 1.1.1.1 uygulaması bu ağda çalışmaz.</li>
+          </ul>
+          <p className="vh-modal-text">VPS tünelleri ve Pi'nin kendi bağlantıları etkilenmez. Sorun olursa bu anahtarla hemen kapatabilirsiniz.
+            Yalnız IPv4: IPv6'yı modem dağıtıyorsa o trafik Pi'den geçmez.</p>
+        </Modal>
       )}
 
       {clearOpen && (

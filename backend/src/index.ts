@@ -59,7 +59,7 @@ import { shareStatus, enableShare, disableShare, setSharePassword, addUsbShare, 
 import { vaultStatus, vaultJob, noteVaultJob, connectVault, saveSettings, startBackup, listSnapshots, disableVault,
   startVaultWatch, vaultLeftover, vaultBlocksSatellite } from './vault';
 import { rulesWithStatus as parentalRulesWithStatus, createRule as createParentalRule, updateRule as updateParentalRule,
-  deleteRule as deleteParentalRule, startParental, CATEGORIES as PARENTAL_CATEGORIES } from './parental';
+  deleteRule as deleteParentalRule, startParental, CATEGORIES as PARENTAL_CATEGORIES, dnsGuardStatus, setDnsGuardAll } from './parental';
 import { noteContentView, contentForClients, contentStatus } from './contentActivity';
 import { startVisits, listVisits, clearVisits, visitStatus, RETENTION_DAYS as VISIT_RETENTION_DAYS } from './visits';
 import { SITE_CATS, siteCategoryInfo } from './siteCategories';
@@ -4591,6 +4591,27 @@ startShareWatch();
 // uygulanır (nft inet pi5_parental + Pi-hole grupları), zamanlayıcı 30 sn'de bir. Liste yanıtı her kuralın şu anki durumunu
 // ve sıradaki değişim zamanını taşır. Bir cihazın internetini kesebildiği için yazma istekleri netAdminGuard'dan geçer.
 app.use('/api/parental', netAdminGuard);
+// Tüm ağda şifreli DNS engeli (parental.ts): açıkken DNS Pi-hole'a yönlendirilir, DoT / DoH kesilir. Bir cihazın internetini
+// kesebilir (Android "Özel DNS" sabit sağlayıcı) — yazma netAdminGuard'dan geçer; arayüz (Ziyaret Geçmişi) uyarıyla açar.
+app.get('/api/parental/dns-guard', async (_req, res) => {
+  try {
+    res.json(await dnsGuardStatus());
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+app.post('/api/parental/dns-guard', async (req, res) => {
+  try {
+    if (typeof req.body?.enabled !== 'boolean') return res.status(400).json({ error: 'enabled (true / false) gerekli' });
+    const st = await setDnsGuardAll(req.body.enabled);
+    await recordEvent('pihole', req.body.enabled
+      ? `Şifreli DNS engeli tüm ağda açıldı (DNS Pi-hole'a yönlendiriliyor, DoT / DoH kesiliyor)${st.applied ? '' : ` — uygulanamadı: ${st.error || 'bilinmeyen hata'}`}`
+      : 'Şifreli DNS engeli kapatıldı', st.applied ? 'info' : 'warning');
+    res.json(st);
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
 app.get('/api/parental/rules', async (_req, res) => {
   try {
     const catalog = Object.entries(PARENTAL_CATEGORIES).map(([id, c]) => ({ id, label: c.label, desc: c.desc, list: !!c.lists }));

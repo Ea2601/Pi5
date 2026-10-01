@@ -38,6 +38,14 @@ const MARK = 'klyrix-ebeveyn';
 const GROUP_PREFIX = 'klyrix-ebeveyn-';
 const DNS_GROUP = 'klyrix-ebeveyn-dns';
 const NFT_TABLE = 'pi5_parental';
+// Tüm ağda şifreli DNS engeli (Ziyaret Geçmişi sayfasındaki anahtar; varsayılan kapalı). Açıkken ev ağından (özel IPv4)
+// gelen DNS (53) Pi-hole'a YÖNLENDİRİLİR (elle 8.8.8.8 yazılmış cihaz çalışmayı sürdürür, Pi-hole'dan geçer); DoT (853) ve
+// bilinen DoH sunucularına 443 kesilir; Pi-hole'da DoH adları (yerleşik + UT1 "doh" listesi) herkese (Default grup)
+// engellenir. VPS tünellerinden gelen (wg_vps*) ve Pi'nin kendi trafiği muaf. Yalnız IPv4: IPv6'yı modem dağıtıyorsa o
+// trafik Pi'den geçmez. Firefox DoH işareti, iCloud Özel Geçiş ve DDR (resolver.arpa) Pi-hole'un kendi varsayılanında kapalı.
+const GUARD_ALL_KEY = 'dns_guard_all';
+const UT1_DOH_LIST = 'https://raw.githubusercontent.com/olbat/ut1-blacklists/master/blacklists/doh/domains';
+const DEFAULT_GROUP = 'Default';
 const TICK_MS = 30000;
 const FULL_SYNC_MS = 15 * 60 * 1000;   // kendini onarma: Pi-hole yeniden kurulsa / elle değiştirilse de
 
@@ -309,9 +317,11 @@ async function resolveTargets(rules: ParentalRule[]): Promise<Map<number, Set<st
 
 const hasDnsPart = (r: ParentalRule) => !r.blockAll && (r.categories.length > 0 || r.sites.length > 0);
 
-export function renderNft(blockNow: string[], guard: string[]): string {
+export function renderNft(blockNow: string[], guard: string[], all = false): string {
   const set = (name: string, type: string, els: string[], flags = '') =>
     `  set ${name} { type ${type};${flags}${els.length ? ` elements = { ${els.join(', ')} }` : ''} }`;
+  // Tüm ağ (şifreli DNS engeli): ev ağı = özel IPv4 kaynak, VPS tünelinden gelen hariç
+  const lan = 'iifname != "wg_vps*" ip saddr @lan4';
   return [
     `table inet ${NFT_TABLE} {}`,
     `delete table inet ${NFT_TABLE}`,
@@ -320,12 +330,23 @@ export function renderNft(blockNow: string[], guard: string[]): string {
     set('dns_guard', 'ether_addr', guard),
     set('doh4', 'ipv4_addr', DOH_V4),
     set('doh6', 'ipv6_addr', DOH_V6),
+    ...(all ? [
+      set('lan4', 'ipv4_addr', ['10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16'], ' flags interval;'),
+      '  chain prerouting {',
+      '    type nat hook prerouting priority dstnat; policy accept;',
+      `    ${lan} fib daddr type != local meta l4proto { tcp, udp } th dport 53 redirect to :53`,
+      '  }',
+    ] : []),
     '  chain forward {',
     '    type filter hook forward priority -10; policy accept;',
     '    ether saddr @block_now drop',
     '    ether saddr @dns_guard meta l4proto { tcp, udp } th dport { 53, 853 } drop',
     '    ether saddr @dns_guard ip daddr @doh4 meta l4proto { tcp, udp } th dport 443 drop',
     '    ether saddr @dns_guard ip6 daddr @doh6 meta l4proto { tcp, udp } th dport 443 drop',
+    ...(all ? [
+      `    ${lan} meta l4proto { tcp, udp } th dport 853 drop`,
+      `    ${lan} ip daddr @doh4 meta l4proto { tcp, udp } th dport 443 drop`,
+    ] : []),
     '  }',
     '}',
     '',
@@ -345,8 +366,8 @@ function nft(args: string[], input?: string): Promise<{ code: number; out: strin
 }
 
 let nftApplied = '';
-async function applyNft(blockNow: string[], guard: string[]): Promise<void> {
-  const want = blockNow.length || guard.length ? renderNft(blockNow.sort(), guard.sort()) : '';
+async function applyNft(blockNow: string[], guard: string[], all = false): Promise<void> {
+  const want = blockNow.length || guard.length || all ? renderNft(blockNow.sort(), guard.sort(), all) : '';
   // Tablo dışarıdan silinmiş olabilir (nftables yeniden başlatma, flush ruleset): varsa ve aynıysa dokunulmaz
   const exists = (await nft(['list', 'table', 'inet', NFT_TABLE])).code === 0;
   if (want === nftApplied && exists === !!want) return;
@@ -364,7 +385,7 @@ interface DnsPlan {
   lists: Map<string, Set<string>>;          // bloklistesi → gruplar
 }
 
-function planDns(rules: ParentalRule[], targets: Map<number, Set<string>>, now: Date): DnsPlan {
+export function planDns(rules: ParentalRule[], targets: Map<number, Set<string>>, now: Date, all = false): DnsPlan {
   const p: DnsPlan = { groups: new Map(), clients: new Map(), regex: new Map(), lists: new Map() };
   const add = (m: Map<string, Set<string>>, k: string, g: string) => { if (!m.has(k)) m.set(k, new Set()); m.get(k)!.add(g); };
   const guard = new Set<string>();
@@ -386,6 +407,11 @@ function planDns(rules: ParentalRule[], targets: Map<number, Set<string>>, now: 
     p.groups.set(DNS_GROUP, true);
     for (const m of guard) add(p.clients, m, DNS_GROUP);
     add(p.regex, domainRegex(DOH_DOMAINS), DNS_GROUP);
+  }
+  // Tüm ağda şifreli DNS engeli: Pi-hole'un Default grubu (herkes). Grup bizim değil: oluşturulmaz / silinmez.
+  if (all) {
+    add(p.regex, domainRegex(DOH_DOMAINS), DEFAULT_GROUP);
+    add(p.lists, UT1_DOH_LIST, DEFAULT_GROUP);
   }
   return p;
 }
@@ -518,6 +544,7 @@ async function applyAll(reason: string): Promise<void> {
   const targets = await resolveTargets(rules);
   const now = new Date();
   const errors: string[] = [];
+  const all = await dnsGuardAllEnabled();
   // Güvenlik duvarı: şu an "tüm internet" kuralı etkin cihazlar + DNS koruması (kategori/site kuralı açık cihazlar)
   const blockNow = new Set<string>(), guard = new Set<string>();
   for (const r of rules) {
@@ -525,9 +552,9 @@ async function applyAll(reason: string): Promise<void> {
     if (r.enabled && r.blockAll && ruleActive(r, now)) macs.forEach(m => blockNow.add(m));
     if (r.enabled && hasDnsPart(r)) macs.forEach(m => guard.add(m));
   }
-  try { await applyNft([...blockNow], [...guard]); } catch (e: any) { errors.push(e.message); }
+  try { await applyNft([...blockNow], [...guard], all); } catch (e: any) { errors.push(e.message); }
 
-  const plan = planDns(rules, targets, now);
+  const plan = planDns(rules, targets, now, all);
   const planKey = JSON.stringify([[...plan.clients].map(([k, v]) => [k, [...v].sort()]).sort(),
     [...plan.regex].map(([k, v]) => [k, [...v].sort()]).sort(), [...plan.lists].map(([k, v]) => [k, [...v].sort()]).sort(),
     [...plan.groups.keys()].sort()]);
@@ -550,8 +577,8 @@ async function applyAll(reason: string): Promise<void> {
       lastGroupsKey = groupsKey;
       health.pihole = true;
     } catch (e: any) {
-      if (plan.groups.size) {
-        // Pi-hole kapalı / yanıt vermiyor: kategori-site engeli uygulanamadı; sonraki turda yeniden denenir
+      if (plan.groups.size || plan.regex.size || plan.lists.size) {
+        // Pi-hole kapalı / yanıt vermiyor: kategori-site / şifreli DNS engeli uygulanamadı; sonraki turda yeniden denenir
         health.pihole = false;
         errors.push(e?.message || String(e));
         forceFull = true;
@@ -579,6 +606,26 @@ function runApply(reason: string): Promise<void> {
 function requestApply(reason: string): void {
   forceFull = true;
   void runApply(reason);
+}
+
+// ── Tüm ağda şifreli DNS engeli ──────────────────────────────────────────────
+async function dnsGuardAllEnabled(): Promise<boolean> {
+  const r = await dbGet('SELECT value FROM app_settings WHERE key = ?', [GUARD_ALL_KEY]).catch(() => undefined) as { value?: string } | undefined;
+  return r?.value === '1';
+}
+export type DnsGuardStatus = { enabled: boolean; applied: boolean; pihole: boolean | null; error: string | null };
+export async function dnsGuardStatus(): Promise<DnsGuardStatus> {
+  const enabled = await dnsGuardAllEnabled();
+  const inNft = nftApplied.includes('chain prerouting');
+  return { enabled, applied: enabled ? inNft && health.nft : !inNft, pihole: health.pihole, error: health.error };
+}
+// Açar / kapatır ve hemen uygular (güvenlik duvarı + Pi-hole); uygulama bitince durum döner.
+export async function setDnsGuardAll(on: boolean): Promise<DnsGuardStatus> {
+  await dbRun('INSERT INTO app_settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value',
+    [GUARD_ALL_KEY, on ? '1' : '0']);
+  forceFull = true;
+  if (isLinux) await runApply(on ? 'şifreli DNS engeli açıldı' : 'şifreli DNS engeli kapatıldı');
+  return dnsGuardStatus();
 }
 export async function rulesWithStatus(): Promise<{ rules: (ParentalRule & { status: RuleStatus })[]; health: ParentalHealth }> {
   const rules = await listRules();

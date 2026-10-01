@@ -3,6 +3,20 @@
 .vh-note svg { flex-shrink: 0; margin-top: 2px; color: var(--accent-color); }
 .vh-alert { margin: 0 0 10px; }
 .vh-modal-text { margin: 0; font-size: 13px; line-height: 1.55; color: var(--text-secondary); }
+.vh-modal-list { margin: 8px 0 10px; padding-left: 18px; font-size: 13px; line-height: 1.55; color: var(--text-secondary); display: flex; flex-direction: column; gap: 6px; }
+.vh-modal-list strong, .vh-modal-text strong { color: var(--text-primary); }
+
+/* Şifreli DNS engeli satırı */
+.vh-guard {
+  display: flex; align-items: center; gap: 10px; margin: 0 0 12px; padding: 10px 12px; border-radius: var(--radius-sm);
+  background: var(--input-bg-soft); border: 1px solid var(--panel-border);
+}
+.vh-guard > svg { flex-shrink: 0; color: var(--text-muted); }
+.vh-guard.is-on { background: var(--accent-glow); border-color: var(--accent-ring); }
+.vh-guard.is-on > svg { color: var(--success-color, #22c55e); }
+.vh-guard-text { display: flex; flex-direction: column; gap: 2px; flex: 1; min-width: 0; font-size: 12px; color: var(--text-secondary); }
+.vh-guard-text strong { font-size: 13px; color: var(--text-primary); }
+.vh-guard .toggle-btn { flex-shrink: 0; }
 
 /* Süzgeçler */
 .vh-filters { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 10px; }
