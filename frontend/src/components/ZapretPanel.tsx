@@ -22,6 +22,9 @@ interface ZapretStatus {
   excludeEntries?: number; fromRouting?: string[];
   // Öğrenen liste: Zapret'in engelli olduğunu algılayıp kendisi eklediği siteler (en yeni önce) ve gece denetimi sonucu
   learned?: string[]; learnedCount?: number; lastCheck?: DpiCheck | null;
+  // Otomatik yöntem öğrenme: siteye özel bulunan yöntemler ve tarama durumu
+  siteStrategies?: { domain: string; strategy: string; at: number }[];
+  autoScan?: { scanning: string | null; queue: string[]; last: { domain: string; at: number; ok: boolean; strategy?: string; detail: string } | null };
   // Routing'in hazır listeli DPI satırları (Yetişkin / Kumar): listeye girer, tek tek gösterilmez — yalnız sayı.
   fromLists?: { id: string; label: string; count: number }[];
   zapretOwnList?: boolean; blockcheck?: { running: boolean; log: string };
@@ -29,6 +32,12 @@ interface ZapretStatus {
 
 type DpiCheck = { at: number; skipped?: string; results: { domain: string; ok: boolean; detail: string }[] };
 const fmtTime = (ms: number) => new Date(ms).toLocaleString('tr-TR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+const scanSummary = (a: ZapretStatus['autoScan']) => {
+  if (!a) return '—';
+  if (a.scanning) return `${a.scanning} taranıyor (Blockcheck)${a.queue.length ? ` · sırada: ${a.queue.join(', ')}` : ''}`;
+  if (!a.last) return 'gerek olmadı';
+  return `${fmtTime(a.last.at)} · ${a.last.domain}: ${a.last.detail}`;
+};
 const checkSummary = (c: DpiCheck | null | undefined) => {
   if (!c) return 'henüz çalışmadı (her gece 04:00)';
   if (c.skipped) return `${fmtTime(c.at)} · atlandı: ${c.skipped}`;
@@ -224,8 +233,9 @@ function BlockcheckCard({ st, refetch }: { st: ZapretStatus | null; refetch: () 
         {running ? 'Blockcheck çalışıyor…' : 'Blockcheck başlat'}
       </button>
       <p className="subtitle" style={{ marginTop: 10 }}>
-        Hızlı tarama, IPv4, HTTP ve HTTPS (TLS 1.2). Zapret çalışıyorsa test süresince durdurulur, bitince eski durumuna döner.
-        Sonuçtaki önerilen strateji Strateji sekmesinde anlatıldığı gibi uygulanır.
+        Hızlı tarama, IPv4, HTTP ve HTTPS (TLS 1.2). Zapret durdurulmaz: yalnız test edilen site test süresince Zapret'ten
+        muaf tutulur, diğer siteler etkilenmez. Öğrenilen bir site mevcut yöntemle açılmazsa Blockcheck kendiliğinden çalışır ve
+        bulduğu yöntemi yalnız o siteye uygular (Öğrenilen sekmesi); bu kart elle denemek içindir.
       </p>
       {log && <pre className="doc-code zapret-log">{log}</pre>}
     </Panel>
@@ -246,8 +256,8 @@ function StrategyCard({ st }: { st: ZapretStatus | null }) {
       )}
       <pre className="doc-code zapret-log">{st?.strategy || '—'}</pre>
       <p className="subtitle" style={{ marginTop: 12 }}>
-        Panel yalnız NFQWS_ENABLE, TPWS_ENABLE, MODE_FILTER, FILTER_MARK ve IFACE_WAN değerlerini yönetir; strateji satırlarına
-        dokunmaz. Blockcheck'in önerdiği stratejiyi uygulamak için SSH'ta <code>sudo nano /opt/zapret/config</code> ile NFQWS_OPT'u
+        Panel NFQWS_ENABLE, TPWS_ENABLE, MODE_FILTER, FILTER_MARK, IFACE_WAN değerlerini ve siteye özel öğrenilmiş yöntemleri
+        (KLYRIX_SITE_OPT — NFQWS_OPT'un başında, Öğrenilen sekmesinden yönetilir) yazar; genel strateji satırlarına dokunmaz. Blockcheck'in önerdiği stratejiyi uygulamak için SSH'ta <code>sudo nano /opt/zapret/config</code> ile NFQWS_OPT'u
         değiştirip <code> sudo systemctl restart zapret</code> çalıştırın; her satırda &lt;HOSTLIST&gt; kalmalı — yoksa o satır
         engelsiz siteler dahil tüm web trafiğine uygulanır. Özgün dosya ilk uygulamada config.pi5-orig olarak saklandı.
       </p>
@@ -368,6 +378,19 @@ function LearnedCard({ st, refetch }: { st: ZapretStatus | null; refetch: () => 
   const list = st?.learned || [];
   const shown = filter ? list.filter(d => d.includes(filter.toLowerCase())) : list;
   const last = check || st?.lastCheck || null;
+  const special = new Set((st?.siteStrategies || []).map(x => x.domain));
+  const dropStrategy = async (domain: string) => {
+    setBusy(domain);
+    try {
+      await postApi('/zapret/site-strategy/remove', { domain });
+      toast.success(`${domain} için öğrenilmiş yöntem silindi`);
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Silinemedi');
+    } finally {
+      setBusy(null);
+      await refetch();
+    }
+  };
 
   const remove = async (domain: string, exclude: boolean) => {
     setBusy(domain);
@@ -410,6 +433,23 @@ function LearnedCard({ st, refetch }: { st: ZapretStatus | null; refetch: () => 
         </button>
       }>
       <div className="zapret-fact" style={{ marginBottom: 10 }}><span>Son denetim</span><strong>{checkSummary(last)}</strong></div>
+      <div className="zapret-fact" style={{ marginBottom: 10 }}><span>Otomatik yöntem arama</span><strong>{scanSummary(st?.autoScan)}</strong></div>
+      {!!st?.siteStrategies?.length && (
+        <div className="list-items" style={{ marginBottom: 12 }}>
+          {st.siteStrategies.map(x => (
+            <div key={x.domain} className="list-item">
+              <div className="list-item-content">
+                <span className="list-item-value">{x.domain} · öğrenilmiş yöntem</span>
+                <span className="list-item-comment" title={x.strategy}>nfqws {x.strategy} · {fmtTime(x.at)}</span>
+              </div>
+              <button className="btn-outline btn-sm" disabled={busy !== null} onClick={() => dropStrategy(x.domain)}
+                title="Bu siteye özel yöntemi sil (site genel yöntemle sürer; açılmazsa yeniden aranır)">
+                <Trash2 size={12} /> Yöntemi sil
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
       {last && !last.skipped && last.results.length > 0 && (
         <div className="list-items" style={{ marginBottom: 12 }}>
           {last.results.map(r => (
@@ -437,7 +477,10 @@ function LearnedCard({ st, refetch }: { st: ZapretStatus | null; refetch: () => 
         )}
         {shown.map(d => (
           <div key={d} className="list-item">
-            <div className="list-item-content"><span className="list-item-value">{d}</span></div>
+            <div className="list-item-content">
+              <span className="list-item-value">{d}</span>
+              {special.has(d) && <span className="list-item-comment">siteye özel öğrenilmiş yöntemle</span>}
+            </div>
             <button className="btn-outline btn-sm" disabled={busy !== null} onClick={() => remove(d, false)} title="Öğrenilenlerden çıkar (engelli davranırsa yeniden öğrenilir)">
               <Trash2 size={12} /> Çıkar
             </button>

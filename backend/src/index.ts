@@ -45,7 +45,7 @@ import {
 import { authGate, registerAuthRoutes } from './auth';
 import { validateSchedule, validateCommand, syncCronJobs, readJobStatuses, readSystemCron, syncCronOnStartup, runningJobs, jobOutput, startJobNow } from './cronSync';
 import { validateListValue, normalizeListValue, syncPiholeLists, lastListSync, externalPiholeEntries } from './piholeLists';
-import { applyZapret, zapretStatus, startBlockcheck, blockcheckRunning, zapretInstalled, zapretInstallIssue, zapretBrief, cleanDpiDomain, removeAutoHost, runDpiCheck } from './zapret';
+import { applyZapret, zapretStatus, startBlockcheck, blockcheckRunning, zapretInstalled, zapretInstallIssue, zapretBrief, cleanDpiDomain, removeAutoHost, runDpiCheck, removeSiteStrategy, startAutoMethod } from './zapret';
 import type { ZapretApplyResult } from './zapret';
 import { unboundStatus, applyUnboundSettings, validateUnboundSettings, savedUnboundSettings } from './unbound';
 import { recordEvent, recordEventOnce, recordVersionChange, serviceLabel } from './events';
@@ -740,9 +740,24 @@ app.post('/api/zapret/learned/remove', async (req, res) => {
     const domain = cleanDpiDomain(req.body?.domain);
     if (!domain) return res.status(400).json({ error: 'Geçersiz alan adı' });
     const removed = removeAutoHost(domain);
+    removeSiteStrategy(domain); // öğrenilmiş yöntemi de unutulur
     if (req.body?.exclude) await dbRun("INSERT OR IGNORE INTO zapret_domains (list_type, domain) VALUES ('exclude', ?)", [domain]);
     const zapret = await applyZapret();
     await zapretEvent(`Zapret öğrenilen site çıkarıldı: ${domain}${req.body?.exclude ? ' (hariç tutulanlara eklendi)' : ''}`, zapret);
+    res.json({ success: true, removed, zapret });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Siteye özel öğrenilmiş yöntemi sil (site öğrenilmiş kalır, genel yöntemle sürer).
+app.post('/api/zapret/site-strategy/remove', async (req, res) => {
+  try {
+    const domain = cleanDpiDomain(req.body?.domain);
+    if (!domain) return res.status(400).json({ error: 'Geçersiz alan adı' });
+    const removed = removeSiteStrategy(domain);
+    const zapret = await applyZapret();
+    await zapretEvent(`Zapret: ${domain} için öğrenilmiş yöntem silindi`, zapret);
     res.json({ success: true, removed, zapret });
   } catch (e: any) {
     res.status(500).json({ error: e.message });
@@ -5762,6 +5777,8 @@ const server = app.listen(Number(port), bindHost, () => {
   setInterval(() => { void refreshAsnRanges(); }, 6 * 3600 * 1000);
   setTimeout(() => { void refreshRoutingLists(); }, 180000);
   setInterval(() => { void refreshRoutingLists(); }, 3600 * 1000);
+  // Zapret: yeni öğrenilen site mevcut yöntemle açılmazsa Blockcheck kendiliğinden (zapret.ts startAutoMethod).
+  startAutoMethod();
   // Zapret gece denetimi (zapret.ts runDpiCheck): her gün 04:00–05:00 arasında bir kez — strateji hâlâ işe yarıyor mu.
   let dpiCheckDay = '';
   setInterval(() => {

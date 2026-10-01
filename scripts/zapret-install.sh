@@ -34,6 +34,13 @@ fi
 # Panelin yönettiği ayar dosyası (zapret.ts); yoksa Zapret'in varsayılanından.
 [ -f "$Z/config" ] || cp "$Z/config.default" "$Z/config" || { log "HATA: $Z/config oluşturulamadı"; exit 1; }
 
+# Blockcheck (panelin otomatik yöntem araması, zapret-blockcheck.sh) ad çözümü için nslookup ya da host ister.
+if ! command -v nslookup >/dev/null 2>&1 && ! command -v host >/dev/null 2>&1; then
+  log "Blockcheck için host kuruluyor (bind9-host)"
+  bash "$BASE/scripts/pkg-ensure.sh" bind9-host 2>&1 | indent
+  [ "${PIPESTATUS[0]}" = 0 ] || log "UYARI: bind9-host kurulamadı — Blockcheck kendisi yeniden dener"
+fi
+
 if nfqws_ok && unit_ok; then exit 0; fi
 
 # 2) nfqws: çalışan program yoksa derlenir. `make` önce binaries/my'yi temizler, programları oraya taşır ve

@@ -11,6 +11,10 @@
 //  - Hariç liste (exclude) --hostlist-exclude olarak gider ve öğrenmeyi de durdurur.
 //  - Yöntem yalnız nfqws (TPWS_ENABLE=0) — nedeni doApply'da. Gece denetimi (runDpiCheck) stratejinin hâlâ işe yaradığını
 //    öğrenilen / DPI'lı sitelerle dener.
+//  - Otomatik yöntem öğrenme (v2.24.82, kullanıcı kararı: kendiliğinden uygula): yeni öğrenilen site mevcut yöntemle Pi'den
+//    3 kez açılamazsa (ya da gece denetiminde açılmazsa) o site için Blockcheck kendiliğinden çalışır (Zapret durdurulmaz),
+//    bulunan yöntem YALNIZ o siteye profil olarak eklenir (config'te KLYRIX_SITE_OPT, NFQWS_OPT'un başında), Zapret yeniden
+//    başlar ve site denenir; açılmazsa geri alınır. Site başına günde en çok bir otomatik tarama.
 //  - Liste dosyaları değişince nfqws onları kendiliğinden yeniden okur; yalnız config değişince (çalışıyorsa) yeniden
 //    başlatılır. Özgün config bir kez config.pi5-orig olarak saklanır.
 import fs from 'fs';
@@ -35,6 +39,7 @@ const AUTO_LIST = `${IPSET}/zapret-hosts-auto.txt`;
 const ZAPRET_OWN = [`${IPSET}/zapret-hosts.txt.gz`, `${IPSET}/zapret-hosts.txt`];
 export const BLOCKCHECK_LOG = path.resolve(__dirname, '../../core/blockcheck.log');
 export const BLOCKCHECK_SCRIPT = path.resolve(__dirname, '../../scripts/zapret-blockcheck.sh');
+const SITE_STRATEGIES = path.resolve(__dirname, '../../core/zapret-site-strategies.json');
 const BEGIN = '# klyrix-begin — Klyrix Gate paneli yönetir (Zapret listeleri + Routing DPI kuralları), elle düzenlemeyin';
 const END = '# klyrix-end';
 const DOMAIN = /^(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9-]{2,63}$/;
@@ -194,10 +199,16 @@ async function doApply(): Promise<ZapretApplyResult> {
       FILTER_MARK: `0x${ZAPRET_FILTER_MARK.toString(16)}`,
       IFACE_WAN: wan,
     });
+    // Site başına öğrenilmiş yöntemler (hariç tutulan siteler atlanır)
+    const ex = new Set(exclude);
+    const sites = Object.fromEntries(Object.entries(readSiteStrategies()).filter(([d]) => !ex.has(d)));
+    const withSites = applySiteOptToConfig(next, buildSiteOpt(sites));
+    if (withSites === null) res.warnings.push('config\'te NFQWS_OPT bulunamadı: siteye özel yöntemler uygulanamıyor');
+    const finalCfg = withSites ?? next;
     res.methodEnabled = true;
-    if (next !== cur) {
+    if (finalCfg !== cur) {
       const tmp = `${CONFIG}.tmp-${process.pid}`;
-      fs.writeFileSync(tmp, next, { mode: 0o644 });
+      fs.writeFileSync(tmp, finalCfg, { mode: 0o644 });
       fs.renameSync(tmp, CONFIG);
       if (await serviceActive()) {
         await execFileP('systemctl', ['restart', 'zapret'], { timeout: 60000 });
@@ -243,6 +254,8 @@ export async function zapretStatus() {
     learned: learned.slice(-500).reverse(), // en yeni önce
     learnedCount: learned.length,
     lastCheck,
+    siteStrategies: Object.entries(readSiteStrategies()).map(([domain, v]) => ({ domain, ...v })),
+    autoScan: { scanning, queue: scanQueue.map(q => q.domain), last: lastScanResult },
     fromRouting,
     fromLists,
     zapretOwnList: ZAPRET_OWN.some(f => fs.existsSync(f)),
@@ -276,8 +289,8 @@ export async function zapretBrief(): Promise<{ installed: boolean; issue: string
   return { installed: true, issue: zapretInstallIssue(), active: await serviceActive() };
 }
 
-export async function startBlockcheck(domain: string): Promise<void> {
-  await execFileP('systemd-run', ['--quiet', '--collect', '--unit=pi5-blockcheck', '/bin/bash', BLOCKCHECK_SCRIPT, domain, BLOCKCHECK_LOG],
+export async function startBlockcheck(domain: string, mode: 'manual' | 'auto' = 'manual'): Promise<void> {
+  await execFileP('systemd-run', ['--quiet', '--collect', '--unit=pi5-blockcheck', '/bin/bash', BLOCKCHECK_SCRIPT, domain, BLOCKCHECK_LOG, mode],
     { timeout: 10000 });
 }
 
@@ -328,7 +341,8 @@ async function doDpiCheck(): Promise<DpiCheck> {
     const failed = out.results.filter(r => !r.ok);
     if (failed.length) {
       await recordEvent('zapret', `DPI denetimi: ${failed.map(f => f.domain).join(', ')} açılamadı — operatör engelleme yöntemini `
-        + `değiştirmiş olabilir; Zapret DPI → Blockcheck ile yeni strateji deneyin`, 'warning');
+        + `değiştirmiş olabilir; yeni yöntem kendiliğinden aranıyor (Blockcheck)`, 'warning');
+      for (const f of failed) enqueueScan(f.domain, 'gece denetimi');
     }
   } catch (e: any) {
     out.skipped = `denetlenemedi: ${String(e?.message || e).slice(0, 120)}`;
@@ -337,4 +351,176 @@ async function doDpiCheck(): Promise<DpiCheck> {
     lastCheck = out;
   }
   return out;
+}
+
+// ─── Siteye özel yöntemler (otomatik Blockcheck'in bulduğu) ───
+type SiteStrategy = { strategy: string; at: number };
+export function readSiteStrategies(): Record<string, SiteStrategy> {
+  try {
+    const raw = JSON.parse(fs.readFileSync(SITE_STRATEGIES, 'utf8'));
+    const out: Record<string, SiteStrategy> = {};
+    for (const [d, v] of Object.entries(raw || {})) {
+      const st = (v as SiteStrategy)?.strategy;
+      if (cleanDpiDomain(d) === d && typeof st === 'string' && SAFE_STRATEGY.test(st)) out[d] = { strategy: st, at: Number((v as SiteStrategy).at) || 0 };
+    }
+    return out;
+  } catch { return {}; }
+}
+function writeSiteStrategies(map: Record<string, SiteStrategy>) {
+  const tmp = `${SITE_STRATEGIES}.tmp-${process.pid}`;
+  fs.writeFileSync(tmp, JSON.stringify(map, null, 2));
+  fs.renameSync(tmp, SITE_STRATEGIES);
+}
+export function removeSiteStrategy(domain: string): boolean {
+  const map = readSiteStrategies();
+  if (!map[domain]) return false;
+  delete map[domain];
+  writeSiteStrategies(map);
+  return true;
+}
+
+// config root olarak kaynaklanan bir kabuk dosyası: strateji yalnız "--seçenek[=değer]" belirteçlerinden oluşabilir; değerde
+// tırnak, $, `, \, ;, &, |, <, >, (, ), boşluk yok (komut sızamaz).
+export const SAFE_STRATEGY = /^--[a-z0-9][a-z0-9-]*(=[A-Za-z0-9_.,:@+%/=!^~-]*)?( --[a-z0-9][a-z0-9-]*(=[A-Za-z0-9_.,:@+%/=!^~-]*)?)*$/;
+
+// Blockcheck günlüğünün "* SUMMARY" bölümünden bu site için çalışan ilk HTTPS (TLS 1.2) nfqws stratejisi.
+// Satır biçimi (blockcheck.sh report_append): "curl_test_https_tls12 ipv4 discord.com : nfqws --dpi-desync=..."
+export function parseBlockcheckSummary(log: string, domain: string): string | null {
+  const at = log.lastIndexOf('* SUMMARY');
+  if (at < 0) return null;
+  for (const line of log.slice(at).split('\n')) {
+    const m = /^curl_test_https_tls12 ipv4 (\S+) : nfqws (.+)$/.exec(line.trim());
+    if (!m || m[1] !== domain || / not working$/.test(m[2])) continue;
+    const st = m[2].trim().replace(/\s+/g, ' ');
+    if (SAFE_STRATEGY.test(st)) return st;
+  }
+  return null;
+}
+
+// Aynı stratejili siteler tek profilde: "--filter-tcp=443 --hostlist-domains=a.com,b.com <strateji> --new". Profiller
+// NFQWS_OPT'un başında olduğundan ilk eşleşen bunlardır; listeli öbür siteler genel profille sürer.
+export function buildSiteOpt(sites: Record<string, SiteStrategy>): string {
+  const by = new Map<string, string[]>();
+  for (const [d, v] of Object.entries(sites).sort()) by.set(v.strategy, [...(by.get(v.strategy) || []), d]);
+  return [...by].map(([st, ds]) => `--filter-tcp=443 --hostlist-domains=${ds.join(',')} ${st} --new`).join(' ');
+}
+
+// config'te NFQWS_OPT'un hemen önüne KLYRIX_SITE_OPT="..." satırı (kabuk sırayla okur: önce tanımlanmalı) ve NFQWS_OPT'un
+// başına $KLYRIX_SITE_OPT. NFQWS_OPT yoksa null.
+export function applySiteOptToConfig(cfg: string, opt: string): string | null {
+  const lines = cfg.split('\n').filter(l => !/^KLYRIX_SITE_OPT=/.test(l));
+  const i = lines.findIndex(l => /^NFQWS_OPT="/.test(l));
+  if (i < 0) return null;
+  const rest = lines[i].slice('NFQWS_OPT="'.length);
+  if (!rest.startsWith('$KLYRIX_SITE_OPT')) lines[i] = `NFQWS_OPT="$KLYRIX_SITE_OPT${rest && !rest.startsWith('"') ? ' ' : ''}${rest}`;
+  lines.splice(i, 0, `KLYRIX_SITE_OPT="${opt}"`);
+  return lines.join('\n');
+}
+
+// ─── Otomatik yöntem öğrenme ───
+const SCAN_COOLDOWN_MS = 24 * 3600 * 1000;
+const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
+const known = new Set<string>();
+let watchReady = false;
+const lastScanAt = new Map<string, number>();
+const scanQueue: { domain: string; reason: string }[] = [];
+let scanning: string | null = null;
+let lastScanResult: { domain: string; at: number; ok: boolean; strategy?: string; detail: string } | null = null;
+
+// Pi'den siteyi aç (Pi'nin kendi trafiği de öğrenme işaretini alır → listedeki siteye atlatma uygulanır).
+async function probe(domain: string): Promise<boolean> {
+  return execFileP('curl', ['-sS', '-o', '/dev/null', '-m', '10', '-w', '%{http_code}', `https://${domain}/`], { timeout: 15000 })
+    .then(x => x.stdout.trim() !== '000', () => false);
+}
+async function probe3(domain: string): Promise<boolean> {
+  for (let i = 0; i < 3; i++) {
+    if (await probe(domain)) return true;
+    if (i < 2) await sleep(5000);
+  }
+  return false;
+}
+
+// Otomatik listeyi izler (dakikada bir): açılışta var olanlar bilinir sayılır; yeni eklenen site 15 sn sonra (nfqws listeyi
+// yeniden okusun) mevcut yöntemle denenir, açılmazsa taranır.
+export function startAutoMethod(): void {
+  if (!isLinux) return;
+  const tick = async () => {
+    if (!zapretInstalled() || zapretInstallIssue()) return;
+    const list = listAutoHosts();
+    if (!watchReady) { list.forEach(h => known.add(h)); watchReady = true; return; }
+    for (const h of list) {
+      if (known.has(h)) continue;
+      known.add(h);
+      setTimeout(() => {
+        void (async () => {
+          if (!(await serviceActive())) return;
+          if (!(await probe3(h))) enqueueScan(h, 'yeni öğrenilen site mevcut yöntemle açılmadı');
+        })();
+      }, 15000);
+    }
+  };
+  setTimeout(() => void tick(), 30000);
+  setInterval(() => void tick(), 60000);
+}
+
+export function enqueueScan(domain: string, reason: string): void {
+  const d = cleanDpiDomain(domain);
+  if (!d) return;
+  if (Date.now() - (lastScanAt.get(d) || 0) < SCAN_COOLDOWN_MS || scanning === d || scanQueue.some(q => q.domain === d)) return;
+  scanQueue.push({ domain: d, reason });
+  void drainScans();
+}
+async function drainScans() {
+  if (scanning) return;
+  while (scanQueue.length) {
+    const { domain, reason } = scanQueue.shift()!;
+    scanning = domain;
+    lastScanAt.set(domain, Date.now());
+    try {
+      lastScanResult = await autoScan(domain, reason);
+    } catch (e: any) {
+      lastScanResult = { domain, at: Date.now(), ok: false, detail: `tarama hatası: ${String(e?.message || e).slice(0, 160)}` };
+    }
+    scanning = null;
+  }
+}
+async function waitBlockcheck(maxMs: number) {
+  const until = Date.now() + maxMs;
+  while (Date.now() < until && await blockcheckRunning()) await sleep(10000);
+}
+async function autoScan(domain: string, reason: string) {
+  const done = (ok: boolean, detail: string, strategy?: string) => ({ domain, at: Date.now(), ok, detail, strategy });
+  await waitBlockcheck(30 * 60 * 1000); // elle başlatılan bitsin
+  await startBlockcheck(domain, 'auto');
+  await sleep(5000);
+  await waitBlockcheck(30 * 60 * 1000);
+  let log = '';
+  try { log = fs.readFileSync(BLOCKCHECK_LOG, 'utf8'); } catch { /* yok */ }
+  const strategy = parseBlockcheckSummary(log, domain);
+  if (!log.includes('* SUMMARY')) {
+    // Tarama yarıda kaldı (eksik araç, ağ yok, durduruldu): engel hakkında bir şey söylemez; son anlamlı satır gösterilir.
+    const why = log.split('\n').map(l => l.trim()).filter(l => l && !/^(==|Zapret muafiyeti)/.test(l)).pop() || 'günlük boş';
+    await recordEvent('zapret', `${domain} için Blockcheck tamamlanamadı (${reason}): ${why.slice(0, 200)}`, 'warning');
+    return done(false, `Blockcheck tamamlanamadı: ${why.slice(0, 120)}`);
+  }
+  if (!strategy) {
+    await recordEvent('zapret', `${domain} için çalışan DPI yöntemi bulunamadı (${reason}). Engel IP ya da DNS tabanlı olabilir — `
+      + `bu siteyi Routing'de VPS çıkışına yönlendirin`, 'warning');
+    return done(false, 'çalışan yöntem bulunamadı (IP / DNS engeli olabilir)');
+  }
+  const map = readSiteStrategies();
+  const prev = map[domain];
+  map[domain] = { strategy, at: Date.now() };
+  writeSiteStrategies(map);
+  const applied = await applyZapret();
+  await sleep(3000);
+  if (applied.ok && await probe3(domain)) {
+    await recordEvent('zapret', `${domain} için yeni DPI yöntemi öğrenildi ve uygulandı (${reason}): nfqws ${strategy}`);
+    return done(true, 'yeni yöntem uygulandı, site açılıyor', strategy);
+  }
+  if (prev) map[domain] = prev; else delete map[domain];
+  writeSiteStrategies(map);
+  await applyZapret();
+  await recordEvent('zapret', `${domain}: Blockcheck'in bulduğu yöntem (${strategy}) uygulandı ama site yine açılmadı — geri alındı`, 'warning');
+  return done(false, 'bulunan yöntem işe yaramadı, geri alındı', strategy);
 }
