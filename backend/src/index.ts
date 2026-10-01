@@ -1583,8 +1583,18 @@ function runInRoutingQueue(fn: () => Promise<void>): Promise<void> {
   routingQueue = next.catch(() => {});
   return next;
 }
+// Sırada bekleyen (henüz BAŞLAMAMIŞ) bir tam uygulama varsa yeni çağrı ona katılır: o çalışma DB'yi başladığında okuyacağı
+// için bu çağrıdan önce yazılan değişikliği de uygular. Panelde arka arkaya basılan N düğme eskiden N tam uygulama
+// (her biri Pi'de birkaç saniye) bekliyordu; artık en çok iki (sürmekte olan + bir sonraki). Başlamış çalışmaya katılınmaz.
+let queuedFullApply: Promise<void> | null = null;
 function applyAllRoutingRules(): Promise<void> {
-  return runInRoutingQueue(applyAllRoutingRulesNow);
+  if (queuedFullApply) return queuedFullApply;
+  const run = runInRoutingQueue(async () => {
+    queuedFullApply = null;
+    await applyAllRoutingRulesNow();
+  });
+  queuedFullApply = run;
+  return run;
 }
 
 // Bir VPS'e yönlenen etkin kurallar, tünel düşünce ne olacağına göre (uygulama adı / alan adı).

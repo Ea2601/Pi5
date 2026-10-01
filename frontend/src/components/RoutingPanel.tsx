@@ -1,7 +1,7 @@
 import {
   Route, Globe, Tv, Gamepad2, MessageCircle, Apple,
   Plus, Trash2, Check, X, Search, Link, Shield, Info,
-  Lightbulb, ChevronDown, ChevronRight, RotateCcw
+  Lightbulb, ChevronDown, ChevronRight, RotateCcw, Loader2
 } from 'lucide-react';
 import { useApi, getApi, putApi, postApi, deleteApi } from '../hooks/useApi';
 import { useState, useRef, useCallback, useEffect } from 'react';
@@ -99,6 +99,35 @@ function groupRangeEntries(ranges: string[]): { label: string; entries: string[]
   }
   return [...groups].map(([label, entries]) => ({ label: entries.length > 1 ? `${label} · ${entries.length} ağ` : label, entries }));
 }
+
+// ─── Bekleyen değişiklikler: tıklanan denetim yanıtı beklemeden yeni değerini gösterir ───
+// Pi'de bir kural değişikliğinin uygulanması birkaç saniye sürer ve istekler sunucuda sıraya girer; eskiden düğme o süre
+// boyunca eski hâlinde kalıyor, arka arkaya basılan diğer düğmeler de değişmiyor, sayfa donmuş gibi görünüyordu.
+// Yanıt ve yeniden yükleme bitince sunucudaki değer geçerli olur; istek başarısızsa denetim eski değerine döner.
+function usePendingEdits() {
+  const [pending, setPending] = useState<Record<string, unknown>>({});
+  const seq = useRef(0);
+  const latest = useRef<Record<string, number>>({});
+  const value = <T,>(id: number, field: string, server: T): T => {
+    const k = `${id}:${field}`;
+    return k in pending ? (pending[k] as T) : server;
+  };
+  const busy = (id: number) => Object.keys(pending).some(k => k.startsWith(`${id}:`));
+  const run = async (id: number, field: string, next: unknown, send: () => Promise<void>) => {
+    const k = `${id}:${field}`;
+    const n = ++seq.current;
+    latest.current[k] = n;
+    setPending(p => ({ ...p, [k]: next }));
+    try {
+      await send();
+    } finally {
+      // Aynı denetime yeniden basıldıysa onun değeri kalır (son tıklama geçerli)
+      if (latest.current[k] === n) setPending(p => { const rest = { ...p }; delete rest[k]; return rest; });
+    }
+  };
+  return { value, busy, run };
+}
+const Saving = () => <Loader2 size={12} className="spin rt-saving" aria-label="Kaydediliyor" />;
 
 // ─── Kural uygulama durumu: değişiklikten sonra "uygulanıyor… / hazır" ───
 // Sunucu kuralı yazıp yanıt döner; DNS yenilemesi arka planda (2-15 sn + yeniden başlatma) sürer.
@@ -233,7 +262,8 @@ function AppRoutingView({ onApplied }: { onApplied: () => void }) {
     grouped[r.category].push(r);
   });
 
-  const handleChange = async (id: number, field: string, value: any) => {
+  const edits = usePendingEdits();
+  const handleChange = (id: number, field: string, value: any) => edits.run(id, field, value, async () => {
     try {
       await putApi(`/routing/rules/${id}`, { [field]: value });
       onApplied();
@@ -241,7 +271,7 @@ function AppRoutingView({ onApplied }: { onApplied: () => void }) {
     } catch (e) {
       toast.error(e instanceof Error ? e.message : 'Kural güncellenemedi');
     }
-  };
+  });
 
   const activeCount = rules.filter(r => r.enabled && r.exit_node !== 'isp').length;
 
@@ -294,16 +324,19 @@ function AppRoutingView({ onApplied }: { onApplied: () => void }) {
 
               <div className="rt-list">
                 {catRules.map(rule => {
-                  const exitNode = rule.exit_node || 'isp';
-                  const dpi = rule.dpi_bypass || 0;
-                  const isActive = rule.enabled && exitNode !== 'isp';
+                  const exitNode = edits.value(rule.id, 'exit_node', rule.exit_node || 'isp');
+                  const dpi = edits.value(rule.id, 'dpi_bypass', rule.dpi_bypass || 0);
+                  const enabled = edits.value(rule.id, 'enabled', rule.enabled);
+                  const fallback = edits.value(rule.id, 'vps_fallback', rule.vps_fallback);
+                  const saving = edits.busy(rule.id);
+                  const isActive = enabled && exitNode !== 'isp';
                   const isExpanded = expandedId === rule.id;
                   const list = ruleList(rule);
                   const ListIcon = list ? CAT_ICON[list] : null;
                   const info = list ? rulesData.lists?.find(l => l.id === list) : undefined;
 
                   return (
-                    <div key={rule.id} className={`rt-item ${!rule.enabled ? 'is-off' : ''} ${isActive ? 'is-vps' : ''}`}>
+                    <div key={rule.id} className={`rt-item ${!enabled ? 'is-off' : ''} ${isActive ? 'is-vps' : ''}`} aria-busy={saving || undefined}>
                       <div className={`rt-row rt-app ${exitNode !== 'isp' ? 'has-fb' : ''}`}>
                         <div className="rt-icon">
                           <div className="app-icon-sm">
@@ -318,6 +351,7 @@ function AppRoutingView({ onApplied }: { onApplied: () => void }) {
                             title={list ? 'Listeyi göster' : "Domain'leri göster"} aria-expanded={isExpanded}>
                             <Info size={13} />
                           </button>
+                          {saving && <Saving />}
                         </div>
 
                         <div className="rt-exit">
@@ -335,7 +369,7 @@ function AppRoutingView({ onApplied }: { onApplied: () => void }) {
                         </div>
                         {exitNode !== 'isp' && (
                           <div className="rt-fb">
-                            <FallbackSelect value={rule.vps_fallback} onChange={v => handleChange(rule.id, 'vps_fallback', v)} />
+                            <FallbackSelect value={fallback} onChange={v => handleChange(rule.id, 'vps_fallback', v)} />
                           </div>
                         )}
 
@@ -344,7 +378,7 @@ function AppRoutingView({ onApplied }: { onApplied: () => void }) {
                         </div>
 
                         <div className="rt-state">
-                          <StateToggle on={!!rule.enabled} label={rule.app_name} onClick={() => handleChange(rule.id, 'enabled', rule.enabled ? 0 : 1)} />
+                          <StateToggle on={!!enabled} label={rule.app_name} onClick={() => handleChange(rule.id, 'enabled', enabled ? 0 : 1)} />
                         </div>
                       </div>
 
@@ -560,7 +594,8 @@ function DomainRoutingView({ onApplied }: { onApplied: () => void }) {
     }
   };
 
-  const handleChange = async (id: number, field: string, value: any) => {
+  const edits = usePendingEdits();
+  const handleChange = (id: number, field: string, value: any) => edits.run(id, field, value, async () => {
     try {
       await putApi(`/routing/domains/${id}`, { [field]: value });
       onApplied();
@@ -569,19 +604,21 @@ function DomainRoutingView({ onApplied }: { onApplied: () => void }) {
     } catch (e) {
       toast.error(e instanceof Error ? e.message : 'Kural güncellenemedi');
     }
-  };
+  });
 
   const handleDelete = async (id: number, domain: string) => {
     if (!confirm(`${domain} kuralı silinsin mi?`)) return;
-    try {
-      await deleteApi(`/routing/domains/${id}`);
-      toast.success(`${domain} silindi`);
-      onApplied();
-      await refetch();
-      await refetchSug();
-    } catch (e) {
-      toast.error(e instanceof Error ? e.message : 'Silinemedi');
-    }
+    await edits.run(id, 'delete', true, async () => {
+      try {
+        await deleteApi(`/routing/domains/${id}`);
+        toast.success(`${domain} silindi`);
+        onApplied();
+        await refetch();
+        await refetchSug();
+      } catch (e) {
+        toast.error(e instanceof Error ? e.message : 'Silinemedi');
+      }
+    });
   };
 
   return (
@@ -684,22 +721,26 @@ function DomainRoutingView({ onApplied }: { onApplied: () => void }) {
             </div>
           )}
           {filtered.map(d => {
-            const exitNode = d.exit_node || 'isp';
-            const dpi = d.dpi_bypass || 0;
+            const exitNode = edits.value(d.id, 'exit_node', d.exit_node || 'isp');
+            const dpi = edits.value(d.id, 'dpi_bypass', d.dpi_bypass || 0);
+            const enabled = edits.value(d.id, 'enabled', d.enabled);
+            const fallback = edits.value(d.id, 'vps_fallback', d.vps_fallback);
+            const saving = edits.busy(d.id);
             // Yalnız öneri üretebilen kural (etkin, redirect değil, VPS ya da DPI) — sunucu yanıtı 2 dk'ya kadar eski olabilir.
-            const rs = d.enabled && !d.redirect_url && (exitNode !== 'isp' || dpi) ? sugByRule.get(d.id) : undefined;
+            const rs = enabled && !d.redirect_url && (exitNode !== 'isp' || dpi) ? sugByRule.get(d.id) : undefined;
             const sugOpen = openSug.has(d.id);
             const hasFb = exitNode !== 'isp' && !d.redirect_url;
 
             return (
-              <div key={d.id} className={`rt-item ${!d.enabled ? 'is-off' : ''} ${d.enabled && exitNode !== 'isp' ? 'is-vps' : ''}`}>
+              <div key={d.id} className={`rt-item ${!enabled ? 'is-off' : ''} ${enabled && exitNode !== 'isp' ? 'is-vps' : ''} ${edits.value(d.id, 'delete', false) ? 'is-deleting' : ''}`} aria-busy={saving || undefined}>
               <div className={`rt-row rt-dom ${hasFb ? 'has-fb' : ''}`}>
                 <div className="rt-state">
-                  <StateToggle on={!!d.enabled} label={d.domain} onClick={() => handleChange(d.id, 'enabled', d.enabled ? 0 : 1)} />
+                  <StateToggle on={!!enabled} label={d.domain} onClick={() => handleChange(d.id, 'enabled', enabled ? 0 : 1)} />
                 </div>
 
                 <div className="rt-name">
                   <span className="rt-domain">{d.domain}</span>
+                  {saving && <Saving />}
                   {!d.domain.includes('.') && <span className="rt-tag rt-tag-warn">kelime</span>}
                   {d.domain.startsWith('*.') && <span className="rt-tag rt-tag-info" lang="en">wildcard</span>}
                   {d.redirect_url && <span className="rt-tag rt-tag-warn" lang="en">redirect</span>}
@@ -725,7 +766,7 @@ function DomainRoutingView({ onApplied }: { onApplied: () => void }) {
                 </div>
                 {hasFb && (
                   <div className="rt-fb">
-                    <FallbackSelect value={d.vps_fallback} onChange={v => handleChange(d.id, 'vps_fallback', v)} />
+                    <FallbackSelect value={fallback} onChange={v => handleChange(d.id, 'vps_fallback', v)} />
                   </div>
                 )}
 
@@ -734,7 +775,8 @@ function DomainRoutingView({ onApplied }: { onApplied: () => void }) {
                 </div>
 
                 <div className="rt-del">
-                  <button className="icon-btn icon-btn-sm cron-delete" onClick={() => handleDelete(d.id, d.domain)} title="Sil" aria-label={`${d.domain} kuralını sil`}>
+                  <button className="icon-btn icon-btn-sm cron-delete" onClick={() => handleDelete(d.id, d.domain)} title="Sil" aria-label={`${d.domain} kuralını sil`}
+                    disabled={edits.value(d.id, 'delete', false)}>
                     <Trash2 size={13} />
                   </button>
                 </div>

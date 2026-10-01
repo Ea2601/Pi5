@@ -59,6 +59,9 @@
 .rt-item.is-off > .rt-row > :not(.rt-state):not(.rt-del),
 .rt-item.is-off > .rt-detail, .rt-item.is-off > .routing-suggest { opacity: 0.45; }
 .rt-item:hover .cron-delete { opacity: 1; }
+/* Kaydediliyor: değişen kuralın adının yanında dönen simge; silinen kart yanıt gelene dek soluk */
+.rt-saving { flex: none; color: var(--text-secondary); }
+.rt-item.is-deleting { opacity: 0.5; pointer-events: none; }
 
 /* Satır ızgarası — telefon:
    uygulama:  [simge | ad ........ | anahtar]   [çıkış ......... | DPI]   [tünel düşerse ......]
