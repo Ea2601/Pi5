@@ -990,8 +990,21 @@ app.post('/api/vps/setup', async (req, res) => {
     if (!connTest.success) {
       return res.status(400).json({ success: false, error: `SSH bağlantısı başarısız: ${connTest.message}` });
     }
-    const vpsId = await dbInsert('INSERT INTO vps_servers (ip, username, password, location, status) VALUES (?, ?, ?, ?, ?)',
-      [ip, username, password || '', location || '', 'installing']);
+    // Aynı IP'ye yeniden kurulum aynı kaydı kullanır (eskiden her deneme yeni kayıt açıyordu: başarısız denemeler panelde
+    // "hata" durumunda ayrı VPS kartları olarak kalıyordu). Kurulum sürüyorsa ikinci deneme başlatılmaz.
+    const existing: any = await dbGet('SELECT id FROM vps_servers WHERE ip = ? ORDER BY id LIMIT 1', [ip]);
+    if (existing && setupJobs.get(Number(existing.id))?.overall === 'running') {
+      return res.status(409).json({ success: false, error: 'Bu VPS için kurulum zaten sürüyor' });
+    }
+    let vpsId: number;
+    if (existing) {
+      vpsId = Number(existing.id);
+      await dbRun(`UPDATE vps_servers SET username = ?, password = ?, location = CASE WHEN ? <> '' THEN ? ELSE location END, status = ? WHERE id = ?`,
+        [username, password || '', location || '', location || '', 'installing', vpsId]);
+    } else {
+      vpsId = await dbInsert('INSERT INTO vps_servers (ip, username, password, location, status) VALUES (?, ?, ?, ?, ?)',
+        [ip, username, password || '', location || '', 'installing']);
+    }
 
     // Start setup in background — returns immediately
     runSetupInBackground(vpsId, ip, username, password || undefined);

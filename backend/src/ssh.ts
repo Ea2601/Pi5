@@ -105,12 +105,18 @@ export async function removeWireGuardClients(opts: VpsConnectOptions, publicKeys
 /**
  * Connect to VPS via SSH — supports password and/or private key auth
  */
-async function connectSSH(opts: VpsConnectOptions): Promise<NodeSSH> {
+// Kurulum yolu (bağlantı testi + kurulum adımları) sabırlı bağlanır: yeni kurulmuş (reinstall) VPS ilk dakikalarda SSH
+// anahtarlarını üretip sshd'yi yeniden başlatır, ilk açılış işleri el sıkışmayı yavaşlatır — eskiden tek deneme / 15 sn,
+// ilk deneme düşüyordu. Kurulumda 30 sn, ağ hatasında 5 ve 15 sn sonra yeniden; şifre / anahtar hatası yeniden denenmez.
+// Diğer işlemler (istemci ekle / sil …) eskisi gibi tek deneme / 15 sn: ulaşılamayan VPS'te panel uzun beklemesin.
+const isAuthError = (e: any) => e?.level === 'client-authentication' || /authentication methods failed/i.test(String(e?.message || ''));
+const SETUP_RETRY_WAITS_MS = [5000, 15000];
+async function connectSSH(opts: VpsConnectOptions, patient = false): Promise<NodeSSH> {
   const ssh = new NodeSSH();
   const connectOpts: Record<string, unknown> = {
     host: opts.ip,
     username: opts.username,
-    readyTimeout: 15000,
+    readyTimeout: patient ? 30000 : 15000,
   };
 
   // Try password auth if provided
@@ -137,8 +143,18 @@ async function connectSSH(opts: VpsConnectOptions): Promise<NodeSSH> {
     }
   }
 
-  await ssh.connect(connectOpts);
-  return ssh;
+  const waits = patient ? SETUP_RETRY_WAITS_MS : [];
+  for (let attempt = 0; ; attempt++) {
+    const conn = attempt ? new NodeSSH() : ssh;
+    try {
+      await conn.connect(connectOpts);
+      return conn;
+    } catch (e: any) {
+      try { conn.dispose(); } catch { /* */ }
+      if (isAuthError(e) || attempt >= waits.length) throw e;
+      await new Promise(r => setTimeout(r, waits[attempt]));
+    }
+  }
 }
 
 /**
@@ -146,7 +162,7 @@ async function connectSSH(opts: VpsConnectOptions): Promise<NodeSSH> {
  */
 export async function testSSHConnection(opts: VpsConnectOptions): Promise<{ success: boolean; message: string }> {
   try {
-    const ssh = await connectSSH(opts);
+    const ssh = await connectSSH(opts, true);
     const result = await ssh.execCommand('echo "connection_ok" && uname -a');
     ssh.dispose();
     return { success: true, message: result.stdout.trim() };
@@ -165,9 +181,10 @@ export async function executeSetupStep(
   // SSH to VPS works from any platform
   const startTime = Date.now();
   try {
-    const ssh = await connectSSH(opts);
+    const ssh = await connectSSH(opts, true);
     let cmd = '';
     let successMsg = '';
+    let failMsg = 'Adım başarısız';
 
     switch (step) {
       case 'connection':
@@ -175,20 +192,41 @@ export async function executeSetupStep(
         successMsg = 'SSH bağlantısı başarılı';
         break;
       case 'update':
-        cmd = 'export DEBIAN_FRONTEND=noninteractive && apt-get update -qq && apt-get upgrade -y -qq -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" 2>&1 | tail -5';
+        cmd = `
+          export DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a
+          set -o pipefail
+          # Yeni kurulmuş VPS: ilk açılış işleri (cloud-init) ve otomatik güncellemeler paket yöneticisini kilitler —
+          # eskiden apt anında düşüyor, adım yine "başarılı" görünüyordu. İlk açılış beklenir, apt kilidi 10 dk beklenir.
+          if command -v cloud-init >/dev/null 2>&1; then timeout 600 cloud-init status --wait >/dev/null 2>&1 || true; fi
+          APT="apt-get -o DPkg::Lock::Timeout=600"
+          $APT update -qq && $APT upgrade -y -qq -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" 2>&1 | tail -5
+        `;
         successMsg = 'Sistem güncellendi';
+        failMsg = 'Sistem güncellenemedi';
         break;
       case 'packages':
-        cmd = `export DEBIAN_FRONTEND=noninteractive && \
-          apt-get install -y -qq wireguard wireguard-tools qrencode iptables curl resolvconf iptables-persistent 2>&1 | tail -5 && \
-          echo "--- Paket kontrol ---" && \
-          which wg && which qrencode && which curl && echo "Tum paketler kurulu"`;
+        // resolvconf kurulmaz: sunucunun wg0.conf'unda DNS satırı yok; Ubuntu'da systemd-resolved ile çakışıp VPS'in DNS'ini
+        // bozuyordu (sonraki apt işlemleri takılıyordu).
+        cmd = `
+          export DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a
+          set -o pipefail
+          # Yeni kurulmuş VPS: ilk açılış işleri (cloud-init) ve otomatik güncellemeler paket yöneticisini kilitler —
+          # eskiden apt anında düşüyor, adım yine "başarılı" görünüyordu. İlk açılış beklenir, apt kilidi 10 dk beklenir.
+          if command -v cloud-init >/dev/null 2>&1; then timeout 600 cloud-init status --wait >/dev/null 2>&1 || true; fi
+          APT="apt-get -o DPkg::Lock::Timeout=600"
+          $APT install -y -qq wireguard wireguard-tools qrencode iptables curl iptables-persistent 2>&1 | tail -5
+          MISSING=""
+          for c in wg wg-quick iptables qrencode curl; do command -v "$c" >/dev/null 2>&1 || MISSING="$MISSING $c"; done
+          if [ -n "$MISSING" ]; then echo "Kurulamayan:$MISSING" >&2; exit 1; fi
+          echo "Tum paketler kurulu"
+        `;
         successMsg = 'WireGuard ve bağımlılıklar kuruldu';
+        failMsg = 'Paketler kurulamadı';
         break;
       case 'maintenance':
+        // set -e yok: IPv6'sız VPS'te sysctl'in ipv6 satırı hata verip betiği NAT'tan önce kesiyordu. Sonda forward ve NAT
+        // gerçekten açık mı denetlenir.
         cmd = `
-          set -e
-
           # 1. Verify internet connectivity
           echo "--- Internet baglanti kontrolu ---"
           if ! ping -c 1 -W 3 8.8.8.8 &>/dev/null; then
@@ -211,7 +249,7 @@ export async function executeSetupStep(
           echo "--- IP forwarding ---"
           echo "net.ipv4.ip_forward=1" > /etc/sysctl.d/99-wireguard.conf
           echo "net.ipv6.conf.all.forwarding=1" >> /etc/sysctl.d/99-wireguard.conf
-          sysctl -p /etc/sysctl.d/99-wireguard.conf 2>&1
+          sysctl -p /etc/sysctl.d/99-wireguard.conf 2>&1 || true
           # Verify
           FWD=$(cat /proc/sys/net/ipv4/ip_forward)
           echo "ip_forward=$FWD"
@@ -259,12 +297,18 @@ export async function executeSetupStep(
             iptables-save > /etc/iptables/rules.v4 2>/dev/null || true
           fi
 
+          if [ "$(cat /proc/sys/net/ipv4/ip_forward)" != "1" ]; then echo "IP forwarding açılamadı" >&2; exit 1; fi
+          if ! iptables -t nat -C POSTROUTING -o "$PRIMARY_IFACE" -j MASQUERADE 2>/dev/null; then
+            echo "NAT (MASQUERADE) kuralı eklenemedi: $PRIMARY_IFACE" >&2; exit 1
+          fi
           echo "--- Tüm ayarlar tamamlandı ---"
         `;
         successMsg = 'Internet, IP forwarding, NAT ve firewall ayarlandı';
+        failMsg = 'Ağ ayarları (forward / NAT) yapılamadı';
         break;
       case 'wireguard':
         cmd = `
+          command -v wg >/dev/null 2>&1 || { echo "wg komutu yok (paket kurulumu başarısız)" >&2; exit 1; }
           # Detect primary network interface (not lo, wg, docker, veth)
           PRIMARY_IFACE=$(ip -o -4 route show to default | awk '{print $5}' | head -1)
           if [ -z "$PRIMARY_IFACE" ]; then PRIMARY_IFACE="eth0"; fi
@@ -284,6 +328,7 @@ export async function executeSetupStep(
           fi
           [ -n "$SERVER_PRIV" ] || SERVER_PRIV=$(wg genkey)
           SERVER_PUB=$(echo "$SERVER_PRIV" | wg pubkey)
+          [ -n "$SERVER_PUB" ] || { echo "Sunucu anahtarı üretilemedi" >&2; exit 1; }
 
           # Get public IP — try curl, wget, hostname fallback
           SERVER_IP=""
@@ -310,11 +355,16 @@ WGEOF
           if [ -n "$WG_PEERS" ]; then printf '\\n%s\\n' "$WG_PEERS" >> /etc/wireguard/wg0.conf; fi
 
           chmod 600 /etc/wireguard/wg0.conf
-          systemctl enable wg-quick@wg0
-          systemctl restart wg-quick@wg0
+          systemctl enable wg-quick@wg0 >/dev/null 2>&1 || true
+          if ! systemctl restart wg-quick@wg0; then
+            echo "wg-quick@wg0 başlatılamadı:" >&2
+            journalctl -u wg-quick@wg0 -n 6 --no-pager 2>/dev/null | sed 's/^/  /' >&2
+            exit 1
+          fi
           echo "SERVER_PUB=$SERVER_PUB SERVER_IP=$SERVER_IP IFACE=$PRIMARY_IFACE"
         `;
         successMsg = 'WireGuard arayüzü oluşturuldu ve başlatıldı';
+        failMsg = 'WireGuard başlatılamadı';
         break;
       case 'handshake':
         cmd = 'wg show wg0 2>&1 || echo "wg0 not found"';
@@ -334,6 +384,12 @@ WGEOF
 
     if (step === 'handshake' && result.stdout.includes('wg0 not found')) {
       return { status: 'error', message: 'WireGuard arayüzü bulunamadı', duration: `${elapsed}s` };
+    }
+    // Komutun sonucu denetlenir (eskiden bakılmıyordu: apt kilitli ya da paket kurulamamışken adım "başarılı" görünüyor,
+    // hata ancak son adımda çıkıyordu). VPS'in verdiği son satırlar mesajda.
+    if (result.code !== 0) {
+      const tail = (result.stderr.trim() || result.stdout.trim()).split('\n').map(l => l.trim()).filter(Boolean).slice(-3).join(' · ').slice(-300);
+      return { status: 'error', message: `${failMsg}${result.code !== null ? ` (çıkış kodu ${result.code})` : ''}${tail ? ` — ${tail}` : ''}`, duration: `${elapsed}s` };
     }
 
     return {
