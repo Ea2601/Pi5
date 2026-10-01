@@ -17,6 +17,7 @@ import { spawn } from 'child_process';
 import { dbAll, dbGet, dbRun } from './db';
 import { isLinux } from './system';
 import { openFtl, startGravity, type Ftl } from './piholeLists';
+import { LIST_SOURCES } from './categoryLists';
 
 export type Day = 'mon' | 'tue' | 'wed' | 'thu' | 'fri' | 'sat' | 'sun';
 export type Mode = 'always' | 'during' | 'outside';
@@ -75,11 +76,11 @@ export const CATEGORIES: Record<CategoryId, { label: string; desc: string; domai
   },
   adult: {
     label: 'Yetişkin içerik', desc: 'Hazır liste: StevenBlack (porn-only), düzenli güncellenir',
-    lists: ['https://raw.githubusercontent.com/StevenBlack/hosts/master/alternates/porn-only/hosts'],
+    lists: LIST_SOURCES.adult.urls,   // Routing ve ağ haritasıyla aynı kaynak (categoryLists.ts)
   },
   gambling: {
     label: 'Kumar ve bahis', desc: 'Hazır liste: StevenBlack (gambling-only), düzenli güncellenir',
-    lists: ['https://raw.githubusercontent.com/StevenBlack/hosts/master/alternates/gambling-only/hosts'],
+    lists: LIST_SOURCES.gambling.urls,
   },
 };
 const CATEGORY_IDS = Object.keys(CATEGORIES) as CategoryId[];

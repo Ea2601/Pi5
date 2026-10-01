@@ -7,6 +7,7 @@ import { useApi, getApi, putApi, postApi, deleteApi } from '../hooks/useApi';
 import { useState, useRef, useCallback, useEffect } from 'react';
 import { Panel, Badge, Select } from './ui';
 import { AppLogo } from './AppLogos';
+import { CAT_ICON } from './contentCategories';
 import { toast } from '../toast';
 import type { TrafficRule } from '../types';
 
@@ -19,7 +20,24 @@ const categoryMeta: Record<string, { label: string; icon: React.ReactNode; color
   gaming: { label: 'Oyun', icon: <Gamepad2 size={16} />, color: 'badge-error' },
   web: { label: 'Web & Geliştirme', icon: <Globe size={16} />, color: 'badge-neutral' },
   apple: { label: 'Apple Servisleri', icon: <Apple size={16} />, color: 'badge-neutral' },
+  restricted: { label: 'Yetişkin & Kumar', icon: <CAT_ICON.adult size={16} />, color: 'badge-error' },
 };
+
+// Hazır listeli satır (backend categoryLists.ts): domains = "@list:adult" — siteler tek tek yazılmaz. VPS çıkışında liste
+// adları Pi-hole'dan panelin çözücüsüne gider (listDns.ts), yalnız DPI'da liste Zapret'e eklenir.
+type ListId = 'adult' | 'gambling';
+interface ListInfo { id: ListId; label: string; source: string; count: number; collapsed: number; updatedAt: string | null; error: string | null }
+interface ListDnsStats { queries: number; added: number; failed: number; listening: boolean; lastError: string }
+const LIST_ENTRY = /^@list:(adult|gambling)$/;
+const ruleList = (r: TrafficRule): ListId | null => {
+  const m = LIST_ENTRY.exec(String(r.domains || '').trim());
+  return m ? (m[1] as ListId) : null;
+};
+const fmtN = (n: number) => n.toLocaleString('tr-TR');
+const listTagStyle = {
+  marginLeft: 6, padding: '1px 7px', borderRadius: 999, fontSize: 10, whiteSpace: 'nowrap',
+  color: 'var(--text-secondary)', border: '1px solid var(--panel-border)',
+} as const;
 
 interface VpsServer { id: number; ip: string; location: string }
 
@@ -49,7 +67,7 @@ const ASN_NAMES: Record<string, string> = {
 function splitRuleEntries(list: string): { domains: string[]; ranges: string[] } {
   const entries = list.split(',').map(s => s.trim()).filter(Boolean);
   return {
-    domains: entries.filter(e => !ASN_ENTRY.test(e) && !CIDR_ENTRY.test(e)),
+    domains: entries.filter(e => !ASN_ENTRY.test(e) && !CIDR_ENTRY.test(e) && !LIST_ENTRY.test(e)),
     ranges: entries.filter(e => ASN_ENTRY.test(e) || CIDR_ENTRY.test(e)),
   };
 }
@@ -186,7 +204,7 @@ export function RoutingPanel() {
 
 // ─── App Routing — inline controls per row ───
 function AppRoutingView({ onApplied }: { onApplied: () => void }) {
-  const { data: rulesData, refetch } = useApi<{ rules: TrafficRule[] }>('/routing/rules', { rules: [] });
+  const { data: rulesData, refetch } = useApi<{ rules: TrafficRule[]; lists?: ListInfo[]; listDns?: ListDnsStats }>('/routing/rules', { rules: [] });
   const { data: vpsData } = useApi<{ servers: VpsServer[] }>('/vps/list', { servers: [] });
   const [filterCat, setFilterCat] = useState<string>('all');
   const [expandedId, setExpandedId] = useState<number | null>(null);
@@ -264,19 +282,23 @@ function AppRoutingView({ onApplied }: { onApplied: () => void }) {
                 const dpi = rule.dpi_bypass || 0;
                 const isActive = rule.enabled && exitNode !== 'isp';
                 const isExpanded = expandedId === rule.id;
+                const list = ruleList(rule);
+                const ListIcon = list ? CAT_ICON[list] : null;
+                const info = list ? rulesData.lists?.find(l => l.id === list) : undefined;
 
                 return (
                   <div key={rule.id}>
                     <div className={`routing-row ${!rule.enabled ? 'routing-row-disabled' : ''} ${isActive ? 'routing-row-active' : ''}`}>
                       <span className="routing-col-icon">
                         <div className="app-icon-sm">
-                          <AppLogo name={rule.app_name} />
+                          {ListIcon ? <ListIcon size={16} strokeWidth={2} /> : <AppLogo name={rule.app_name} />}
                         </div>
                       </span>
 
                       <span className="routing-col-name">
                         <strong>{rule.app_name}</strong>
-                        <button className="info-btn" onClick={() => setExpandedId(isExpanded ? null : rule.id)} title="Domain'leri göster">
+                        {list && <span className="routing-list-tag" style={listTagStyle} title={info ? `${info.source} · ${fmtN(info.count)} alan adı` : 'Hazır liste'}>hazır liste{info?.count ? ` · ${fmtN(info.count)}` : ''}</span>}
+                        <button className="info-btn" onClick={() => setExpandedId(isExpanded ? null : rule.id)} title={list ? 'Listeyi göster' : "Domain'leri göster"}>
                           <Info size={12} />
                         </button>
                       </span>
@@ -318,12 +340,31 @@ function AppRoutingView({ onApplied }: { onApplied: () => void }) {
                       </span>
                     </div>
 
-                    {isExpanded && rule.domains && (() => {
+                    {isExpanded && list && (
+                      <div className="routing-domains-info routing-list-info">
+                        <span style={{ color: 'var(--text-muted)', fontSize: 11 }}>Hazır liste:</span>
+                        <span style={{ fontSize: 11 }}>
+                          {info?.count
+                            ? `${info.source} — ${fmtN(info.count)} alan adı, alt alan adlarıyla (tekrarlar ayıklanınca ${fmtN(info.collapsed)})`
+                            : 'Liste yükleniyor…'}
+                          {info?.updatedAt ? ` · güncellendi ${new Date(info.updatedAt).toLocaleDateString('tr-TR')}` : ''}
+                          {' · siteleri tek tek yazmak gerekmez, liste günde bir yenilenir'}
+                        </span>
+                        <span style={{ fontSize: 11, color: 'var(--text-secondary)' }}>
+                          {exitNode !== 'isp'
+                            ? `VPS çıkışı: Pi-hole bu listedeki adları paneldeki çözücüye iletir, adresler yanıt dönmeden tünel yoluna eklenir${rulesData.listDns?.listening ? ` · son açılıştan beri ${fmtN(rulesData.listDns.queries)} sorgu, ${fmtN(rulesData.listDns.added)} adres` : ''}`
+                            : dpi ? "DPI: liste Zapret'in bypass listesine eklendi (Pi-hole'a dokunulmaz)" : 'Çıkış noktası ya da DPI seçilince uygulanır'}
+                        </span>
+                        {info?.error && <span style={{ fontSize: 11, color: 'var(--warning-color)' }}>{info.error}</span>}
+                        {exitNode !== 'isp' && rulesData.listDns?.lastError && <span style={{ fontSize: 11, color: 'var(--warning-color)' }}>{rulesData.listDns.lastError}</span>}
+                      </div>
+                    )}
+                    {isExpanded && !list && rule.domains && (() => {
                       const { domains: names, ranges } = splitRuleEntries(rule.domains);
                       return (
                         <div className="routing-domains-info">
                           <span style={{ color: 'var(--text-muted)', fontSize: 11 }}>Domain'ler:</span>
-                          <span style={{ fontFamily: 'var(--font-mono, monospace)', fontSize: 11 }}>
+                          <span style={{ fontFamily: 'var(--font-mono, monospace)', fontSize: 11, overflowWrap: 'anywhere' }}>
                             {names.join(',')}
                           </span>
                           {groupRangeEntries(ranges).map(g => (

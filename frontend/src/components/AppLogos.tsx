@@ -46,6 +46,14 @@ const domainMap: Record<string, string> = {
   Zoom: 'zoom.us',
   Facebook: 'facebook.com',
   Snapchat: 'snapchat.com',
+  // v2.24.67: Ebeveyn Kontrol kategorilerinden eklenen servisler
+  Threads: 'threads.net', Pinterest: 'pinterest.com', Reddit: 'reddit.com', Tumblr: 'tumblr.com', Bluesky: 'bsky.app',
+  VK: 'vk.com', 'Ask.fm': 'ask.fm', Kick: 'kick.com', 'Disney+': 'disneyplus.com', 'Prime Video': 'primevideo.com',
+  Hulu: 'hulu.com', Max: 'max.com', Dailymotion: 'dailymotion.com', Vimeo: 'vimeo.com', MUBI: 'mubi.com',
+  Roblox: 'roblox.com', Minecraft: 'minecraft.net', PlayStation: 'playstation.com', Xbox: 'xbox.com', EA: 'ea.com',
+  'Riot Games': 'riotgames.com', 'Battle.net': 'battle.net', Supercell: 'supercell.com', Garena: 'garena.com',
+  'PUBG Mobile': 'pubgmobile.com', Miniclip: 'miniclip.com', Messenger: 'messenger.com', Viber: 'viber.com',
+  LINE: 'line.me', WeChat: 'wechat.com',
 };
 
 const letterStyle: CSSProperties = {

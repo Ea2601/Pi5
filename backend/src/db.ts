@@ -164,6 +164,64 @@ export const initDb = () => {
     db.run(`UPDATE traffic_routing SET domains = domains || ',@asn:714!443'
       WHERE id = 17 AND app_name = 'FaceTime' AND COALESCE(domains, '') != '' AND instr(domains, '@asn:714!443') = 0`);
 
+    // v2.24.67: Ebeveyn Kontrol kategorilerindeki (parental.ts CATEGORIES) servislerden Routing'de olmayanlar. Hepsi ISP
+    // (Direkt) gelir: çıkış seçilene dek etkisizdir. Yetişkin / Kumar hazır listeyle (@list:, categoryLists.ts): siteler tek
+    // tek yazılmaz; VPS çıkışında listDns.ts, yalnız DPI'da Zapret yolundan uygulanır.
+    const contentRules: [number, string, string, string][] = [
+      [21, 'Threads', 'social', '*.threads.net'],
+      [22, 'Pinterest', 'social', '*.pinterest.com,*.pinimg.com'],
+      [23, 'Reddit', 'social', '*.reddit.com,*.redd.it,*.redditmedia.com,*.redditstatic.com'],
+      [24, 'Tumblr', 'social', '*.tumblr.com'],
+      [25, 'Bluesky', 'social', '*.bsky.app'],
+      [26, 'VK', 'social', '*.vk.com'],
+      [27, 'Ask.fm', 'social', '*.ask.fm'],
+      [28, 'Kick', 'streaming', '*.kick.com'],
+      [29, 'Disney+', 'streaming', '*.disneyplus.com,*.dssott.com,*.bamgrid.com,*.disney-plus.net'],
+      [30, 'Prime Video', 'streaming', '*.primevideo.com,*.aiv-cdn.net,*.aiv-delivery.net'],
+      [31, 'Hulu', 'streaming', '*.hulu.com'],
+      [32, 'Max', 'streaming', '*.max.com,*.hbomax.com'],
+      [33, 'Dailymotion', 'streaming', '*.dailymotion.com,*.dmcdn.net'],
+      [34, 'Vimeo', 'streaming', '*.vimeo.com,*.vimeocdn.com'],
+      [35, 'MUBI', 'streaming', '*.mubi.com'],
+      [36, 'Yerli Platformlar', 'streaming', '*.blutv.com,*.exxen.com,*.puhutv.com,*.gain.tv,*.tabii.com,*.tod.tv'],
+      [37, 'Roblox', 'gaming', '*.roblox.com,*.rbxcdn.com,*.robloxlabs.com'],
+      [38, 'Minecraft', 'gaming', '*.minecraft.net,*.minecraftservices.com,*.mojang.com'],
+      [39, 'PlayStation', 'gaming', '*.playstation.com,*.playstation.net,*.sonyentertainmentnetwork.com'],
+      [40, 'Xbox', 'gaming', '*.xboxlive.com,*.xbox.com'],
+      [41, 'EA', 'gaming', '*.ea.com,*.origin.com'],
+      [42, 'Riot Games', 'gaming', '*.riotgames.com,*.leagueoflegends.com,*.playvalorant.com'],
+      [43, 'Battle.net', 'gaming', '*.battle.net,*.blizzard.com'],
+      [44, 'Supercell', 'gaming', '*.supercell.com,*.brawlstars.com,*.clashofclans.com'],
+      [45, 'Garena', 'gaming', '*.garena.com'],
+      [46, 'PUBG Mobile', 'gaming', '*.pubgmobile.com'],
+      [47, 'Miniclip', 'gaming', '*.miniclip.com'],
+      [48, 'Tarayıcı Oyunları', 'gaming', '*.poki.com,*.crazygames.com,*.friv.com'],
+      [49, 'Messenger', 'voip', '*.messenger.com'],
+      [50, 'Viber', 'voip', '*.viber.com'],
+      [51, 'LINE', 'voip', '*.line.me'],
+      [52, 'WeChat', 'voip', '*.wechat.com'],
+      [53, 'Yetişkin İçerik', 'restricted', '@list:adult'],
+      [54, 'Kumar ve Bahis', 'restricted', '@list:gambling'],
+    ];
+    contentRules.forEach(([id, app, cat, domains]) => {
+      db.run(`INSERT OR IGNORE INTO traffic_routing (id, app_name, category, route_type, domains) VALUES (?, ?, ?, 'direct', ?)`, [id, app, cat, domains]);
+    });
+    // Var olan satırlarda ebeveyn kategorisindeki eksik alan adları: yalnız tam girdi yoksa sona eklenir.
+    const contentAdds: [number, string, string][] = [
+      [2, 'Telegram', '*.telegram.me'],
+      [5, 'YouTube', '*.youtu.be'], [5, 'YouTube', '*.youtube-nocookie.com'], [5, 'YouTube', '*.youtubei.googleapis.com'],
+      [6, 'Netflix', '*.nflximg.net'],
+      [10, 'TikTok', '*.tiktokcdn-us.com'], [10, 'TikTok', '*.byteoversea.com'], [10, 'TikTok', '*.ibytedtos.com'],
+      [11, 'Steam', '*.steamserver.net'], [11, 'Steam', '*.steamstatic.com'],
+      [12, 'Epic Games', '*.epicgames.dev'],
+      [20, 'Snapchat', '*.snapkit.com'], [20, 'Snapchat', '*.snap-dev.net'],
+    ];
+    contentAdds.forEach(([id, app, entry]) => {
+      db.run(`UPDATE traffic_routing SET domains = domains || ',' || ?
+        WHERE id = ? AND app_name = ? AND COALESCE(domains, '') != '' AND instr(',' || domains || ',', ',' || ? || ',') = 0`,
+        [entry, id, app, entry]);
+    });
+
     // Domain-based routing: route specific domains through specific profiles
     db.run(`CREATE TABLE IF NOT EXISTS domain_routing (
       id INTEGER PRIMARY KEY AUTOINCREMENT,

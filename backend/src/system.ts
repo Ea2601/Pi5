@@ -6,6 +6,8 @@ import { promises as dnsPromises } from 'dns';
 import sqlite3 from 'sqlite3';
 import { shq } from './util';
 import { encodeRouteMark, decodeVpsMark, decodeLegacyVpsMark, isManagedRuleMark, normFallback, DPI_ONLY_MARK, ISP_FALLBACK_BIT, type VpsMark } from './routeMarks';
+import { planListRouting, configureListDns, listSetForName, parseUpstreams, type ListRoute } from './listDns';
+import { collapsedList } from './categoryLists';
 
 const execAsync = promisify(exec);
 export const isLinux = os.platform() === 'linux';
@@ -1314,12 +1316,16 @@ export function getRoutingApplyStatus() {
 // (FTL v6.5: rfc1035.c extract_addresses ← forward.c process_reply). Telefon eski cevabı önbellekte tuttukça (TTL,
 // Cloudflare'de 300 sn) yeni kuralın adresleri sete girmez ve trafik modemden çıkar. Bu yüzden kural değişince Pi
 // adları kendisi çözüp adresleri doğrudan sete ekler. Adlar kabuğa hiç ulaşmaz: Node çözücü + dosyadan `ipset restore`.
-export interface RoutingLine { base: string; set: string }
+// list: hazır listeli satırın işareti ("# klyrix-list:adult/rt_m…", listDns.ts) — tabanı boş, hiçbir adla eşleşmez; setin
+// boşaltılması / doldurulmasında o listenin son sorulan adları da işlenir (namesForLines, resolveToSets).
+export interface RoutingLine { base: string; set: string; list?: string }
 export function parseRoutingLines(lines: string[]): RoutingLine[] {
   const out: RoutingLine[] = [];
   for (const l of lines) {
     const m = /^ipset=\/([^/]+)\/(rt_m\d+)$/.exec(l.trim());
-    if (m) out.push({ base: m[1].toLowerCase(), set: m[2] });
+    if (m) { out.push({ base: m[1].toLowerCase(), set: m[2] }); continue; }
+    const k = /^# klyrix-list:([a-z]+)\/(rt_m\d+)$/.exec(l.trim());
+    if (k) out.push({ base: '', set: k[2], list: k[1] });
   }
   return out;
 }
@@ -1329,6 +1335,7 @@ export function setForName(name: string, lines: RoutingLine[]): string | null {
   const n = name.toLowerCase().replace(/\.$/, '');
   let best: RoutingLine | null = null;
   for (const l of lines) {
+    if (l.list) continue;
     if ((n === l.base || n.endsWith(`.${l.base}`)) && (!best || l.base.length >= best.base.length)) best = l;
   }
   return best ? best.set : null;
@@ -1391,7 +1398,7 @@ async function resolveToSets(names: string[], lines: RoutingLine[], deadline: nu
   const worker = async () => {
     while (next < names.length && Date.now() < deadline) {
       const name = names[next++];
-      const set = setForName(name, lines);
+      const set = setForName(name, lines) ?? (lines.some(l => l.list) ? listSetForName(name) : null);
       if (!set) continue;
       for (let attempt = 0; attempt < 2; attempt++) {
         try {
@@ -1428,9 +1435,11 @@ async function namesForLines(only: RoutingLine[], maxNames: number, dbTimeoutMs:
     names.add(l.base);
     names.add(`www.${l.base}`);
   }
+  const listSets = new Set(only.filter(l => l.list).map(l => l.set));
   for (const n of await ftlRecentNames(86400, 20000, dbTimeoutMs)) {
     if (names.size >= maxNames) break;
-    if (setForName(n, only) && VALID_DNSMASQ_DOMAIN.test(n) && !n.startsWith('*.')) names.add(n);
+    const hit = setForName(n, only) || (listSets.size > 0 && listSets.has(listSetForName(n) || ''));
+    if (hit && VALID_DNSMASQ_DOMAIN.test(n) && !n.startsWith('*.')) names.add(n);
   }
   return [...names].slice(0, maxNames);
 }
@@ -1848,7 +1857,7 @@ async function detectGatewayLan(ns: NetModeState | null = readNetModeState()): P
 }
 
 // opts.staleVps: izleyicinin "yanıt vermiyor" onayladığı VPS'ler — tünel rotaları tablolara konmaz (bkz. syncMarkTable).
-export async function applyDomainRouting(domains?: DomainRoute[], ranges: RangeRoute[] = [], opts: { staleVps?: ReadonlySet<number> } = {}): Promise<void> {
+export async function applyDomainRouting(domains?: DomainRoute[], ranges: RangeRoute[] = [], opts: { staleVps?: ReadonlySet<number>; lists?: ListRoute[] } = {}): Promise<void> {
   if (!isLinux) return;
   if (!domains) return;
 
@@ -1978,6 +1987,18 @@ export async function applyDomainRouting(domains?: DomainRoute[], ranges: RangeR
     ipsetLines.push(`ipset=/${base}/${setName}`);
   }
 
+  // 1a. Hazır listeli satırlar (Yetişkin / Kumar — listDns.ts): VPS çıkışlıysa liste adları server= ile panelin
+  //     ileticisine gider, iletici adresleri kuralın setine ekler (ipset= ile 83 bin satır her sorguyu yavaşlatırdı).
+  //     Yalnız DPI ise liste Zapret'e gider (zapret.ts), burada satır yok. İşaret satırı setin değişimini izletir.
+  const listPlan = planListRouting(opts.lists || [], r => {
+    const mark = getFwmark(r.exit_node, r.dpi_bypass, r.vps_fallback);
+    return { mark, vps: !!decodeVpsMark(mark) };
+  }, collapsedList, d => VALID_DNSMASQ_DOMAIN.test(d));
+  for (const [mark, set] of listPlan.marks) if (!markSets.has(mark)) markSets.set(mark, set);
+  ipsetLines.push(...listPlan.markers);
+  if (listPlan.skipped.length) console.error(`[routing] hazır liste yüklenemedi, satır uygulanmadı: ${listPlan.skipped.join(', ')}`);
+  configureListDns(listPlan.sets, listPlan.sets.size ? parseUpstreams(await run('pihole-FTL --config dns.upstreams 2>/dev/null', 5000)) : []);
+
   // 1b. IP aralığı setleri (kuralın çıkışına göre): aynı çıkış + aynı kip (tüm portlar / 443 hariç) tek sette birleşir.
   const netSets = new Map<string, NetSet>();
   for (const r of ranges) {
@@ -2021,7 +2042,7 @@ export async function applyDomainRouting(domains?: DomainRoute[], ranges: RangeR
     oldRoutingLines = oldRoutingLines.map(l => l.replace(/\/(rt_m\d+)$/, (all, set: string) => (legacyAlias.has(set) ? `/rt_m${legacyAlias.get(set)}` : all)));
   }
   if (migrated.size) console.log(`[routing] eski işaret şemasından geçiş: ${[...migrated].map(([a, b]) => `${a} → ${b}`).join(', ')}`);
-  const routingChanged = writeIfChanged('/etc/dnsmasq.d/05-domain-routing.conf', ipsetLines.join('\n') + '\n');
+  const routingChanged = writeIfChanged('/etc/dnsmasq.d/05-domain-routing.conf', [...ipsetLines, ...listPlan.serverLines].join('\n') + '\n');
   // Takma adlar FTL güncel dosyayı yükleyene dek kalır: dosya bu uygulamada değiştiyse, DNS işi bekliyor / sürüyorsa ya da
   // FTL dosyalardan önce başladıysa.
   const aliases = legacyAlias.size && (routingChanged || dnsJobPending || dnsJobRunning || ftlStale) ? legacyAlias : new Map<string, number>();
@@ -2031,7 +2052,7 @@ export async function applyDomainRouting(domains?: DomainRoute[], ranges: RangeR
   const setsWithRemovals = new Set<string>();
   const oldSets = new Set<string>();
   for (const line of oldRoutingLines) {
-    const m = line.match(/^ipset=\/[^/]+\/(rt_m\d+)$/);
+    const m = line.match(/^(?:ipset=\/[^/]+|# klyrix-list:[a-z]+)\/(rt_m\d+)$/);
     if (!m) continue;
     oldSets.add(m[1]);
     if (!newRoutingLines.has(line)) setsWithRemovals.add(m[1]);

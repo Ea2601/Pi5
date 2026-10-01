@@ -16,6 +16,8 @@ interface ZapretStatus {
   installed: boolean; lastApply: ZapretApply | null;
   service?: boolean; processes?: number; nfqws?: boolean; tpws?: boolean; modeFilter?: string; iface?: string;
   strategy?: string; unlistedLines?: number; userEntries?: number; excludeEntries?: number; fromRouting?: string[];
+  // Routing'in hazır listeli DPI satırları (Yetişkin / Kumar): listeye girer, tek tek gösterilmez — yalnız sayı.
+  fromLists?: { id: string; label: string; count: number }[];
   zapretOwnList?: boolean; blockcheck?: { running: boolean; log: string };
 }
 
@@ -125,7 +127,8 @@ function ZapretStatusCard({ st, onApplied }: { st: ZapretStatus | null; onApplie
       : 'Kapalı'],
     ['Kapsam', st.modeFilter === 'hostlist' ? 'Yalnız listedeki siteler' : `MODE_FILTER=${st.modeFilter || '—'}`],
     ['Çıkış arayüzü', st.iface || '—'],
-    ['Bypass listesi', `${st.userEntries ?? 0} alan adı${st.fromRouting?.length ? ` (${st.fromRouting.length} Routing'den)` : ''}`],
+    ['Bypass listesi', `${st.userEntries ?? 0} alan adı${st.fromRouting?.length ? ` (${st.fromRouting.length} Routing'den)` : ''}`
+      + (st.fromLists?.length ? ` · hazır liste: ${st.fromLists.map(l => `${l.label} ${l.count.toLocaleString('tr-TR')}`).join(', ')}` : '')],
     ['Hariç', `${st.excludeEntries ?? 0} alan adı`],
   ];
   const warnings = [...(la?.warnings || [])];

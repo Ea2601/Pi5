@@ -57,6 +57,8 @@ import { shareStatus, enableShare, disableShare, setSharePassword, addUsbShare, 
 import { rulesWithStatus as parentalRulesWithStatus, createRule as createParentalRule, updateRule as updateParentalRule,
   deleteRule as deleteParentalRule, startParental, CATEGORIES as PARENTAL_CATEGORIES } from './parental';
 import { noteContentView, contentForClients, contentStatus } from './contentActivity';
+import { LIST_TOKEN, LIST_IDS, ensureList, ensureLists, listInfo, type ListId } from './categoryLists';
+import { listDnsStats, type ListRoute } from './listDns';
 import type { ListSyncResult } from './piholeLists';
 import {
   shq, isValidMac, isValidDomain, isValidTimezone,
@@ -1605,11 +1607,27 @@ async function applyAllRoutingRulesNow() {
   const allDomains: { domain: string; exit_node: string; dpi_bypass: number; enabled: number; redirect_url?: string; vps_fallback?: string }[] = [];
   // IP aralığı girdileri (ipRanges.ts): @asn:<n>[!443] ve a.b.c.d[/nn] — DNS'siz trafik (ör. WhatsApp aramaları) için.
   const ranges: RangeRoute[] = [];
+  // Hazır liste girdileri (categoryLists.ts): @list:adult / @list:gambling — VPS çıkışlıysa listDns.ts yolundan; yalnız
+  // DPI ise Zapret'e (zapret.ts). Liste önbellekte yoksa indirilir (ilk açılışta birkaç sn).
+  const lists: ListRoute[] = [];
 
   // App domains (wildcard patterns like *.whatsapp.net → whatsapp.net for dnsmasq)
   for (const rule of appRules) {
     const domains = (rule.domains as string).split(',').map((d: string) => d.trim()).filter(Boolean);
     for (const domain of domains) {
+      const lt = LIST_TOKEN.exec(domain);
+      if (lt) {
+        if (exitOf(rule.exit_node) === 'isp') continue;
+        const id = lt[1] as ListId;
+        await ensureList(id, Infinity);
+        const info = listInfo().find(l => l.id === id);
+        if (!info?.count) {
+          void recordEventOnce('routing-list', `${rule.app_name} yönlendirilemedi: ${info?.error || 'hazır liste yüklenemedi'}`, 'warning', 60);
+          continue;
+        }
+        lists.push({ id, exit_node: exitOf(rule.exit_node), dpi_bypass: rule.dpi_bypass, vps_fallback: rule.vps_fallback });
+        continue;
+      }
       const asn = ASN_TOKEN.exec(domain);
       if (asn) {
         const r = await getAsnPrefixes(Number(asn[1]));
@@ -1633,7 +1651,7 @@ async function applyAllRoutingRulesNow() {
   }
 
   try {
-    await applyDomainRouting(allDomains, ranges, { staleVps: staleTunnels() });
+    await applyDomainRouting(allDomains, ranges, { staleVps: staleTunnels(), lists });
   } finally {
     // Routing'deki "DPI" kurallarının alan adları Zapret listesine de yazılır (zapret.ts); routing'i bekletmez.
     void applyZapret().then(r => {
@@ -1659,6 +1677,29 @@ async function refreshAsnRanges() {
     if (changed) await applyAllRoutingRules();
   } catch (e: any) {
     console.error('[routing] AS aralıkları yenilenemedi:', e?.message || e);
+  }
+}
+
+// Hazır listeler (Yetişkin / Kumar) saatte bir denetlenir, 24 saatten eskiyse indirilir. İçerik değiştiyse ve bir Routing
+// satırı kullanıyorsa (VPS ya da DPI) yeniden uygulanır — VPS satırı Pi-hole'u yeniden başlattığı için (DNS ~1-2 sn) yalnız
+// gece 03-06 arasında; gündüz gelen değişiklik geceye kalır (arada başka bir kural değişikliği zaten güncel listeyi uygular).
+let listApplyPending = false;
+async function refreshRoutingLists() {
+  if (!isLinux) return;
+  try {
+    const rows = await dbAll(`SELECT domains FROM traffic_routing WHERE enabled = 1 AND domains LIKE '%@list:%'
+      AND (COALESCE(exit_node, 'isp') != 'isp' OR dpi_bypass = 1)`) as any[];
+    const used = new Set<ListId>();
+    for (const r of rows) for (const d of String(r.domains).split(',')) { const m = LIST_TOKEN.exec(d.trim()); if (m) used.add(m[1] as ListId); }
+    if (!used.size) return;
+    if ((await ensureLists([...used])).length) listApplyPending = true;
+    const h = new Date().getHours();
+    if (listApplyPending && h >= 3 && h < 6) {
+      listApplyPending = false;
+      await applyAllRoutingRules();
+    }
+  } catch (e: any) {
+    console.error('[routing] hazır listeler yenilenemedi:', e?.message || e);
   }
 }
 
@@ -1711,7 +1752,9 @@ app.get('/api/routing/rules', async (_req, res) => {
       LEFT JOIN vps_servers s ON t.vps_id = s.id
       ORDER BY t.category, t.app_name
     `);
-    res.json({ rules });
+    // Hazır listeli satırların bilgisi (ad sayısı, güncellenme): önbellekten yüklenir, yoksa arka planda indirilir.
+    void ensureLists(LIST_IDS, Infinity).catch(() => undefined);
+    res.json({ rules, lists: listInfo(), listDns: listDnsStats() });
   } catch (e: any) {
     res.status(500).json({ error: e.message });
   }
@@ -5468,6 +5511,8 @@ const server = app.listen(Number(port), bindHost, () => {
   // AS aralıkları (ör. WhatsApp aramaları için Meta) 6 saatte bir denetlenir; ilk denetim açılıştan 2 dk sonra.
   setTimeout(() => { void refreshAsnRanges(); }, 120000);
   setInterval(() => { void refreshAsnRanges(); }, 6 * 3600 * 1000);
+  setTimeout(() => { void refreshRoutingLists(); }, 180000);
+  setInterval(() => { void refreshRoutingLists(); }, 3600 * 1000);
   // Cihaz engelleri (nft tablosu açılışta yoktur; pi5-gw-restore da yükler — burada DB'deki güncel liste yazılır).
   void reapplyBlockedDevices();
   // Ağ haritası: cihazların kablolu / Wi-Fi ayrımı için arka planda ARP yanıt süresi ölçümü (linkProbe.ts). Taban çizgisi

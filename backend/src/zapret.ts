@@ -16,6 +16,7 @@ import { promisify } from 'util';
 import { dbAll } from './db';
 import { isLinux, detectInterfaces } from './system';
 import { ASN_TOKEN, normalizeCidr } from './ipRanges';
+import { LIST_TOKEN, LIST_SOURCES, ensureList, collapsedList, type ListId } from './categoryLists';
 
 const execFileP = promisify(execFile);
 const ZAPRET = '/opt/zapret';
@@ -39,16 +40,25 @@ export function cleanDpiDomain(raw: unknown): string | null {
   return DOMAIN.test(d) ? d : null;
 }
 
-export async function collectDpiDomains(): Promise<{ hostlist: string[]; exclude: string[]; fromRouting: string[]; vpsDpiRules: number }> {
+// fromLists: Routing'in hazır listeli DPI satırları (Yetişkin / Kumar — categoryLists.ts); alan adları hostlist'e girer ama
+// arayüze tek tek gönderilmez (on binlerce ad), yalnız sayısı.
+export async function collectDpiDomains(): Promise<{ hostlist: string[]; exclude: string[]; fromRouting: string[];
+  fromLists: { id: ListId; label: string; count: number }[]; vpsDpiRules: number }> {
   const zap = await dbAll('SELECT list_type, domain FROM zapret_domains WHERE enabled = 1') as any[];
   const apps = await dbAll("SELECT domains, exit_node FROM traffic_routing WHERE enabled = 1 AND dpi_bypass = 1") as any[];
   const doms = await dbAll("SELECT domain, exit_node, redirect_url FROM domain_routing WHERE enabled = 1 AND dpi_bypass = 1") as any[];
   const isp = (e: unknown) => !e || e === 'isp';
   const fromRouting = new Set<string>();
+  const listIds = new Set<ListId>();
   let vpsDpiRules = 0;
   for (const r of apps) {
     if (!isp(r.exit_node)) { vpsDpiRules++; continue; }
-    for (const d of String(r.domains || '').split(',')) { const c = cleanDpiDomain(d); if (c) fromRouting.add(c); }
+    for (const d of String(r.domains || '').split(',')) {
+      const lt = LIST_TOKEN.exec(d.trim());
+      if (lt) { listIds.add(lt[1] as ListId); continue; }
+      const c = cleanDpiDomain(d);
+      if (c) fromRouting.add(c);
+    }
   }
   for (const r of doms) {
     if (r.redirect_url) continue;
@@ -57,12 +67,19 @@ export async function collectDpiDomains(): Promise<{ hostlist: string[]; exclude
     if (c) fromRouting.add(c);
   }
   const hostlist = new Set(fromRouting);
+  const fromLists: { id: ListId; label: string; count: number }[] = [];
+  for (const id of listIds) {
+    await ensureList(id, Infinity);
+    let n = 0;
+    for (const d of collapsedList(id)) { const c = cleanDpiDomain(d); if (c) { hostlist.add(c); n++; } }
+    fromLists.push({ id, label: LIST_SOURCES[id].label, count: n });
+  }
   const exclude = new Set<string>();
   for (const r of zap) {
     const c = cleanDpiDomain(r.domain);
     if (c) (r.list_type === 'exclude' ? exclude : hostlist).add(c);
   }
-  return { hostlist: [...hostlist].sort(), exclude: [...exclude].sort(), fromRouting: [...fromRouting].sort(), vpsDpiRules };
+  return { hostlist: [...hostlist].sort(), exclude: [...exclude].sort(), fromRouting: [...fromRouting].sort(), fromLists, vpsDpiRules };
 }
 
 // Dosyadaki panel bölümünü yeniler (dışındaki satırlar korunur). Değiştiyse true.
@@ -184,7 +201,7 @@ export async function zapretStatus() {
   const bcActive = await blockcheckRunning();
   let bcLog = '';
   try { bcLog = fs.readFileSync(BLOCKCHECK_LOG, 'utf8').split('\n').slice(-80).join('\n'); } catch { /* henüz yok */ }
-  const { fromRouting } = await collectDpiDomains();
+  const { fromRouting, fromLists } = await collectDpiDomains();
   return {
     installed: true,
     service: await serviceActive(),
@@ -198,6 +215,7 @@ export async function zapretStatus() {
     userEntries: countEntries(USER_LIST),
     excludeEntries: countEntries(EXCLUDE_LIST),
     fromRouting,
+    fromLists,
     zapretOwnList: ZAPRET_OWN.some(f => fs.existsSync(f)),
     blockcheck: { running: bcActive, log: bcLog },
     lastApply,

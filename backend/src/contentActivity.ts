@@ -3,16 +3,17 @@
 // gecikmeyle yazar, API anlıktır. Bir cihaz son 5 dk'da bir türün alan adını sorduysa o türün rozeti yanar; o türdeki
 // sorguların hepsi Pi-hole'da engellendiyse rozet "engellendi" olur.
 //  - Sınıflandırma ebeveyn kurallarıyla aynı kaynaktan: CATEGORIES (parental.ts) alan adları alt alan adlarıyla, Yetişkin /
-//    Kumar StevenBlack listeleri (günde bir indirilir, diskte önbellek). Hiçbirine uymayan = Genel. Arka plan gürültüsü
-//    (bağlantı denetimi, saat, bildirim kanalı, telemetri, ters DNS, yerel adlar) sayılmaz.
+//    Kumar StevenBlack listeleri (categoryLists.ts: Routing ile ortak, günde bir indirilir, diskte önbellek). Hiçbirine
+//    uymayan = Genel. Arka plan gürültüsü (bağlantı denetimi, saat, bildirim kanalı, telemetri, ters DNS, yerel adlar) sayılmaz.
 //  - DNS'e dayanır: arka planda çalışan uygulama da görünür; Pi-hole'u kullanmayan (başka DNS'e ayarlı) cihaz görünmez.
 //  - Yalnız harita açıkken (panel /api/topology/live?content=1 istedikçe) 10 sn'de bir okunur; 2 dk istek gelmezse durur,
 //    Pi-hole oturumu kapanır, bellekteki kayıt silinir. Kiosk bu parametreyi göndermez.
-import fs from 'fs';
-import path from 'path';
 import { CATEGORIES, type CategoryId } from './parental';
 import { openFtl, type Ftl } from './piholeLists';
 import { isLinux } from './system';
+import { LIST_IDS, ensureLists, getList } from './categoryLists';
+
+export { parseHostsList } from './categoryLists';
 
 export type ContentCat = CategoryId | 'general';
 export const CONTENT_ORDER: ContentCat[] = ['social', 'video', 'gaming', 'messaging', 'adult', 'gambling', 'general'];
@@ -27,9 +28,6 @@ const PAGE = 2000;
 const MAX_PAGES = 10;
 const OVERLAP_S = 15;             // ardışık okumalar üst üste biner; aynı sorgu kimlik + zamanla bir kez sayılır
 const MAX_EVENTS = 400;           // cihaz × tür başına bellekte en çok
-const LIST_MAX_AGE_MS = 24 * 3600 * 1000;
-const LIST_RETRY_MS = 30 * 60 * 1000;
-const CACHE_DIR = process.env.PI5_CONTENT_CACHE || '/var/cache/pi5-gateway/content-lists';
 
 // Yalnız ad çözme sorguları; PTR (ters DNS), SRV, TXT… içerik değildir.
 const QTYPES = new Set(['A', 'AAAA', 'HTTPS']);
@@ -63,11 +61,15 @@ for (const [id, c] of Object.entries(CATEGORIES) as [CategoryId, (typeof CATEGOR
 }
 
 export type ListSets = Map<CategoryId, Set<string>>;
-const lists: ListSets = new Map();
+const loadedSets = (): ListSets => {
+  const m: ListSets = new Map();
+  for (const id of LIST_IDS) { const s = getList(id); if (s) m.set(id, s); }
+  return m;
+};
 
 // Alan adı → tür; null = sayılmaz (gürültü / geçersiz). Soneklere en özelden genele bakılır: önce kategori alan adları,
 // sonra hazır listeler (listeler tam ad içerir: "cdn.site.com" kaydı "a.cdn.site.com"u da kapsar).
-export function classifyDomain(domain: string, sets: ListSets = lists): ContentCat | null {
+export function classifyDomain(domain: string, sets: ListSets = loadedSets()): ContentCat | null {
   const d = String(domain || '').toLowerCase().replace(/\.$/, '');
   if (!d.includes('.') || d === 'hidden' || /^[\d.]+$/.test(d) || d.includes(':')) return null;
   const labels = d.split('.');
@@ -79,19 +81,6 @@ export function classifyDomain(domain: string, sets: ListSets = lists): ContentC
     for (const [cat, set] of sets) if (set.has(s)) return cat;
   }
   return 'general';
-}
-
-// hosts biçimi ("0.0.0.0 alan.adı") ya da düz alan adı listesi → küme.
-export function parseHostsList(text: string): Set<string> {
-  const out = new Set<string>();
-  for (const raw of text.split('\n')) {
-    const line = raw.replace(/#.*/, '').trim();
-    if (!line) continue;
-    const parts = line.split(/\s+/);
-    const d = (parts.length > 1 ? parts[1] : parts[0]).toLowerCase().replace(/\.$/, '');
-    if (d.includes('.') && d !== '0.0.0.0' && d !== 'localhost' && !/^[\d.]+$/.test(d)) out.add(d);
-  }
-  return out;
 }
 
 // ── Toplama ──────────────────────────────────────────────────────────────────
@@ -165,50 +154,6 @@ export function contentForClients(ips: string[], nowS = Date.now() / 1000): Cont
   return out;
 }
 
-// ── Hazır listeler (Yetişkin / Kumar) ────────────────────────────────────────
-let listsLoadedAt = 0;
-let listsTriedAt = 0;
-let listsBusy = false;
-
-async function refreshLists(): Promise<void> {
-  if (listsBusy || Date.now() - listsLoadedAt < LIST_MAX_AGE_MS || Date.now() - listsTriedAt < LIST_RETRY_MS) return;
-  listsBusy = true;
-  listsTriedAt = Date.now();
-  try {
-    try { fs.mkdirSync(CACHE_DIR, { recursive: true }); } catch { /* salt okunur: yalnız bellekte */ }
-    let allFresh = true;
-    for (const [id, c] of Object.entries(CATEGORIES) as [CategoryId, (typeof CATEGORIES)[CategoryId]][]) {
-      if (!c.lists?.length) continue;
-      const file = path.join(CACHE_DIR, `${id}.txt`);
-      let text = '';
-      let fresh = false;
-      try { fresh = Date.now() - fs.statSync(file).mtimeMs < LIST_MAX_AGE_MS; } catch { /* yok */ }
-      if (fresh) text = fs.readFileSync(file, 'utf8');
-      else {
-        try {
-          const parts: string[] = [];
-          for (const url of c.lists) {
-            const r = await fetch(url, { signal: AbortSignal.timeout(30000) });
-            if (!r.ok) throw new Error(`HTTP ${r.status}`);
-            parts.push(await r.text());
-          }
-          text = parts.join('\n');
-          try { fs.writeFileSync(`${file}.tmp`, text); fs.renameSync(`${file}.tmp`, file); } catch { /* önbelleksiz sürer */ }
-        } catch (e: any) {
-          allFresh = false;
-          console.warn(`[content] ${id} listesi indirilemedi: ${e?.message || e}`);
-          try { text = fs.readFileSync(file, 'utf8'); } catch { text = ''; }   // eski önbellek varsa onunla
-        }
-      }
-      const set = parseHostsList(text);
-      if (set.size) lists.set(id, set);
-    }
-    if (allFresh) listsLoadedAt = Date.now();
-  } finally {
-    listsBusy = false;
-  }
-}
-
 // ── Örnekleyici ──────────────────────────────────────────────────────────────
 let lastView = 0;
 let timer: ReturnType<typeof setInterval> | null = null;
@@ -273,7 +218,7 @@ async function tick(): Promise<void> {
   if (Date.now() - lastView > IDLE_MS) { stopContent(); return; }
   running = true;
   try {
-    void refreshLists();
+    void ensureLists().catch(() => undefined);
     const nowS = Date.now() / 1000;
     const from = fromS || nowS - WINDOW_S;
     let got: RawQuery[] | 'auth' = 'auth';
