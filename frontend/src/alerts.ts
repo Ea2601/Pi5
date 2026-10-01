@@ -17,7 +17,7 @@ export interface AlertsPage { alerts: AlertItem[]; hasMore?: boolean }
 
 const SOURCE_LABEL: Record<string, string> = {
   cpu: 'İşlemci', memory: 'Bellek', disk: 'Disk', dns: 'DNS', network: 'İnternet', dhcp: 'DHCP', 'dhcp-rogue': 'DHCP',
-  'dhcp-probe': 'DHCP', netmode: 'Ağ modu', 'netmode-ap': 'Ağ modu', service: 'Servis', update: 'Güncelleme',
+  'dhcp-probe': 'DHCP', netmode: 'Ağ modu', 'netmode-ap': 'Ağ modu', 'netmode-missing': 'Ağ modu', service: 'Servis', update: 'Güncelleme',
   unbound: 'Unbound', zapret: 'Zapret', pihole: 'Pi-hole', vps: 'VPS', device: 'Cihaz', cron: 'Cron', vpn: 'Ev VPN',
   mesh: 'Mesh', storage: 'Depolama', bandwidth: 'Bant genişliği',
 };

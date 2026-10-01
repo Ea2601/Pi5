@@ -59,7 +59,7 @@ const QUICK_COMMANDS: QuickGroup[] = [
   {
     label: 'Ağ & Bağlantı',
     commands: [
-      { cmd: 'ip addr show eth0', desc: 'LAN arayüzü IP adresi' },
+      { cmd: 'ip -br addr', desc: 'Arayüzler ve IP adresleri' },
       { cmd: 'ss -tulnp', desc: 'Açık portlar ve dinleyen servisler' },
       { cmd: 'wg show', desc: 'WireGuard tünel durumu ve handshake' },
       { cmd: 'nft list ruleset', desc: 'Tüm nftables güvenlik duvarı kuralları' },

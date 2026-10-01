@@ -41,6 +41,12 @@ export interface NetModeStatus {
   home_band?: 'bg' | 'a'; home_channel?: number; home_capable?: boolean; home_active?: boolean; br_active?: boolean;
   // İnternet kartı (Cihaz Rolleri → WAN router): açıkken sabit adres ve Pi DHCP'si bu sihirbazdan değiştirilemez.
   wan_stage?: 'none' | 'trial' | 'on'; wan_port?: string;
+  // Wi-Fi kartları ve rolleri ("kart=rol,…", NetworkManager'dan); wifi_cards: çekirdeğin gördüğü Wi-Fi kartları ("kart,…";
+  // boş = bu cihazda Wi-Fi kartı yok). nm_unmanaged: varsayılan rotanın kartı NetworkManager'ın yönetiminde değil
+  // (ifupdown / netplan); nm_external: NetworkManager dışında yapılandırılmış (systemd-networkd / dhcpcd / elle).
+  // ifaces_missing / missing_hint: kayıtlı kart bulunamadı ("rol:ad,…" / "rol:eski->yeni").
+  wifi_roles?: string; wifi_cards?: string; nm_unmanaged?: string; nm_external?: string; ifaces_missing?: string;
+  missing_hint?: string;
 }
 interface ProbeResult { servers: string[]; own: string[] }
 
@@ -165,7 +171,11 @@ export function DhcpWizard({ dhcp, net, netErr, reload }: Props) {
   const wifiOff = net.wifi === 'disabled';
   // Ev Wi-Fi'ı açıkken kart yayındadır (köprünün portu, modem ağına istemci olarak bağlanmaz).
   const homeStage = net.home_stage || 'none';
-  const wifiReady = wifiOff || apOn || homeStage === 'on';
+  // Wi-Fi kartı olmayan cihaz (ör. Wi-Fi'sız x86 / Pi'de kart yok): ayrılacak bağlantı yok — 3. adım tamam sayılır. Çekirdeğin
+  // kart listesine bakılır (wifi_cards); NetworkManager listesi bir yoklamada boş gelse de Wi-Fi'lı cihaz Wi-Fi'sız sayılmaz.
+  // Eski betik (wifi_cards yok): eski davranış.
+  const noWifi = !!net.nm && net.wifi_cards !== undefined && !net.wifi_cards && !net.wifi_roles;
+  const wifiReady = noWifi || wifiOff || apOn || homeStage === 'on';
   const viaWifi = wlanAddrs.some(a => ipOf(a) === window.location.hostname);
   // Panel şu an kurulum Wi-Fi'ından açılmış (yayın kapanınca bu tarayıcının bağlantısı kopar).
   const viaAp = apStage !== 'none' && window.location.hostname === apIp;
@@ -363,6 +373,13 @@ export function DhcpWizard({ dhcp, net, netErr, reload }: Props) {
   };
 
   const guardEmergency = net.guard_result === 'emergency';
+  // Kayıtlı ağ kartı bulunamadı (çıkarılmış ya da adı değişmiş): Pi yalnız bildirir, ayara dokunmaz. Koruma sonucu bir
+  // sonraki denetime kadar eski kalır: kart geri geldiyse (ifaces_missing'de yok) uyarı gösterilmez.
+  const missingNow = (net.ifaces_missing || '').split(',').map(s => s.trim()).filter(Boolean);
+  const guardMissing = net.guard_result === 'missing' && !!net.iface && missingNow.includes(`lan:${net.iface}`);
+  // Varsayılan rotanın kartı NetworkManager'ın dışında (yönetilmiyor / dışarıdan yapılandırılmış): roller o kartta açılmaz.
+  const nmCard = net.nm_unmanaged || net.nm_external || '';
+  const lanMovedTo = (net.missing_hint || '').split(',').map(h => h.trim()).find(h => h.startsWith('lan:'))?.split('->')[1] || '';
   // İnternet kartı açıkken Pi evin router'ıdır: ev ağında başka DHCP sunucusu yok, eth0'da modem tarafı adres yok.
   const wanOn = !!net.wan_stage && net.wan_stage !== 'none';
   const wanLock = "İnternet kartı (WAN router) açık — önce Cihaz Rolleri → İnternet bağlantısı'ndan kapatın";
@@ -387,6 +404,30 @@ export function DhcpWizard({ dhcp, net, netErr, reload }: Props) {
         </div>
       )}
       {netErr && <span className="dhcp-muted">Sabit adres durumu yenilenemedi: {netErr}</span>}
+      {net.nm === false && (
+        <Alert kind="err">
+          NetworkManager gerekli — bu cihazda kurulu değil ya da çalışmıyor. Sabit adres ve ağ rolleri NetworkManager ile
+          yönetilir; panel güncellemesi eksikse kurar.
+        </Alert>
+      )}
+      {!!nmCard && (
+        <Alert kind="err">
+          Bu kart (<span className="rl-mono">{nmCard}</span>){' '}
+          {net.nm_unmanaged
+            ? "NetworkManager tarafından yönetilmiyor (ör. /etc/network/interfaces ya da netplan'da tanımlı)."
+            : 'NetworkManager dışında yapılandırılmış (systemd-networkd / dhcpcd / elle); NetworkManager yalnız izliyor.'}
+          {' '}Ağ rolleri için kartı NetworkManager'a taşıyın:{' '}
+          {net.planned_type === 'ethernet' ? (
+            <>
+              önce profil oluşturun (
+              <span className="rl-mono">sudo nmcli connection add type ethernet ifname {nmCard} con-name {nmCard} ipv4.method auto</span>
+              {' '}— adres elle verilmişse aynı adresle <span className="rl-mono">ipv4.method manual</span>), sonra kartı eski
+              ayarından çıkarıp yeniden başlatın. Klyrix NetworkManager'ın kendiliğinden profil açmasını kapattı: bu sıra
+              atlanırsa kart açılışta adressiz kalır.
+            </>
+          ) : 'kartı eski ayarından çıkarıp yeniden başlatın.'}
+        </Alert>
+      )}
       {wanOn && (
         <Alert kind="ok">
           İnternet kartı (<span className="rl-mono">{net.wan_port || 'WAN'}</span>) açık: Pi evin router'ı. Sabit adres ve Pi DHCP'si bu
@@ -399,6 +440,12 @@ export function DhcpWizard({ dhcp, net, netErr, reload }: Props) {
           <Alert kind="err">
             Sabit IP profili yüklenemedi — Pi adresini acil modda (yalnız bu açılış için) tutuyor
             {net.guard_detail ? ` (${net.guard_detail})` : ''}. Pi bir sonraki açılışta profili yedekten yeniden yüklemeyi dener.
+          </Alert>
+        )}
+        {guardMissing && (
+          <Alert kind="err">
+            Ağ kartı bulunamadı{net.iface ? ` (${net.iface})` : ''} — kart çıkarılmış ya da adı değişmiş olabilir. Pi sabit adres
+            ayarına dokunmadı; kartı yeniden takın{lanMovedTo ? ` (aynı kart şimdi ${lanMovedTo} adıyla görünüyor)` : ''}.
           </Alert>
         )}
         {stage === 'none' && (
@@ -489,7 +536,10 @@ export function DhcpWizard({ dhcp, net, netErr, reload }: Props) {
             bağlanmaz. Ayarlar: menü → Cihaz Rolleri.
           </span>
         )}
-        {apStage === 'none' && homeStage === 'none' && (
+        {noWifi && apStage === 'none' && homeStage === 'none' && (
+          <span>Bu cihazda Wi-Fi kartı yok — Pi yalnız kabloyla bağlı, ayrılacak Wi-Fi bağlantısı yok.</span>
+        )}
+        {!noWifi && apStage === 'none' && homeStage === 'none' && (
           <>
             <span>
               {wifiOff

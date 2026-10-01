@@ -2418,6 +2418,7 @@ app.get('/api/system/hardware', async (_req, res) => {
       bakActive: ns?.bakStage === 'on' && readFailoverStatus()?.active === 'backup',
       repStage: ns?.repStage || 'none', repPort: ns?.repPort || null, repSsid: ns?.repSsid || '', repDhcp: ns?.repDhcp || 'relay',
       repLanState: ns?.repStage === 'on' ? (readRepLanStatus()?.state || '') : '',
+      lanIface: ns?.iface || null, repLan: ns?.repLan || null,
     });
     res.json({ supported: true, ...hw, roles: evaluateRoles(hw) });
   } catch (e: any) {
@@ -2782,6 +2783,28 @@ if (isLinux) {
           const n = await runKvScript(NET_MODE_SCRIPT, ['status'], 30000);
           if (n.code === 0 && ns?.stage === 'static' && n.kv.guard_result === 'emergency') {
             await addAlert('health', 'critical', 'Sabit IP profili yüklenemedi — Pi adresini acil modda tutuyor (menü → DHCP Ayarları)', 'netmode');
+          }
+          // Kayıtlı ağ kartı yok (çıkarılmış ya da adı değişmiş): Pi yalnız bildirir, kartın rolünü değiştirmez. Ev ağı kartı
+          // (sabit adres kartı / Wi-Fi köprüsünün ev tarafı) kritik, diğerleri uyarı. Açılış koruması "missing" yazdıysa ama
+          // kart geri geldiyse sayılmaz (guard.status bir sonraki denetime kadar eski kalır).
+          if (n.code === 0) {
+            const miss = splitList(n.kv.ifaces_missing).map(x => ({ role: x.slice(0, x.indexOf(':')), name: x.slice(x.indexOf(':') + 1) }))
+              .filter(m => m.role && m.name);
+            if (n.kv.guard_result === 'missing' && n.kv.iface && !miss.some(m => m.name === n.kv.iface)
+              && !fs.existsSync(`/sys/class/net/${n.kv.iface}`)) miss.push({ role: 'lan', name: n.kv.iface });
+            if (miss.length) {
+              // missing_hint "rol:eski->yeni": kartın kalıcı MAC'i şimdi başka bir adla görünüyor.
+              const moved = new Map(splitList(n.kv.missing_hint).map(h => {
+                const [from, to] = h.split('->');
+                return [from.slice(from.indexOf(':') + 1), to || ''] as [string, string];
+              }));
+              const names = [...new Set(miss.map(m => m.name))];
+              const hint = names.filter(x => moved.get(x)).map(x => `${x} → ${moved.get(x)}`);
+              const lanMissing = miss.some(m => m.role === 'lan' || m.role === 'rep_lan');
+              await addAlert('health', lanMissing ? 'critical' : 'warning',
+                `Ağ kartı bulunamadı: ${names.join(', ')} — kart çıkarılmış ya da adı değişmiş olabilir${hint.length ? ` (aynı kart yeni adla görünüyor: ${hint.join(', ')})` : ''}; Pi kartın ayarlarına dokunmadı (menü → Cihaz Rolleri)`,
+                'netmode-missing');
+            }
           }
           if (n.code === 0 && n.kv.ap_stage === 'on' && n.kv.ap_active !== '1') {
             await addAlert('health', 'warning', 'Kurulum Wi-Fi yayını kapalı — Pi bir sonraki açılışta ya da NetworkManager yeniden başlayınca yeniden açmayı dener', 'netmode-ap');

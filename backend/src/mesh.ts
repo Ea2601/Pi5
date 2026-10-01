@@ -18,6 +18,7 @@ import { spawn } from 'child_process';
 import { db, dbAll, dbGet, dbRun } from './db';
 import { readHomeStations } from './homeWifi';
 import { recordEvent, recordEventOnce } from './events';
+import { getLanIdentity } from './system';
 
 export const NET_MODE_SCRIPT = '/opt/pi5-gateway/scripts/net-mode.sh';
 export const MESH_SCRIPT = '/opt/pi5-gateway/scripts/mesh.sh';
@@ -589,11 +590,33 @@ export async function joinMain(main: string, code: string): Promise<{ applied: s
   if (!validMainAddr(main)) throw new MeshError(400, 'Ana cihazın adresi geçersiz (ör. 192.168.1.153)');
   if (!/^\d{6}$/.test(code)) throw new MeshError(400, 'Eşleştirme kodu 6 haneli olmalı');
   const id = deviceId();
-  const macOf = () => { try { return fs.readFileSync('/sys/class/net/eth0/address', 'utf8').trim().toLowerCase(); } catch { return ''; } };
+  // Uydunun MAC'i (ana cihaz yalnız kaydeder): ev ağına bağlı kart (varsayılan rotanın kartı; adı cihaza göre değişir:
+  // eth0, end0, enp1s0 …), okunamazsa ilk fiziksel Ethernet kartı, o da yoksa boş.
+  const macOf = async (): Promise<string> => {
+    const read = (n: string) => {
+      try {
+        const m = fs.readFileSync(`/sys/class/net/${n}/address`, 'utf8').trim().toLowerCase();
+        return MAC_RE.test(m) && m !== '00:00:00:00:00:00' ? m : '';
+      } catch { return ''; }
+    };
+    const lan = (await getLanIdentity().catch(() => null))?.iface || '';
+    if (/^[A-Za-z0-9_.-]{1,15}$/.test(lan) && read(lan)) return read(lan);
+    let names: string[] = [];
+    try { names = fs.readdirSync('/sys/class/net').sort(); } catch { /* /sys yok */ }
+    for (const n of names) {
+      const b = `/sys/class/net/${n}`;
+      let type = '';
+      try { type = fs.readFileSync(`${b}/type`, 'utf8').trim(); } catch { /* kart gitti */ }
+      if (type !== '1' || !fs.existsSync(`${b}/device`) || fs.existsSync(`${b}/wireless`) || fs.existsSync(`${b}/phy80211`)
+        || fs.existsSync(`${b}/bridge`)) continue;
+      if (read(n)) return read(n);
+    }
+    return '';
+  };
   // Şifreli kanal (v2) teklifi; eski ana cihaz alanı yok sayar ve v1 yanıt döner. İlk kullanımda güven (pairSatellite
   // üstündeki not): eşleşme anında araya giren biri taklit / v1'e düşürme yapabilir — panel hangi kanalın kurulduğunu gösterir.
   const eph = x25519Pair();
-  const r = await postJson(main, '/api/mesh/pair', { code, id, name: os.hostname(), mac: macOf(), proto: 2, pub: eph.pub });
+  const r = await postJson(main, '/api/mesh/pair', { code, id, name: os.hostname(), mac: await macOf(), proto: 2, pub: eph.pub });
   let s: SatState;
   let config: SatConfig;
   if (r.status === 200 && r.json?.proto === 2) {

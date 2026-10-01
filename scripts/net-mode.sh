@@ -188,7 +188,7 @@ AVAHI_HOSTS=/etc/avahi/hosts
 AVAHI_CONF=/etc/avahi/avahi-daemon.conf
 REP_AVAHI_ORIG=$DIR/avahi-daemon.conf.orig
 SELF=$(readlink -f "$0")
-STATE_KEYS="stage trial_ends iface transit client gw dns old_uuid old_name old_ipv6 wifi_off ap_stage ap_trial_ends ap_iface ap_ssid ap_old_uuid ap_radio_was_off home_stage home_trial_ends home_iface home_ssid home_band home_channel home_radio_was_off lan_if sat_stage sat_trial_ends sat_iface sat_old_uuid sat_old_name sat_wifi sat_ssid sat_band sat_channel sat_radio_was_off sat_backhaul wan_stage wan_trial_ends wan_port wan_dev wan_type wan_vlan wan_prio wan_mac wan_mtu wan_user wan_addr wan_gw wan_dns wan_lan wan_dhcp_vendor wan_dhcp_cid wan_dhcp_host wan_ssid bak_stage bak_kind bak_type bak_port bak_dev bak_vlan bak_mtu bak_user bak_addr bak_gw bak_dns bak_ssid bak_match bak_radio_was_off rep_stage rep_trial_ends rep_port rep_lan rep_ssid rep_dhcp rep_range rep_old_uuid rep_old_name rep_radio_was_off rep_sysctl"
+STATE_KEYS="stage trial_ends iface iface_hw transit client gw dns old_uuid old_name old_ipv6 wifi_off ap_stage ap_trial_ends ap_iface ap_ssid ap_old_uuid ap_radio_was_off home_stage home_trial_ends home_iface home_ssid home_band home_channel home_radio_was_off lan_if sat_stage sat_trial_ends sat_iface sat_old_uuid sat_old_name sat_wifi sat_ssid sat_band sat_channel sat_radio_was_off sat_backhaul wan_stage wan_trial_ends wan_port wan_port_hw wan_dev wan_type wan_vlan wan_prio wan_mac wan_mtu wan_user wan_addr wan_gw wan_dns wan_lan wan_dhcp_vendor wan_dhcp_cid wan_dhcp_host wan_ssid bak_stage bak_kind bak_type bak_port bak_dev bak_vlan bak_mtu bak_user bak_addr bak_gw bak_dns bak_ssid bak_match bak_radio_was_off rep_stage rep_trial_ends rep_port rep_lan rep_ssid rep_dhcp rep_range rep_old_uuid rep_old_name rep_radio_was_off rep_sysctl"
 
 die() { echo "error=$*"; exit 1; }
 log() { logger -t pi5-net-mode "$*" 2>/dev/null || true; }
@@ -211,6 +211,9 @@ read_state() {
   fi
   case "$S_stage" in trial|static) ;; *) S_stage=none ;; esac
   [[ $S_trial_ends =~ ^[0-9]+$ ]] || S_trial_ends=0
+  # Kartların kalıcı MAC'i (yalnız durum bilgisi: kart adı değişirse status yeni adını gösterir); eski durum dosyasında yok.
+  [[ $S_iface_hw =~ ^([0-9a-f]{2}:){5}[0-9a-f]{2}$ ]] || S_iface_hw=""
+  [[ $S_wan_port_hw =~ ^([0-9a-f]{2}:){5}[0-9a-f]{2}$ ]] || S_wan_port_hw=""
   [ "$S_wifi_off" = 1 ] || S_wifi_off=0
   case "$S_ap_stage" in trial|on) ;; *) S_ap_stage=none ;; esac
   [[ $S_ap_trial_ends =~ ^[0-9]+$ ]] || S_ap_trial_ends=0
@@ -288,7 +291,7 @@ write_state() {
 }
 # Kurulum alanlarını boşaltır (stage=none); wifi_off ve kurulum Wi-Fi'ı alanları (ap_*) korunur.
 reset_setup() {
-  S_stage=none; S_trial_ends=0; S_iface=""; S_transit=""; S_client=""; S_gw=""; S_dns=""
+  S_stage=none; S_trial_ends=0; S_iface=""; S_iface_hw=""; S_transit=""; S_client=""; S_gw=""; S_dns=""
   S_old_uuid=""; S_old_name=""; S_old_ipv6=""
 }
 # Kurulum Wi-Fi'ı alanlarını boşaltır (ap_stage=none); sabit adres alanları ve wifi_off korunur.
@@ -307,7 +310,7 @@ sat_reset() {
 }
 # İnternet kartı alanlarını boşaltır (wan_stage=none, wan_lan=0: ev ağı profilleri tek kollu düzende).
 wan_reset() {
-  S_wan_stage=none; S_wan_trial_ends=0; S_wan_port=""; S_wan_dev=""; S_wan_type=""; S_wan_vlan=""; S_wan_prio=""
+  S_wan_stage=none; S_wan_trial_ends=0; S_wan_port=""; S_wan_port_hw=""; S_wan_dev=""; S_wan_type=""; S_wan_vlan=""; S_wan_prio=""
   S_wan_mac=""; S_wan_mtu=""; S_wan_user=""; S_wan_addr=""; S_wan_gw=""; S_wan_dns=""; S_wan_lan=0
   S_wan_dhcp_vendor=""; S_wan_dhcp_cid=""; S_wan_dhcp_host=""; S_wan_ssid=""
 }
@@ -455,6 +458,84 @@ route_ok() { local r; r=$(ip -4 route get 1.1.1.1 2>/dev/null | head -1); [[ " $
 carrier() { if [ "$(cat "/sys/class/net/$1/carrier" 2>/dev/null)" = 1 ]; then echo 1; else echo 0; fi; }
 dev_type() { nmcli -g GENERAL.TYPE device show "$1" 2>/dev/null; }
 dev_state() { nmcli -g GENERAL.STATE device show "$1" 2>/dev/null | cut -d' ' -f1; }
+# Kart NetworkManager'ın yönetiminde değil (durum 10 "unmanaged": ifupdown'un /etc/network/interfaces kartı, netplan'ın
+# networkd kartı, NM ayarı): NM profili o kartta etkinleşemez. Rol komutları bunu en başta, anlaşılır nedenle reddeder.
+# $2 = strict: yalnız NM'nin elle etkinleştirmede de aşamadığı yönetim dışılık — ayar eklentisi (neden 76: ifupdown'un
+# /etc/network/interfaces kartı, netplan-networkd, keyfile unmanaged-devices). Öbür nedenlerde (elle `managed no`, udev
+# kuralı, NetworkManager.conf, dışarıdan açılmış kart) NM profil elle etkinleştirilince kartı yeniden yönetir (NM 1.52'de
+# denendi): internet kartı / üst Wi-Fi öyle de açılıyordu, o yol değişmez.
+nm_unmanaged() {
+  if [ -z "$1" ] || [ "$(dev_state "$1")" != 10 ]; then return 1; fi
+  if [ "${2:-}" != strict ]; then return 0; fi
+  [ "$(nmcli -g GENERAL.REASON device show "$1" 2>/dev/null | cut -d' ' -f1)" = 76 ]
+}
+# Kart NetworkManager dışında yapılandırılmış (salt systemd-networkd .network dosyası, dhcpcd, elle `ip addr`): NM kartı
+# yalnız izler — durum "connected (externally)", etkin profil NM'nin ürettiği geçici profildir (keyfile [.nmmeta]
+# volatile / external). Kart bırakılınca o profil silinir: sabit adres / uydu / köprü denemesi geri alınırken eski adrese
+# dönülemez, kart adressiz kalırdı (SSH ve panel kopar). Bu yüzden o kartta roller açılmaz. NM'nin kendi açtığı otomatik
+# "Wired connection" profili (yalnız nm-generated) ve netplan profilleri (/run altında, işaretsiz) sayılmaz.
+nm_external() {
+  [ -n "${1:-}" ] || return 1
+  case "$(nmcli -g GENERAL.STATE device show "$1" 2>/dev/null)" in *'(externally)'*) return 0 ;; esac
+  uuid_volatile "$(active_uuid "$1")"
+}
+uuid_volatile() {
+  local f
+  [ -n "${1:-}" ] || return 1
+  f=$(file_of_uuid "$1")
+  [ -n "$f" ] && [ -r "$f" ] && grep -Eq '^(external|volatile)=true$' "$f"
+}
+# Kartı NetworkManager'a taşıma sırası: Klyrix NM'nin kendiliğinden kablolu profil açmasını kapattı (no-auto-default) —
+# kablolu kart eski ayarından profil oluşturulmadan çıkarılırsa açılışta adressiz kalır. Wi-Fi kartının profilini rol
+# kendisi kurar.
+nm_move_hint() {
+  if [ "$(dev_type "$1")" = ethernet ]; then
+    echo "Ağ rolleri için kartı NetworkManager'a taşıyın: önce profil oluşturun (sudo nmcli connection add type ethernet ifname $1 con-name $1 ipv4.method auto — adres elle verilmişse aynı adresle ipv4.method manual), sonra kartı eski ayarından çıkarıp yeniden başlatın; NetworkManager kendiliğinden profil açmaz."
+  else
+    echo "Ağ rolleri için kartı NetworkManager'a taşıyın: kartı eski ayarından çıkarıp yeniden başlatın."
+  fi
+}
+unmanaged_msg() { echo "Bu kart ($1) NetworkManager tarafından yönetilmiyor (ör. /etc/network/interfaces ya da netplan'da tanımlı). $(nm_move_hint "$1")"; }
+external_msg() { echo "Bu kart ($1) NetworkManager dışında yapılandırılmış (systemd-networkd / dhcpcd / elle); NetworkManager yalnız izliyor, deneme geri alınırken eski adrese dönülemezdi. $(nm_move_hint "$1")"; }
+# Kartın kalıcı (donanım) MAC'i: ethtool -P, yoksa `ip link` permaddr, yoksa geçerli adres (pi-dhcp.sh pi_macs gibi).
+# Profil MAC'i klonlasa da kart tanınır; kart adı değişince status yeni adı bununla bulur. Bulunamazsa boş.
+mac_ok() { [[ $1 =~ ^([0-9a-f]{2}:){5}[0-9a-f]{2}$ ]] && [ "$1" != 00:00:00:00:00:00 ]; }
+perm_mac() {
+  local m=""
+  if command -v ethtool >/dev/null 2>&1; then
+    m=$(ethtool -P "$1" 2>/dev/null | sed -n 's/^Permanent address: *//p' | tr 'A-F' 'a-f')
+  fi
+  mac_ok "$m" || m=$(ip -o link show dev "$1" 2>/dev/null | sed -n 's/.* permaddr \([0-9a-fA-F:]\{17\}\).*/\1/p' | tr 'A-F' 'a-f')
+  mac_ok "$m" || m=$({ tr 'A-F' 'a-f' < "/sys/class/net/$1/address"; } 2>/dev/null)
+  if mac_ok "$m"; then echo "$m"; fi
+}
+# $1 kalıcı MAC → şu an o MAC'i taşıyan fiziksel kartın adı (köprü / VLAN gibi sanal kartlar MAC'i paylaşır: sayılmaz).
+mac_owner() {
+  local d
+  mac_ok "${1:-}" || return 1
+  for d in /sys/class/net/*; do
+    [ -e "$d/device" ] || continue
+    if [ "$(perm_mac "${d##*/}")" = "$1" ]; then echo "${d##*/}"; return 0; fi
+  done
+  return 1
+}
+# Kayıtlı kart adları "rol ad" satırları (rol yalnız aşaması açıkken). Yedek hatta yalnız Ethernet / Wi-Fi türünün kartı:
+# USB türünde kayıtlı ad yoktur (arayüz her takışta yeniden adlanır, grup 77 ile bulunur).
+saved_cards() {
+  if [ "$S_stage" != none ] && [ -n "$S_iface" ]; then echo "lan $S_iface"; fi
+  if [ "$S_wan_stage" != none ] && [ -n "$S_wan_port" ]; then echo "wan $S_wan_port"; fi
+  if [ "$S_rep_stage" != none ]; then
+    if [ -n "$S_rep_port" ]; then echo "rep $S_rep_port"; fi
+    if [ -n "$S_rep_lan" ]; then echo "rep_lan $S_rep_lan"; fi
+  fi
+  if [ "$S_ap_stage" != none ] && [ -n "$S_ap_iface" ]; then echo "ap $S_ap_iface"; fi
+  if [ "$S_home_stage" != none ] && [ -n "$S_home_iface" ]; then echo "home $S_home_iface"; fi
+  if [ "$S_sat_stage" != none ] && [ -n "$S_sat_iface" ]; then echo "sat $S_sat_iface"; fi
+  if [ "$S_bak_stage" != none ] && { [ "$S_bak_kind" = eth ] || [ "$S_bak_kind" = wifi ]; } && [ -n "$S_bak_port" ]; then
+    echo "bak $S_bak_port"
+  fi
+  return 0
+}
 active_conn() { nmcli -g GENERAL.CONNECTION device show "$1" 2>/dev/null; }
 active_uuid() { nmcli -t -f UUID,DEVICE connection show --active 2>/dev/null | awk -F: -v d="$1" '$2 == d { print $1; exit }'; }
 uuids_named() { nmcli -t -f UUID,NAME connection show 2>/dev/null | awk -F: -v n="$1" '$2 == n { print $1 }'; }
@@ -651,6 +732,15 @@ guard_routine() {
     [ "$SECONDS" -ge "$end" ] && break
     sleep 1
   done
+  # 1b. Kayıtlı kart yok (çıkarılmış ya da adı değişmiş; USB kart açılışta geç gelebilir — bekleme yukarıda yapıldı): yalnız
+  #     bildirilir, hiçbir şey değiştirilmez. Kart adı profillere ve güvenlik duvarı kurallarına yazılıdır: başka bir karta
+  #     kendiliğinden geçmek ev ağının kartına internet tarafının kurallarını koyabilirdi.
+  if [ ! -e "/sys/class/net/$ifc" ]; then
+    local now_as=""
+    now_as=$(mac_owner "$S_iface_hw") || now_as=""
+    write_guard missing "ağ kartı bulunamadı ($ifc) — kart çıkarılmış ya da adı değişmiş olabilir${now_as:+ (aynı kart şimdi $now_as adıyla görünüyor)}; ayarlara dokunulmadı"
+    return 0
+  fi
   # 2. Kablo yok: yapılacak bir şey yok — kablo gelince NM profili kendisi etkinleştirir.
   if [ "$(carrier "$ifc")" != 1 ]; then
     write_guard no_carrier "kablo bağlantısı yok ($ifc)"; return 0
@@ -3077,7 +3167,17 @@ cmd_status() {
   echo "planned_gw=$pgw"
   echo "planned_client=$DEFAULT_CLIENT"
   echo "wifi=$wifi"
-  echo "wlan_addrs=$(ip -4 -o addr show 2>/dev/null | awk '$2 ~ /^wlan/ { print $4 }' | csv)"
+  # Wi-Fi kartlarının adresleri — kart türü sysfs'ten (wireless / phy80211), addan değil: wlp* / wlx* adlı kartlarda da
+  # "panel Wi-Fi'dan açık, bağlantı kopar" uyarıları çalışsın.
+  echo "wlan_addrs=$(for d in /sys/class/net/*; do
+    { [ -e "$d/wireless" ] || [ -e "$d/phy80211" ]; } || continue
+    iface_addrs "${d##*/}"
+  done | csv)"
+  # Çekirdeğin gördüğü Wi-Fi kartları (sysfs; "kart,…"; boş = bu cihazda Wi-Fi kartı yok). NM listesine (wifi_roles)
+  # dayanılmaz: o nmcli çağrısı bir kez başarısız olursa Wi-Fi'lı cihaz Wi-Fi'sız sanılırdı.
+  echo "wifi_cards=$(for d in /sys/class/net/*; do
+    if [ -e "$d/wireless" ] || [ -e "$d/phy80211" ]; then echo "${d##*/}"; fi
+  done | csv)"
   echo "guard_result=$gr"
   echo "guard_at=$ga"
   echo "guard_detail=$gd"
@@ -3244,6 +3344,35 @@ cmd_status() {
   echo "rep_guard_result=$(sed -n 's/^result=//p' "$REP_GUARD_STATUS" 2>/dev/null)"
   echo "rep_guard_detail=$(sed -n 's/^detail=//p' "$REP_GUARD_STATUS" 2>/dev/null)"
   echo "wifi_roles=$( if [ "$nm" = 1 ]; then wifi_devs | while IFS= read -r d; do printf '%s=%s\n' "$d" "$(radio_user "$d")"; done | csv; fi )"
+  # Varsayılan rotanın kartı NetworkManager'ın yönetiminde değil (ifupdown / netplan-networkd): sabit adres ve roller o
+  # kartta kurulamaz. Klyrix'in kendi bıraktığı kart sayılmaz (acil mod: sabit adres kartı; Wi-Fi köprüsünün ev tarafı).
+  local unm="" ext=""
+  if [ "$nm" = 1 ] && nm_unmanaged "$pifc"; then
+    unm=$pifc
+    if [ "$S_stage" != none ] && [ "$pifc" = "$S_iface" ]; then unm=""; fi
+    if [ "$S_rep_stage" != none ] && [ "$pifc" = "$S_rep_lan" ]; then unm=""; fi
+  fi
+  echo "nm_unmanaged=$unm"
+  # Varsayılan rotanın kartı NetworkManager dışında yapılandırılmış (salt systemd-networkd / dhcpcd / elle; NM yalnız
+  # izliyor): sabit adres, uydu ve Wi-Fi köprüsü o kartta açılmaz. Yalnız hiçbir rol yokken bildirilir (rol açıkken kart
+  # Klyrix'in profilindedir).
+  if [ "$nm" = 1 ] && [ "$S_stage" = none ] && [ "$S_sat_stage" = none ] && [ "$S_rep_stage" = none ] \
+     && nm_external "$pifc"; then
+    ext=$pifc
+  fi
+  echo "nm_external=$ext"
+  # Kayıtlı kartlardan şu an olmayanlar ("rol:ad,…"; çıkarılmış ya da adı değişmiş). Yalnız bildirilir, rol değiştirilmez.
+  # missing_hint: kartın kalıcı MAC'i şimdi başka bir adla görünüyorsa "rol:eski->yeni".
+  local mis="" mhint="" role name hw owner
+  while read -r role name; do
+    if [ -z "$name" ] || [ -e "/sys/class/net/$name" ]; then continue; fi
+    mis="${mis:+$mis,}$role:$name"
+    hw=""
+    case "$role" in lan) hw=$S_iface_hw ;; wan) hw=$S_wan_port_hw ;; esac
+    if [ -n "$hw" ] && owner=$(mac_owner "$hw"); then mhint="${mhint:+$mhint,}$role:$name->$owner"; fi
+  done < <(saved_cards)
+  echo "ifaces_missing=$mis"
+  echo "missing_hint=$mhint"
 }
 
 cmd_static() {
@@ -3273,6 +3402,8 @@ cmd_static() {
   [ -n "$ifc" ] || die "varsayılan rota yok — Pi internete bağlı değil"
   [ "$(dev_type "$ifc")" = ethernet ] \
     || die "Pi kabloyla bağlı değil (internet $ifc üzerinden geliyor) — Pi'yi modeme kabloyla bağlayın"
+  nm_unmanaged "$ifc" && die "$(unmanaged_msg "$ifc")"
+  nm_external "$ifc" && die "$(external_msg "$ifc")"
   [ "$(carrier "$ifc")" = 1 ] || die "$ifc kablo bağlantısı yok"
   valid_ip "$gw" || die "varsayılan ağ geçidi bulunamadı ($ifc)"
   transit=$(addr_for_gw "$ifc" "$gw") || die "$ifc üzerinde modemin ($gw) ağında adres yok"
@@ -3337,7 +3468,7 @@ cmd_static() {
   #    tanımlayıcısı (9) devredilmez: geri alma işi kilidi kendisi alır, miras kalan tanımlayıcı onu kilitlerdi.
   end=$(( $(date +%s) + trial ))
   S_stage=trial; S_trial_ends=$end; S_iface=$ifc; S_transit=$transit; S_client=$cl; S_gw=$gw; S_dns="127.0.0.1,$gw"
-  S_old_uuid=$old_uuid; S_old_name=$old_name; S_old_ipv6=$old_v6
+  S_old_uuid=$old_uuid; S_old_name=$old_name; S_old_ipv6=$old_v6; S_iface_hw=$(perm_mac "$ifc")
   if ! write_state; then
     delete_named "$PROFILE"; rm -f "$BACKUP"
     die "durum dosyası yazılamadı ($STATE_FILE) — değişiklik yapılmadı"
@@ -3895,6 +4026,8 @@ cmd_sat_on() {
   [ -n "$ifc" ] || die "varsayılan rota yok — uydu ev ağına bağlı değil"
   [ "$ifc" = "$wifi" ] && die "uydunun ağ bağlantısı Wi-Fi'dan geliyor — ilk kurulum için uyduyu kabloyla bağlayın"
   [ "$(dev_type "$ifc")" = ethernet ] || die "uydu kabloyla bağlı değil ($ifc)"
+  nm_unmanaged "$ifc" && die "$(unmanaged_msg "$ifc")"
+  nm_external "$ifc" && die "$(external_msg "$ifc")"
   [[ $ifc =~ ^[A-Za-z0-9_.-]{1,15}$ ]] || die "arayüz adı beklenmedik: $ifc"
   valid_ssid "$ssid" || die "geçersiz ağ adı"
   valid_psk "$psk" || die "geçersiz parola"
@@ -3994,13 +4127,15 @@ cmd_sat_rollback() {
 }
 
 cmd_sat_off() {
+  local ifc
   read_state
   [ "$S_sat_stage" = none ] && { echo "ok=1"; return 0; }
   nm_running || die "NetworkManager çalışmıyor"
+  ifc=$S_sat_iface
   sat_stop_timer
   sat_unwind
   sat_finish_none || die "durum dosyası yazılamadı ($STATE_FILE)"
-  log "uydu kapatıldı; eth0 eski profilinde"
+  log "uydu kapatıldı; ${ifc:-kablolu kart} eski profilinde"
   echo "ok=1"
 }
 
@@ -4198,6 +4333,8 @@ cmd_wan_on() {
   lan=$(lan_dev)
   lan_addrs_ok "$lan" || die "ev ağı adresleri ($lan) beklenen düzende değil — önce DHCP Ayarları'ndaki uyarıyı giderin"
   [ -e "/sys/class/net/$port" ] || die "$port adlı kart yok"
+  # Ev ağı kartı (tek port) Klyrix'in kendi profilindedir (acil modda bilerek yönetim dışı): yalnız ayrı kart denetlenir.
+  if [ "$port" != "$S_iface" ] && nm_unmanaged "$port" strict; then die "$(unmanaged_msg "$port")"; fi
   # Yedek hat: kartı / VLAN'ı ana hat olamaz; yedek hattayken deneme internet rotasını ana hattan denetleyemez.
   if [ "$S_bak_stage" != none ]; then
     bak_failed_over && die "yedek hat devrede (ana hat çalışmıyor) — internet kartı denemesi rotayı ana hattan denetler; ana hat dönünce ya da yedek hattı kapatınca deneyin"
@@ -4251,7 +4388,7 @@ cmd_wan_on() {
   fi
   # 3. Profiller (önceki denemeden kalmış kopyalar silinir; yalnız bu dosyalar yüklenir). Durum alanları profil
   #    yazımından önce doldurulur (yazıcılar onları okur); durum dosyası zamanlayıcıyla birlikte yazılır.
-  S_wan_port=$port; S_wan_type=$type; S_wan_vlan=$vlan; S_wan_prio=$prio; S_wan_mac=$mac; S_wan_mtu=$mtu
+  S_wan_port=$port; S_wan_port_hw=$(perm_mac "$port"); S_wan_type=$type; S_wan_vlan=$vlan; S_wan_prio=$prio; S_wan_mac=$mac; S_wan_mtu=$mtu
   S_wan_user=$user; S_wan_addr=$addr; S_wan_gw=$gw; S_wan_dns=$dns; S_wan_lan=0
   S_wan_dhcp_vendor=$dvendor; S_wan_dhcp_cid=$dcid; S_wan_dhcp_host=$dhost; S_wan_ssid=$ssid
   S_wan_dev=$(wan_l3_of "$port" "$type" "$vlan")
@@ -4802,11 +4939,14 @@ cmd_rep_on() {
   [[ $lan =~ ^[A-Za-z0-9_.-]{1,15}$ ]] || die "geçersiz ev tarafı kartı: $lan"
   [ -e "/sys/class/net/$lan" ] || die "$lan kartı yok"
   [ "$(dev_type "$lan")" = ethernet ] || die "$lan bir Ethernet kartı değil — ev tarafı kablolu olmalı"
+  nm_unmanaged "$lan" && die "$(unmanaged_msg "$lan")"
+  nm_external "$lan" && die "$(external_msg "$lan")"
   [ "$ifc" = "$lan" ] || die "Pi'nin interneti $ifc üzerinden geliyor — kurulum için Pi'yi $lan ile modeme bağlayın"
   if [ -z "$port" ]; then port=$(wifi_dev_free rep) || die "$(wifi_busy_why rep)"; fi
   [[ $port =~ ^[A-Za-z0-9_.-]{1,15}$ ]] || die "geçersiz Wi-Fi kartı adı: $port"
   [ "$port" != "$lan" ] || die "Wi-Fi kartı ile ev tarafı kartı aynı olamaz"
   [ -e "/sys/class/net/$port" ] || die "$port kartı yok"
+  nm_unmanaged "$port" strict && die "$(unmanaged_msg "$port")"
   if [ "${PI5_REP_TEST_UPLINK_ETH:-0}" != 1 ]; then
     [ "$(dev_type "$port")" = wifi ] || die "$port bir Wi-Fi kartı değil"
   fi

@@ -79,6 +79,22 @@ apt install -y -qq \
   conntrack usb-modeswitch usbmuxd \
   parprouted dhcp-helper dnsmasq-base avahi-daemon
 
+# NetworkManager: sabit adres ve ağ rolleri (scripts/net-mode.sh) onunla yönetilir. Raspberry Pi OS'ta zaten kuruludur;
+# düz Debian'da (ifupdown / systemd-networkd, ör. x86) yoksa kurulur. Paketten ÖNCE no-auto-default yazılır: NM
+# yönetmediği kartlara kendiliğinden "Wired connection" profili açıp mevcut adresi değiştirmesin. /etc/network/interfaces,
+# netplan ve systemd-networkd ayarlarına dokunulmaz: ifupdown / netplan kartı NM'de "yönetilmiyor", salt systemd-networkd /
+# dhcpcd kartı "dışarıdan bağlı" (connected (externally)) görünür; panel ikisini de bildirir, roller o kartta açılmaz.
+if ! command -v nmcli >/dev/null 2>&1; then
+  if { mkdir -p /etc/NetworkManager/conf.d \
+       && printf '[main]\nno-auto-default=*\n' > /etc/NetworkManager/conf.d/90-klyrix-no-auto-default.conf; } 2>/dev/null; then
+    warn "NetworkManager kuruluyor (ağ rolleri için gerekli)..."
+    if apt install -y -qq network-manager; then log "NetworkManager kuruldu"
+    else warn "NetworkManager kurulamadı — sabit adres ve ağ rolleri çalışmaz (sonra: sudo apt install network-manager)"; fi
+  else
+    warn "NetworkManager ayarı yazılamadı — paket kurulmadı (sabit adres ve ağ rolleri NetworkManager ister)"
+  fi
+fi
+
 # Node.js 22 LTS
 if ! command -v node &>/dev/null || [ "$(node -v | cut -d. -f1 | tr -d v)" -lt 20 ]; then
   warn "Node.js kuruluyor..."
@@ -131,8 +147,22 @@ if command -v pihole &>/dev/null; then
 else
   warn "Pi-hole kuruluyor (headless)..."
   mkdir -p /etc/pihole
-  cat > /etc/pihole/setupVars.conf << 'PHEOF'
-PIHOLE_INTERFACE=eth0
+  # Pi-hole'un arayüzü: en düşük metrikli varsayılan rotanın kartı (wg*/lo/docker*/veth* hariç); rota yoksa ilk fiziksel
+  # kart (/sys/class/net/X/device var, tür 1), o da yoksa eth0. Kart adı cihaza göre değişir (eth0, end0, enp1s0 …).
+  PH_IF=$(ip -4 route show default 2>/dev/null | awk '
+    { dev = ""; m = 0
+      for (i = 1; i < NF; i++) { if ($i == "dev") dev = $(i + 1); else if ($i == "metric") m = $(i + 1) + 0 }
+      if (dev == "" || dev == "lo" || dev ~ /^(wg|docker|veth)/) next
+      if (best == "" || m < bm) { best = dev; bm = m } }
+    END { if (best != "") print best }') || PH_IF=""
+  if [ -z "$PH_IF" ]; then
+    for d in /sys/class/net/*; do
+      if [ -e "$d/device" ] && [ "$(cat "$d/type" 2>/dev/null)" = 1 ]; then PH_IF=${d##*/}; break; fi
+    done
+  fi
+  [ -n "$PH_IF" ] || PH_IF=eth0
+  printf 'PIHOLE_INTERFACE=%s\n' "$PH_IF" > /etc/pihole/setupVars.conf
+  cat >> /etc/pihole/setupVars.conf << 'PHEOF'
 # Gizlilik: TEK upstream = Unbound (recursive). 1.1.1.1 gibi ikinci upstream eklemek
 # sorguların yarısını Unbound'u atlayıp dış sağlayıcıya sızdırır — kasıtlı olarak eklenmedi.
 PIHOLE_DNS_1=127.0.0.1#5335
@@ -431,14 +461,20 @@ net.ipv4.ip_forward=1
 net.ipv6.conf.all.forwarding=1
 SYSEOF
 sysctl -p /etc/sysctl.d/99-pi5-gateway.conf 2>/dev/null
-# Tek bacaklı ağ geçidi: ICMP redirect gönderme (Pi istemcilere "modeme doğrudan git" demesin)
+# Tek bacaklı ağ geçidi: ICMP redirect gönderme (Pi istemcilere "modeme doğrudan git" demesin). Kart adı cihaza göre
+# değişir (eth0, end0, enp1s0, enx…): '*' tüm kartları kapsar; sonradan takılan kart değeri default'tan alır.
 cat > /etc/sysctl.d/98-pi5-onearm.conf << 'SYSEOF'
 net.ipv4.conf.all.send_redirects = 0
 net.ipv4.conf.default.send_redirects = 0
+net.ipv4.conf.*.send_redirects = 0
 net.ipv4.conf.eth0.send_redirects = 0
 net.ipv4.conf.wlan0.send_redirects = 0
 SYSEOF
 sysctl -q -p /etc/sysctl.d/98-pi5-onearm.conf >/dev/null 2>&1 || true
+# Şu an var olan her kartta da hemen 0 (sysctl'in glob desteğine bağlı kalınmaz).
+for f in /proc/sys/net/ipv4/conf/*/send_redirects; do
+  if [ -w "$f" ]; then { echo 0 > "$f"; } 2>/dev/null || true; fi
+done
 # Açılışta ağ geçidi kuralları (NAT, forward izni, cihaz engeli) panelden bağımsız yüklensin
 cat > /etc/systemd/system/pi5-gw-restore.service << 'GWEOF'
 [Unit]
@@ -464,7 +500,7 @@ systemctl enable pi5-gw-restore.service >/dev/null 2>&1 || true
 # onarılır (sabit adres panelden verilir; yoksa birim hiçbir şey yapmaz). Hata kurulumu durdurmaz.
 cat > /etc/systemd/system/pi5-net-guard.service << 'NGEOF' || warn "pi5-net-guard.service yazılamadı"
 [Unit]
-Description=Klyrix Gate sabit IP koruması (eth0 profili)
+Description=Klyrix Gate sabit IP koruması (sabit adres profili)
 After=NetworkManager.service
 PartOf=NetworkManager.service
 Before=network-online.target

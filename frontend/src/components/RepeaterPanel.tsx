@@ -31,10 +31,11 @@ const fmtAgo = (sec: number) => (sec < 90 ? `${sec} sn` : sec < 5400 ? `${Math.r
 const IPV4 = /^(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}$/;
 const ipNum = (ip: string) => ip.split('.').reduce((a, o) => a * 256 + Number(o), 0);
 const numIp = (n: number) => [24, 16, 8, 0].map(s => Math.floor(n / 2 ** s) % 256).join('.');
-const LAN_TEXT: Record<string, string> = {
-  active: 'açık — cihazlar modemle aynı ağda', modem: 'kapalı — eth0 kablosu hâlâ modemde', no_carrier: 'kablo takılı değil',
+// Ev tarafının durumu; lanIf: ev tarafı kartının gerçek adı (eth0, end0, enp1s0 …).
+const LAN_TEXT = (lanIf: string): Record<string, string> => ({
+  active: 'açık — cihazlar modemle aynı ağda', modem: `kapalı — ${lanIf} kablosu hâlâ modemde`, no_carrier: 'kablo takılı değil',
   no_uplink: "kapalı — üst Wi-Fi'da adres yok", missing: 'ev tarafı kartı yok',
-};
+});
 
 function Alert({ kind, children }: { kind: 'ok' | 'err' | 'info'; children: ReactNode }) {
   return (
@@ -185,7 +186,7 @@ export function RepeaterPanel({ radios = [], onChange }: { radios?: WanRadio[]; 
 
   return (
     <Panel title={title} icon={icon} actions={badge} className="wn-panel rp-panel"
-      subtitle="Pi Wi-Fi ile modeme bağlanır; eth0'a takılan cihazlar (bilgisayar, konsol, anahtar) modemle aynı ağda olur, Pi-hole ve VPS yönlendirmesi onlara da uygulanır.">
+      subtitle={`Pi Wi-Fi ile modeme bağlanır; ${lanIf}'a takılan cihazlar (bilgisayar, konsol, anahtar) modemle aynı ağda olur, Pi-hole ve VPS yönlendirmesi onlara da uygulanır.`}>
       <div className="hw-body">
         {stage === 'none' && (
           <>
@@ -265,7 +266,7 @@ export function RepeaterPanel({ radios = [], onChange }: { radios?: WanRadio[]; 
             <dl className="hw-facts">
               <div><dt>Üst Wi-Fi</dt><dd>{st.rep_ssid} · <span className="rl-mono">{st.rep_port}</span>{st.rep_signal ? ` · sinyal %${st.rep_signal}` : ''}{st.rep_signal && st.rep_signal < 40 ? " (zayıf — Pi'yi modeme yaklaştırın)" : ''}</dd></div>
               <div><dt>Pi'nin adresi</dt><dd><span className="rl-mono">{repIp || '—'}</span>{st.rep_mdns ? <> · <span className="rl-mono">{st.rep_mdns}</span></> : null} — değişmemesi için modemde Pi'ye adres ayırın</dd></div>
-              <div><dt>Ev tarafı ({lanIf})</dt><dd>{LAN_TEXT[lanState] || 'denetleniyor…'}{lanState && st.rep_lan_since && st.now ? ` · ${fmtAgo(Math.max(0, st.now - st.rep_lan_since))}` : ''}</dd></div>
+              <div><dt>Ev tarafı ({lanIf})</dt><dd>{LAN_TEXT(lanIf)[lanState] || 'denetleniyor…'}{lanState && st.rep_lan_since && st.now ? ` · ${fmtAgo(Math.max(0, st.now - st.rep_lan_since))}` : ''}</dd></div>
               <div><dt>Cihazlar</dt><dd>{st.rep_clients || 0}</dd></div>
               <div><dt>Adres dağıtımı</dt><dd>{st.rep_dhcp === 'pi' ? <>Pi verir · <span className="rl-mono">{st.rep_range}</span></> : 'Modem verir (Pi aktarır)'} · <EN>DNS</EN> Pi-hole</dd></div>
             </dl>

@@ -124,6 +124,20 @@ if ! pkg_ensure wireguard-tools ipset iptables iputils-arping iw ppp conntrack u
   echo "  [pkg] UYARI: sistem paketleri kurulamadı (ayrıntı yukarıda)" >> "$LOG"
 fi
 
+# 4c. NetworkManager: sabit adres ve ağ rolleri (net-mode.sh) onunla yönetilir. Raspberry Pi OS'ta kurulu → hiçbir şey
+#     yapılmaz. Düz Debian'da (ifupdown / systemd-networkd) yoksa install.sh ile aynı sıra: önce no-auto-default (NM
+#     yönetmediği kartlara kendiliğinden profil açmasın), sonra paket. /etc/network/interfaces, netplan ve
+#     systemd-networkd ayarlarına dokunulmaz. Hata güncellemeyi durdurmaz.
+if ! command -v nmcli >/dev/null 2>&1; then
+  if { mkdir -p /etc/NetworkManager/conf.d \
+       && printf '[main]\nno-auto-default=*\n' > /etc/NetworkManager/conf.d/90-klyrix-no-auto-default.conf; } 2>/dev/null; then
+    echo "  [ağ] NetworkManager kuruluyor (ağ rolleri için gerekli)..." >> "$LOG"
+    pkg_ensure network-manager || echo "  [pkg] UYARI: NetworkManager kurulamadı — sabit adres ve ağ rolleri çalışmaz" >> "$LOG"
+  else
+    echo "  [ağ] UYARI: NetworkManager ayarı yazılamadı — paket kurulmadı" >> "$LOG"
+  fi
+fi
+
 # 5. Enable I2C/SPI if not already
 raspi-config nonint do_i2c 0 2>/dev/null || true
 raspi-config nonint do_spi 0 2>/dev/null || true
@@ -175,7 +189,8 @@ fi
 
 # 7b. Ağ geçidi kalıcılığı (Faz 2 Adım 0) — idempotent, her güncellemede yeniden yazılır:
 #   - ICMP redirect kapalı: tek bacaklı ağ geçidinde Pi istemcilere "modeme doğrudan git" demesin (engel/tünel atlanırdı).
-#     Kernel her arayüzde all VEYA <iface> 1 ise gönderir → all/default/eth0/wlan0 hepsi 0.
+#     Kernel her arayüzde all VEYA <iface> 1 ise gönderir → all/default/her kart 0 ('*': eth0, end0, enp*, enx*, wlan0 …;
+#     sonradan takılan kart default'tan alır). Var olan kartlara /proc'tan da hemen yazılır.
 #   - Backend ağ hazır olunca başlasın (After/Wants network-online: routing ve LAN kimliği doğru adresle kurulsun).
 #   - pi5-gw-restore.service: açılışta NAT / forward izni / cihaz engeli panelden bağımsız yüklenir.
 mkdir -p /etc/sysctl.d
@@ -183,10 +198,14 @@ cat > /etc/sysctl.d/98-pi5-onearm.conf << 'SYSEOF'
 # Klyrix Gate — tek bacaklı ağ geçidi: ICMP redirect gönderme (post-update.sh yazar)
 net.ipv4.conf.all.send_redirects = 0
 net.ipv4.conf.default.send_redirects = 0
+net.ipv4.conf.*.send_redirects = 0
 net.ipv4.conf.eth0.send_redirects = 0
 net.ipv4.conf.wlan0.send_redirects = 0
 SYSEOF
 sysctl -q -p /etc/sysctl.d/98-pi5-onearm.conf >/dev/null 2>&1 || true
+for f in /proc/sys/net/ipv4/conf/*/send_redirects; do
+  if [ -w "$f" ]; then { echo 0 > "$f"; } 2>/dev/null || true; fi
+done
 mkdir -p /etc/systemd/system/pi5-backend.service.d
 cat > /etc/systemd/system/pi5-backend.service.d/10-online.conf << 'DROPEOF'
 [Unit]
@@ -220,7 +239,7 @@ echo "  [ağ] ICMP redirect kapalı, açılış kuralları (pi5-gw-restore) etki
 #     (acil mod) tutulur. Sabit adres yoksa hiçbir şey yapmaz. Hata güncellemeyi durdurmaz (set -e: her adım || / if).
 cat > /etc/systemd/system/pi5-net-guard.service << 'NGEOF' || echo "  [ağ] UYARI: pi5-net-guard.service yazılamadı" >> "$LOG"
 [Unit]
-Description=Klyrix Gate sabit IP koruması (eth0 profili)
+Description=Klyrix Gate sabit IP koruması (sabit adres profili)
 After=NetworkManager.service
 PartOf=NetworkManager.service
 Before=network-online.target

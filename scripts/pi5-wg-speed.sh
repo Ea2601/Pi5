@@ -8,10 +8,23 @@ IF=$(wg show interfaces 2>/dev/null | tr ' ' '\n' | grep '^wg_vps' | head -1)
 if [ -z "$IF" ]; then echo "wg_vps* tüneli yok"; exit 0; fi
 EP=$(wg show "$IF" endpoints | awk '{print $2}' | head -1); EPIP=${EP%:*}
 PEER_TUN=10.66.66.1   # VPS tarafı wg0 adresi (ssh.ts: Address = 10.66.66.1/24)
+# Kart adları cihaza göre değişir (eth0, end0, enp1s0 …): ev ağı kartı sabit adres kaydından (net-mode.sh), Wi-Fi
+# köprüsünde ev tarafı kartından (rep_lan; varsayılan rota orada üst Wi-Fi'dadır), yoksa en düşük metrikli varsayılan
+# rotadan; Wi-Fi kartı sysfs'ten (phy80211).
+LAN_IF=$(sed -n 's/^iface=//p' /etc/pi5-gateway/net/state 2>/dev/null | head -1)
+[ -n "$LAN_IF" ] || LAN_IF=$(sed -n 's/^rep_lan=//p' /etc/pi5-gateway/net/state 2>/dev/null | head -1)
+[ -n "$LAN_IF" ] || LAN_IF=$(ip -4 route show default 2>/dev/null | awk '
+  { dev = ""; m = 0
+    for (i = 1; i < NF; i++) { if ($i == "dev") dev = $(i + 1); else if ($i == "metric") m = $(i + 1) + 0 }
+    if (dev == "" || dev == "lo" || dev ~ /^(wg|docker|veth)/) next
+    if (best == "" || m < bm) { best = dev; bm = m } }
+  END { if (best != "") print best }')
+WIFI_IF=""
+for d in /sys/class/net/*; do if [ -e "$d/phy80211" ]; then WIFI_IF=${d##*/}; break; fi; done
 
 h "Tünel: $IF → $EP"
 ip -o link show "$IF" | grep -oE 'mtu [0-9]+'
-echo "eth0 / wlan0 MTU: $(cat /sys/class/net/eth0/mtu 2>/dev/null) / $(cat /sys/class/net/wlan0/mtu 2>/dev/null)"
+echo "${LAN_IF:-ev ağı kartı} / ${WIFI_IF:-Wi-Fi yok} MTU: $(cat "/sys/class/net/$LAN_IF/mtu" 2>/dev/null) / $(cat "/sys/class/net/$WIFI_IF/mtu" 2>/dev/null)"
 wg show "$IF" latest-handshakes | awk -v now="$(date +%s)" '{print "el sıkışma yaşı:", now-$2, "sn"}'
 wg show "$IF" transfer | awk '{printf "aktarım: alınan %.1f MB, gönderilen %.1f MB\n", $2/1048576, $3/1048576}'
 
@@ -50,7 +63,7 @@ curl --interface "$IF" -s -o /dev/null --max-time 10 \
   -w 'HTTP %{http_code}, bağlanma %{time_connect}s, TLS %{time_appconnect}s, toplam %{time_total}s\n' https://www.google.com/ \
   || echo "(başarısız / zaman aşımı)"
 
-h "Telefon yolu: istemciler Pi'nin hangi arayüzünden görülüyor (wlan0 = Pi'nin Wi-Fi'si yolda)"
+h "Telefon yolu: istemciler Pi'nin hangi arayüzünden görülüyor (${WIFI_IF:-Wi-Fi kartı} = Pi'nin Wi-Fi'si yolda)"
 ip -4 neigh show | grep -vE 'FAILED|INCOMPLETE' | awk '{print $1, $3}'
-if command -v iw >/dev/null; then iw dev wlan0 link 2>/dev/null | grep -E 'freq|signal|tx bitrate'; fi
+if command -v iw >/dev/null && [ -n "$WIFI_IF" ]; then iw dev "$WIFI_IF" link 2>/dev/null | grep -E 'freq|signal|tx bitrate'; fi
 exit 0

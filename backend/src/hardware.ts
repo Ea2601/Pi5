@@ -39,6 +39,8 @@ export type Hardware = {
     bakStage?: string; bakDev?: string | null; bakActive?: boolean;
     // R4 C: Wi-Fi köprüsü (aynı ağ) aşaması, üst Wi-Fi kartı / adı, DHCP kipi, ev tarafının durumu (izleyici).
     repStage?: string; repPort?: string | null; repSsid?: string; repDhcp?: string; repLanState?: string;
+    // Ev ağı kartının adı (sabit adres kartı / Wi-Fi köprüsünün ev tarafı): rol notlarında gösterilir (eth0, end0, enp1s0 …).
+    lanIface?: string | null; repLan?: string | null;
   };
 };
 
@@ -246,20 +248,23 @@ export function evaluateRoles(hw: Hardware): RoleEval[] {
   const repStage = hw.net.wanSsid ? (hw.net.wanStage || 'none') : 'none';
   const sameStage = hw.net.repStage === 'trial' || hw.net.repStage === 'on' ? hw.net.repStage : 'none';
   const sameLan = hw.net.repLanState || '';
+  // Ev tarafı kartının gerçek adı (Wi-Fi köprüsünün ev tarafı, yoksa sabit adres kartı); bilinmiyorsa genel ad.
+  const lanCard = hw.net.repLan || hw.net.lanIface || '';
+  const lanCable = lanCard ? `${lanCard} kablosu` : 'ev tarafı kartının kablosu';
   const SAME_LAN_TEXT: Record<string, string> = {
-    active: 'ev tarafı açık', modem: 'eth0 kablosu modemde', no_carrier: 'eth0 kablosu takılı değil',
+    active: 'ev tarafı açık', modem: `${lanCable} modemde`, no_carrier: `${lanCable} takılı değil`,
     no_uplink: 'üst Wi-Fi kopuk', missing: 'ev tarafı kartı yok',
   };
   const repNotes: Note[] = [];
   if (repStage === 'trial') repNotes.push({ kind: 'info', text: "Deneme sürüyor: internet çalışıyorsa WAN router panelinden 'Kalıcı yap'a basın; basılmazsa Pi eski ayara döner." });
   if (sameStage === 'trial') repNotes.push({ kind: 'info', text: "Wi-Fi köprüsü denemesi sürüyor: Pi'nin yeni adresini açıp Wi-Fi köprüsü panelinden 'Kalıcı yap'a basın; basılmazsa geri alınır." });
-  if (sameStage === 'on' && sameLan === 'modem') repNotes.push({ kind: 'warn', text: 'eth0 kablosu hâlâ modeme bağlı: ev tarafı kapalı. Kabloyu arkadaki cihaza ya da anahtara takın.' });
+  if (sameStage === 'on' && sameLan === 'modem') repNotes.push({ kind: 'warn', text: `${lanCard ? lanCable : 'Ev tarafı kartının kablosu'} hâlâ modeme bağlı: ev tarafı kapalı. Kabloyu arkadaki cihaza ya da anahtara takın.` });
   if (!unknownRadios && !satRole && repStage === 'none' && sameStage === 'none' && staRadios.length) {
     repNotes.push({ kind: 'info', text: "Ayrı ağ (yönlendirmeli): WAN router panelinde internet kartı olarak Wi-Fi kartını seçip üst Wi-Fi'ın adını ve parolasını girin. Kurulum kabloyla yapılır; kalıcı yaptıktan sonra kablo çıkarılıp Pi yerine taşınır." });
-    repNotes.push({ kind: 'info', text: "Aynı ağ (ARP vekili): Wi-Fi köprüsü panelinden. eth0'a takılan cihazlar modemle aynı ağda olur (adresi modem ya da Pi verir), Pi-hole ve VPS yönlendirmesi onlara da uygulanır." });
+    repNotes.push({ kind: 'info', text: `Aynı ağ (ARP vekili): Wi-Fi köprüsü panelinden. Ev tarafı kartına${lanCard ? ` (${lanCard})` : ''} takılan cihazlar modemle aynı ağda olur (adresi modem ya da Pi verir), Pi-hole ve VPS yönlendirmesi onlara da uygulanır.` });
   }
   if (!unknownRadios && staRadios.length && !twoRadio) {
-    repNotes.push({ kind: 'info', text: "Tek Wi-Fi radyosu: üst Wi-Fi'a bağlanınca ev ağı yalnız kablodan (eth0) olur; kablosuz yayın için ikinci bir Wi-Fi kartı gerekir." });
+    repNotes.push({ kind: 'info', text: `Tek Wi-Fi radyosu: üst Wi-Fi'a bağlanınca ev ağı yalnız kablodan (${lanCard || 'ev tarafı kartı'}) olur; kablosuz yayın için ikinci bir Wi-Fi kartı gerekir.` });
   }
   out.push({
     id: 'repeater', group: 'wireless', phase: null,

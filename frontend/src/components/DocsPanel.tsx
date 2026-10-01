@@ -198,11 +198,11 @@ function OverviewDoc() {
       </DocBlock>
 
       <DocBlock title="Trafik Akışı">
-        <CodeBlock>{`İstemci → Pi5 (eth0) → Pi-hole DNS (port 53)
+        <CodeBlock>{`İstemci → Pi (ev ağı kartı) → Pi-hole DNS (port 53)
                           → Unbound (port 5335) → Root DNS
                           → nftables (filtreleme)
-                          → Zapret (DPI bypass) / WireGuard (VPN tünel)
-                          → İnternet (wlan0)`}</CodeBlock>
+                          → Zapret (DPI bypass) / WireGuard (VPS tünelleri wg_vps*)
+                          → İnternet (modem; ya da isteğe bağlı internet kartı)`}</CodeBlock>
       </DocBlock>
 
       <DocTip>Tüm ayarlar bu panel üzerinden yapılabilir. Her servisin kendi sayfasında "Ayarlar" sekmesi bulunur.</DocTip>
@@ -218,10 +218,11 @@ function ArchitectureDoc() {
       <DocBlock title="Donanım">
         <table className="doc-table">
           <tbody>
-            <tr><td>Platform</td><td>Raspberry Pi 5 (8GB RAM)</td></tr>
-            <tr><td>İşletim Sistemi</td><td>Raspberry Pi OS (64-bit, Debian Bookworm)</td></tr>
-            <tr><td>Depolama</td><td>128GB microSD / NVMe SSD</td></tr>
-            <tr><td>Ağ Arayüzleri</td><td>eth0 (LAN), wlan0 (WAN), wg0 (VPN)</td></tr>
+            <tr><td>Platform</td><td>Raspberry Pi 5 / 4 / 3, Pi Zero 2 W (USB Ethernet adaptörüyle) ya da NetworkManager'lı x86_64 Debian</td></tr>
+            <tr><td>İşletim Sistemi</td><td>Debian 13 (trixie) / Raspberry Pi OS</td></tr>
+            <tr><td>Depolama</td><td>microSD kart ya da SSD; isteğe bağlı veri diski (NVMe / USB)</td></tr>
+            <tr><td>Ağ Düzeni</td><td>Tek bacaklı: ev ağı kartı (kablolu) hem modem tarafı adresini hem cihazların ağ geçidi adresini taşır; isteğe bağlı internet kartı (WAN router rolü)</td></tr>
+            <tr><td>Ağ Arayüzleri</td><td>Kart adları cihaza göre değişir (eth0, end0, enp1s0 …); rol verilirken algılanır ve kaydedilir. VPS tünelleri wg_vps*, ev VPN'i wg_pi</td></tr>
           </tbody>
         </table>
       </DocBlock>
@@ -570,9 +571,10 @@ Trafik izleme: Her cihazın anlık download/upload hızı gösterilir`}</CodeBlo
         <table className="doc-table">
           <thead><tr><th>Arayüz</th><th>Rol</th><th>IP Aralığı</th></tr></thead>
           <tbody>
-            <tr><td>eth0</td><td>LAN (cihazlar buraya bağlanır)</td><td>192.168.1.0/24</td></tr>
-            <tr><td>wlan0</td><td>WAN (internet çıkışı)</td><td>DHCP / ISP</td></tr>
-            <tr><td>wg0</td><td>VPN tüneli</td><td>10.66.66.0/24</td></tr>
+            <tr><td>Ev ağı kartı (kablolu)</td><td>Tek bacaklı: modem tarafı adres + cihazların ağ geçidi (aynı kart)</td><td>Modem ağı (ör. 192.168.1.0/24) + cihaz ağı (ör. 192.168.0.0/24)</td></tr>
+            <tr><td>İnternet kartı (isteğe bağlı)</td><td>WAN router rolü: internet bu karttan (DHCP / sabit / PPPoE, VLAN)</td><td>Operatör / modem</td></tr>
+            <tr><td>wg_vps*</td><td>VPS tünelleri (yönlendirme profilleri)</td><td>10.66.66.0/24</td></tr>
+            <tr><td>wg_pi</td><td>Ev VPN'i (dışarıdan eve bağlanma)</td><td>10.77.77.0/24</td></tr>
           </tbody>
         </table>
       </DocBlock>

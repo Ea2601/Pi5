@@ -1117,6 +1117,21 @@ export async function activeUplink(): Promise<ActiveUplink | null> {
   return { via: 'primary', dev: id.iface, ip: id.transit.ip, gateway: id.gateway, public: !isPrivateIpv4(id.transit.ip) };
 }
 
+// Sanal arayüz: çekirdekte /sys/devices/virtual altında (tailscale0, virbr0, tun*, zt*, podman / lxc köprüleri …). Adres
+// taşısa da ev ağı kartı sayılmaz — yoksa güvenlik duvarı iki kartlı yola sapıp NAT'ı yanlış karta yazardı. Ev Wi-Fi'ı
+// köprüsü (br0) ev ağının kendisidir: sanal sayılmaz. Okunamazsa sanal sayılmaz (eski, ad önekli davranış sürer).
+// Fiziksel bir kartın üstündeki sanal aygıt (VLAN enp1s0.10, bond0, macvlan, fiziksel portlu köprü: sysfs lower_<kart>
+// bağı, zincir de olabilir — VLAN → bond → kart) gerçek bir ev ağıdır: sanal sayılmaz.
+function isVirtualIface(name: string, depth = 0): boolean {
+  if (name === HOME_BRIDGE) return false;
+  const dir = `/sys/class/net/${name}`;
+  try { if (!fs.realpathSync(dir).includes('/devices/virtual/')) return false; } catch { return false; }
+  if (depth >= 4) return true;
+  let lowers: string[] = [];
+  try { lowers = fs.readdirSync(dir).filter(e => e.startsWith('lower_')).map(e => e.slice('lower_'.length)); } catch { /* kart gitti */ }
+  return !lowers.some(l => !isVirtualIface(l, depth + 1));
+}
+
 export async function detectInterfaces(): Promise<{ wan: string; lan: string }> {
   const ns = readNetModeState();
   // İnternet kartı modu: iki ayrı kart — internet tarafı adres/rota arayüzü (kart / VLAN / PPPoE), ev ağı eth0 / br0.
@@ -1134,7 +1149,7 @@ export async function detectInterfaces(): Promise<{ wan: string; lan: string }> 
     const addrs: any[] = JSON.parse((await run('ip -j -4 addr show 2>/dev/null')) || '[]');
     for (const a of addrs) {
       if (!a.ifname || a.ifname === wan || (apIface && a.ifname === apIface) || /^(wg|lo|docker|veth|br-)/.test(a.ifname)
-        || bakIfs.includes(a.ifname)) continue;
+        || bakIfs.includes(a.ifname) || isVirtualIface(a.ifname)) continue;
       const ips = (a.addr_info || []).filter((x: any) => x.family === 'inet' && x.local).map((x: any) => x.local);
       const outside = (ip: string) => !!id
         && !sameSubnet(ip, id.transit.ip, id.transit.prefix) && !sameSubnet(ip, id.client.ip, id.client.prefix);
@@ -1146,6 +1161,7 @@ export async function detectInterfaces(): Promise<{ wan: string; lan: string }> 
   const links = (await run('ls /sys/class/net 2>/dev/null')).split(/\s+/).filter(Boolean);
   const lan = links.find(l =>
     l !== 'lo' && l !== wan && !l.startsWith('wg') && !l.startsWith('docker') && !l.startsWith('veth') && !l.startsWith('br-')
+    && !isVirtualIface(l)
   ) || (wan === 'eth0' ? 'wlan0' : 'eth0');
   return { wan, lan };
 }
