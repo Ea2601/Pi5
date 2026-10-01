@@ -47,7 +47,8 @@ function withLengths(d: string, pts: Pt[]): PathGeom {
   return { d, pts, cum, len: cum[cum.length - 1] };
 }
 
-// Yolları uç uca ekler; aradaki boşluk (kartın içi) düz çizgiyle geçilir — parçacık kartın arkasından geçer.
+// Yolları uç uca ekler; aradaki boşluk (kartın içi) düz çizgiyle geçilir — parçacık orada gizlenir, kartın ledi yanar
+// (NetworkTopology parçacık motoru).
 export function joinPaths(paths: PathGeom[]): PathGeom {
   const pts: Pt[] = [];
   for (const p of paths) pts.push(...p.pts);

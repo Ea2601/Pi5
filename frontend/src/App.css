@@ -826,7 +826,10 @@ body.nav-open { overflow: hidden; }
 .topo-t-sub { fill: var(--text-secondary); }
 .topo-t-rate { fill: var(--text-primary); opacity: 0.85; font-variant-numeric: tabular-nums; }
 .topo-t-mono { fill: var(--text-secondary); font-family: var(--font-mono); }
-.topo-status { fill: var(--text-muted); }
+/* Durum ledi: boştayken durum rengi; trafik kartın içinden geçtikçe parçacık motoru kısa yakar (yol rengi, büyür) ve arada
+   söndürür — sunucu ledi gibi titrer. Kenar parıltısı (topo-blink) pakette yanar, yavaşça söner. Hareket azaltmada titreşim yok. */
+.topo-status { fill: var(--text-muted); transform-box: fill-box; transform-origin: center; }
+.topo-blink { fill: none; stroke: var(--success-color); stroke-width: 1.6; vector-effect: non-scaling-stroke; opacity: 0; pointer-events: none; }
 .topo-status.is-on { fill: var(--success-color); opacity: 0.55; }
 .topo-status.is-active, .topo-status.is-ok { fill: var(--success-color); }
 .topo-status.is-stale { fill: var(--warning-color); }

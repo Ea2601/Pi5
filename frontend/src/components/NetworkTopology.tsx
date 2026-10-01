@@ -8,8 +8,9 @@ import { CAT_ICON, CAT_LABEL, CONTENT_ORDER, type ContentCat } from './contentCa
 import './TopologyContent.css';
 
 // Canlı ağ haritası: cihaz → erişim (kablolu / Wi-Fi) → Pi → çıkış (yerel / DPI / VPS tüneli) → internet. Veri /api/topology/live (3 sn):
-// cihaz başı, bağlantı türü başı gerçek sayaçlar. Hareketli parçacıklar gerçek trafiktir (hızla yoğunlaşır); boştaki
-// yollar kesikli çizilir. "Önizleme" tüm yolları temsili akışla gösterir ve bunu açıkça belirtir.
+// cihaz başı, bağlantı türü başı gerçek sayaçlar. Hareketli parçacıklar gerçek trafiktir (hızla yoğunlaşır); yalnız kartlar
+// arasındaki çizgilerde görünür — kartın içinden geçerken gizlenir ve kartın durum ledi sunucu ledi gibi yanıp söner, kenarı
+// parlar. Boştaki yollar kesikli çizilir. "Önizleme" tüm yolları temsili akışla gösterir ve bunu açıkça belirtir.
 
 type Flow = { exit: ExitId; dpiRequested: boolean; downBps: number; upBps: number; bytesDown: number; bytesUp: number };
 // Bağlantı türü (arka uç linkProbe.ts): ARP yanıt süresi + gizli MAC / cihaz türü ipuçları; Kurulum Wi-Fi'ı ve Ev VPN'i
@@ -187,6 +188,13 @@ function dominantCls(d: TopoDevice): Cls {
 
 // ─── Düğüm çizimleri ───
 
+// Etkinlik: kartın durum ledi (data-led) ve kenar parıltısı (data-blink). Trafik kartın içinden geçtikçe parçacık motoru
+// bunları doğrudan yakar (inline stil; React bu stillere dokunmaz). Hareket azaltmada titreşim yok: led sınıfıyla sabit yanar.
+const ledKey = { dev: (mac: string) => `dev:${mac}`, exit: (id: ExitId) => `exit:${id}`, pi: 'pi', net: 'net' } as const;
+function Blink({ id, b, rx }: { id: string; b: Box; rx: number }) {
+  return <rect x={b.x} y={b.y} width={b.w} height={b.h} rx={rx} className="topo-blink" data-blink={id} />;
+}
+
 type DeviceNodeProps = { d: TopoDevice; b: Box; lod: 0 | 1 | 2; mode: LayoutMode; exitsById: Map<ExitId, TopoExit>; onPick: (d: TopoDevice) => void; hl: boolean };
 function DeviceNode({ d, b, lod, mode, exitsById, onPick, hl }: DeviceNodeProps) {
   const cy = b.y + b.h / 2;
@@ -238,11 +246,13 @@ function DeviceNode({ d, b, lod, mode, exitsById, onPick, hl }: DeviceNodeProps)
       onClick={() => onPick(d)} onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onPick(d); } }}>
       <title>{label}</title>
       <rect x={b.x} y={b.y} width={b.w} height={b.h} rx={10} className="topo-card" />
+      <Blink id={ledKey.dev(d.mac)} b={b} rx={10} />
       <circle cx={icx} cy={icy} r={iconR} className={`topo-icon-bg topo-c-${dominantCls(d)}`} />
       <svg x={icx - iconR * 0.6} y={icy - iconR * 0.6} width={iconR * 1.2} height={iconR * 1.2} viewBox="0 0 24 24" className="topo-icon" overflow="visible">
         {d.vpn ? <ShieldCheck size={24} strokeWidth={1.8} /> : deviceIcon(d.type, 24)}
       </svg>
-      <circle cx={b.x + b.w - 9} cy={b.y + 9} r={3} className={`topo-status ${d.blocked ? 'is-blocked' : active ? 'is-active' : d.online ? 'is-on' : 'is-off'}`} />
+      <circle cx={b.x + b.w - 9} cy={b.y + 9} r={3} data-led={ledKey.dev(d.mac)}
+        className={`topo-status ${d.blocked ? 'is-blocked' : active ? 'is-active' : d.online ? 'is-on' : 'is-off'}`} />
       {body}
       {content.length > 0 && <ContentBadges list={content} b={b} r={br} />}
     </g>
@@ -292,8 +302,12 @@ function AccessNode({ id, b, lod, mode, st, onPick, hl }: AccessNodeProps) {
       onClick={() => onPick(id)} onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onPick(id); } }}>
       <title>{aria}</title>
       <rect x={b.x} y={b.y} width={b.w} height={b.h} rx={mode === 'narrow' ? 9 : 10} className="topo-card" />
+      <Blink id={id} b={b} rx={mode === 'narrow' ? 9 : 10} />
       <svg x={icon.x} y={icon.y} width={icon.s} height={icon.s} viewBox="0 0 24 24" className="topo-icon">{accessIcon(id)}</svg>
       {body}
+      {/* Dar düzende sağda hız yazısı var: led sol alt köşede */}
+      <circle cx={mode === 'narrow' ? b.x + 6 : b.x + b.w - 9} cy={mode === 'narrow' ? b.y + b.h - 6 : b.y + 9} r={mode === 'narrow' ? 2.2 : 3}
+        data-led={id} className={`topo-status ${st.down + st.up > 0 ? 'is-active' : st.online ? 'is-on' : 'is-off'}`} />
     </g>
   );
 }
@@ -354,16 +368,26 @@ function ExitNode({ x, b, lod, mode, onPick, hl }: ExitNodeProps) {
       onClick={() => onPick(x)} onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onPick(x); } }}>
       <title>{label}</title>
       <rect x={b.x} y={b.y} width={b.w} height={b.h} rx={10} className="topo-card" />
+      <Blink id={ledKey.exit(x.id)} b={b} rx={10} />
       <rect x={b.x + 5} y={b.y + 9} width={3} height={b.h - 18} rx={1.5} className="topo-bar" />
-      {x.kind === 'vps' && <circle cx={b.x + b.w - (big ? 7 : 9)} cy={b.y + (big ? 7 : 9)} r={big ? 2.5 : 3} className={`topo-status is-${health}`} />}
+      <circle cx={b.x + b.w - (big ? 7 : 9)} cy={b.y + (big ? 7 : 9)} r={big ? 2.5 : 3} data-led={ledKey.exit(x.id)}
+        className={`topo-status ${x.kind === 'vps' ? `is-${health}` : x.downBps + x.upBps > 0 ? 'is-active' : 'is-on'}`} />
       {body}
     </g>
   );
 }
 
-// Parçacık: gerçek (ya da önizleme) akışın bir "paketi". Rota = cihaz → Pi → çıkış → internet; indirme ters yönde.
+// Parçacık: gerçek (ya da önizleme) akışın bir "paketi". Rota = cihaz → erişim → Pi → çıkış → internet; indirme ters yönde.
+// Bağlantı çizgileri kart kenarlarında biter, rota onları kartın içinden düz geçişlerle birleştirir (gaps): parçacık orada
+// gizlenir ve o kartın ledi yanar; uçlarda (cihaz / internet kartı) da çıkarken ve varınca yanar.
+type Route = { geom: PathGeom; gaps: { a: number; b: number; node: string }[] };
 type Emitter = { mac: string; exit: ExitId; cls: Cls; down: number; up: number; speed: number; size: number; accD: number; accU: number };
-type Particle = { el: SVGCircleElement; route: PathGeom; s: number; dir: 1 | -1; speed: number; size: number; mac: string; exit: ExitId; acc: AccessId | undefined; dim: boolean };
+type Particle = { el: SVGCircleElement; route: Route; s: number; dir: 1 | -1; speed: number; size: number; mac: string; exit: ExitId; cls: Cls; acc: AccessId | undefined; dim: boolean; gap: number; hidden: boolean };
+// Led: paket başına kısa yanma + zorunlu kısa sönme (yoğun trafikte sürekli değil titrek yanar); son paketten sonra bir süre
+// sönük kalır, sonra durum rengine döner. Kenar her pakette parlar ve hızla söner (ledle aynı ritim, sert kesik yok).
+const LED_ON_MS = 70, LED_OFF_MS = 55, LED_IDLE_MS = 450, GLOW_TAU_S = 0.12;
+const LED_COLOR: Record<Cls, string> = { local: 'var(--success-color)', dpi: 'var(--topo-dpi)', vps: 'var(--topo-vps)', none: 'var(--text-muted)' };
+type Led = { onUntil: number; next: number; last: number; glow: number; color: string; lit: boolean; dimmed: boolean; led: SVGElement | null; card: SVGElement | null };
 const emitRate = (bps: number) => (bps < 64 ? 0 : 0.5 + 6.5 * level(bps));
 
 export function NetworkTopology() {
@@ -647,7 +671,7 @@ export function NetworkTopology() {
   const emitters = useRef(new Map<string, Emitter>());
   const particles = useRef<Particle[]>([]);
   const pool = useRef<SVGCircleElement[]>([]);
-  const routes = useRef(new Map<string, PathGeom>());
+  const routes = useRef(new Map<string, Route>());
   const [reduced, setReduced] = useState(() => typeof window !== 'undefined' && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
   useEffect(() => {
     const mq = window.matchMedia('(prefers-reduced-motion: reduce)');
@@ -691,19 +715,60 @@ export function NetworkTopology() {
   useEffect(() => {
     const layer = partRef.current;
     if (!layer || reduced) return;
+    const svg = layer.ownerSVGElement;
     let raf = 0, last = performance.now(), lastK = -1, lastSel = '';
-    const routeFor = (mac: string, exit: ExitId): PathGeom | null => {
+    const routeFor = (mac: string, exit: ExitId): Route | null => {
       const key = `${mac}|${exit}`;
       let r = routes.current.get(key);
       if (!r) {
         const lay = layoutRef.current;
         const acc = accOfRef.current.get(mac);
         const a = lay.devLink.get(mac), m = acc ? lay.accessLink.get(acc) : undefined, b = lay.exitLink.get(exit), c = lay.netLink.get(exit);
-        if (!a || !m || !b || !c) return null;
-        r = joinPaths([a, m, b, c]);
+        if (!acc || !a || !m || !b || !c) return null;
+        // Parçalar arasındaki düz geçiş kartın içidir: erişim, Pi, çıkış kartı.
+        const parts = [a, m, b, c], nodes = [acc, ledKey.pi, ledKey.exit(exit)];
+        const gaps: Route['gaps'] = [];
+        let off = 0;
+        parts.forEach((pt, i) => {
+          off += pt.len;
+          if (i === parts.length - 1) return;
+          const e = pt.pts[pt.pts.length - 1], n = parts[i + 1].pts[0];
+          const g = Math.hypot(n.x - e.x, n.y - e.y);
+          gaps.push({ a: off, b: off + g, node: nodes[i] });
+          off += g;
+        });
+        r = { geom: joinPaths(parts), gaps };
         routes.current.set(key, r);
       }
       return r;
+    };
+    const leds = new Map<string, Led>();
+    const flash = (node: string, cls: Cls, now: number) => {
+      let l = leds.get(node);
+      if (!l) { l = { onUntil: 0, next: 0, last: 0, glow: 0, color: '', lit: false, dimmed: false, led: null, card: null }; leds.set(node, l); }
+      l.glow = 1; l.last = now; l.color = LED_COLOR[cls];
+      if (now >= l.next) { l.onUntil = now + LED_ON_MS; l.next = now + LED_ON_MS + LED_OFF_MS; }
+    };
+    const find = (sel: string) => (svg ? svg.querySelector<SVGElement>(sel) : null);
+    const paintLeds = (now: number, dt: number) => {
+      for (const [node, l] of leds) {
+        if (!l.led?.isConnected) l.led = find(`[data-led="${CSS.escape(node)}"]`);
+        if (!l.card?.isConnected) l.card = find(`[data-blink="${CSS.escape(node)}"]`);
+        const lit = now < l.onUntil;
+        const busy = now - l.last < LED_IDLE_MS;
+        if (l.led && (lit !== l.lit || busy !== l.dimmed)) {
+          l.led.style.fill = lit ? l.color : '';
+          l.led.style.opacity = lit ? '1' : busy ? '0.22' : '';
+          l.led.style.transform = lit ? 'scale(1.35)' : '';
+          l.lit = lit; l.dimmed = busy;
+        }
+        l.glow *= Math.exp(-dt / GLOW_TAU_S);
+        if (l.card) {
+          if (l.glow > 0.03) { l.card.style.stroke = l.color; l.card.style.opacity = (0.75 * l.glow).toFixed(2); }
+          else l.card.style.opacity = '';
+        }
+        if (!busy && !lit && l.glow <= 0.03) leds.delete(node);
+      }
     };
     const spawn = (em: Emitter, dir: 1 | -1) => {
       if (particles.current.length >= MAX_PARTICLES) return;
@@ -714,7 +779,9 @@ export function NetworkTopology() {
       el.setAttribute('class', `topo-p topo-c-${em.cls}`);
       el.style.display = '';
       el.style.opacity = '';
-      particles.current.push({ el, route, s: dir === 1 ? 0 : route.len, dir, speed: em.speed * (0.9 + Math.random() * 0.2), size: em.size, mac: em.mac, exit: em.exit, acc: accOfRef.current.get(em.mac), dim: false });
+      el.style.visibility = 'hidden'; // başlangıçta kartın içinde (cihaz / internet)
+      particles.current.push({ el, route, s: dir === 1 ? 0 : route.geom.len, dir, speed: em.speed * (0.9 + Math.random() * 0.2), size: em.size, mac: em.mac, exit: em.exit, cls: em.cls, acc: accOfRef.current.get(em.mac), dim: false, gap: -1, hidden: true });
+      flash(dir === 1 ? ledKey.dev(em.mac) : ledKey.net, em.cls, performance.now());
       lastK = -1; // yeni parçacığa boyut/soluklaştırma uygulansın
     };
     const frame = (now: number) => {
@@ -733,10 +800,26 @@ export function NetworkTopology() {
       const alive: Particle[] = [];
       for (const p of particles.current) {
         p.s += p.dir * p.speed * dt;
-        if (p.s < 0 || p.s > p.route.len) { p.el.style.display = 'none'; pool.current.push(p.el); continue; }
-        const pt = pointAt(p.route, p.s);
-        p.el.setAttribute('cx', pt.x.toFixed(1));
-        p.el.setAttribute('cy', pt.y.toFixed(1));
+        const len = p.route.geom.len;
+        if (p.s < 0 || p.s > len) {
+          flash(p.s < 0 ? ledKey.dev(p.mac) : ledKey.net, p.cls, now);
+          p.el.style.display = 'none'; pool.current.push(p.el); continue;
+        }
+        // Kartın içinde (kenardan parçacık yarıçapı kadar pay): gizli; yeni bir karta girince o kartın ledi yanar.
+        const pad = (1.9 + 1.7 * p.size) / Math.sqrt(k);
+        let gap = -1;
+        for (let i = 0; i < p.route.gaps.length; i++) {
+          const g = p.route.gaps[i];
+          if (p.s > g.a - pad && p.s < g.b + pad) { gap = i; break; }
+        }
+        if (gap !== p.gap) { if (gap >= 0) flash(p.route.gaps[gap].node, p.cls, now); p.gap = gap; }
+        const hidden = gap >= 0 || p.s < pad || p.s > len - pad;
+        if (hidden !== p.hidden) { p.hidden = hidden; p.el.style.visibility = hidden ? 'hidden' : ''; }
+        if (!hidden) {
+          const pt = pointAt(p.route.geom, p.s);
+          p.el.setAttribute('cx', pt.x.toFixed(1));
+          p.el.setAttribute('cy', pt.y.toFixed(1));
+        }
         if (restyle) {
           p.el.setAttribute('r', ((1.9 + 1.7 * p.size) / Math.sqrt(k)).toFixed(2));
           const dim = !!s && (s.kind === 'device' ? p.mac !== s.id : s.kind === 'exit' ? p.exit !== s.id : p.acc !== s.id);
@@ -745,6 +828,7 @@ export function NetworkTopology() {
         alive.push(p);
       }
       particles.current = alive;
+      paintLeds(now, dt);
       lastK = k; lastSel = selKey;
       raf = requestAnimationFrame(frame);
     };
@@ -833,6 +917,9 @@ export function NetworkTopology() {
                 <g className="topo-nodes">
                   <g className="topo-node topo-net is-hl">
                     <rect x={net.x} y={net.y} width={net.w} height={net.h} rx={net.h / 2} className="topo-card" />
+                    <Blink id={ledKey.net} b={net} rx={net.h / 2} />
+                    <circle cx={net.x + net.w - net.h / 2} cy={net.y + net.h / 2} r={3} data-led={ledKey.net}
+                      className={`topo-status ${total.down + total.up > 0 ? 'is-active' : 'is-on'}`} />
                     <svg x={net.x + 12} y={net.y + net.h / 2 - 8} width={16} height={16} viewBox="0 0 24 24" className="topo-icon"><Globe size={24} strokeWidth={1.8} /></svg>
                     <text x={net.x + 34} y={net.y + net.h / 2 + (lod === 2 ? -1 : 4)} className="topo-t-name" fontSize={lod === 2 ? 9 : 11.5}>İnternet</text>
                     {lod === 2 && <text x={net.x + 34} y={net.y + net.h / 2 + 8} className="topo-t-rate" fontSize={6}>{rates(total.down, total.up)}</text>}
@@ -844,6 +931,9 @@ export function NetworkTopology() {
                   })}
                   <g className="topo-node topo-pi is-hl" aria-label={`Klyrix Gate ${data.gateway.lanIp}`}>
                     <rect x={pi.x} y={pi.y} width={pi.w} height={pi.h} rx={12} className="topo-card" />
+                    <Blink id={ledKey.pi} b={pi} rx={12} />
+                    <circle cx={pi.x + pi.w - 10} cy={pi.y + 10} r={3} data-led={ledKey.pi}
+                      className={`topo-status ${total.down + total.up > 0 ? 'is-active' : 'is-on'}`} />
                     <svg x={pi.x + 12} y={pi.y + pi.h / 2 - 10} width={20} height={20} viewBox="0 0 24 24" className="topo-icon"><Router size={24} strokeWidth={1.8} /></svg>
                     <text x={pi.x + 40} y={pi.y + pi.h / 2 - (lod === 0 ? -4 : 3)} className="topo-t-name" fontSize={lod === 0 ? 13 : 11.5}>Klyrix Gate</text>
                     {lod > 0 && <text x={pi.x + 40} y={pi.y + pi.h / 2 + 10} className="topo-t-mono" fontSize={lod === 2 ? 7 : 8.5}>{data.gateway.lanIp || '—'}</text>}
@@ -888,7 +978,7 @@ export function NetworkTopology() {
                   <span className="topo-c-local"><i />Yerel</span>
                   <span className="topo-c-dpi"><i />DPI (istenen)</span>
                   <span className="topo-c-vps"><i />VPS tüneli</span>
-                  <span className="topo-legend-note">{reduced ? 'Kalın çizgi = trafik var' : 'Akan noktalar = gerçek trafik'}{lod < 2 ? ' · ayrıntı için yakınlaştırın' : ''}</span>
+                  <span className="topo-legend-note">{reduced ? 'Kalın çizgi, yeşil led = trafik var' : 'Akan noktalar = gerçek trafik · yanıp sönen led = karttan geçen trafik'}{lod < 2 ? ' · ayrıntı için yakınlaştırın' : ''}</span>
                   {(contentCats.length > 0 || (data.content && !data.content.available)) && (
                     <span className="topo-legend-content" title={`Cihazın son ${contentMin} dk'da sorduğu alan adlarından (Pi-hole). Çizgili rozet = engellendi, soluk = ${FRESH_S} sn'den eski.`}>
                       {contentCats.map(c => {
