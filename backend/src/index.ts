@@ -56,6 +56,8 @@ import { startReachWatch, noteReachResult, reachWatchState, REACH_WATCH_INTERVAL
 import { storageStatus, storageJob, noteStorageJob, startArchive, startPrepare, startMigrate, startStorageWatch } from './storage';
 import { applyKiosk, kioskSupport } from './kiosk';
 import { shareStatus, enableShare, disableShare, setSharePassword, addUsbShare, removeUsbShare, startShareWatch } from './share';
+import { vaultStatus, vaultJob, noteVaultJob, connectVault, saveSettings, startBackup, listSnapshots, disableVault,
+  startVaultWatch, vaultLeftover, vaultBlocksSatellite } from './vault';
 import { rulesWithStatus as parentalRulesWithStatus, createRule as createParentalRule, updateRule as updateParentalRule,
   deleteRule as deleteParentalRule, startParental, CATEGORIES as PARENTAL_CATEGORIES } from './parental';
 import { noteContentView, contentForClients, contentStatus } from './contentActivity';
@@ -155,7 +157,7 @@ app.use('/api', authGate);
 // terminali çalıştıramasın). Ağ uçlarındaki (netmode, wan …) denetimin aynısı; localhost (kiosk) ve IP güvenilir.
 // netAdminGuard aşağıda tanımlı: istek anında çağrılır.
 app.use(['/api/terminal', '/api/cron', '/api/backup', '/api/system', '/api/services', '/api/storage', '/api/firewall',
-  '/api/fail2ban', '/api/unbound', '/api/bandwidth'], (req, res, next) => { void netAdminGuard(req, res, next); });
+  '/api/fail2ban', '/api/unbound', '/api/bandwidth', '/api/vault'], (req, res, next) => { void netAdminGuard(req, res, next); });
 // Uzaktan yönetim anahtarı (VPS istemcisine panel erişimi, remoteAccess.ts): yalnız bu yol — /api/vps'in geri kalanı değil.
 app.use('/api/vps/:id/clients/:clientId/panel-access', writeLimiter, (req, res, next) => { void netAdminGuard(req, res, next); });
 registerAuthRoutes(app);
@@ -4011,6 +4013,9 @@ app.post('/api/system/role', netAdminGuard, async (req, res) => {
   try {
     if (role === readRole()) return res.json({ success: true, restart: false });
     if (role === 'satellite') {
+      // Bulut yedeği uyduda yönetilemez (uçlar 409): erişim / cihaz anahtarı cihazda kalmasın, süren yedek izlenmez kalmasın
+      const vb = await vaultBlocksSatellite();
+      if (vb) return res.status(409).json({ error: vb });
       const ns = readNetModeState();
       if (ns && ns.stage !== 'none') return res.status(409).json({ error: 'Önce menü → DHCP Ayarları\'ndan otomatik adrese dönün (sabit adres ana cihaz içindir)' });
       if (ns && ns.homeStage !== 'none') return res.status(409).json({ error: "Önce ev Wi-Fi'ını kapatın (Cihaz Rolleri → Ev Wi-Fi'ı)" });
@@ -4343,20 +4348,25 @@ async function applyRestored(tables: Set<string>, keys: Set<string>, req: expres
   return out;
 }
 
+// Yedeğin içeriği (tek kaynak): indirilen yedek dosyası ve bulut yedeğinin config.json'u (vault.ts) aynı nesnedir.
+async function buildBackupExport(): Promise<{ backup_version: number; created_at: string; data: Record<string, any[]> }> {
+  const configTables: Record<string, any[]> = {};
+  for (const t of BACKUP_TABLES) {
+    configTables[t] = t === 'dhcp_leases'
+      ? await dbAll('SELECT * FROM dhcp_leases WHERE is_static = 1')
+      : await dbAll(`SELECT * FROM ${t}`);
+  }
+
+  return {
+    backup_version: 2,
+    created_at: new Date().toISOString(),
+    data: configTables,
+  };
+}
+
 app.get('/api/backup/export', async (_req, res) => {
   try {
-    const configTables: Record<string, any[]> = {};
-    for (const t of BACKUP_TABLES) {
-      configTables[t] = t === 'dhcp_leases'
-        ? await dbAll('SELECT * FROM dhcp_leases WHERE is_static = 1')
-        : await dbAll(`SELECT * FROM ${t}`);
-    }
-
-    res.json({
-      backup_version: 2,
-      created_at: new Date().toISOString(),
-      data: configTables,
-    });
+    res.json(await buildBackupExport());
   } catch (e: any) {
     res.status(500).json({ error: e.message });
   }
@@ -4419,6 +4429,59 @@ app.post('/api/backup/import', async (req, res) => {
     res.status(500).json({ error: e.message });
   }
 });
+
+// ─── Bulut Yedeği (vault.ts → scripts/vault.sh, pi5-vault birimi) ───
+// Kullanıcının kendi S3 uyumlu kovasına restic ile şifreli yedek. Bağlanma ve yedek işleri hemen döner; panel ilerlemeyi
+// /api/vault/job'dan izler. Gizli erişim anahtarı ve parola hiçbir yanıtta, günlükte ya da app_settings'te yer almaz.
+// Yazma uçları netAdminGuard (yukarıdaki önek listesi) + writeLimiter; uyduda tüm uçlar 409 (yedek ana cihazdadır) —
+// yalnız yerel silme (disable, anahtar silmeden) geçer: uydu olarak yeniden kurulan eski ana cihazda erişim ve cihaz
+// anahtarı kalmasın (409 yanıtındaki leftover bunu panele söyler).
+app.use('/api/vault', (req, res, next) => {
+  if (isSatellite() && !(req.method === 'POST' && req.path === '/disable' && req.body?.removeKey !== true)) {
+    return res.status(409).json({ error: 'Bu cihaz uydu — bulut yedeği ana cihazdadır', leftover: vaultLeftover() });
+  }
+  if (req.method !== 'GET') return writeLimiter(req, res, next);
+  next();
+});
+const vaultRoute = (fn: (req: express.Request) => Promise<unknown>) => async (req: express.Request, res: express.Response) => {
+  try {
+    res.json({ success: true, ...((await fn(req)) as object || {}) });
+  } catch (e: any) {
+    res.status(400).json({ error: e.message });
+  }
+};
+app.get('/api/vault', async (_req, res) => {
+  try {
+    res.json(await vaultStatus());
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+app.get('/api/vault/job', async (_req, res) => {
+  try {
+    const j = await vaultJob();
+    if (j.state === 'done' || j.state === 'failed') void noteVaultJob();
+    res.json(j);
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+app.get('/api/vault/snapshots', async (req, res) => {
+  try {
+    res.json(await listSnapshots(req.query.repo));
+  } catch (e: any) {
+    res.status(400).json({ error: e.message });
+  }
+});
+app.post('/api/vault/connect', vaultRoute(req => connectVault(req.body || {})));
+app.post('/api/vault/settings', vaultRoute(req => saveSettings(req.body || {}).then(() => vaultStatus())));
+app.post('/api/vault/backup', vaultRoute(req => {
+  const what = req.body?.what;
+  if (what !== 'config' && what !== 'all') throw new Error("what 'config' ya da 'all' olmalı");
+  return startBackup(what);
+}));
+app.post('/api/vault/disable', vaultRoute(req => disableVault(req.body || {})));
+startVaultWatch({ exportConfig: buildBackupExport });
 
 // ─── Depolama (storage.ts): takılı diskler, bölümler, doluluk ve verilerin hangi diskte durduğu ───
 app.get('/api/storage', async (_req, res) => {

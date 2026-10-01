@@ -332,6 +332,19 @@ export function startStorageWatch(): void {
   }, 8000);
 }
 
+// Depolama işi ile bulut yedeği işi (vault.ts) aynı anda başlatılmasın: iki başlatıcı da birim durumu denetiminden
+// systemd-run dönene kadar bu kapıyı tutar (bulut yedeği arada ayar dökümünü hazırlar — denetim ile başlatma arasında
+// öbürü araya giremez). Değer: kapıyı tutanın adı ('' = boş).
+let jobGate = '';
+export function holdJobGate(owner: 'storage' | 'vault'): string {
+  if (jobGate) return jobGate;
+  jobGate = owner;
+  return '';
+}
+export function freeJobGate(owner: 'storage' | 'vault'): void {
+  if (jobGate === owner) jobGate = '';
+}
+
 let launching = false;
 // script / scriptCmd: paylaşım işi (share.ts) aynı birimi ve durum dosyasını scripts/share.sh ile kullanır.
 export async function launchStorageJob(cmd: StorageCmd, args: string[], startMsg: string, script = SCRIPT, scriptCmd: string = cmd): Promise<{ id: string }> {
@@ -340,10 +353,13 @@ export async function launchStorageJob(cmd: StorageCmd, args: string[], startMsg
   if (launching) throw new Error('Bir depolama işi başlatılıyor');
   launching = true;
   try {
-    const [unit, upd] = await Promise.all([unitState(STORAGE_UNIT), unitState('pi5-update')]);
-    if (unit === 'unknown' || upd === 'unknown') throw new Error('İş durumu okunamadı (systemctl) — birazdan yeniden deneyin');
+    if (holdJobGate('storage')) throw new Error('Bulut yedeği işi başlatılıyor — bitince yeniden deneyin');
+    // Bulut yedeği (vault.ts, pi5-vault) paylaşım klasörlerini okurken hazırlama / taşıma onları ayıramaz ("kullanımda")
+    const [unit, upd, vault] = await Promise.all([unitState(STORAGE_UNIT), unitState('pi5-update'), unitState('pi5-vault')]);
+    if (unit === 'unknown' || upd === 'unknown' || vault === 'unknown') throw new Error('İş durumu okunamadı (systemctl) — birazdan yeniden deneyin');
     if (unit === 'active') throw new Error('Bir depolama işi zaten sürüyor');
     if (upd === 'active') throw new Error('Panel güncellemesi sürüyor — bitince yeniden deneyin');
+    if (vault === 'active') throw new Error('Bulut yedeği sürüyor — bitince yeniden deneyin');
     // Kilit: güncelleme sonrası denetim (storage.sh ensure) ya da elle başlatılmış bir komut sürüyorsa bekle
     try {
       await execFileP('flock', ['-n', JOB_LOCK, 'true'], { timeout: 5000 });
@@ -372,6 +388,7 @@ export async function launchStorageJob(cmd: StorageCmd, args: string[], startMsg
     watchJob();
     return { id };
   } finally {
+    freeJobGate('storage');
     launching = false;
   }
 }

@@ -1,7 +1,7 @@
 import {
   BookOpen, ShieldBan, Zap, Flame, Globe, Server, ShieldAlert,
   Clock, Network, Route, ChevronDown, ChevronRight, Terminal,
-  AlertTriangle, CheckCircle, Info, Cpu, Smartphone
+  AlertTriangle, CheckCircle, Info, Cpu, Smartphone, Cloud
 } from 'lucide-react';
 import { useState } from 'react';
 import { Panel, Badge } from './ui';
@@ -98,6 +98,13 @@ export function DocsPanel() {
       title: 'Cron & Bakım',
       icon: <Clock size={15} />,
       content: <CronDoc />,
+    },
+    {
+      id: 'vault',
+      title: 'Bulut Yedeği',
+      icon: <Cloud size={15} />,
+      badge: 'Yedek',
+      content: <VaultDoc />,
     },
     {
       id: 'troubleshooting',
@@ -635,6 +642,56 @@ function CronDoc() {
       </DocBlock>
 
       <DocTip>Cron görevlerini "Sistem & Log" sayfasından yönetebilir, yeni görev ekleyebilir veya mevcut görevleri düzenleyebilirsiniz.</DocTip>
+    </div>
+  );
+}
+
+function VaultDoc() {
+  return (
+    <div className="doc-page">
+      <h3>Bulut Yedeği</h3>
+      <p>Yedekleme sayfasındaki «Bulut Yedeği», panel ayarlarınızı (isterseniz seçtiğiniz klasörleri de) <strong>kendi</strong> S3
+        uyumlu depolama hesabınıza şifreli olarak yükler: Cloudflare R2, Backblaze B2, AWS S3 ya da MinIO gibi bir özel depo.
+        Klyrix'in sunucusu yoktur; hesabınızı, anahtarlarınızı ve yedeklerinizi görmez. Bağlamadığınız sürece cihazdan hiçbir
+        şey çıkmaz.</p>
+
+      <DocBlock title="Ne yedeklenir">
+        <table className="doc-table">
+          <tbody>
+            <tr><td>Ayarlar (her gün)</td><td>İndirilen yedek dosyasının aynısı: servis ayarları, yönlendirme ve güvenlik duvarı kuralları, listeler, cihaz kuralları, Cron görevleri, statik DHCP kayıtları + panel sürümü ve cihaz bilgisi</td></tr>
+            <tr><td>Klasörler (isteğe bağlı)</td><td>Paylaşım alanı, ağda paylaşılan USB diskler, ev dizinleri ve /srv altından seçtikleriniz. Sistem klasörleri ve eski sistem arşivleri seçilemez; ev dizinindeki bir eski sistem arşivinin etc / root / opt klasörleri yedeğe girmez</td></tr>
+            <tr><td>Gizli anahtarlar (varsayılan kapalı)</td><td>VPS SSH bilgileri ve tünel anahtarları, VPN istemcileri, Ev VPN'i anahtarları, DDNS anahtarları — yalnız ayarlardan açarsanız. Sonradan kapatırsanız önceki anlık görüntülerde saklama süresi dolana kadar kalırlar</td></tr>
+          </tbody>
+        </table>
+      </DocBlock>
+
+      <DocBlock title="Şifreleme ve anahtarlar">
+        <p>Yedekler <strong>restic</strong> ile cihazda şifrelenir (AES-256), sonra yüklenir; depo sağlayıcısı içeriği göremez.
+          Bağlanırken yazdığınız parola cihazda saklanmaz: cihaz depoya rastgele bir cihaz anahtarıyla erişir. Bulut deposunun
+          erişim anahtarı ve cihaz anahtarı cihazda yalnız root'un okuyabileceği dosyalardadır — cihaz (SD kart) ele geçirilirse
+          yedekler okunabilir ya da silinebilir, bu yüzden yalnız o kovaya yetkili bir erişim anahtarı kullanın. Anlık görüntüler
+          sürümlüdür (günlük / haftalık / aylık saklama); silinen ya da bozulan bir dosyanın eski hâli geri alınabilir.</p>
+        <DocTip type="warning">Kurtarma için <strong>kurtarma kiti + parola</strong> birlikte gerekir. Bağlanırken gösterilen kiti ve
+          parolanızı güvenli bir yerde saklayın: parolayı kaybederseniz yedekler hiç kimse tarafından açılamaz.</DocTip>
+      </DocBlock>
+
+      <DocBlock title="Zamanlama ve trafik">
+        <p>Yedek her gün seçtiğiniz saatte (varsayılan 04:30) alınır; cihaz kapalıysa açılışta, saat internetten eşitlenince
+          yakalanır. Geçici bir sorunda (internet yok, depoya ulaşılamadı) aynı gün yarım saat arayla üç kez daha denenir. Yükleme
+          sınırı koyabilirsiniz (son hız testinin yarısı önerilir). Yedek hattındayken (mobil hat) klasörler yüklenmez, yalnız
+          ayarlar yedeklenir; klasör yüklemesi sürerken yedek hattına geçilirse yükleme durur ve sonraki yedekte kaldığı yerden
+          sürer. Disk hazırlama / veri taşıma ile bulut yedeği aynı anda çalışmaz; panel güncellemesi yedeği kesmez.</p>
+      </DocBlock>
+
+      <DocBlock title="Ücret">
+        <p>Depolama ücreti ve hesap tamamen sizindir. Yalnız ayar yedeği birkaç MB'tır; klasör yedeğinin maliyeti boyutuna göre
+          değişir. Güncel fiyatlar için sağlayıcınızın sayfasına bakın. Backblaze B2'de kova ayarındaki yaşam döngüsünü «Keep
+          only the last version of the file» yapın: yoksa temizlenen eski yedekler gizlenir ama ücretlendirilmeye devam eder.</p>
+      </DocBlock>
+
+      <DocTip>Buluttan geri yükleme (yeni cihaza kurtarma) sonraki bir sürümde panele gelecek. O zamana kadar yedekler kovanızda
+        güvende kalır: indirilen kurtarma kiti dosyasında iki deponun restic adresi (…/config ve …/files) ve örnek komutlar
+        vardır; parolanızla herhangi bir bilgisayarda <code>restic … snapshots</code> / <code>restore latest</code> ile açılır.</DocTip>
     </div>
   );
 }
