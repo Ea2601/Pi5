@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo, lazy, Suspense } from 'react';
+import { useState, useEffect, useCallback, useMemo, lazy, Suspense, type ComponentType } from 'react';
 import { Loader2 } from 'lucide-react';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { Sidebar } from './components/Sidebar';
@@ -10,13 +10,11 @@ import { DhcpPanel } from './components/DhcpPanel';
 import { ZapretPanel } from './components/ZapretPanel';
 import { FirewallPanel } from './components/FirewallPanel';
 import { RoutingPanel } from './components/RoutingPanel';
-import { VpsSetup } from './components/VpsSetup';
 import { UnboundPanel } from './components/UnboundPanel';
 import { Fail2banPanel } from './components/Fail2banPanel';
 import { SystemLogs } from './components/SystemLogs';
 import { BandwidthPanel } from './components/BandwidthPanel';
 import { DnsQueryLog } from './components/DnsQueryLog';
-import { VisitHistory } from './components/VisitHistory';
 import { SpeedTestPanel } from './components/SpeedTestPanel';
 import { AlertsPanel } from './components/AlertsPanel';
 import { NetworkToolsPanel } from './components/NetworkToolsPanel';
@@ -33,7 +31,6 @@ import { StoragePanel } from './components/StoragePanel';
 import { PanelAuthBanner } from './components/PanelAuthBanner';
 import { LoginScreen } from './components/LoginScreen';
 import { NetworkBackdrop } from './components/NetworkBackdrop';
-import { RolesPanel } from './components/RolesPanel';
 import { LiveVersionNotice } from './components/LiveVersionNotice';
 import { AUTH_REQUIRED_EVENT, fetchAuthStatus, logout, type AuthStatus } from './auth';
 import type { TabId } from './types';
@@ -43,21 +40,27 @@ import { Toaster } from './toast';
 import './index.css';
 import './App.css';
 
-// Belgeler (büyük, statik metin) ayrı parça olarak yalnız sekme açılınca yüklenir: ana paket Vite'ın 1000 kB uyarı
-// sınırının altında kalsın. Güncellemeden sonra açık kalmış eski sekmede eski adlı parça artık yoktur: sayfa bir kez
-// kendiliğinden yenilenir ve yeni sürümü alır (#docs adreste kalır). React.lazy başarısız yüklemeyi saklar ("Tekrar Dene"
-// yeniden indirmez); yenilemeden sonra da yüklenemezse sekmenin hata sınırı Türkçe nedeni gösterir. Bayrak sekme
-// oturumunda: gerçekten eksik parça yenileme döngüsüne girmez; depolama yoksa yenilenmez.
+// Büyük sayfalar (Belgeler, WireGuard, Cihaz Rolleri, Ziyaret Geçmişi) ayrı parça olarak yalnız sekme açılınca yüklenir:
+// ana paket Vite'ın 1000 kB uyarı sınırının altında kalsın. Güncellemeden sonra açık kalmış eski sekmede eski adlı parça
+// artık yoktur: sayfa bir kez kendiliğinden yenilenir ve yeni sürümü alır (#sekme adreste kalır). React.lazy başarısız
+// yüklemeyi saklar ("Tekrar Dene" yeniden indirmez); yenilemeden sonra da yüklenemezse sekmenin hata sınırı Türkçe nedeni
+// gösterir. Bayrak sekme oturumunda: gerçekten eksik parça yenileme döngüsüne girmez; depolama yoksa yenilenmez.
 const CHUNK_RELOAD_KEY = 'klx-chunk-reload';
-const DocsPanel = lazy(() => import('./components/DocsPanel').then(m => {
-  try { sessionStorage.removeItem(CHUNK_RELOAD_KEY); } catch { /* depolama yok */ }
-  return { default: m.DocsPanel };
-}, () => {
-  let first = false;
-  try { first = !sessionStorage.getItem(CHUNK_RELOAD_KEY); if (first) sessionStorage.setItem(CHUNK_RELOAD_KEY, '1'); } catch { first = false; }
-  if (first) { window.location.reload(); return new Promise<never>(() => {}); }
-  throw new Error('Belgeler sayfası yüklenemedi — sayfayı yenileyin (panel güncellenmiş olabilir)');
-}));
+function lazyTab<P extends object>(load: () => Promise<ComponentType<P>>, label: string) {
+  return lazy(() => load().then(C => {
+    try { sessionStorage.removeItem(CHUNK_RELOAD_KEY); } catch { /* depolama yok */ }
+    return { default: C };
+  }, () => {
+    let first = false;
+    try { first = !sessionStorage.getItem(CHUNK_RELOAD_KEY); if (first) sessionStorage.setItem(CHUNK_RELOAD_KEY, '1'); } catch { first = false; }
+    if (first) { window.location.reload(); return new Promise<never>(() => {}); }
+    throw new Error(`${label} sayfası yüklenemedi — sayfayı yenileyin (panel güncellenmiş olabilir)`);
+  }));
+}
+const DocsPanel = lazyTab(() => import('./components/DocsPanel').then(m => m.DocsPanel), 'Belgeler');
+const VpsSetup = lazyTab(() => import('./components/VpsSetup').then(m => m.VpsSetup), 'WireGuard');
+const RolesPanel = lazyTab(() => import('./components/RolesPanel').then(m => m.RolesPanel), 'Cihaz Rolleri');
+const VisitHistory = lazyTab(() => import('./components/VisitHistory').then(m => m.VisitHistory), 'Ziyaret Geçmişi');
 const tabLoading = (
   <div style={{ textAlign: 'center', padding: 30, color: 'var(--text-muted)' }}><Loader2 size={20} className="spin" /></div>
 );
@@ -184,13 +187,13 @@ function App() {
       case 'firewall': return <FirewallPanel />;
       case 'unbound': return <UnboundPanel />;
       case 'fail2ban': return <Fail2banPanel />;
-      case 'vps': return <VpsSetup />;
-      case 'roles': return <RolesPanel />;
+      case 'vps': return <Suspense fallback={tabLoading}><VpsSetup /></Suspense>;
+      case 'roles': return <Suspense fallback={tabLoading}><RolesPanel /></Suspense>;
       case 'maintenance': return <SystemLogs />;
       case 'docs': return <Suspense fallback={tabLoading}><DocsPanel /></Suspense>;
       case 'bandwidth': return <BandwidthPanel />;
       case 'dnslog': return <DnsQueryLog />;
-      case 'visits': return <VisitHistory />;
+      case 'visits': return <Suspense fallback={tabLoading}><VisitHistory /></Suspense>;
       case 'speedtest': return <SpeedTestPanel />;
       case 'ddns': return <DdnsPanel />;
       case 'alerts': return <AlertsPanel />;

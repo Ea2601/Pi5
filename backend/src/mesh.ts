@@ -12,6 +12,8 @@
 //    ilk açılış denemedir: köprü üzerinden ana cihaza yeniden ulaşınca "sat confirm", ulaşamazsa geri alınır.
 //  - Keşif: her cihaz mDNS'te _klyrix-gate._tcp duyurur, GET /api/mesh/pair kimlik yanıtı verir; ağ geçidi + mDNS
 //    adayları yalnız adres önerir (kod şart). v2 uydu, ana cihazın adresi değişirse onu kimliğiyle yeniden bulur.
+//  - Uzaktan güncelleme (yalnız v2): ana cihaz isteği uyduya özel zarfın içinde gönderir; uydu güncellemeyi kendi
+//    güncelleme yoluyla (update.ts → GitHub) başlatır — ana cihaz kod göndermez, yalnız "şimdi" der.
 import crypto from 'crypto';
 import fs from 'fs';
 import http from 'http';
@@ -22,6 +24,7 @@ import { readHomeStations } from './homeWifi';
 import { recordEvent, recordEventOnce } from './events';
 import { getLanIdentity } from './system';
 import { readDefaultRoute } from './topology';
+import { getUpdateStatus, startUpdate, STORAGE_BUSY_MSG, UPDATE_MAX_RUNTIME_S, type UpdateStatus } from './update';
 
 export const NET_MODE_SCRIPT = '/opt/pi5-gateway/scripts/net-mode.sh';
 export const MESH_SCRIPT = '/opt/pi5-gateway/scripts/mesh.sh';
@@ -34,6 +37,11 @@ export const PAIR_MAX_FAILS = 5;
 export const SYNC_INTERVAL_MS = 60 * 1000;
 export const OFFLINE_AFTER_S = 180;
 const SAT_TRIAL_S = 180;
+// Uzaktan güncelleme: istek kimliği (nonce) 32 hex; yanıtlanmayan istek 24 saatte silinir; uydu 10 dakikada en çok bir
+// kez güncelleme başlatır (istek ne kadar gelirse gelsin).
+const NONCE_RE = /^[0-9a-f]{32}$/;
+export const UPDATE_REQ_TTL_S = 24 * 3600;
+export const UPDATE_MIN_GAP_S = 10 * 60;
 
 export type WifiConfig = { ssid: string; psk: string; band: 'bg' | 'a'; channel: number };
 export type MeshConfig = { id: string; psk: string; channel: number };
@@ -132,7 +140,8 @@ const kvErr = (r: KvResult, fb: string) => [r.kv.error || fb, r.kv.detail].filte
 // ─── Ana cihaz ───
 
 // v2 sütunları: proto (1 = taşıyıcı anahtar, 2 = şifreli kanal), last_seq (tekrar koruması), revoked_at (v2 mezar taşı:
-// kaldırılan uydu bir sonraki senkronda imzalı "kaldırıldı" yanıtını alabilsin diye anahtar 30 gün tutulur).
+// kaldırılan uydu bir sonraki senkronda imzalı "kaldırıldı" yanıtını alabilsin diye anahtar 30 gün tutulur), update_req
+// (bekleyen güncelleme isteği, JSON {nonce, at}; uydu aldığını bildirince ya da 24 saatte silinir).
 let tablesReady: Promise<void> | null = null;
 function ensureTables(): Promise<void> {
   tablesReady ??= (async () => {
@@ -143,6 +152,7 @@ function ensureTables(): Promise<void> {
     if (!cols.has('proto')) await dbRun('ALTER TABLE mesh_satellites ADD COLUMN proto INTEGER DEFAULT 1');
     if (!cols.has('last_seq')) await dbRun('ALTER TABLE mesh_satellites ADD COLUMN last_seq INTEGER DEFAULT 0');
     if (!cols.has('revoked_at')) await dbRun('ALTER TABLE mesh_satellites ADD COLUMN revoked_at INTEGER');
+    if (!cols.has('update_req')) await dbRun('ALTER TABLE mesh_satellites ADD COLUMN update_req TEXT');
   })().catch(e => { tablesReady = null; throw e; });
   return tablesReady;
 }
@@ -290,10 +300,11 @@ export async function pairSatellite(body: any, ip: string): Promise<PairV1 | Pai
   const name = cleanName(body?.name);
   const now = Math.floor(Date.now() / 1000);
   if (v2) writePeerKey(body.id, v2.key); else removePeerKey(body.id); // v1'e dönen uydunun eski v2 anahtarı kalmasın
+  // Yeniden eşleşmede önceki eşleşmenin bekleyen güncelleme isteği (update_req) taşınmaz.
   await dbRun(`INSERT INTO mesh_satellites (id, name, mac, token_hash, ip, last_seen, status, created_at, proto, last_seq, revoked_at)
     VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?, 0, NULL)
     ON CONFLICT(id) DO UPDATE SET name = excluded.name, mac = excluded.mac, token_hash = excluded.token_hash, ip = excluded.ip, last_seen = excluded.last_seen,
-      proto = excluded.proto, last_seq = 0, revoked_at = NULL`,
+      proto = excluded.proto, last_seq = 0, revoked_at = NULL, update_req = NULL`,
   [body.id, name, mac, v2 ? keyFp(v2.key) : sha256(token), ip, now, now, v2 ? 2 : 1]);
   await recordEvent('mesh', `Uydu eklendi: ${name} (${ip})`);
   const config = await planConfig(body.id, parts); // kanal planı satır yazıldıktan sonra (yeni uydu sırada sonda)
@@ -303,6 +314,13 @@ export async function pairSatellite(body: any, ip: string): Promise<PairV1 | Pai
   return { token, config, ...(mainId ? { main_id: mainId } : {}) };
 }
 
+// Uydunun güncelleme durumu (bildirimde; günlük metni yok): running / done / failed + kısa neden + zaman (sn). req: bu iş
+// ana cihazın son isteğinin işi (uydu başlattı ya da istek geldiğinde zaten sürüyordu) — gece güncellemesi değil.
+export type UpdateState = { state: 'running' | 'done' | 'failed'; reason: string; at: number; req?: true };
+const updateStateOf = (u: any): UpdateState | null => (u && typeof u === 'object' && (u.state === 'running' || u.state === 'done' || u.state === 'failed')
+  ? { state: u.state, reason: String(u.reason || '').replace(/\s+/g, ' ').trim().slice(0, 80), at: Number.isSafeInteger(u.at) && u.at > 0 ? u.at : 0,
+    ...(u.req === true ? { req: true as const } : {}) }
+  : null);
 const satStatusOf = (raw: any) => {
   const st = raw && typeof raw === 'object' ? raw : {};
   return {
@@ -311,8 +329,105 @@ const satStatusOf = (raw: any) => {
     backhaul: st.backhaul === 'mesh' ? 'mesh' : 'wired', mesh_peers: Number(st.mesh_peers) || 0,
     stations: Array.isArray(st.stations) ? st.stations.map((m: any) => String(m).toLowerCase()).filter((m: string) => MAC_RE.test(m)).slice(0, 256) : [],
     error: String(st.error || '').slice(0, 200),
+    // Uzaktan güncelleme: update_cap (uydunun yazılımı isteği anlıyor; eski sürüm alanı hiç göndermez), son alınan istek ve
+    // öncekiler (ana cihaz bunlarla isteği kapatır), güncelleme durumu, yeni isteğin en erken kabulüne kalan süre (sn;
+    // uydunun 10 dk sınırı — panel düğmeyi o zamana dek kapatır, bildirim anına göre: last_seen + update_retry_in).
+    update_cap: st.update_cap === 1,
+    update_nonce: typeof st.update_nonce === 'string' && NONCE_RE.test(st.update_nonce) ? st.update_nonce : '',
+    update_seen: Array.isArray(st.update_seen) ? st.update_seen.filter((n: unknown): n is string => typeof n === 'string' && NONCE_RE.test(n)).slice(0, 8) : [],
+    update_state: updateStateOf(st.update_state),
+    update_retry_in: Number.isSafeInteger(st.update_retry_in) && st.update_retry_in > 0 ? Math.min(st.update_retry_in, UPDATE_MIN_GAP_S) : 0,
   };
 };
+
+// ─── Uzaktan güncelleme (ana cihaz) ───
+// İstek yalnız şifreli (v2) eşleşmeye: nonce uyduya özel zarfın içinde gider (sahte ya da araya giren bir yanıt uyduya
+// güncelleme başlatamaz). v1 eşleşmeye istek yazılmaz, v1 yanıtında hiç yoktur. Uydu güncellemeyi kendi yoluyla GitHub'dan
+// indirir (gece güncellemesinin aynısı); istek ancak "ne zaman"ı belirler.
+type UpdateReq = { nonce: string; at: number };
+function parseUpdateReq(raw: unknown): UpdateReq | null {
+  if (typeof raw !== 'string' || !raw) return null;
+  try {
+    const o = JSON.parse(raw);
+    return o && typeof o === 'object' && NONCE_RE.test(o.nonce) && Number.isSafeInteger(o.at) ? { nonce: o.nonce, at: o.at } : null;
+  } catch { return null; }
+}
+// Saat geri giderse (ileri tarihli istek) de 24 saat sınırı geçerli: istek süresiz kalmaz.
+const updateReqExpired = (r: UpdateReq, now: number) => now - r.at >= UPDATE_REQ_TTL_S || r.at - now > UPDATE_REQ_TTL_S;
+// Koşullu silme (satır o arada değişmediyse) + olay: aynı istek için tek kayıt.
+async function clearUpdateReq(id: string, raw: string, event: string, severity: 'info' | 'warning' = 'info'): Promise<boolean> {
+  if (!(await dbChanges('UPDATE mesh_satellites SET update_req = NULL WHERE id = ? AND update_req = ?', [id, raw]))) return false;
+  if (event) await recordEvent('mesh', event, severity);
+  return true;
+}
+const expiredText = (name: string) => `Uydu güncelleme isteği 24 saatte yanıtlanmadı: ${name} — istek silindi`;
+// Kullanıcı isteği (panel): bekleyen istek varken aynısını döner (çift tıklama, iki sekme yeni istek açmaz). Uydunun son
+// bildirimi isteği anladığını söylemiyorsa (bu özellikten önceki sürüm) istek yazılmaz: alan yok sayılır, istek 24 saat
+// "gönderildi" görünür, uydu gece kendini güncelleyince de bekleyen istekle ikinci kez güncellenirdi.
+export async function requestSatelliteUpdate(id: string): Promise<{ nonce: string; at: number; already: boolean }> {
+  await ensureTables();
+  const sel = () => dbGet('SELECT name, proto, status, update_req FROM mesh_satellites WHERE id = ? AND revoked_at IS NULL', [id]);
+  const row = await sel();
+  if (!row) throw new MeshError(404, 'Uydu bulunamadı (kaldırılmış olabilir)');
+  if (row.proto !== 2) throw new MeshError(409, 'Eski eşleşme: güncelleme isteği yalnız şifreli kanalda — uyduyu yeniden eşleştirin');
+  let cap = false;
+  try { cap = JSON.parse(row.status || 'null')?.update_cap === true; } catch { /* durum yok / bozuk */ }
+  if (!cap) {
+    throw new MeshError(409, "Uydunun yazılımı uzaktan güncellemeyi desteklemiyor (bu özellikten eski sürüm) — uydunun kendi panelinden (Ayarlar → Sistem Güncellemesi) güncelleyin; gece güncellemesi de getirir");
+  }
+  const now = Math.floor(Date.now() / 1000);
+  const raw: string | null = typeof row.update_req === 'string' && row.update_req ? row.update_req : null;
+  const cur = parseUpdateReq(raw);
+  if (cur && !updateReqExpired(cur, now)) return { ...cur, already: true };
+  if (raw) await clearUpdateReq(id, raw, cur ? expiredText(row.name) : '', 'warning'); // süresi geçmiş / bozuk
+  const req: UpdateReq = { nonce: crypto.randomBytes(16).toString('hex'), at: now };
+  if (!(await dbChanges('UPDATE mesh_satellites SET update_req = ? WHERE id = ? AND revoked_at IS NULL AND proto = 2 AND update_req IS NULL',
+    [JSON.stringify(req), id]))) {
+    // Bu arada başka bir istek yazdı (ya da uydu kaldırıldı / yeniden eşleşti): geçerli olan döner.
+    const again = await sel();
+    const p = again?.proto === 2 ? parseUpdateReq(again.update_req) : null;
+    if (p && !updateReqExpired(p, now)) return { ...p, already: true };
+    throw new MeshError(409, 'Uydunun durumu bu arada değişti — sayfayı yenileyip yeniden deneyin');
+  }
+  await recordEvent('mesh', `Uydu güncellemesi istendi: ${row.name}`);
+  return { ...req, already: false };
+}
+// req: isteğin işi başladı ve başarısız oldu; değilse istek iş başlatmadı (ret notu: sık istek, depolama işi …).
+const updateStateText = (u: UpdateState | null) => !u ? '' : u.state === 'running' ? ' — güncelleme sürüyor'
+  : u.state === 'done' ? ' — güncellendi' : ` — ${u.req ? 'güncelleme başarısız' : 'başlamadı'}${u.reason ? `: ${u.reason}` : ''}`;
+// Senkronda (v2): uydu isteği aldıysa (update_nonce aynı) ya da istek 24 saati geçtiyse silinir; yoksa zarfa girecek nonce.
+// Uydunun daha önce aldığı (update_seen) bir istek yeniden işlenmez — ör. veritabanı eski bir anlık görüntüden açıldıysa —
+// o da silinir. acked: istek bu senkronda alındı (olay o anki durumu zaten yazdı).
+async function pendingUpdate(id: string, raw: unknown, status: ReturnType<typeof satStatusOf>): Promise<{ update: string; acked: boolean }> {
+  const none = { update: '', acked: false };
+  if (typeof raw !== 'string' || !raw) return none;
+  const req = parseUpdateReq(raw);
+  if (!req) { await clearUpdateReq(id, raw, ''); return none; } // bozuk değer: sessizce silinir
+  if (status.update_nonce === req.nonce) {
+    const acked = await clearUpdateReq(id, raw, `Uydu güncelleme isteğini aldı: ${status.name}${updateStateText(status.update_state)}`,
+      status.update_state?.state === 'failed' ? 'warning' : 'info');
+    return { update: '', acked };
+  }
+  if (status.update_seen.includes(req.nonce)) {
+    await clearUpdateReq(id, raw, `Uydu bu güncelleme isteğini daha önce almıştı: ${status.name} — istek silindi`);
+    return none;
+  }
+  if (updateReqExpired(req, Math.floor(Date.now() / 1000))) { await clearUpdateReq(id, raw, expiredText(status.name), 'warning'); return none; }
+  return { update: req.nonce, acked: false };
+}
+// İsteğin sonucu: uydunun bu istek için başlattığı (ya da istek geldiğinde zaten süren) iş bitti → ana cihazın olaylarına
+// bir kez yazılır (satırdaki durum 24 saat sonra gizlenir; kullanıcı uydunun panelini izlemez). Önceki bildirimde aynı sonuç
+// varsa yazılmaz (bir uydunun v2 senkronları sırayla gelir: uydu tarafında v2Chain + artan seq); istekle ilgisiz işler (gece
+// güncellemesi: req yok) hiç yazılmaz.
+async function recordUpdateOutcome(prevRaw: unknown, status: ReturnType<typeof satStatusOf>) {
+  const u = status.update_state;
+  if (!u?.req || u.state === 'running') return;
+  let prev: UpdateState | null = null;
+  try { prev = updateStateOf(JSON.parse(String(prevRaw || 'null'))?.update_state); } catch { /* durum yok / bozuk */ }
+  if (prev?.req && prev.state === u.state && prev.at === u.at && prev.reason === u.reason) return;
+  if (u.state === 'done') await recordEvent('mesh', `Uydu güncellendi: ${status.name}${status.version ? ` (${status.version})` : ''}`);
+  else await recordEvent('mesh', `Uydu güncellemesi başarısız: ${status.name}${u.reason ? ` — ${u.reason}` : ''}`, 'warning');
+}
 
 // Uydunun dakikalık bildirimi (kimlik anahtarla kanıtlanır).
 export async function syncSatellite(auth: string | undefined, body: any, ip: string): Promise<{ config: SatConfig } | { proto: 2; box: Box }> {
@@ -334,7 +449,7 @@ export async function syncSatellite(auth: string | undefined, body: any, ip: str
 async function syncSatelliteV2(body: any, ip: string): Promise<{ proto: 2; box: Box }> {
   const seq = body?.seq;
   if (!validSatId(body?.id) || !Number.isSafeInteger(seq) || seq <= 0) throw new MeshError(401, 'Uydu kimliği doğrulanamadı');
-  const row = await dbGet('SELECT id, proto, revoked_at, token_hash FROM mesh_satellites WHERE id = ?', [body.id]);
+  const row = await dbGet('SELECT id, proto, revoked_at, token_hash, update_req, status FROM mesh_satellites WHERE id = ?', [body.id]);
   const key = row && row.proto === 2 ? readPeerKey(body.id) : null;
   if (!keyMatches(key, row?.token_hash)) throw new MeshError(401, 'Uydu eşleşmesi yok (kaldırılmış olabilir)');
   let msg: any;
@@ -350,20 +465,26 @@ async function syncSatelliteV2(body: any, ip: string): Promise<{ proto: 2; box: 
   const status = satStatusOf(msg.status);
   await dbRun('UPDATE mesh_satellites SET ip = ?, last_seen = ?, status = ?, name = ? WHERE id = ?',
     [ip, Math.floor(Date.now() / 1000), JSON.stringify(status), status.name, body.id]);
+  // update: bekleyen güncelleme isteği (yalnız bu şifreli zarfın içinde; eski uydu alanı yok sayar).
+  const { update, acked } = await pendingUpdate(body.id, row.update_req, status);
+  if (!acked) await recordUpdateOutcome(row.status, status);
   const config = await configFor(body.id);
-  return reply({ config, addrs: await addrs() });
+  return reply({ config, addrs: await addrs(), ...(update ? { update } : {}) });
 }
 
-// Mezar taşları (kaldırılmış v2 uydular) listede, sayımlarda ve kanal planında yoktur.
+// Mezar taşları (kaldırılmış v2 uydular) listede, sayımlarda ve kanal planında yoktur. update_req: bekleyen güncelleme
+// isteği (var mı + ne zaman), süresi geçmişse yok sayılır.
 export async function listSatellites() {
   await ensureTables();
   const now = Math.floor(Date.now() / 1000);
-  const rows = await dbAll('SELECT id, name, mac, ip, last_seen, status, created_at, proto FROM mesh_satellites WHERE revoked_at IS NULL ORDER BY created_at, id');
+  const rows = await dbAll('SELECT id, name, mac, ip, last_seen, status, created_at, proto, update_req FROM mesh_satellites WHERE revoked_at IS NULL ORDER BY created_at, id');
   return rows.map((r: any) => {
     let status: any = null;
     try { status = r.status ? JSON.parse(r.status) : null; } catch { status = null; }
+    const req = parseUpdateReq(r.update_req);
     return { id: r.id, name: r.name, mac: r.mac, ip: r.ip, last_seen: r.last_seen, created_at: r.created_at,
-      online: !!r.last_seen && now - r.last_seen <= OFFLINE_AFTER_S, status, proto: r.proto === 2 ? 2 : 1 };
+      online: !!r.last_seen && now - r.last_seen <= OFFLINE_AFTER_S, status, proto: r.proto === 2 ? 2 : 1,
+      update_req: req && !updateReqExpired(req, now) ? { pending: true, at: req.at } : null };
   });
 }
 // v1: satır silinir (uydu sonraki senkronda 401 alır). v2: mezar taşı — anahtar kalır, uydu sonraki senkronda imzalı
@@ -376,7 +497,7 @@ export async function removeSatellite(id: string): Promise<boolean> {
   if (!row) return false;
   const key = readPeerKey(id);
   if (key) {
-    await dbRun('UPDATE mesh_satellites SET revoked_at = ?, token_hash = ?, proto = 2 WHERE id = ?', [Math.floor(Date.now() / 1000), keyFp(key), id]);
+    await dbRun('UPDATE mesh_satellites SET revoked_at = ?, token_hash = ?, proto = 2, update_req = NULL WHERE id = ?', [Math.floor(Date.now() / 1000), keyFp(key), id]);
   } else {
     await dbRun('DELETE FROM mesh_satellites WHERE id = ?', [id]);
     removePeerKey(id);
@@ -401,6 +522,11 @@ export async function checkOfflineSatellites() {
     for (const r of await dbAll('SELECT id, token_hash FROM mesh_satellites WHERE revoked_at IS NOT NULL AND revoked_at < ?', [cutoff])) {
       if (!(await dbChanges('DELETE FROM mesh_satellites WHERE id = ? AND revoked_at IS NOT NULL AND revoked_at < ?', [r.id, cutoff]))) continue;
       if (keyMatches(readPeerKey(r.id), r.token_hash)) removePeerKey(r.id);
+    }
+    // 24 saatte alınmayan güncelleme isteği (uydu çevrimdışı kaldı): silinir, olay yazılır.
+    for (const r of await dbAll('SELECT id, name, update_req FROM mesh_satellites WHERE update_req IS NOT NULL')) {
+      const req = parseUpdateReq(r.update_req);
+      if (!req || updateReqExpired(req, now)) await clearUpdateReq(r.id, r.update_req, req ? expiredText(r.name) : '', 'warning');
     }
     for (const s of await listSatellites()) {
       if (!s.online && s.last_seen && now - s.last_seen > 600) {
@@ -441,11 +567,17 @@ export async function mainMeshState() {
 // ─── Uydu ───
 
 // v1: token (taşıyıcı anahtar). v2: proto 2 + key (uyduya özel kanal anahtarı) + seq (son gönderilen sıra) + main_id.
+// Uzaktan güncelleme (yalnız v2): update_nonce (son alınan istek), update_seen (öncekiler; eski istek yeniden işlenmez —
+// ör. ana cihazın veritabanı eski bir anlık görüntüden açılırsa), last_update_start (10 dk sınırı, yeniden başlasa da
+// geçerli), update_note + update_note_at (son isteğin iş başlatmama nedeni: sık istek, depolama işi … ya da iş başlarken
+// kalan "başlatılıyor" işareti), update_job (son isteğin sonucunu verecek işin kimliği: ana cihaz bitişini olay yazar).
 type SatState = {
   main: string; id: string; token?: string; name: string; paired_at: number;
   proto?: 2; key?: string; seq?: number; main_id?: string;
   last_sync?: number; last_error?: string; applied_wifi?: string; applied_mesh?: string; revoked?: boolean;
+  update_nonce?: string; update_seen?: string[]; last_update_start?: number; update_note?: string; update_note_at?: number; update_job?: string;
 };
+type UpdFields = Pick<SatState, 'update_nonce' | 'update_seen' | 'last_update_start' | 'update_note' | 'update_note_at' | 'update_job'>;
 const isV2 = (s: SatState) => s.proto === 2 && /^[0-9a-f]{64}$/.test(s.key || '');
 export function readSatState(): SatState | null {
   try {
@@ -455,8 +587,9 @@ export function readSatState(): SatState | null {
 }
 // Aynı eşleşme mi (kimlik + v2 anahtarı / v1 jetonu)?
 const samePairing = (a: SatState, b: SatState) => a.id === b.id && (isV2(a) ? isV2(b) && a.key === b.key : !isV2(b) && a.token === b.token);
-// newMain: ana cihazın yeni adresi (yalnız doğrulanmış yeniden keşif, sendSyncV2).
-function writeSatState(s: SatState, newMain?: string) {
+// newMain: ana cihazın yeni adresi (yalnız doğrulanmış yeniden keşif, sendSyncV2). upd: güncelleme isteği alanları (yalnız
+// acceptUpdateRequest).
+function writeSatState(s: SatState, newMain?: string, upd?: UpdFields) {
   // seq hiç geri gitmez: aynı eşleşmede başka bir akış (ön sınama, "Şimdi eşitle") bu arada daha büyük seq göndermiş olabilir.
   const disk = isV2(s) ? readSatState() : null;
   if (disk && samePairing(disk, s) && (Number(disk.seq) || 0) > (Number(s.seq) || 0)) s.seq = disk.seq;
@@ -464,6 +597,13 @@ function writeSatState(s: SatState, newMain?: string) {
   // bulduysa eski adresli bellek kopyası onu geri almaz.
   if (disk && samePairing(disk, s)) s.main = newMain || disk.main;
   else if (newMain) s.main = newMain;
+  // Güncelleme isteği alanları da aynı eşleşmede yalnız upd ile değişir: eski bellek kopyası alınmış isteği silip onun
+  // ikinci kez işlenmesine yol açmasın.
+  const src = upd || (disk && samePairing(disk, s) ? disk : null);
+  if (src) {
+    s.update_nonce = src.update_nonce; s.update_seen = src.update_seen; s.last_update_start = src.last_update_start;
+    s.update_note = src.update_note; s.update_note_at = src.update_note_at; s.update_job = src.update_job;
+  }
   fs.mkdirSync(MESH_DIR, { recursive: true, mode: 0o700 });
   writeFileDurable(SAT_FILE, JSON.stringify(s));
 }
@@ -777,9 +917,11 @@ export function discoverKlyrix(): Promise<Discovery> {
 //    sayarsa (addrs) ve aynı eşleşme hâlâ diskteyse güncellenir → moved. Listede değilse (araya giren düz bir aktarıcı ya
 //    da adres çevirisi) yanıt yine ana cihazındır ve işlenir, ama adres değişmez → mainAddrs (doğrulanmış liste).
 //  - authed: yanıt bu uydunun anahtarıyla açıldı (gerçekten ana cihazdan).
+//  - update (yalnız v2, doğrulanmış yanıt): ana cihazın güncelleme isteği (32 hex). v1 yanıtında hiç okunmaz; yalnız
+//    syncOnce işler (ön sınama ve takip senkronları yok sayar).
 type SyncResult = {
   ok: boolean; status: number; error: string; config?: SatConfig; revoked?: boolean; stale?: boolean; authed?: boolean; moved?: { from: string; to: string };
-  mainAddrs?: string[];
+  mainAddrs?: string[]; update?: string;
 };
 const REDISCOVER_SYNC_MS = 8000;
 let v2Chain: Promise<unknown> = Promise.resolve();
@@ -830,12 +972,136 @@ async function sendSyncV2(s: SatState, status: unknown, addr?: string): Promise<
   // Doğrulanmış kaldırma: ok değil (v1'deki 401 gibi deneme yayını geri alınır); syncOnce önce revoked'a bakar.
   if (msg.revoked === true) return { ok: false, status: 200, error: 'ana cihaz bu uydunun eşleşmesini kaldırdı', revoked: true, authed: true, moved, mainAddrs };
   if (!msg.config || typeof msg.config !== 'object') return { ok: false, status: 200, error: 'ana cihazın yanıtında ayar yok', authed: true, moved, mainAddrs };
-  return { ok: true, status: 200, error: '', config: msg.config, authed: true, moved, mainAddrs };
+  const update = typeof msg.update === 'string' && NONCE_RE.test(msg.update) ? msg.update : undefined;
+  return { ok: true, status: 200, error: '', config: msg.config, authed: true, moved, mainAddrs, update };
 }
 
 const versionOf = () => { try { return JSON.parse(fs.readFileSync('/opt/pi5-gateway/version.json', 'utf8')).version || ''; } catch { return ''; } };
+
+// ─── Uzaktan güncelleme (uydu) ───
+const UPD_NOTE_RUNNING = 'güncelleme zaten sürüyor';
+const UPD_NOTE_RATE = 'çok sık istek — 10 dakikada en çok bir kez';
+const UPD_NOTE_STORAGE = 'depolama işi sürüyor';
+// Başlatma işareti: nonce ile aynı yazımda diske girer, iş başlayınca (ya da ret notuyla) silinir. Süreç arada ölürse
+// (çökme, bellek, elle yeniden başlatma) işaret kalır: istek "yarıda kesildi" görünür ve 10 dk sınırına sayılmaz.
+const UPD_NOTE_STARTING = 'başlatılıyor';
+const UPD_NOTE_INTERRUPTED = 'yarıda kesildi — yeniden isteyin';
+const UPDATE_SEEN_MAX = 8;
+let updStarting = ''; // bu süreçte başlatılmakta olan isteğin nonce'u (işaret bu süreçteyse "yarıda kesildi" değildir)
+const jobStatus = async (): Promise<UpdateStatus> => { try { return await getUpdateStatus(); } catch { return { state: 'idle' }; } };
+const jobAtOf = (st: UpdateStatus) => (st.state === 'idle' ? 0 : st.startedAt || 0);
+// İşaret kaldı, bu süreç başlatmıyor ve işaretten sonra başlamış iş yok: önceki süreç işi başlatamadan öldü.
+const startInterrupted = (s: SatState, st: UpdateStatus) => s.update_note === UPD_NOTE_STARTING && updStarting !== s.update_nonce
+  && jobAtOf(st) < (Number(s.update_note_at) || 0);
+// Son gerçek başlatma (yarıda kalan sayılmaz) ve 10 dk sınırından kalan süre (sn). Saat geri gittiyse (son başlatma ileri
+// tarihli) sınır uygulanmaz: istek süresiz engellenmesin.
+const lastStart = (s: SatState | null, st: UpdateStatus) => (s && !startInterrupted(s, st) ? Number(s.last_update_start) || 0 : 0);
+const gapLeft = (last: number, now: number) => (last > 0 && now >= last && now - last < UPDATE_MIN_GAP_S ? last + UPDATE_MIN_GAP_S - now : 0);
+// Başarısız işin kısa nedeni (update.ts summarizeUpdate adım adları → ana cihazda gösterilecek Türkçe; tanınmayan ad
+// olduğu gibi). Günlük metni gönderilmez; yalnız update.sh'nin kilit iletisi (çıkış 75) tanınır.
+const FAIL_REASON: Record<string, string> = {
+  'Hazırlık': 'hazırlık adımı başarısız', 'Git Pull': "kod indirilemedi (GitHub'a ulaşılamadı?)", 'Backend Build': 'backend derlenemedi',
+  'Frontend Build': 'arayüz derlenemedi', 'Yeni derlemeye geçiş': 'yeni derlemeye geçilemedi', 'Servis Restart': 'panel yeniden başlatılamadı',
+  'Güncelleme ertelendi': 'depolama işi sürüyordu — ertelendi', 'Güncelleme durduruldu': `${UPDATE_MAX_RUNTIME_S / 60} dk sınırı aşıldı ya da durduruldu`,
+  'Güncelleme başlatılamadı': 'başlatılamadı', 'Güncelleme yarıda kesildi': 'yarıda kesildi',
+};
+function failReason(st: UpdateStatus): string {
+  const f = st.steps?.find(x => !x.success);
+  if (!f) return '';
+  if (f.step === 'Güncelleme') return /Başka bir güncelleme sürüyor/.test(f.output) ? 'başka bir güncelleme sürüyordu — atlandı' : 'güncelleme başarısız';
+  return FAIL_REASON[f.step] || f.step;
+}
+// Bu cihazın güncelleme durumu (update.ts; gece güncellemesi ve panel de aynı iştir) + ana cihazın son isteğinin ret
+// nedeni. Ret, ondan sonra başlamış bir iş yoksa gösterilir ("zaten sürüyor" ise o işin kendi sonucu); sık istekte önceki
+// başarısız işin nedeni korunur. Süren işte her zaman aşama gösterilir.
+function deviceUpdateState(s: SatState | null, st: UpdateStatus): UpdateState | null {
+  const note = s?.update_note || '';
+  const noteAt = Number(s?.update_note_at) || 0;
+  const jobAt = jobAtOf(st);
+  if (s && note === UPD_NOTE_STARTING && jobAt < noteAt) {
+    return startInterrupted(s, st) ? { state: 'failed', reason: UPD_NOTE_INTERRUPTED, at: noteAt } : { state: 'running', reason: UPD_NOTE_STARTING, at: noteAt };
+  }
+  const req = !!st.id && st.id === s?.update_job ? { req: true as const } : {};
+  if (st.state === 'running') return { state: 'running', reason: st.phase || '', at: jobAt, ...req };
+  const why = st.state === 'failed' ? failReason(st) : '';
+  if (note && note !== UPD_NOTE_RUNNING && note !== UPD_NOTE_STARTING && noteAt >= jobAt) {
+    return { state: 'failed', reason: note === UPD_NOTE_RATE && why ? `${why} — yeniden istek çok erken` : note, at: noteAt };
+  }
+  if (st.state === 'done') return { state: 'done', reason: '', at: st.finishedAt || jobAt, ...req };
+  if (st.state === 'failed') return { state: 'failed', reason: why, at: st.finishedAt || jobAt, ...req };
+  return null;
+}
+const sameLivePairing = (d: SatState | null, s: SatState): d is SatState => !!d && isV2(d) && samePairing(d, s) && !d.revoked;
+const seenOf = (d: SatState) => (Array.isArray(d.update_seen) ? d.update_seen : []).filter(n => typeof n === 'string' && NONCE_RE.test(n));
+const isNewNonce = (d: SatState, nonce: string) => nonce !== d.update_nonce && !seenOf(d).includes(nonce);
+// Ana cihazın güncelleme isteği (yalnız syncOnce, yalnız doğrulanmış v2 yanıtı). Yeni nonce ÖNCE diske yazılır, başlatma
+// işaretiyle birlikte (yeniden başlasa da aynı istek bir daha işlenmez; aynı anda iki senkron da tek iş başlatır — okuma
+// + yazma arada beklemesiz; iş durumu bu yüzden önceden okunur), sonra son başlatmadan 10 dk geçtiyse bu cihazın kendi
+// güncellemesi (startUpdate: systemd-run → update-job.sh → GitHub). true = yeni istek işlendi.
+async function acceptUpdateRequest(s: SatState, nonce: string): Promise<boolean> {
+  if (!isV2(s) || !NONCE_RE.test(nonce)) return false;
+  const pre = readSatState();
+  if (!sameLivePairing(pre, s) || !isNewNonce(pre, nonce)) return false; // bilinen istek: iş durumu hiç okunmaz
+  const job = await jobStatus();
+  const disk = readSatState();
+  if (!sameLivePairing(disk, s) || !isNewNonce(disk, nonce)) return false;
+  const now = Math.floor(Date.now() / 1000);
+  const last = lastStart(disk, job);
+  const limited = gapLeft(last, now) > 0;
+  const upd: UpdFields = {
+    update_nonce: nonce,
+    update_seen: [...new Set([disk.update_nonce, ...seenOf(disk)].filter((n): n is string => !!n && NONCE_RE.test(n)))].slice(0, UPDATE_SEEN_MAX),
+    last_update_start: limited ? last : now,
+    update_note: limited ? UPD_NOTE_RATE : UPD_NOTE_STARTING,
+    update_note_at: now,
+    update_job: disk.update_job,
+  };
+  writeSatState(disk, undefined, upd);
+  Object.assign(s, upd);
+  if (limited) {
+    await recordEvent('mesh', `Ana cihaz güncelleme istedi — başlatılmadı: ${UPD_NOTE_RATE}`, 'warning');
+    return true;
+  }
+  let note = '';
+  try {
+    updStarting = nonce;
+    let jobId = '';
+    try {
+      const r = await startUpdate();
+      jobId = r.id || '';
+      if (!r.started) note = UPD_NOTE_RUNNING;
+    } catch (e: any) {
+      const msg = String(e?.message || '');
+      note = msg === STORAGE_BUSY_MSG ? UPD_NOTE_STORAGE : /okunamadı/.test(msg) ? 'güncelleme durumu okunamadı' : 'başlatılamadı';
+    }
+    // Sonuç (aynı istek hâlâ diskteyse) başlatma işaretinin yerine yazılır. İş başlamadıysa 10 dk sınırı bu denemeyi saymaz
+    // (neden ortadan kalkınca yeni istek hemen çalışabilsin). update_job: bu isteğin sonucunu verecek iş — başlatılan ya da
+    // istek geldiğinde zaten süren.
+    const res: UpdFields = note
+      ? { ...upd, last_update_start: last || undefined, update_note: note, update_note_at: Math.floor(Date.now() / 1000),
+        update_job: note === UPD_NOTE_RUNNING && jobId ? jobId : upd.update_job }
+      : { ...upd, update_note: '', update_job: jobId || upd.update_job };
+    const cur = readSatState();
+    if (sameLivePairing(cur, s) && cur.update_nonce === nonce) writeSatState(cur, undefined, res);
+    Object.assign(s, res);
+  } finally {
+    updStarting = ''; // sonuç yazımıyla arada bekleme yok: işaret hiçbir an "yarıda kesildi" okunmaz
+  }
+  if (note) {
+    await recordEvent('mesh', `Ana cihaz güncelleme istedi — başlatılmadı: ${note}`, note === UPD_NOTE_RUNNING ? 'info' : 'warning');
+  } else {
+    await recordEvent('mesh', 'Ana cihaz güncelleme istedi — güncelleme başlatıldı (GitHub)');
+    await recordEvent('update', 'Panel güncellemesi başlatıldı (ana cihazın isteği)');
+  }
+  return true;
+}
+
 async function satStatusReport(err = '') {
-  const [n, ms] = await Promise.all([runKv(NET_MODE_SCRIPT, ['status'], 30000), meshStatus()]);
+  const [n, ms, job] = await Promise.all([runKv(NET_MODE_SCRIPT, ['status'], 30000), meshStatus(), jobStatus()]);
+  // Eşleşme dosyası beklemelerden SONRA okunur ve hemen değerlendirilir: başlatma işareti ile bu süreçteki başlatma bilgisi
+  // (updStarting) aynı anın — süren bir başlatma, işaret silinirken "yarıda kesildi" diye bildirilmez.
+  const s = readSatState();
+  const upd = deviceUpdateState(s, job);
   const kv = n.code === 0 ? n.kv : {};
   const m: Record<string, string> = ms || {}; // bildirim: durum okunamazsa eskisi gibi kablo / 0 komşu
   const stations = kv.sat_wifi && kv.sat_stage !== 'none' ? [...await readHomeStations(kv.sat_wifi, BRIDGE)] : [];
@@ -843,6 +1109,9 @@ async function satStatusReport(err = '') {
     name: os.hostname(), version: versionOf(), sat_stage: kv.sat_stage || 'none', active: kv.sat_active === '1', bridge: kv.sat_br === '1',
     band: kv.sat_band || 'bg', channel: Number(kv.sat_channel) || null, backhaul: m.attached === '1' ? 'mesh' : 'wired',
     mesh_peers: Number(m.peers) || 0, stations, error: err,
+    update_cap: 1, update_nonce: s && !s.revoked && s.update_nonce ? s.update_nonce : '',
+    update_seen: s && !s.revoked && Array.isArray(s.update_seen) ? s.update_seen.slice(0, UPDATE_SEEN_MAX) : [], update_state: upd,
+    update_retry_in: s && !s.revoked ? gapLeft(lastStart(s, job), Math.floor(Date.now() / 1000)) : 0,
   };
 }
 const wifiKey = (w: WifiConfig) => sha256(`${w.ssid}\n${w.psk}\n${w.band}\n${w.channel}`).slice(0, 16);
@@ -1066,8 +1335,10 @@ export async function syncOnce(): Promise<void> {
   const before = `${s.applied_wifi}|${s.applied_mesh}`;
   s.last_error = [await applyOnce(s, r.config), relayNote].filter(Boolean).join('; ');
   if (!writeIfCurrent(s)) return;
-  // Bir şey uygulandıysa ana cihaz yeni durumu bir sonraki dakikayı beklemeden görsün.
-  if (`${s.applied_wifi}|${s.applied_mesh}` !== before) {
+  // Ana cihazın güncelleme isteği: yalnız bu senkronun doğrulanmış (v2) yanıtından — ön sınama, takip senkronu ve v1 hiç.
+  const updated = r.authed && r.update ? await acceptUpdateRequest(s, r.update) : false;
+  // Bir şey uygulandıysa ya da istek işlendiyse ana cihaz yeni durumu bir sonraki dakikayı beklemeden görsün (istek kapanır).
+  if (updated || `${s.applied_wifi}|${s.applied_mesh}` !== before) {
     await sendSync(s, await satStatusReport(s.last_error || ''));
   }
 }

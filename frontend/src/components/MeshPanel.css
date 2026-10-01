@@ -30,3 +30,39 @@
 .msd-link { color: var(--accent-color); text-decoration: none; margin-left: auto; }
 .msd-link:hover { text-decoration: underline; color: var(--accent-hover); }
 .msd-item-hint { flex-basis: 100%; font-size: 11.5px; color: var(--text-secondary); overflow-wrap: anywhere; }
+
+/* Uydu sürümleri ve güncelleme isteği (uydular tablosu "Sürüm" sütunu + üstteki "Tümünü güncelle" satırı). Telefonda
+   satır kartında sağa yaslı (td::before = sütun adı). */
+.msu-bar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 12px; margin: 12px 0 6px; }
+.msu-bar .dhcp-muted { min-width: 0; flex: 1 1 260px; }
+.msu-btn { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
+.msu-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+/* Tablo sığmazsa (dar masaüstü / tablet, kart düzeninden hemen önce) panelin içinde yatay kayar, sayfa taşmaz. */
+.msu-scroll { overflow-x: auto; }
+.msu-cell { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; min-width: 0; }
+.msu-top { display: inline-flex; align-items: center; flex-wrap: wrap; gap: 4px 8px; }
+.msu-ver { display: inline-flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.msu-state { font-size: 11.5px; color: var(--text-secondary); overflow-wrap: anywhere; max-width: 200px; }
+.msu-state-running { color: var(--accent-color); }
+.msu-state-done { color: var(--success-color); }
+.msu-state-failed, .msu-state-stale { color: var(--warning-color); }
+:root.light-theme .msu-state-failed, :root.light-theme .msu-state-stale { color: #b45309; }
+.msu-hint { font-size: 11px; color: var(--text-secondary); overflow-wrap: anywhere; max-width: 200px; }
+.msu-link { font-size: 11.5px; color: var(--accent-color); text-decoration: none; }
+.msu-link:hover { text-decoration: underline; color: var(--accent-hover); }
+@media (max-width: 760px) {
+  .msu-cell { align-items: flex-end; text-align: right; }
+  .msu-top { justify-content: flex-end; }
+  .msu-state, .msu-hint { max-width: none; }
+}
+/* Masaüstünde hücre boşluğu 9 px (Sürüm sütunuyla tablo kenar çubuklu 1024 px'e sığar); geniş ekranda uydu adı ve sürüm
+   satırı (sürüm + rozet + düğme) tek satır — satırlar alçak kalır. Dosyanın sonunda (yukarıdaki .msu-* kurallarını ezer);
+   seçiciler .rl-table.ms-table: App.css pakette bu dosyadan sonra gelir. */
+@media (min-width: 761px) {
+  .rl-table.ms-table th, .rl-table.ms-table td { padding-left: 9px; padding-right: 9px; }
+}
+@media (min-width: 1280px) {
+  .rl-table.ms-table td[data-label="Uydu"] { white-space: nowrap; }
+  .msu-top, .msu-ver { flex-wrap: nowrap; }
+  .msu-top > * { flex-shrink: 0; }
+}

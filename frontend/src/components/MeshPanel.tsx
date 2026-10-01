@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import type { ReactNode } from 'react';
-import { Share2, AlertTriangle, CheckCircle, Info, Trash2, Search } from 'lucide-react';
+import { Share2, AlertTriangle, CheckCircle, Info, Trash2, Search, Download } from 'lucide-react';
 import { getApi, postApi, deleteApi } from '../hooks/useApi';
 import { toast } from '../toast';
 import { Panel, Badge } from './ui';
@@ -10,13 +10,23 @@ import './MeshPanel.css';
 // eşleşme ve durum. Uydu ana cihazın ev Wi-Fi'ını aynı ağ adı ve şifreyle (farklı kanalda) yayınlar. Veri /api/mesh/state
 // (backend/src/mesh.ts); rol değişimi /api/system/role (backend yeniden başlar). Ağdaki diğer Klyrix cihazları
 // /api/mesh/discover (ağ geçidi + mDNS): yalnız adres önerir — eşleşme yine kodla, rol yine o cihazın kendi panelinden.
+// Uydu sürümleri ana cihazın sürümüyle karşılaştırılır; eski uyduya güncelleme isteği yalnız şifreli (v2) eşleşmeyle gider,
+// uydu güncellemeyi GitHub'dan kendisi indirir (POST /api/mesh/satellites/:id/update).
 
+// Uydunun güncelleme durumu (uydu bildirir; günlük metni yok). at: saniye; req: ana cihazın isteğinin işi. update_cap:
+// uydunun yazılımı uzaktan güncelleme isteğini anlıyor (bu özellikten eski sürüm göndermez). update_retry_in: uydunun
+// 10 dk sınırından kalan süre (sn, bildirim anına göre → last_seen + update_retry_in).
+type UpdateState = { state: 'running' | 'done' | 'failed'; reason?: string; at?: number; req?: boolean };
 type SatStatus = {
   name?: string; version?: string; sat_stage?: string; active?: boolean; bridge?: boolean; band?: string; channel?: number | null;
-  backhaul?: 'wired' | 'mesh'; mesh_peers?: number; stations?: string[]; error?: string;
+  backhaul?: 'wired' | 'mesh'; mesh_peers?: number; stations?: string[]; error?: string; update_cap?: boolean; update_state?: UpdateState | null;
+  update_retry_in?: number;
 };
-// proto: 2 = şifreli kanal (v2), 1 = eski eşleşme (taşıyıcı anahtar, şifresiz).
-type Satellite = { id: string; name: string; mac: string | null; ip: string | null; last_seen: number | null; online: boolean; status: SatStatus | null; proto?: number };
+// proto: 2 = şifreli kanal (v2), 1 = eski eşleşme (taşıyıcı anahtar, şifresiz). update_req: bekleyen güncelleme isteği.
+type Satellite = {
+  id: string; name: string; mac: string | null; ip: string | null; last_seen: number | null; online: boolean; status: SatStatus | null; proto?: number;
+  update_req?: { pending: boolean; at: number } | null;
+};
 // unknown: mesh.sh durumu okunamadı (kapalı demek değil).
 type MainMesh = { capable: string[]; configured: boolean; id: string; channel: number | null; iface: boolean; wpa: boolean; attached: boolean; peers: number; unknown?: boolean };
 type MainState = {
@@ -47,6 +57,30 @@ const ago = (ts: number | null | undefined) => {
   return s < 60 ? 'az önce' : s < 3600 ? `${Math.floor(s / 60)} dk önce` : s < 86400 ? `${Math.floor(s / 3600)} sa önce` : new Date(ts * 1000).toLocaleString('tr-TR');
 };
 const fmtLeft = (left: number) => `${Math.floor(left / 60)}:${String(left % 60).padStart(2, '0')}`;
+// Sürüm karşılaştırması: sayısal parçalar tek tek (2.24.9 < 2.24.84), "v" öneki ve sondaki ek yok sayılır.
+// null = karşılaştırılamaz (sürüm yok / biçim tanınmadı).
+const verParts = (v?: string) => { const m = /^v?(\d+(?:\.\d+)*)/.exec(String(v || '').trim()); return m ? m[1].split('.').map(Number) : null; };
+function cmpVer(a?: string, b?: string): number | null {
+  const x = verParts(a), y = verParts(b);
+  if (!x || !y) return null;
+  for (let i = 0; i < Math.max(x.length, y.length); i++) { const d = (x[i] || 0) - (y[i] || 0); if (d) return d < 0 ? -1 : 1; }
+  return 0;
+}
+// Güncellenemeyen eski uydu: satırda kısa not, tam açıklama düğmenin ve notun başlığında. Şifreli eşleşme (v2) 2.24.75 ile
+// geldi: daha eski yazılımlı v1 uydu yeniden eşleşmede yine v1 olur — önce kendi panelinden güncellenmeli.
+const V1_UPDATE_HINT = 'Eski eşleşme — güncelleme isteği için yeniden eşleştirin';
+const V1_UPDATE_SHORT = 'Güncelleme isteği için yeniden eşleştirin';
+const V2_PAIR_SINCE = '2.24.75';
+const OLDSW_UPDATE_HINT = 'Uydunun yazılımı şifreli eşleşmeyi desteklemiyor (2.24.75 öncesi) — önce uydunun kendi panelinden (Ayarlar → Sistem Güncellemesi) güncelleyin, sonra yeniden eşleştirin';
+const OLDSW_UPDATE_SHORT = 'Önce uydunun kendi panelinden güncelleyin, sonra yeniden eşleştirin';
+const NOCAP_UPDATE_HINT = 'Uydunun yazılımı uzaktan güncellemeyi desteklemiyor — uydunun kendi panelinden güncelleyin (gece güncellemesi de getirir)';
+const NOCAP_UPDATE_SHORT = 'Uydunun kendi panelinden güncelleyin';
+const UPDATE_CONFIRM = "Uydu güncellemeyi GitHub'dan kendisi indirir (birkaç dakika sürer); bu sırada uydunun Wi-Fi yayını kısa süre kesilebilir. Devam edilsin mi?";
+// "Tümünü güncelle": istekler sırayla gider ama her uydu isteği kendi senkronunda alır — güncellemeler aşağı yukarı aynı anda.
+const UPDATE_ALL_CONFIRM = "Uydular isteği bir dakika içinde alır ve aşağı yukarı aynı anda güncellenir (her biri GitHub'dan kendisi indirir, birkaç dakika sürer); bu sırada uyduların Wi-Fi yayını kısa süre kesilebilir — bu cihazın yayını sürer. Devam edilsin mi?";
+// Süren güncelleme en çok 30 dk (update.ts UPDATE_MAX_RUNTIME_S) + pay: daha eski "güncelleniyor" bildirimi bayattır.
+const RUN_STALE_S = 1800 + 120;
+const hhmm = (ts: number) => new Date(ts * 1000).toLocaleTimeString('tr-TR', { hour: '2-digit', minute: '2-digit' });
 
 function Alert({ kind, children }: { kind: 'ok' | 'err' | 'info'; children: ReactNode }) {
   return (
@@ -76,6 +110,8 @@ export function MeshPanel({ onChange }: { onChange?: () => void }) {
   const [disc, setDisc] = useState<Discovery | null>(null);
   const [discErr, setDiscErr] = useState<string | null>(null);
   const [finding, setFinding] = useState(false);
+  const [mainVer, setMainVer] = useState('');
+  const [mainHasUpdate, setMainHasUpdate] = useState(false);
 
   const load = useCallback(async () => {
     try { setSt(await getApi<State>('/mesh/state')); setErr(null); } catch (e) { setErr(errText(e, 'durum okunamadı')); }
@@ -93,13 +129,26 @@ export function MeshPanel({ onChange }: { onChange?: () => void }) {
     const t = setTimeout(() => { void discover(); }, 0);
     return () => clearTimeout(t);
   }, [role, discover]);
+  // Ana cihazın sürümü (uydu sürümleri bununla karşılaştırılır) ve bu cihazın kendi güncellemesi var mı (üst çubuğun da
+  // kullandığı denetim; backend 60 sn önbellekli). version.json okunamazsa sürüm bilinmiyor sayılır (yedek değer değil).
+  useEffect(() => {
+    if (role !== 'main') return;
+    let alive = true;
+    getApi<{ version?: string; build?: number; date?: string }>('/system/version')
+      .then(v => { if (alive) setMainVer(v?.date === 'unknown' && !v?.build ? '' : String(v?.version || '')); }).catch(() => {});
+    getApi<{ available?: boolean }>('/system/update-check').then(u => { if (alive) setMainHasUpdate(u?.available === true); }).catch(() => {});
+    return () => { alive = false; };
+  }, [role]);
   const pairingActive = !!code && code.expires_at > now;
+  // Çevrimiçi bir uydunun güncelleme isteği bekliyor ya da güncellemesi sürüyorken durum daha sık okunur (çevrimdışı uydunun
+  // isteği 24 saate kadar bekleyebilir: onun için sık okuma yok).
+  const updWatch = st?.role === 'main' && st.satellites.some(s => s.online && (!!s.update_req || s.status?.update_state?.state === 'running'));
   useEffect(() => {
     const first = setTimeout(() => { void load(); }, 0);
     // Kod açıkken (uydu gelmesi beklenirken) sık, değilse seyrek.
-    const id = setInterval(() => { void load(); }, pairingActive ? 5000 : 30000);
+    const id = setInterval(() => { void load(); }, pairingActive ? 5000 : updWatch ? 10000 : 30000);
     return () => { clearTimeout(first); clearInterval(id); };
-  }, [load, pairingActive]);
+  }, [load, pairingActive, updWatch]);
   useEffect(() => { const t = setInterval(() => setNow(Math.floor(Date.now() / 1000)), 1000); return () => clearInterval(t); }, []);
 
   const act = async (key: string, fn: () => Promise<void>) => {
@@ -216,6 +265,94 @@ export function MeshPanel({ onChange }: { onChange?: () => void }) {
       toast.info(`${s.name} kaldırıldı`);
     });
   };
+  // Uydunun 10 dk sınırı (en erken yeni istek, ana cihaz saatiyle) ve süren güncelleme: çevrimdışı uydunun ya da 30 dk
+  // sınırını aşmış "güncelleniyor" bildirimi bayattır (düğmeyi gizlemez).
+  const retryAt = (s: Satellite) => (s.status?.update_retry_in ? (s.last_seen || 0) + s.status.update_retry_in : 0);
+  const runningLive = (s: Satellite) => {
+    const us = s.status?.update_state;
+    return us?.state === 'running' && s.online && (!us.at || now - us.at <= RUN_STALE_S);
+  };
+  // Güncelleme: yalnız çevrimiçi, şifreli (v2), isteği anlayan, ana cihazdan eski, isteği / güncellemesi sürmeyen ve 10 dk
+  // sınırında olmayan uydular.
+  const canUpdate = (s: Satellite) => s.online && s.proto === 2 && !!s.status?.update_cap && cmpVer(s.status?.version, mainVer) === -1
+    && !s.update_req && !runningLive(s) && retryAt(s) <= now;
+  const eligible = sats.filter(canUpdate);
+  const requestUpdate = (s: Satellite) => postApi(`/mesh/satellites/${encodeURIComponent(s.id)}/update`, {});
+  const updateOne = (s: Satellite) => {
+    if (!window.confirm(`"${s.name}" uydusu güncellenecek. ${UPDATE_CONFIRM}`)) return;
+    void act(`upd-${s.id}`, async () => { await requestUpdate(s); toast.success(`${s.name}: güncelleme isteği gönderildi — uydu bir dakika içinde alır`); });
+  };
+  // Sırayla, tek tek istek: biri başarısız olsa da diğerleri gönderilir. Onay hangi uyduların istekte olduğunu (ve hangi
+  // eski uyduların olmadığını) adıyla söyler.
+  const updateAll = () => {
+    const list = eligible;
+    if (!list.length) return;
+    const skipped = sats.filter(s => cmpVer(s.status?.version, mainVer) === -1 && !canUpdate(s));
+    const msg = `${list.length} uyduya güncelleme isteği gönderilecek: ${list.map(s => s.name).join(', ')}.`
+      + (skipped.length ? ` Bu istekte olmayan eski uydular: ${skipped.map(s => s.name).join(', ')} (satırlarındaki nota bakın).` : '')
+      + ` ${UPDATE_ALL_CONFIRM}`;
+    if (!window.confirm(msg)) return;
+    void act('upd-all', async () => {
+      let ok = 0;
+      const errs: string[] = [];
+      for (const s of list) {
+        try { await requestUpdate(s); ok++; } catch (e) { errs.push(`${s.name}: ${errText(e, 'istek gönderilemedi')}`); }
+      }
+      if (ok) toast.success(`${ok} uyduya güncelleme isteği gönderildi — her biri bir dakika içinde alır`);
+      if (errs.length) toast.error(errs.join('; '));
+    });
+  };
+  const verCell = (s: Satellite) => {
+    const v = s.status?.version || '';
+    const c = cmpVer(v, mainVer);
+    const us = s.status?.update_state;
+    const live = runningLive(s);
+    const wait = retryAt(s);
+    const waiting = wait > now;
+    // Biten / başarısız güncelleme 24 saat gösterilir; süren her zaman (bayatsa "son bilinen").
+    const showState = !!us && (us.state === 'running' || !us.at || now - us.at < 86400);
+    const stateText = !us ? '' : us.state === 'running'
+      ? (live ? `güncelleniyor${us.reason ? ` — ${us.reason}` : ''}` : `son bilinen: güncelleniyordu${s.online ? ' (30 dk sınırı aşıldı)' : ' — uydu çevrimdışı'}`)
+      : us.state === 'done' ? 'güncellendi' : `başarısız${us.reason ? `: ${us.reason}` : ''}`;
+    const [hintShort, hintFull] = s.proto !== 2
+      ? (cmpVer(v, V2_PAIR_SINCE) === -1 ? [OLDSW_UPDATE_SHORT, OLDSW_UPDATE_HINT] : [V1_UPDATE_SHORT, V1_UPDATE_HINT])
+      : [NOCAP_UPDATE_SHORT, NOCAP_UPDATE_HINT];
+    const canAsk = c === -1 && s.proto === 2 && !!s.status?.update_cap && !s.update_req && !live;
+    const noAsk = c === -1 && (s.proto !== 2 || !s.status?.update_cap) && !s.update_req;
+    // Üst satır: sürüm + rozet + düğme (sığmazsa alta kayar); altında durum, bağlantı ve not.
+    return (
+      <div className="msu-cell">
+        <span className="msu-top">
+          <span className="msu-ver">
+            <span className="rl-mono">{v || '—'}</span>
+            {c === 0 ? <Badge variant="success">güncel</Badge> : c === -1 ? <Badge variant="warning">eski</Badge> : c === 1 ? <Badge variant="info">daha yeni</Badge> : null}
+          </span>
+          {canAsk && (
+            <button className="btn-outline btn-sm msu-btn" onClick={() => updateOne(s)} disabled={!!busy || !s.online || waiting}
+              aria-label={`${s.name} uydusunu güncelle`}
+              title={waiting ? `Uydu 10 dakikada en çok bir güncelleme başlatır — yeniden istek en erken ${hhmm(wait)}`
+                : s.online ? "Uydu güncellemeyi GitHub'dan kendisi indirir" : 'Uydu çevrimdışı'}>
+              <Download size={13} /> {busy === `upd-${s.id}` ? 'İsteniyor…' : 'Güncelle'}
+            </button>
+          )}
+          {noAsk && (
+            <button className="btn-outline btn-sm msu-btn" disabled title={hintFull} aria-label={`${s.name} uydusunu güncelle`}><Download size={13} /> Güncelle</button>
+          )}
+        </span>
+        {s.update_req ? (
+          <span className="msu-state">istek gönderildi — {s.online ? 'uydu bir dakika içinde alır' : 'uydu çevrimdışı, bağlanınca alır'}</span>
+        ) : showState && us ? (
+          <span className={`msu-state msu-state-${us.state === 'running' && !live ? 'stale' : us.state}`}>{stateText}</span>
+        ) : null}
+        {!s.update_req && showState && us?.state === 'failed' && !!s.ip && IPV4.test(s.ip) && (
+          <a className="msu-link" href={`http://${s.ip}/#settings`} target="_blank" rel="noopener noreferrer"
+            title="Uydunun kendi paneli: Ayarlar → Sistem Güncellemesi (adımlar ve günlük)">ayrıntı: uydunun paneli</a>
+        )}
+        {canAsk && waiting && <span className="msu-hint">Yeniden istek: en erken {hhmm(wait)}</span>}
+        {noAsk && <span className="msu-hint" title={hintFull}>{hintShort}</span>}
+      </div>
+    );
+  };
   const m = st.mesh;
   // Ağdaki diğer Klyrix cihazları (bu cihazın uydular tablosundakiler hariç): yalnız bilgi + kendi panellerine bağlantı.
   const others = (disc?.devices || []).filter(d => IPV4.test(d.ip) && !sats.some(s => s.id === d.id));
@@ -252,26 +389,43 @@ export function MeshPanel({ onChange }: { onChange?: () => void }) {
           </div>
         )}
         {sats.length > 0 && (
-          <table className="rl-table ms-table">
-            <thead><tr><th>Uydu</th><th>Adres</th><th>Durum</th><th>Yayın</th><th>Bağlantı</th><th>Eşleşme</th><th className="rl-num">Cihaz</th><th /></tr></thead>
-            <tbody>
-              {sats.map(s => (
-                <tr key={s.id}>
-                  <td data-label="Uydu" className="rl-strong">{s.name}</td>
-                  <td data-label="Adres" className="rl-mono">{s.ip || '—'}</td>
-                  <td data-label="Durum">{s.online ? <Badge variant="success">Çevrimiçi</Badge> : <span className="rl-muted">Çevrimdışı · {ago(s.last_seen)}</span>}</td>
-                  <td data-label="Yayın">{s.status?.active ? `${bandText(s.status.band)} · kanal ${s.status.channel || '—'}` : <span className="rl-muted">{s.status?.error || 'kapalı'}</span>}</td>
-                  <td data-label="Bağlantı">{s.status?.backhaul === 'mesh' ? `Mesh (${s.status.mesh_peers || 0} komşu)` : 'Kablo'}</td>
-                  <td data-label="Eşleşme">{s.proto === 2 ? <Badge variant="success">Şifreli</Badge>
-                    : s.proto === 1 ? <Badge variant="warning">Eski eşleşme (şifresiz) — yeniden eşleştirin</Badge> : '—'}</td>
-                  <td data-label="Cihaz" className="rl-num">{s.status?.stations?.length ?? 0}</td>
-                  <td data-label="" className="rl-c">
-                    <button className="icon-btn" title="Uyduyu kaldır" aria-label={`${s.name} uydusunu kaldır`} onClick={() => remove(s)} disabled={!!busy}><Trash2 size={14} /></button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+          <div className="msu-bar">
+            <span className="dhcp-muted">
+              Bu cihazın sürümü <span className="rl-mono">{mainVer || '—'}</span>. Eski uydular güncellemeyi GitHub'dan kendileri indirir; istek yalnız şifreli eşleşmeyle gider.
+            </span>
+            <button className="btn-outline btn-sm msu-btn" onClick={updateAll} disabled={!!busy || !eligible.length}
+              title={eligible.length ? undefined : 'Güncellenecek çevrimiçi, şifreli eşleşmiş eski uydu yok'}>
+              <Download size={13} /> {busy === 'upd-all' ? 'İsteniyor…' : `Tümünü güncelle${eligible.length ? ` (${eligible.length})` : ''}`}
+            </button>
+          </div>
+        )}
+        {sats.length > 0 && mainHasUpdate && (
+          <Alert kind="info">Bu cihaz için de yeni sürüm var: önce bu cihazı güncelleyin (Ayarlar → Sistem Güncellemesi), sonra uyduları — uydular GitHub'daki son sürümü indirir.</Alert>
+        )}
+        {sats.length > 0 && (
+          <div className="msu-scroll">
+            <table className="rl-table ms-table">
+              <thead><tr><th>Uydu</th><th>Adres</th><th>Durum</th><th>Sürüm</th><th>Yayın</th><th>Bağlantı</th><th>Eşleşme</th><th className="rl-num">Cihaz</th><th /></tr></thead>
+              <tbody>
+                {sats.map(s => (
+                  <tr key={s.id}>
+                    <td data-label="Uydu" className="rl-strong">{s.name}</td>
+                    <td data-label="Adres" className="rl-mono">{s.ip || '—'}</td>
+                    <td data-label="Durum">{s.online ? <Badge variant="success">Çevrimiçi</Badge> : <span className="rl-muted">Çevrimdışı · {ago(s.last_seen)}</span>}</td>
+                    <td data-label="Sürüm">{verCell(s)}</td>
+                    <td data-label="Yayın">{s.status?.active ? `${bandText(s.status.band)} · kanal ${s.status.channel || '—'}` : <span className="rl-muted">{s.status?.error || 'kapalı'}</span>}</td>
+                    <td data-label="Bağlantı">{s.status?.backhaul === 'mesh' ? `Mesh (${s.status.mesh_peers || 0} komşu)` : 'Kablo'}</td>
+                    <td data-label="Eşleşme">{s.proto === 2 ? <Badge variant="success">Şifreli</Badge>
+                      : s.proto === 1 ? <Badge variant="warning">Eski eşleşme (şifresiz) — yeniden eşleştirin</Badge> : '—'}</td>
+                    <td data-label="Cihaz" className="rl-num">{s.status?.stations?.length ?? 0}</td>
+                    <td data-label="" className="rl-c">
+                      <button className="icon-btn" title="Uyduyu kaldır" aria-label={`${s.name} uydusunu kaldır`} onClick={() => remove(s)} disabled={!!busy}><Trash2 size={14} /></button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         )}
         <h4 className="rl-sub">Ağdaki diğer Klyrix cihazları</h4>
         <div className="msd-find">

@@ -16,7 +16,7 @@ const STATE_DIR = '/run/pi5-update';
 const STATE_FILE = `${STATE_DIR}/state`;
 const OUTPUT_FILE = `${STATE_DIR}/output`;
 export const UPDATE_MAX_RUNTIME_S = 1800;
-const STORAGE_BUSY_MSG = 'Depolama işi sürüyor (disk hazırlama / veri taşıma) — bitince yeniden deneyin; gece güncellemesi ertesi gece yeniden dener';
+export const STORAGE_BUSY_MSG = 'Depolama işi sürüyor (disk hazırlama / veri taşıma) — bitince yeniden deneyin; gece güncellemesi ertesi gece yeniden dener';
 // Backend durumu systemd-run'dan ÖNCE yazar: bu süre içinde birim henüz görünmüyorsa iş "yarıda kesildi" sayılmaz.
 const START_GRACE_S = 15;
 

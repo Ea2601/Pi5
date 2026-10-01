@@ -40,7 +40,7 @@ import { STARTUP_ROLE, isSatellite, readRole, writeRole, type DeviceRole } from 
 import {
   createPairing, cancelPairing, pairingState, pairSatellite, syncSatellite, listSatellites, removeSatellite, satelliteStations,
   checkOfflineSatellites, setMainWireless, mainMeshState, joinMain, syncOnce, leaveMain, satelliteState, startSatelliteAgent,
-  readSatState, MeshError, validSatId, removePeerKeys, meshHello, publishMdns, discoverKlyrix,
+  readSatState, MeshError, validSatId, removePeerKeys, meshHello, publishMdns, discoverKlyrix, requestSatelliteUpdate,
 } from './mesh';
 import { authGate, registerAuthRoutes } from './auth';
 import { validateSchedule, validateCommand, syncCronJobs, readJobStatuses, readSystemCron, syncCronOnStartup, runningJobs, jobOutput, startJobNow } from './cronSync';
@@ -4126,6 +4126,13 @@ app.post('/api/mesh/sync', async (req, res) => {
 app.delete('/api/mesh/satellites/:id', async (req, res) => {
   if (!validSatId(req.params.id)) return res.status(400).json({ error: 'Geçersiz uydu kimliği' });
   try { res.json({ success: await removeSatellite(req.params.id) }); } catch (e: any) { meshFail(res, e); }
+});
+// Uyduya güncelleme isteği (yalnız şifreli v2 eşleşme; v1 → 409): istek bir sonraki senkronun zarfında gider, uydu
+// güncellemeyi kendi yoluyla GitHub'dan indirir (10 dakikada en çok bir kez). Yazma: yukarıdaki /api/mesh netAdminGuard.
+app.post('/api/mesh/satellites/:id/update', async (req, res) => {
+  if (!validSatId(req.params.id)) return res.status(400).json({ error: 'Geçersiz uydu kimliği' });
+  if (isSatellite()) return res.status(409).json({ error: 'Bu cihaz uydu — uydu güncellemesi ana cihazdan istenir' });
+  try { res.json({ success: true, ...(await requestSatelliteUpdate(req.params.id)) }); } catch (e: any) { meshFail(res, e); }
 });
 app.post('/api/mesh/wireless', async (req, res) => {
   if (isSatellite()) return res.status(409).json({ error: 'Kablosuz mesh ana cihazdan açılır; uydu ayarı senkronla alır' });
