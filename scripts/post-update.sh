@@ -310,4 +310,12 @@ fi
 #    speedtest-cli'ye düşer; hata güncellemeyi durdurmaz.
 bash "$BASE/scripts/ookla-ensure.sh" >> "$LOG" 2>&1 || echo "  [ookla] UYARI: kurulamadı — hız testi speedtest-cli ile sürer" >> "$LOG"
 
+# 10. Zapret (DPI atlatma): nfqws derlenir, servis birimi kurulur (kurulum tamsa hiçbir şey yapmaz; servis açılmaz —
+#     panelden açılır). İlk kurulumda derleme paketleri + derleme birkaç dakika sürer. Hata güncellemeyi durdurmaz;
+#     panel Zapret sayfasında ve Routing'deki DPI kurallarında "eksik kurulu" der. Kurulum tamsa betik bir şey yazmaz;
+#     yazdığı satırlar güncelleme çıktısında da görünür.
+ZRC=0; ZOUT=$(bash "$BASE/scripts/zapret-install.sh" 2>&1) || ZRC=$?
+if [ -n "$ZOUT" ]; then printf '%s\n' "$ZOUT" | tee -a "$LOG"; fi
+[ "$ZRC" = 0 ] || echo "  [zapret] UYARI: kurulamadı — DPI çalışmaz (ayrıntı: $LOG)" | tee -a "$LOG"
+
 echo "$(date '+%Y-%m-%d %H:%M:%S') — Post-update tamamlandı" >> "$LOG"

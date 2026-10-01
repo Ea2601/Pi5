@@ -1,7 +1,7 @@
 import {
   Route, Globe, Tv, Gamepad2, MessageCircle, Apple,
   Plus, Trash2, Check, X, Search, Link, Shield, Info,
-  Lightbulb, ChevronDown, ChevronRight, RotateCcw, Loader2
+  Lightbulb, ChevronDown, ChevronRight, RotateCcw, Loader2, AlertTriangle
 } from 'lucide-react';
 import { useApi, getApi, putApi, postApi, deleteApi } from '../hooks/useApi';
 import { useState, useRef, useCallback, useEffect } from 'react';
@@ -37,6 +37,18 @@ const ruleList = (r: TrafficRule): ListId | null => {
 const fmtN = (n: number) => n.toLocaleString('tr-TR');
 
 interface VpsServer { id: number; ip: string; location: string }
+
+// Zapret'in kısa durumu (GET /routing/rules ve /routing/domains yanıtında). DPI açık, çıkışı ISP olan kural Zapret
+// çalışmıyorsa hiçbir trafiğe dokunmaz — kartta nedeniyle söylenir. VPS çıkışında DPI zaten etkisiz (tünel şifreli çıkar).
+interface ZapretBrief { installed: boolean; issue: string | null; active: boolean }
+const dpiInactiveReason = (z: ZapretBrief | undefined): string | null => {
+  if (!z || z.active) return null;
+  if (!z.installed) return 'Zapret bu cihazda kurulu değil';
+  return z.issue || 'Zapret kapalı — Zapret DPI sayfasından açın';
+};
+function DpiInactive({ why }: { why: string }) {
+  return <div className="rt-warnline" role="note"><AlertTriangle size={13} /><span>DPI uygulanmıyor: {why}</span></div>;
+}
 
 // VPS çıkışlı kuralda tünel kapanınca / VPS yanıt vermeyince ne olacağı (backend routeMarks.ts, kural başına).
 const FALLBACK_TITLE = "VPS tüneli kapanırsa ya da VPS yanıt vermezse — engelle: bu trafik operatörden (ISP) çıkmaz, site açılmaz; operatörden devam: trafik ISP üzerinden sürer (gerçek konumunuz görünür)";
@@ -246,7 +258,8 @@ export function RoutingPanel() {
 
 // ─── App Routing — inline controls per row ───
 function AppRoutingView({ onApplied }: { onApplied: () => void }) {
-  const { data: rulesData, refetch } = useApi<{ rules: TrafficRule[]; lists?: ListInfo[]; listDns?: ListDnsStats }>('/routing/rules', { rules: [] });
+  const { data: rulesData, refetch } = useApi<{ rules: TrafficRule[]; lists?: ListInfo[]; listDns?: ListDnsStats; zapret?: ZapretBrief }>('/routing/rules', { rules: [] });
+  const dpiWhy = dpiInactiveReason(rulesData.zapret);
   const { data: vpsData } = useApi<{ servers: VpsServer[] }>('/vps/list', { servers: [] });
   const [filterCat, setFilterCat] = useState<string>('all');
   const [expandedId, setExpandedId] = useState<number | null>(null);
@@ -381,6 +394,7 @@ function AppRoutingView({ onApplied }: { onApplied: () => void }) {
                           <StateToggle on={!!enabled} label={rule.app_name} onClick={() => handleChange(rule.id, 'enabled', enabled ? 0 : 1)} />
                         </div>
                       </div>
+                      {enabled && dpi && exitNode === 'isp' && dpiWhy ? <DpiInactive why={dpiWhy} /> : null}
 
                       {isExpanded && list && (
                         <div className="rt-detail">
@@ -499,7 +513,8 @@ function DismissedList({ onChange }: { onChange: () => void }) {
 }
 
 function DomainRoutingView({ onApplied }: { onApplied: () => void }) {
-  const { data, refetch } = useApi<{ domains: DomainRule[] }>('/routing/domains', { domains: [] });
+  const { data, refetch } = useApi<{ domains: DomainRule[]; zapret?: ZapretBrief }>('/routing/domains', { domains: [] });
+  const dpiWhy = dpiInactiveReason(data.zapret);
   const [adding, setAdding] = useState(false);
   const { data: vpsData } = useApi<{ servers: VpsServer[] }>('/vps/list', { servers: [] });
   const [showAdd, setShowAdd] = useState(false);
@@ -781,6 +796,7 @@ function DomainRoutingView({ onApplied }: { onApplied: () => void }) {
                   </button>
                 </div>
               </div>
+              {enabled && dpi && exitNode === 'isp' && !d.redirect_url && dpiWhy ? <DpiInactive why={dpiWhy} /> : null}
 
               {rs && rs.suggestions.length > 0 && (
                 <div className="routing-suggest">

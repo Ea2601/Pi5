@@ -44,7 +44,7 @@ import {
 import { authGate, registerAuthRoutes } from './auth';
 import { validateSchedule, validateCommand, syncCronJobs, readJobStatuses, readSystemCron, syncCronOnStartup, runningJobs, jobOutput, startJobNow } from './cronSync';
 import { validateListValue, normalizeListValue, syncPiholeLists, lastListSync, externalPiholeEntries } from './piholeLists';
-import { applyZapret, zapretStatus, startBlockcheck, blockcheckRunning, zapretInstalled, cleanDpiDomain } from './zapret';
+import { applyZapret, zapretStatus, startBlockcheck, blockcheckRunning, zapretInstalled, zapretInstallIssue, zapretBrief, cleanDpiDomain } from './zapret';
 import type { ZapretApplyResult } from './zapret';
 import { unboundStatus, applyUnboundSettings, validateUnboundSettings, savedUnboundSettings } from './unbound';
 import { recordEvent, recordEventOnce, recordVersionChange, serviceLabel } from './events';
@@ -267,6 +267,9 @@ app.post('/api/services/toggle', async (req, res) => {
     if (typeof enabled !== 'boolean') return res.status(400).json({ success: false, name, error: 'enabled alanı true/false olmalı' });
     // Pi-hole evin DHCP sunucusuyken kapatılırsa ev DNS'siz ve DHCP'siz kalır.
     if (name === 'pihole' && !enabled && await piDhcpActive()) return res.status(409).json({ success: false, name, error: PI_DHCP_BUSY_MSG });
+    // Eksik kurulu Zapret açılamaz (systemctl "Unit zapret.service does not exist" derdi); ne yapılacağı söylenir.
+    const zapretIssue = name === 'zapret' && enabled ? zapretInstallIssue() : null;
+    if (zapretIssue) return res.status(409).json({ success: false, name, error: zapretIssue });
     // Zapret açılmadan önce listesi ve ayarları yazılır (zapret.ts); sonuç (ör. "liste boş" uyarısı) yanıtla döner.
     const zapret: ZapretApplyResult | undefined = name === 'zapret' && enabled ? await applyZapret() : undefined;
     let actionError = '';
@@ -705,6 +708,8 @@ app.post('/api/zapret/apply', async (_req, res) => {
 app.post('/api/zapret/blockcheck', async (req, res) => {
   try {
     if (!zapretInstalled()) return res.status(400).json({ error: 'Zapret bu cihazda kurulu değil' });
+    const issue = zapretInstallIssue(); // blockcheck stratejileri nfqws ile dener
+    if (issue) return res.status(409).json({ error: issue });
     const domain = cleanDpiDomain(req.body?.domain || 'discord.com');
     if (!domain) return res.status(400).json({ error: 'Geçersiz alan adı' });
     if (await blockcheckRunning()) return res.status(409).json({ error: 'Blockcheck zaten çalışıyor' });
@@ -1780,7 +1785,8 @@ app.get('/api/routing/rules', async (_req, res) => {
     `);
     // Hazır listeli satırların bilgisi (ad sayısı, güncellenme): önbellekten yüklenir, yoksa arka planda indirilir.
     void ensureLists(LIST_IDS, Infinity).catch(() => undefined);
-    res.json({ rules, lists: listInfo(), listDns: listDnsStats() });
+    // zapret: DPI kuralı açık ama Zapret çalışmıyorsa Routing kartında uyarı için
+    res.json({ rules, lists: listInfo(), listDns: listDnsStats(), zapret: await zapretBrief() });
   } catch (e: any) {
     res.status(500).json({ error: e.message });
   }
@@ -1820,7 +1826,7 @@ app.get('/api/routing/status', (_req, res) => {
 app.get('/api/routing/domains', async (_req, res) => {
   try {
     const domains = await dbAll(`SELECT ${DOMAIN_ROUTING_COLUMNS} FROM domain_routing ORDER BY domain`);
-    res.json({ domains });
+    res.json({ domains, zapret: await zapretBrief() });
   } catch (e: any) {
     res.status(500).json({ error: e.message });
   }

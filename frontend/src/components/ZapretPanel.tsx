@@ -14,6 +14,8 @@ interface ZapretApply {
 }
 interface ZapretStatus {
   installed: boolean; lastApply: ZapretApply | null;
+  // Klasör var ama nfqws / servis birimi yok (yarım kurulum): nedeni ve ne yapılacağı (Ayarlar → Güncelle kurar)
+  installIssue?: string | null;
   service?: boolean; processes?: number; nfqws?: boolean; tpws?: boolean; modeFilter?: string; iface?: string;
   strategy?: string; unlistedLines?: number; userEntries?: number; excludeEntries?: number; fromRouting?: string[];
   // Routing'in hazır listeli DPI satırları (Yetişkin / Kumar): listeye girer, tek tek gösterilmez — yalnız sayı.
@@ -131,7 +133,8 @@ function ZapretStatusCard({ st, onApplied }: { st: ZapretStatus | null; onApplie
       + (st.fromLists?.length ? ` · hazır liste: ${st.fromLists.map(l => `${l.label} ${l.count.toLocaleString('tr-TR')}`).join(', ')}` : '')],
     ['Hariç', `${st.excludeEntries ?? 0} alan adı`],
   ];
-  const warnings = [...(la?.warnings || [])];
+  // Eksik kurulum ayrı (kırmızı) bantta; son uygulamanın uyarılarında da geçtiği için orada tekrarlanmaz.
+  const warnings = (la?.warnings || []).filter(w => w !== st.installIssue);
   if (la && la.vpsDpiRules > 0) {
     warnings.push(`${la.vpsDpiRules} Routing kuralında çıkış VPS + DPI: tünel trafiği modemden şifreli çıkar, orada DPI atlatma etkisizdir`);
   }
@@ -143,6 +146,11 @@ function ZapretStatusCard({ st, onApplied }: { st: ZapretStatus | null; onApplie
           <RefreshCw size={13} className={applying ? 'spin' : ''} /> Zapret'e uygula
         </button>
       }>
+      {st.installIssue && (
+        <div className="routing-apply routing-apply-err" style={{ marginTop: 0, marginBottom: 12 }}>
+          <AlertTriangle size={14} /><span>{st.installIssue}. Kurulum tamamlanana dek DPI hiçbir trafiğe uygulanmaz.</span>
+        </div>
+      )}
       <div className="zapret-facts">
         {facts.map(([k, v]) => (
           <div key={k} className="zapret-fact"><span>{k}</span><strong>{v}</strong></div>

@@ -238,19 +238,11 @@ systemctl enable nftables
 log "nftables aktif"
 
 # --- Zapret (DPI bypass) ---
-if [ -d "/opt/zapret" ]; then
-  log "Zapret zaten kurulu"
-else
-  warn "Zapret kuruluyor..."
-  git clone --depth=1 https://github.com/bol-van/zapret.git /opt/zapret 2>/dev/null || true
-  if [ -f "/opt/zapret/install_easy.sh" ]; then
-    cd /opt/zapret
-    # Auto-install mode
-    echo -e "1\n1\n" | bash install_easy.sh 2>/dev/null || warn "Zapret kurulumu kısmen tamamlandı (manuel kontrol gerekebilir)"
-    cd "$INSTALL_DIR"
-  fi
-  log "Zapret kuruldu"
-fi
+# Kaynaktan derlenir + servis birimi kurulur (scripts/zapret-install.sh); servis kapalı kalır, panelden açılır. Eskiden
+# etkileşimli install_easy.sh'e körlemesine "1\n1" veriliyordu: hata gizleniyor, birim ve nfqws kurulmuyordu.
+warn "Zapret kuruluyor (derleme birkaç dakika sürebilir)..."
+if bash "$INSTALL_DIR/scripts/zapret-install.sh"; then log "Zapret hazır (panelden açılır)"
+else warn "Zapret kurulamadı — DPI çalışmaz (sonra: sudo bash $INSTALL_DIR/scripts/zapret-install.sh; panel güncellemesi de dener)"; fi
 
 # ─── Hardware: LED, LCD bağımlılıkları ───
 # Bookworm (PEP 668) externally-managed-environment: --break-system-packages gerekir, yoksa sessiz başarısızlık.

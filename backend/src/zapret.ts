@@ -147,6 +147,9 @@ async function doApply(): Promise<ZapretApplyResult> {
       return res;
     }
     res.installed = true;
+    // Eksik kurulumda da listeler ve ayarlar yazılır (kurulum tamamlanınca hazır olsunlar); durum uyarıda söylenir.
+    const issue = zapretInstallIssue();
+    if (issue) res.warnings.push(issue);
     const { hostlist, exclude, fromRouting, vpsDpiRules } = await collectDpiDomains();
     Object.assign(res, { hostlist: hostlist.length, exclude: exclude.length, fromRouting: fromRouting.length, vpsDpiRules });
     writeManagedBlock(USER_LIST, hostlist);
@@ -204,6 +207,7 @@ export async function zapretStatus() {
   const { fromRouting, fromLists } = await collectDpiDomains();
   return {
     installed: true,
+    installIssue: zapretInstallIssue(),
     service: await serviceActive(),
     processes: procs.length,
     nfqws: configValue(txt, 'NFQWS_ENABLE') === '1',
@@ -227,6 +231,25 @@ export const blockcheckRunning = async () =>
     .then(r => r.stdout.trim(), e => String(e?.stdout || '').trim())) === 'active';
 
 export const zapretInstalled = () => isLinux && fs.existsSync(CONFIG);
+
+// Klasör / config var ama Zapret çalıştırılamıyorsa nedeni (yoksa null). Eskiden yalnız config'e bakılıyordu: install.sh'in
+// etkileşimli kurulumu yarıda kaldığında panel "kurulu" diyor, servis "Unit zapret.service does not exist" ile düşüyordu.
+// Eksik parçayı panel güncellemesi kurar (scripts/zapret-install.sh, post-update).
+const NFQWS = `${ZAPRET}/nfq/nfqws`;
+const UNIT_FILES = ['/lib/systemd/system/zapret.service', '/usr/lib/systemd/system/zapret.service', '/etc/systemd/system/zapret.service'];
+export function zapretInstallIssue(): string | null {
+  if (!zapretInstalled()) return null;
+  const missing: string[] = [];
+  try { fs.accessSync(NFQWS, fs.constants.X_OK); } catch { missing.push('nfqws programı'); }
+  if (!UNIT_FILES.some(f => fs.existsSync(f))) missing.push('servis birimi');
+  return missing.length ? `Zapret eksik kurulu (${missing.join(' ve ')} yok) — Ayarlar → Güncelle Zapret'i kurar` : null;
+}
+
+// Routing kartları için kısa durum: DPI kuralı açık ama Zapret çalışmıyorsa kartta uyarı gösterilir.
+export async function zapretBrief(): Promise<{ installed: boolean; issue: string | null; active: boolean }> {
+  if (!zapretInstalled()) return { installed: false, issue: null, active: false };
+  return { installed: true, issue: zapretInstallIssue(), active: await serviceActive() };
+}
 
 export async function startBlockcheck(domain: string): Promise<void> {
   await execFileP('systemd-run', ['--quiet', '--collect', '--unit=pi5-blockcheck', '/bin/bash', BLOCKCHECK_SCRIPT, domain, BLOCKCHECK_LOG],
