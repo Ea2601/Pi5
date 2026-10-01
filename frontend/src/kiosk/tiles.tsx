@@ -285,7 +285,7 @@ export function DevicesTile() {
 
 // ── Güvenlik uygulamaları: her biri durumu ve kısa ayrıntısıyla (panelin menüsündeki simgelerle) ──
 interface F2b { jails?: { name: string; currentlyBanned: number; totalBanned: number }[] }
-interface Zapret { installed?: boolean; service?: boolean; nfqws?: boolean; processes?: number; userEntries?: number }
+interface Zapret { installed?: boolean; service?: boolean; nfqws?: boolean; processes?: number; dpiRules?: number }
 type AppTone = 'ok' | 'warn' | 'bad' | 'off';
 const APP_STATUS: Record<ServiceRow['status'] | 'off', [string, AppTone]> = {
   running: ['Çalışıyor', 'ok'], error: ['Hatalı', 'bad'], restarting: ['Geçişte', 'warn'], stopped: ['Durmuş', 'warn'],
@@ -316,7 +316,7 @@ export function SecurityTile() {
     { key: 'unbound', icon: <Globe />, name: 'Unbound', role: 'özel DNS çözücü', st: state(find('unbound')),
       detail: ub?.stats?.hitRate != null ? `%${num(ub.stats.hitRate)} önbellek isabeti` : '' },
     { key: 'zapret', icon: <Zap />, name: 'Zapret', role: 'DPI atlatma', st: state(find('zapret')),
-      detail: zp?.installed && zp.userEntries ? `${num(zp.userEntries)} alan adı` : '' },
+      detail: zp?.installed && zp.dpiRules ? `${num(zp.dpiRules)} DPI kuralı` : '' },
     { key: 'fail2ban', icon: <ShieldAlert />, name: 'Fail2Ban', role: 'saldırı engelleme', st: state(find('fail2ban')),
       detail: f2b ? (banned ? `${num(banned)} yasaklı IP` : 'yasaklı IP yok') : '' },
     { key: 'nftables', icon: <Flame />, name: 'Güvenlik duvarı', role: 'nftables', st: state(find('nftables')), detail: '' },

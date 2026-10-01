@@ -7,28 +7,30 @@ import { toast } from '../toast';
 
 type ZapretTab = 'overview' | 'strategy' | 'hostlist' | 'exclude';
 
-// Backend zapret.ts: listeler ve NFQWS_ENABLE / MODE_FILTER / IFACE_WAN Zapret'e gerçekten yazılır.
+// Backend zapret.ts: Zapret Routing'in DPI işaretine bakar (FILTER_MARK); hariç liste ve NFQWS_ENABLE / MODE_FILTER /
+// FILTER_MARK / IFACE_WAN Zapret'e gerçekten yazılır.
 interface ZapretApply {
-  ok: boolean; installed: boolean; hostlist: number; exclude: number; fromRouting: number; vpsDpiRules: number;
+  ok: boolean; installed: boolean; dpiRules: number; manual: number; exclude: number; fromRouting: number; vpsDpiRules: number;
   methodEnabled: boolean; restarted: boolean; warnings: string[]; error?: string; at: number;
 }
 interface ZapretStatus {
   installed: boolean; lastApply: ZapretApply | null;
   // Klasör var ama nfqws / servis birimi yok (yarım kurulum): nedeni ve ne yapılacağı (Ayarlar → Güncelle kurar)
   installIssue?: string | null;
-  service?: boolean; processes?: number; nfqws?: boolean; tpws?: boolean; modeFilter?: string; iface?: string;
-  strategy?: string; unlistedLines?: number; userEntries?: number; excludeEntries?: number; fromRouting?: string[];
+  service?: boolean; processes?: number; nfqws?: boolean; tpws?: boolean; modeFilter?: string; filterMark?: string; iface?: string;
+  strategy?: string; unlistedLines?: number; dpiRules?: number; vpsDpiRules?: number; manualEntries?: number;
+  excludeEntries?: number; fromRouting?: string[];
   // Routing'in hazır listeli DPI satırları (Yetişkin / Kumar): listeye girer, tek tek gösterilmez — yalnız sayı.
   fromLists?: { id: string; label: string; count: number }[];
   zapretOwnList?: boolean; blockcheck?: { running: boolean; log: string };
 }
 
-// Uygulama sonucunu bildir: kayıt her durumda saklanır; Zapret'e yazılamadıysa neden, liste boşsa uyarı gösterilir.
+// Uygulama sonucunu bildir: kayıt her durumda saklanır; Zapret'e yazılamadıysa neden, DPI kuralı yoksa uyarı gösterilir.
 function reportApply(z: ZapretApply | undefined, okMsg: string) {
   if (!z || !z.installed) { toast.success(okMsg); return; }
   if (!z.ok) { toast.error(`Kaydedildi ama Zapret'e uygulanamadı: ${z.error || 'bilinmeyen hata'}`); return; }
   toast.success(`${okMsg}${z.restarted ? ' — Zapret yeniden başlatıldı' : ' ve Zapret\'e uygulandı'}`);
-  if (!z.methodEnabled) toast.info('DPI listesi boş: Zapret hiçbir trafiğe dokunmuyor. Bypass listesine site ekleyin.');
+  if (!z.methodEnabled) toast.info("DPI'ı açık kural yok: Zapret hiçbir trafiğe dokunmuyor. Routing'de bir kuralda DPI'ı açın.");
 }
 
 export function ZapretPanel() {
@@ -43,7 +45,7 @@ export function ZapretPanel() {
     setToggling(true);
     try {
       const r = await postApi('/services/toggle', { name: 'zapret', enabled: !isEnabled });
-      if (r.zapret && !r.zapret.methodEnabled) toast.info('Zapret açık ama DPI listesi boş: hiçbir trafiğe dokunmuyor.');
+      if (r.zapret && !r.zapret.methodEnabled) toast.info("Zapret açık ama DPI'ı açık kural yok: hiçbir trafiğe dokunmuyor.");
     } catch (e) {
       toast.error(e instanceof Error ? e.message : 'Zapret açılıp kapatılamadı');
     } finally {
@@ -55,14 +57,14 @@ export function ZapretPanel() {
   const tabs: { id: ZapretTab; label: string; icon: React.ReactNode }[] = [
     { id: 'overview', label: 'Genel Bakış', icon: <Zap size={14} /> },
     { id: 'strategy', label: 'Strateji', icon: <FileText size={14} /> },
-    { id: 'hostlist', label: 'Bypass Listesi', icon: <List size={14} /> },
+    { id: 'hostlist', label: 'Ek Siteler', icon: <List size={14} /> },
     { id: 'exclude', label: 'Hariç Tutulanlar', icon: <Shield size={14} /> },
   ];
 
   return (
     <div className="fade-in">
       <Panel title="Zapret DPI Bypass Motoru" icon={<Zap size={20} style={{ marginRight: 8 }} />}
-        subtitle="Yalnız listedeki sitelere, modem çıkışında nfqws paket manipülasyonu"
+        subtitle="Routing'de DPI'ı açık kuralların trafiğine, modem çıkışında nfqws paket manipülasyonu"
         badge={<Badge variant={isEnabled ? 'success' : 'neutral'}>{isEnabled ? 'Aktif' : 'Pasif'}</Badge>}
         actions={
           <button className={`toggle-btn ${isEnabled ? 'toggle-on' : 'toggle-off'}`} onClick={handleToggle} disabled={toggling}
@@ -106,7 +108,7 @@ function ZapretStatusCard({ st, onApplied }: { st: ZapretStatus | null; onApplie
   const [applying, setApplying] = useState(false);
   const handleApply = async () => {
     setApplying(true);
-    try { reportApply((await postApi('/zapret/apply', {})).zapret, 'Listeler yazıldı'); }
+    try { reportApply((await postApi('/zapret/apply', {})).zapret, 'Ayarlar yazıldı'); }
     catch (e) { toast.error(e instanceof Error ? e.message : 'Uygulanamadı'); }
     finally { setApplying(false); await onApplied(); }
   };
@@ -127,22 +129,20 @@ function ZapretStatusCard({ st, onApplied }: { st: ZapretStatus | null; onApplie
     ['nfqws', st.nfqws
       ? (st.processes ? `Açık · ${st.processes} süreç` : 'Açık · süreç yok')
       : 'Kapalı'],
-    ['Kapsam', st.modeFilter === 'hostlist' ? 'Yalnız listedeki siteler' : `MODE_FILTER=${st.modeFilter || '—'}`],
+    ['Kapsam', st.filterMark ? `DPI'ı açık kuralların trafiği (işaret ${st.filterMark})` : 'İşaret süzgeci yok — "Zapret\'e uygula" ile yazılır'],
     ['Çıkış arayüzü', st.iface || '—'],
-    ['Bypass listesi', `${st.userEntries ?? 0} alan adı${st.fromRouting?.length ? ` (${st.fromRouting.length} Routing'den)` : ''}`
+    ['DPI kuralları', `${st.dpiRules ?? 0} kural${st.vpsDpiRules ? ` (${st.vpsDpiRules} VPS'te: tünel düşünce)` : ''}`
+      + (st.manualEntries ? ` · ${st.manualEntries} ek site` : '')
       + (st.fromLists?.length ? ` · hazır liste: ${st.fromLists.map(l => `${l.label} ${l.count.toLocaleString('tr-TR')}`).join(', ')}` : '')],
-    ['Hariç', `${st.excludeEntries ?? 0} alan adı`],
+    ['Hariç', `${st.excludeEntries ?? 0} satır`],
   ];
   // Eksik kurulum ayrı (kırmızı) bantta; son uygulamanın uyarılarında da geçtiği için orada tekrarlanmaz.
   const warnings = (la?.warnings || []).filter(w => w !== st.installIssue);
-  if (la && la.vpsDpiRules > 0) {
-    warnings.push(`${la.vpsDpiRules} Routing kuralında çıkış VPS + DPI: tünel trafiği modemden şifreli çıkar, orada DPI atlatma etkisizdir`);
-  }
 
   return (
     <Panel title="Durum" subtitle="Zapret'in Pi üzerindeki gerçek durumu"
       actions={
-        <button className="btn-outline btn-sm" onClick={handleApply} disabled={applying} title="Listeleri ve ayarları Zapret'e yeniden yaz">
+        <button className="btn-outline btn-sm" onClick={handleApply} disabled={applying} title="Ayarları ve hariç listesini Zapret'e yeniden yaz">
           <RefreshCw size={13} className={applying ? 'spin' : ''} /> Zapret'e uygula
         </button>
       }>
@@ -163,9 +163,10 @@ function ZapretStatusCard({ st, onApplied }: { st: ZapretStatus | null; onApplie
         <div key={w} className="routing-apply"><AlertTriangle size={14} /><span>{w}</span></div>
       ))}
       <p className="subtitle" style={{ marginTop: 12 }}>
-        Zapret yalnız Bypass Listesi'ndeki sitelere (alt alan adları dahil) ve modem tarafı çıkıştaki trafiğe uygulanır.
-        Routing'de çıkışı ISP olup DPI seçili kuralların siteleri listeye kendiliğinden eklenir. Liste boşken yöntem kapalı tutulur;
-        Zapret'te boş liste "tüm trafik" demektir.
+        Site listesi gerekmez: Routing'de DPI'ı açtığınız kuralın trafiği (alan adı, hazır liste ya da IP aralığı) işaretlenir ve
+        modemden çıkarken Zapret'ten geçer. VPS çıkışlı kuralda tünel çalışırken DPI kullanılmaz; tünel düşer ve "operatörden + DPI"
+        seçiliyse trafik modemden DPI ile çıkar. Bir kuralda DPI açılınca Zapret kapalıysa kendiliğinden açılır; buradaki
+        anahtar Zapret'i tümden kapatır. Routing'de kuralı olmayan bir site için Ek Siteler'i kullanın.
       </p>
     </Panel>
   );
@@ -220,15 +221,15 @@ function StrategyCard({ st }: { st: ZapretStatus | null }) {
       {!!st?.unlistedLines && (
         <div className="routing-apply routing-apply-err" style={{ marginTop: 0, marginBottom: 10 }}>
           <AlertTriangle size={14} />
-          <span>{st.unlistedLines} strateji satırında &lt;HOSTLIST&gt; yok: o satır listeden bağımsız, tüm trafiğe uygulanır.</span>
+          <span>{st.unlistedLines} strateji satırında &lt;HOSTLIST&gt; yok: o satırda Hariç Tutulanlar uygulanmaz.</span>
         </div>
       )}
       <pre className="doc-code zapret-log">{st?.strategy || '—'}</pre>
       <p className="subtitle" style={{ marginTop: 12 }}>
-        Panel yalnız NFQWS_ENABLE, TPWS_ENABLE, MODE_FILTER ve IFACE_WAN değerlerini yönetir; strateji satırlarına dokunmaz.
-        Blockcheck'in önerdiği stratejiyi uygulamak için SSH'ta <code>sudo nano /opt/zapret/config</code> ile NFQWS_OPT'u değiştirip
-        <code> sudo systemctl restart zapret</code> çalıştırın; her satırda &lt;HOSTLIST&gt; kalmalı. Özgün dosya ilk uygulamada
-        config.pi5-orig olarak saklandı.
+        Panel yalnız NFQWS_ENABLE, TPWS_ENABLE, MODE_FILTER, FILTER_MARK ve IFACE_WAN değerlerini yönetir; strateji satırlarına
+        dokunmaz. Blockcheck'in önerdiği stratejiyi uygulamak için SSH'ta <code>sudo nano /opt/zapret/config</code> ile NFQWS_OPT'u
+        değiştirip <code> sudo systemctl restart zapret</code> çalıştırın; Hariç Tutulanlar'ın uygulanması için her satırda
+        &lt;HOSTLIST&gt; kalmalı. Özgün dosya ilk uygulamada config.pi5-orig olarak saklandı.
       </p>
       <p className="subtitle" style={{ marginTop: 8 }}>
         Yöntem yalnız nfqws: paketleri modem çıkışında işler ve VPS tüneline giden trafiğe dokunmaz. tpws web trafiğini Pi'deki
@@ -273,10 +274,10 @@ function ZapretDomainManager({ listType, fromRouting, onChanged }: {
 
   const handleDelete = (id: number) => run(() => deleteApi(`/zapret/domains/${id}`), 'Silindi');
 
-  const title = listType === 'hostlist' ? 'Bypass Listesi' : 'Hariç Tutulanlar';
+  const title = listType === 'hostlist' ? 'Ek Siteler' : 'Hariç Tutulanlar';
   const subtitle = listType === 'hostlist'
-    ? 'DPI atlatma uygulanacak siteler; alt alan adları dahil (discord.com → cdn.discord.com)'
-    : 'Bypass listesinde olsa bile DPI atlatma uygulanmayacak siteler';
+    ? "İsteğe bağlı: Routing'de kuralı olmayan, modemden DPI atlatmayla çıkacak siteler; alt alan adları dahil (discord.com → cdn.discord.com)"
+    : "DPI'ı açık bir kurala girse bile DPI atlatma uygulanmayacak siteler";
 
   return (
     <Panel title={title} subtitle={subtitle} icon={<List size={18} style={{ marginRight: 8 }} />}>
@@ -305,7 +306,7 @@ function ZapretDomainManager({ listType, fromRouting, onChanged }: {
             <button
               className={`toggle-btn toggle-sm ${item.enabled ? 'toggle-on' : 'toggle-off'}`}
               onClick={() => handleToggle(item.id, item.enabled)}
-              title={item.enabled ? 'Devre dışı bırak (Zapret listesinden çıkarılır)' : 'Etkinleştir'}
+              title={item.enabled ? 'Devre dışı bırak' : 'Etkinleştir'}
             >
               <div className="toggle-knob" />
             </button>
@@ -326,7 +327,7 @@ function ZapretDomainManager({ listType, fromRouting, onChanged }: {
 
       {fromRouting.length > 0 && (
         <div className="pihole-external">
-          <span className="list-item-comment">Routing'deki DPI kurallarından (çıkış ISP) — Routing sayfasından yönetilir:</span>
+          <span className="list-item-comment">Routing'de DPI'ı açık kuralların siteleri (çıkış ISP; burada eklemek gerekmez) — Routing sayfasından yönetilir:</span>
           <div className="list-items">
             {fromRouting.map(d => (
               <div key={d} className="list-item list-item-disabled"><span className="list-item-value">{d}</span></div>

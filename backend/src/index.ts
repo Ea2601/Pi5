@@ -627,13 +627,38 @@ app.post('/api/pihole/lists/sync', async (_req, res) => {
 });
 
 // ─── Zapret (DPI atlatma) ───
-// Listeler Zapret'e gerçekten yazılır (zapret.ts): her değişiklikten sonra uygulanır; yanıttaki `zapret` sonucu
-// (ok / warnings / error) arayüzde gösterilir. Routing'de çıkışı ISP olan DPI kurallarının alan adları da listeye girer.
-// Liste değişikliği + Zapret'e uygulama sonucu olay geçmişine.
+// Zapret Routing'in DPI işaretine bakar (zapret.ts): ek siteler Routing'de ISP + DPI alan adı gibi işaretlenir, hariç
+// liste Zapret'e yazılır; her değişiklikten sonra uygulanır, yanıttaki `zapret` sonucu (ok / warnings / error)
+// arayüzde gösterilir. Liste değişikliği + Zapret'e uygulama sonucu olay geçmişine.
 const zapretEvent = (what: string, z: ZapretApplyResult) => recordEvent('zapret',
   z.ok ? `${what}${z.installed ? '' : ' (Zapret kurulu değil — yalnız kaydedildi)'}` : `${what} — Zapret'e uygulanamadı: ${z.error || 'bilinmeyen hata'}`,
   z.ok ? 'info' : 'warning');
-const ZAPRET_LIST_LABEL = (t: string) => (t === 'exclude' ? 'hariç tutulanlar' : 'bypass listesi');
+const ZAPRET_LIST_LABEL = (t: string) => (t === 'exclude' ? 'hariç tutulanlar' : 'ek DPI siteleri');
+// Ek site işaretle çalışır → Routing yeniden uygulanır (sonunda Zapret de); hariç liste yalnız Zapret'in dosyasında.
+async function applyZapretList(type: unknown): Promise<ZapretApplyResult> {
+  if (type === 'hostlist') await applyAllRoutingRules();
+  return applyZapret();
+}
+// DPI'ı açılan kural (ya da ek site) Zapret çalışmıyorsa hiçbir trafiğe dokunmaz: Zapret kurulu ama kapalıysa
+// kendiliğinden açılır (kullanıcı kararı, 2026-10-01). Yalnız DPI'ın açıldığı değişiklikte çağrılır, her routing
+// uygulamasında değil — Zapret sayfasındaki anahtarla kapatan kullanıcının kararı bir sonraki DPI açılışına dek geçerli.
+// Hata isteği düşürmez; sonuç olay geçmişine.
+async function autoStartZapret(): Promise<void> {
+  try {
+    if (!isLinux || !zapretInstalled() || zapretInstallIssue()) return;
+    if ((await zapretBrief()).active) return;
+    await applyZapret(); // NFQWS_ENABLE + FILTER_MARK açılıştan önce yazılmış olsun
+    let why = '';
+    try { await systemServices.toggleService('zapret', true); } catch (e: any) { why = e.message; }
+    const st = await waitServiceSettled('zapret', 'running', why ? 3000 : 15000);
+    await dbRun('UPDATE service_status SET enabled = ?, status = ?, last_check = CURRENT_TIMESTAMP WHERE name = ?',
+      [st.status === 'running' ? 1 : 0, st.status, 'zapret']);
+    if (st.status === 'running') await recordEvent('service:zapret', "Zapret açıldı (Routing'de DPI açılan kural için)");
+    else await recordEvent('service:zapret', `Zapret kendiliğinden açılamadı: ${why || `durum ${st.status}`}`, 'warning');
+  } catch (e: any) {
+    console.error('[zapret] kendiliğinden açılamadı:', e?.message || e);
+  }
+}
 app.get('/api/zapret/domains', async (_req, res) => {
   try {
     const domains = await dbAll('SELECT * FROM zapret_domains ORDER BY list_type, domain');
@@ -651,7 +676,8 @@ app.post('/api/zapret/domains', async (req, res) => {
     const clean = cleanDpiDomain(domain);
     if (!clean) return res.status(400).json({ error: 'Geçersiz alan adı (ör. discord.com ya da *.discord.com)' });
     await dbRun('INSERT OR IGNORE INTO zapret_domains (list_type, domain) VALUES (?, ?)', [type, clean]);
-    const zapret = await applyZapret();
+    const zapret = await applyZapretList(type);
+    if (type === 'hostlist') await autoStartZapret();
     await zapretEvent(`Zapret ${ZAPRET_LIST_LABEL(type)}: eklendi ${clean}`, zapret);
     res.json({ success: true, zapret });
   } catch (e: any) {
@@ -664,7 +690,8 @@ app.put('/api/zapret/domains/:id', async (req, res) => {
     const { enabled } = req.body;
     await dbRun('UPDATE zapret_domains SET enabled = ? WHERE id = ?', [enabled ? 1 : 0, req.params.id]);
     const row: any = await dbGet('SELECT list_type, domain FROM zapret_domains WHERE id = ?', [req.params.id]);
-    const zapret = await applyZapret();
+    const zapret = await applyZapretList(row?.list_type);
+    if (row?.list_type === 'hostlist' && enabled) await autoStartZapret();
     if (row) await zapretEvent(`Zapret ${ZAPRET_LIST_LABEL(row.list_type)}: ${enabled ? 'etkinleştirildi' : 'devre dışı bırakıldı'} ${row.domain}`, zapret);
     res.json({ success: true, zapret });
   } catch (e: any) {
@@ -676,7 +703,7 @@ app.delete('/api/zapret/domains/:id', async (req, res) => {
   try {
     const row: any = await dbGet('SELECT list_type, domain FROM zapret_domains WHERE id = ?', [req.params.id]);
     await dbRun('DELETE FROM zapret_domains WHERE id = ?', [req.params.id]);
-    const zapret = await applyZapret();
+    const zapret = await applyZapretList(row?.list_type);
     if (row) await zapretEvent(`Zapret ${ZAPRET_LIST_LABEL(row.list_type)}: silindi ${row.domain}`, zapret);
     res.json({ success: true, zapret });
   } catch (e: any) {
@@ -697,7 +724,7 @@ app.get('/api/zapret/status', async (_req, res) => {
 app.post('/api/zapret/apply', async (_req, res) => {
   try {
     const zapret = await applyZapret();
-    await zapretEvent(`Zapret listeleri yeniden uygulandı (${zapret.hostlist} alan adı)`, zapret);
+    await zapretEvent(`Zapret yeniden uygulandı (${zapret.dpiRules} DPI kuralı${zapret.manual ? `, ${zapret.manual} ek site` : ''})`, zapret);
     res.json({ success: true, zapret });
   } catch (e: any) {
     res.status(500).json({ error: e.message });
@@ -1638,8 +1665,8 @@ async function applyAllRoutingRulesNow() {
   const allDomains: { domain: string; exit_node: string; dpi_bypass: number; enabled: number; redirect_url?: string; vps_fallback?: string }[] = [];
   // IP aralığı girdileri (ipRanges.ts): @asn:<n>[!443] ve a.b.c.d[/nn] — DNS'siz trafik (ör. WhatsApp aramaları) için.
   const ranges: RangeRoute[] = [];
-  // Hazır liste girdileri (categoryLists.ts): @list:adult / @list:gambling — VPS çıkışlıysa listDns.ts yolundan; yalnız
-  // DPI ise Zapret'e (zapret.ts). Liste önbellekte yoksa indirilir (ilk açılışta birkaç sn).
+  // Hazır liste girdileri (categoryLists.ts): @list:adult / @list:gambling — işaretliyse (VPS çıkışı ya da yalnız DPI)
+  // listDns.ts yolundan; yalnız DPI'da işaret 0x4000, Zapret ona bakar. Liste önbellekte yoksa indirilir (ilk açılışta birkaç sn).
   const lists: ListRoute[] = [];
 
   // App domains (wildcard patterns like *.whatsapp.net → whatsapp.net for dnsmasq)
@@ -1648,7 +1675,7 @@ async function applyAllRoutingRulesNow() {
     for (const domain of domains) {
       const lt = LIST_TOKEN.exec(domain);
       if (lt) {
-        if (exitOf(rule.exit_node) === 'isp') continue;
+        if (exitOf(rule.exit_node) === 'isp' && !rule.dpi_bypass) continue; // işaretsiz: yönlendirilecek bir şey yok
         const id = lt[1] as ListId;
         await ensureList(id, Infinity);
         const info = listInfo().find(l => l.id === id);
@@ -1679,6 +1706,13 @@ async function applyAllRoutingRulesNow() {
   // Custom domain rules — redirect_url dahil (yoksa DNS-redirect kuralları kaybolur)
   for (const rule of domainRules) {
     allDomains.push({ domain: rule.domain, exit_node: exitOf(rule.exit_node), dpi_bypass: rule.dpi_bypass, enabled: 1, redirect_url: rule.redirect_url || undefined, vps_fallback: rule.vps_fallback });
+  }
+  // Zapret sayfasının ek DPI siteleri: ISP + DPI alan adı gibi işaretlenir (Zapret işarete bakar). Aynı alan adının
+  // Routing kuralı varsa o geçerli (çıkışı ve DPI'ı kural belirler).
+  const ruled = new Set(allDomains.map(d => d.domain.replace(/^\*\./, '')));
+  for (const z of await dbAll("SELECT domain FROM zapret_domains WHERE enabled = 1 AND list_type = 'hostlist'") as any[]) {
+    const d = cleanDpiDomain(z.domain);
+    if (d && !ruled.has(d)) allDomains.push({ domain: d, exit_node: 'isp', dpi_bypass: 1, enabled: 1 });
   }
 
   try {
@@ -1811,6 +1845,10 @@ app.put('/api/routing/rules/:id', async (req, res) => {
     await dbRun(`UPDATE traffic_routing SET ${updates.join(', ')} WHERE id = ?`, params);
     // Apply unified routing (app + domain rules together)
     await applyAllRoutingRules();
+    if (dpi_bypass || enabled) {
+      const r: any = await dbGet('SELECT enabled, dpi_bypass FROM traffic_routing WHERE id = ?', [req.params.id]);
+      if (r?.enabled && r.dpi_bypass) await autoStartZapret();
+    }
     res.json({ success: true });
   } catch (e: any) {
     res.status(500).json({ error: e.message });
@@ -1841,6 +1879,7 @@ app.post('/api/routing/domains', async (req, res) => {
       [cleanDomain, route_type || 'direct', description || '', exit_node || 'isp', dpi_bypass ? 1 : 0, redirect_url || '', normFallback(vps_fallback)]);
     // Apply unified routing (app + domain rules together)
     await applyAllRoutingRules();
+    if (dpi_bypass && !redirect_url) await autoStartZapret();
     const domains = await dbAll(`SELECT ${DOMAIN_ROUTING_COLUMNS} FROM domain_routing ORDER BY domain`);
     res.json({ success: true, domains });
   } catch (e: any) {
@@ -1870,6 +1909,10 @@ app.put('/api/routing/domains/:id', async (req, res) => {
     params.push(req.params.id);
     await dbRun(`UPDATE domain_routing SET ${updates.join(', ')} WHERE id = ?`, params);
     await applyAllRoutingRules();
+    if (dpi_bypass || enabled) {
+      const r: any = await dbGet('SELECT enabled, dpi_bypass, redirect_url FROM domain_routing WHERE id = ?', [req.params.id]);
+      if (r?.enabled && r.dpi_bypass && !r.redirect_url) await autoStartZapret();
+    }
     res.json({ success: true });
   } catch (e: any) {
     res.status(500).json({ error: e.message });

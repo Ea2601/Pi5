@@ -1,14 +1,22 @@
-// Yönlendirme işaretleri (fwmark; VPS işaretinde aynı zamanda ip rule tablo numarası). v2.24.55 şeması:
+// Yönlendirme işaretleri (fwmark; VPS işaretinde aynı zamanda ip rule tablo numarası). v2.24.55 şeması, v2.24.75'te
+// yalnız-DPI işareti 200 → 0x4000:
 //   0             → ISP (işaretsiz)
-//   200           → ISP + DPI istendi (Zapret kendi listesiyle çalışır; kural/tablo yok)
+//   0x4000        → ISP + DPI (kural/tablo yok). Zapret liste yerine bu bite bakar (config FILTER_MARK=0x4000):
+//                   işaretli trafik modemden (IFACE_WAN) çıkarken nfqws'ten geçer.
 //   0x8000 | id   → wg_vps<id> tüneli (id 1–8191)
-//     + 0x4000    → DPI de istendi (tünel içinde etkisiz; sayaçlarda gösterilir)
+//     + 0x4000    → DPI de istendi: tünel çalışırken etkisiz (trafik wg'den çıkar, Zapret yalnız modem çıkışına bakar);
+//                   tünel düşüp operatörden devam edilirse (0x2000) trafik modemden DPI ile çıkar
 //     + 0x2000    → tünel yoksa / yanıt vermiyorsa operatörden devam; bit yoksa ENGELLE (tabloda kalıcı unreachable)
+// Panel işaretin yalnız alt 16 bitini yazar (ROUTE_MARK_MASK): üst bitler Zapret'indir (0x40000000 kendi paketleri,
+// 0x20000000 POSTNAT, bağlantı işaretinde de) — tamamını ezmek Zapret'in döngü korumasını bozardı.
 // Eski şema (≤ v2.24.54): 100+id tünel, 300+id tünel + DPI — id ≥ 100'de 200 ve 300+id ile çakışıyordu, tünel düşünce
 // ne olacağını da taşımıyordu. Sayaçlar (topology.ts) ve geçiş (system.ts) için hâlâ çözülür.
-export const DPI_ONLY_MARK = 200;
 export const VPS_MARK_BIT = 0x8000;
 export const DPI_MARK_BIT = 0x4000;
+export const DPI_ONLY_MARK = DPI_MARK_BIT;
+// v2.24.55–74'ün yalnız-DPI işareti: seti (rt_m200) geçişte yenisine kopyalanır, sayaçlarda tanınır.
+export const LEGACY_DPI_ONLY_MARK = 200;
+export const ROUTE_MARK_MASK = 0xffff;
 export const ISP_FALLBACK_BIT = 0x2000;
 export const VPS_ID_MAX = 0x1fff;
 

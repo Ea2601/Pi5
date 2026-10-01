@@ -22,18 +22,19 @@ export type ListRoute = { id: ListId; exit_node: string; dpi_bypass: number; vps
 export type Upstream = { host: string; port: number };
 
 // ── Plan (saf): liste satırları → dnsmasq satırları ve setler ─────────────────────────────────────────────────────────
-// mark: kuralın işareti (system.ts getFwmark); yalnız VPS işaretleri (vpsMark true) iletici yoluna girer. Dönen
+// mark: kuralın işareti (system.ts getFwmark); işaretli her satır (VPS çıkışı ya da v2.24.75'ten beri yalnız DPI — Zapret
+// işarete bakar) iletici yoluna girer, işaretsiz (ISP, DPI yok) satır girmez. Dönen
 // markers 05 dosyasına yorum olarak yazılır ("# klyrix-list:adult/rt_m32769"): çıkış değişince eski set "satırı çıkarılan
 // set" sayılıp boşaltılır (system.ts). serverLines tekrarsız, sıralı.
-export function planListRouting(routes: ListRoute[], markOf: (r: ListRoute) => { mark: number; vps: boolean },
+export function planListRouting(routes: ListRoute[], markOf: (r: ListRoute) => number,
   domainsOf: (id: ListId) => string[], valid: (d: string) => boolean = () => true):
   { sets: Map<ListId, string>; marks: Map<number, string>; markers: string[]; serverLines: string[]; skipped: ListId[] } {
   const sets = new Map<ListId, string>(), marks = new Map<number, string>(), markers: string[] = [], skipped: ListId[] = [];
   const names = new Set<string>();
   for (const r of routes) {
     if (sets.has(r.id)) continue;
-    const { mark, vps } = markOf(r);
-    if (!vps || mark === 0) continue;
+    const mark = markOf(r);
+    if (mark === 0) continue;
     const doms = domainsOf(r.id);
     if (!doms.length) { skipped.push(r.id); continue; }
     const set = `rt_m${mark}`;

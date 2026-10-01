@@ -38,26 +38,31 @@ const fmtN = (n: number) => n.toLocaleString('tr-TR');
 
 interface VpsServer { id: number; ip: string; location: string }
 
-// Zapret'in kısa durumu (GET /routing/rules ve /routing/domains yanıtında). DPI açık, çıkışı ISP olan kural Zapret
-// çalışmıyorsa hiçbir trafiğe dokunmaz — kartta nedeniyle söylenir. VPS çıkışında DPI zaten etkisiz (tünel şifreli çıkar).
+// Zapret'in kısa durumu (GET /routing/rules ve /routing/domains yanıtında). DPI'ı açık kural Zapret çalışmıyorsa hiçbir
+// trafiğe dokunmaz — kartta nedeniyle söylenir: çıkışı ISP olan kuralda hemen, VPS + "operatörden devam" kuralında tünel
+// düşünce (tünel çalışırken DPI kullanılmaz: trafik wg'den şifreli çıkar). VPS + "engelle"de DPI hiç kullanılmaz.
 interface ZapretBrief { installed: boolean; issue: string | null; active: boolean }
 const dpiInactiveReason = (z: ZapretBrief | undefined): string | null => {
   if (!z || z.active) return null;
   if (!z.installed) return 'Zapret bu cihazda kurulu değil';
   return z.issue || 'Zapret kapalı — Zapret DPI sayfasından açın';
 };
-function DpiInactive({ why }: { why: string }) {
-  return <div className="rt-warnline" role="note"><AlertTriangle size={13} /><span>DPI uygulanmıyor: {why}</span></div>;
+function DpiInactive({ why, vps }: { why: string; vps: boolean }) {
+  return (
+    <div className="rt-warnline" role="note">
+      <AlertTriangle size={13} /><span>{vps ? 'Tünel düşerse DPI uygulanmaz' : 'DPI uygulanmıyor'}: {why}</span>
+    </div>
+  );
 }
 
 // VPS çıkışlı kuralda tünel kapanınca / VPS yanıt vermeyince ne olacağı (backend routeMarks.ts, kural başına).
-const FALLBACK_TITLE = "VPS tüneli kapanırsa ya da VPS yanıt vermezse — engelle: bu trafik operatörden (ISP) çıkmaz, site açılmaz; operatörden devam: trafik ISP üzerinden sürer (gerçek konumunuz görünür)";
-function FallbackSelect({ value, onChange }: { value: string | undefined; onChange: (v: 'block' | 'isp') => void }) {
+const FALLBACK_TITLE = "VPS tüneli kapanırsa ya da VPS yanıt vermezse — engelle: bu trafik operatörden (ISP) çıkmaz, site açılmaz; operatörden devam: trafik ISP üzerinden sürer (gerçek konumunuz görünür), kuralda DPI açıksa DPI atlatmayla";
+function FallbackSelect({ value, dpi, onChange }: { value: string | undefined; dpi: boolean; onChange: (v: 'block' | 'isp') => void }) {
   return (
     <Select className="config-select config-select-sm" value={value === 'isp' ? 'isp' : 'block'}
       onChange={e => onChange(e.target.value === 'isp' ? 'isp' : 'block')} title={FALLBACK_TITLE} aria-label="Tünel düşerse">
       <option value="block">Tünel düşerse: engelle</option>
-      <option value="isp">Tünel düşerse: operatörden devam</option>
+      <option value="isp">{dpi ? 'Tünel düşerse: operatörden + DPI' : 'Tünel düşerse: operatörden devam'}</option>
     </Select>
   );
 }
@@ -382,7 +387,7 @@ function AppRoutingView({ onApplied }: { onApplied: () => void }) {
                         </div>
                         {exitNode !== 'isp' && (
                           <div className="rt-fb">
-                            <FallbackSelect value={fallback} onChange={v => handleChange(rule.id, 'vps_fallback', v)} />
+                            <FallbackSelect value={fallback} dpi={!!dpi} onChange={v => handleChange(rule.id, 'vps_fallback', v)} />
                           </div>
                         )}
 
@@ -394,7 +399,8 @@ function AppRoutingView({ onApplied }: { onApplied: () => void }) {
                           <StateToggle on={!!enabled} label={rule.app_name} onClick={() => handleChange(rule.id, 'enabled', enabled ? 0 : 1)} />
                         </div>
                       </div>
-                      {enabled && dpi && exitNode === 'isp' && dpiWhy ? <DpiInactive why={dpiWhy} /> : null}
+                      {enabled && dpi && (exitNode === 'isp' || fallback === 'isp') && dpiWhy
+                        ? <DpiInactive why={dpiWhy} vps={exitNode !== 'isp'} /> : null}
 
                       {isExpanded && list && (
                         <div className="rt-detail">
@@ -409,10 +415,11 @@ function AppRoutingView({ onApplied }: { onApplied: () => void }) {
                           <span>
                             {exitNode !== 'isp'
                               ? `VPS çıkışı: Pi-hole bu listedeki adları paneldeki çözücüye iletir, adresler yanıt dönmeden tünel yoluna eklenir${rulesData.listDns?.listening ? ` · son açılıştan beri ${fmtN(rulesData.listDns.queries)} sorgu, ${fmtN(rulesData.listDns.added)} adres` : ''}`
-                              : dpi ? "DPI: liste Zapret'in bypass listesine eklendi (Pi-hole'a dokunulmaz)" : 'Çıkış noktası ya da DPI seçilince uygulanır'}
+                              : dpi ? `DPI: Pi-hole bu listedeki adları paneldeki çözücüye iletir, adresler DPI işaretiyle modemden çıkar (Zapret)${rulesData.listDns?.listening ? ` · son açılıştan beri ${fmtN(rulesData.listDns.queries)} sorgu, ${fmtN(rulesData.listDns.added)} adres` : ''}`
+                              : 'Çıkış noktası ya da DPI seçilince uygulanır'}
                           </span>
                           {info?.error && <span className="rt-warn">{info.error}</span>}
-                          {exitNode !== 'isp' && rulesData.listDns?.lastError && <span className="rt-warn">{rulesData.listDns.lastError}</span>}
+                          {(exitNode !== 'isp' || !!dpi) && rulesData.listDns?.lastError && <span className="rt-warn">{rulesData.listDns.lastError}</span>}
                         </div>
                       )}
                       {isExpanded && !list && rule.domains && (() => {
@@ -781,7 +788,7 @@ function DomainRoutingView({ onApplied }: { onApplied: () => void }) {
                 </div>
                 {hasFb && (
                   <div className="rt-fb">
-                    <FallbackSelect value={fallback} onChange={v => handleChange(d.id, 'vps_fallback', v)} />
+                    <FallbackSelect value={fallback} dpi={!!dpi} onChange={v => handleChange(d.id, 'vps_fallback', v)} />
                   </div>
                 )}
 
@@ -796,7 +803,8 @@ function DomainRoutingView({ onApplied }: { onApplied: () => void }) {
                   </button>
                 </div>
               </div>
-              {enabled && dpi && exitNode === 'isp' && !d.redirect_url && dpiWhy ? <DpiInactive why={dpiWhy} /> : null}
+              {enabled && dpi && (exitNode === 'isp' || fallback === 'isp') && !d.redirect_url && dpiWhy
+                ? <DpiInactive why={dpiWhy} vps={exitNode !== 'isp'} /> : null}
 
               {rs && rs.suggestions.length > 0 && (
                 <div className="routing-suggest">

@@ -49,7 +49,7 @@ snapset(){
   done > "$TMP/set.txt"
   SNAP=1
 }
-marks(){ iptables -t mangle -L PI5_ROUTING -v -n -x 2>/dev/null | awk '/MARK set/ {p += $1; b += $2} END {print p + 0, b + 0}'; }
+marks(){ iptables -t mangle -L PI5_ROUTING -v -n -x 2>/dev/null | awk '/MARK x?set/ {p += $1; b += $2} END {print p + 0, b + 0}'; }
 wgbytes(){ for i in $WG_IFS; do echo "$i $(cat /sys/class/net/$i/statistics/tx_bytes 2>/dev/null) $(cat /sys/class/net/$i/statistics/rx_bytes 2>/dev/null)"; done; }
 
 if [ "$IZLE" -gt 0 ]; then

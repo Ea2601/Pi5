@@ -4,7 +4,7 @@ import { promisify } from 'util';
 import type { IpCounters } from './bandwidth';
 import type { ContentBadge, ContentStatus } from './contentActivity';
 import { classifyLink, isRandomMac, wirelessHint, type LinkInfo } from './linkProbe';
-import { decodeVpsMark, DPI_ONLY_MARK } from './routeMarks';
+import { decodeVpsMark, DPI_ONLY_MARK, LEGACY_DPI_ONLY_MARK } from './routeMarks';
 
 // Canlı ağ topolojisi: cihaz → Pi → çıkış (yerel / DPI / VPS tüneli) → internet. Trafik bandwidth.ts'in ct mark'a göre
 // ayrılmış sayaçlarından gelir; sınıflar routeMarks.ts şemasıyla aynı:
@@ -23,7 +23,7 @@ export function classifyMark(mark: number): MarkClass {
   const v = decodeVpsMark(m);
   if (v) return { exit: `vps:${v.vpsId}`, dpiRequested: v.dpi };
   if (m >= 100 && m < 200) return { exit: `vps:${m - 100}`, dpiRequested: false };
-  if (m === DPI_ONLY_MARK) return { exit: 'dpi', dpiRequested: true };
+  if (m === DPI_ONLY_MARK || m === LEGACY_DPI_ONLY_MARK) return { exit: 'dpi', dpiRequested: true };
   if (m >= 300 && m < 400) return { exit: `vps:${m - 300}`, dpiRequested: true };
   return { exit: 'local', dpiRequested: false };
 }

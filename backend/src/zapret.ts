@@ -1,12 +1,14 @@
-// Zapret (DPI atlatma): panel ayarları Zapret'e gerçekten uygulanır. Eskiden mod, ayarlar ve alan adı listeleri yalnız
-// veritabanındaydı; Routing'deki "DPI" anahtarı bir fwmark koyuyordu ama Zapret'i o işarete göre çalıştıran kod yoktu.
-//  - Zapret yalnız LİSTEDEKİ alan adlarına (MODE_FILTER=hostlist) ve yalnız modem tarafı çıkışında (IFACE_WAN) çalışır;
-//    VPS tüneline giren trafik eth0'a şifreli çıkar, Zapret ona dokunmaz (VPS + DPI kuralında DPI etkisizdir).
-//  - Liste = Zapret sayfasının bypass listesi + Routing'de çıkışı ISP olan DPI kurallarının alan adları. Hariç liste ayrı.
-//    Zapret'in dosyalarında panelin bölümü işaretlidir (klyrix-begin/end); dosyaya elle eklenmiş satırlar korunur.
-//  - GÜVENLİK: Zapret'in belgesine göre "boş liste = liste yok" → boş hostlist ile nfqws TÜM 80/443 trafiğine uygulanır.
-//    Etkin toplam liste boşsa yöntem kapalı tutulur (NFQWS_ENABLE=0), servis açık olsa bile.
-//  - Yöntem yalnız nfqws (TPWS_ENABLE=0) — nedeni doApply'da.
+// Zapret (DPI atlatma): panel ayarları Zapret'e gerçekten uygulanır.
+//  - v2.24.75'ten beri Zapret LİSTEYE değil Routing'in işaretine bakar: DPI'ı açık kuralın trafiği PI5_ROUTING'de DPI
+//    bitini (0x4000, routeMarks.ts) alır; config'te FILTER_MARK=0x4000 → nfqws yalnız bu bitli paketleri işler. Site
+//    listesi gerekmez; IP aralıklı kurallar (ör. WhatsApp aramaları) da kapsanır. Eskiden yalnız alan adı listesine
+//    bakılıyordu: DPI'ı açan kullanıcıdan liste bekleniyor, IP aralıkları ve VPS kuralları hiç kapsanmıyordu.
+//  - Yalnız modem tarafı çıkışında (IFACE_WAN): VPS + DPI kuralında tünel çalışırken trafik wg'den çıkar, Zapret dokunmaz;
+//    tünel düşüp "operatörden devam" edilirse trafik modemden DPI ile çıkar (işaret aynı kalır).
+//  - Zapret sayfasının ek siteleri (zapret_domains hostlist) Routing'de ISP + DPI alan adı gibi işaretlenir (index.ts).
+//    Hariç liste (exclude) nfqws'e --hostlist-exclude olarak gider (MODE_FILTER=hostlist). Kullanıcı listesi dosyası
+//    (zapret-hosts-user.txt) BULUNMAZ: varsa nfqws işaretli trafikte de yalnız ondaki sitelere çalışırdı.
+//  - Yöntem yalnız nfqws (TPWS_ENABLE=0) — nedeni doApply'da. DPI kuralı yoksa NFQWS_ENABLE=0.
 //  - Liste dosyaları değişince nfqws onları kendiliğinden yeniden okur; yalnız config değişince (çalışıyorsa) yeniden
 //    başlatılır. Özgün config bir kez config.pi5-orig olarak saklanır.
 import fs from 'fs';
@@ -15,6 +17,7 @@ import { execFile } from 'child_process';
 import { promisify } from 'util';
 import { dbAll } from './db';
 import { isLinux, detectInterfaces } from './system';
+import { DPI_MARK_BIT } from './routeMarks';
 import { ASN_TOKEN, normalizeCidr } from './ipRanges';
 import { LIST_TOKEN, LIST_SOURCES, ensureList, collapsedList, type ListId } from './categoryLists';
 
@@ -40,18 +43,21 @@ export function cleanDpiDomain(raw: unknown): string | null {
   return DOMAIN.test(d) ? d : null;
 }
 
-// fromLists: Routing'in hazır listeli DPI satırları (Yetişkin / Kumar — categoryLists.ts); alan adları hostlist'e girer ama
-// arayüze tek tek gönderilmez (on binlerce ad), yalnız sayısı.
-export async function collectDpiDomains(): Promise<{ hostlist: string[]; exclude: string[]; fromRouting: string[];
-  fromLists: { id: ListId; label: string; count: number }[]; vpsDpiRules: number }> {
+// DPI'ı kullanan kurallar (arayüz ve NFQWS_ENABLE için). fromRouting: çıkışı ISP olan DPI kurallarının alan adları;
+// fromLists: hazır listeli ISP + DPI satırları (Yetişkin / Kumar — on binlerce ad, yalnız sayısı); manual: Zapret
+// sayfasının ek siteleri; dpiRules: DPI'ı açık tüm Routing kuralları (VPS + DPI dahil — tünel düşünce kullanılır),
+// vpsDpiRules: bunların VPS çıkışlı olanları.
+export async function collectDpiDomains(): Promise<{ exclude: string[]; manual: string[]; fromRouting: string[];
+  fromLists: { id: ListId; label: string; count: number }[]; dpiRules: number; vpsDpiRules: number }> {
   const zap = await dbAll('SELECT list_type, domain FROM zapret_domains WHERE enabled = 1') as any[];
-  const apps = await dbAll("SELECT domains, exit_node FROM traffic_routing WHERE enabled = 1 AND dpi_bypass = 1") as any[];
+  const apps = await dbAll("SELECT domains, exit_node FROM traffic_routing WHERE enabled = 1 AND dpi_bypass = 1 AND domains != ''") as any[];
   const doms = await dbAll("SELECT domain, exit_node, redirect_url FROM domain_routing WHERE enabled = 1 AND dpi_bypass = 1") as any[];
   const isp = (e: unknown) => !e || e === 'isp';
   const fromRouting = new Set<string>();
   const listIds = new Set<ListId>();
-  let vpsDpiRules = 0;
+  let dpiRules = 0, vpsDpiRules = 0;
   for (const r of apps) {
+    dpiRules++;
     if (!isp(r.exit_node)) { vpsDpiRules++; continue; }
     for (const d of String(r.domains || '').split(',')) {
       const lt = LIST_TOKEN.exec(d.trim());
@@ -62,24 +68,38 @@ export async function collectDpiDomains(): Promise<{ hostlist: string[]; exclude
   }
   for (const r of doms) {
     if (r.redirect_url) continue;
+    dpiRules++;
     if (!isp(r.exit_node)) { vpsDpiRules++; continue; }
     const c = cleanDpiDomain(r.domain);
     if (c) fromRouting.add(c);
   }
-  const hostlist = new Set(fromRouting);
   const fromLists: { id: ListId; label: string; count: number }[] = [];
   for (const id of listIds) {
     await ensureList(id, Infinity);
-    let n = 0;
-    for (const d of collapsedList(id)) { const c = cleanDpiDomain(d); if (c) { hostlist.add(c); n++; } }
-    fromLists.push({ id, label: LIST_SOURCES[id].label, count: n });
+    fromLists.push({ id, label: LIST_SOURCES[id].label, count: collapsedList(id).length });
   }
-  const exclude = new Set<string>();
+  const exclude = new Set<string>(), manual = new Set<string>();
   for (const r of zap) {
     const c = cleanDpiDomain(r.domain);
-    if (c) (r.list_type === 'exclude' ? exclude : hostlist).add(c);
+    if (c) (r.list_type === 'exclude' ? exclude : manual).add(c);
   }
-  return { hostlist: [...hostlist].sort(), exclude: [...exclude].sort(), fromRouting: [...fromRouting].sort(), fromLists, vpsDpiRules };
+  return { exclude: [...exclude].sort(), manual: [...manual].sort(), fromRouting: [...fromRouting].sort(), fromLists, dpiRules, vpsDpiRules };
+}
+
+// Kullanıcı listesi (zapret-hosts-user.txt[.gz]) varsa nfqws işaretli trafikte de yalnız ondaki sitelere çalışır. Panelin
+// eski bölümü (≤ v2.24.74 Routing DPI alan adlarını buraya yazıyordu) ya da boş dosya silinir; elle eklenmiş satır varsa
+// dosyaya dokunulmaz, uyarı döner.
+function retireUserList(): string | null {
+  if (fs.existsSync(`${USER_LIST}.gz`)) return 'zapret-hosts-user.txt.gz var: DPI yalnız o listedeki sitelere uygulanır (dosyayı silin)';
+  if (!fs.existsSync(USER_LIST)) return null;
+  const lines = fs.readFileSync(USER_LIST, 'utf8').split('\n');
+  const b = lines.indexOf(BEGIN);
+  const e = lines.indexOf(END);
+  const outside = b >= 0 && e > b ? [...lines.slice(0, b), ...lines.slice(e + 1)] : lines;
+  const foreign = outside.filter(l => l.trim() && !l.trim().startsWith('#')).length;
+  if (foreign) return `zapret-hosts-user.txt'te elle eklenmiş ${foreign} satır var: DPI yalnız o sitelere uygulanır (satırları silin)`;
+  fs.unlinkSync(USER_LIST);
+  return null;
 }
 
 // Dosyadaki panel bölümünü yeniler (dışındaki satırlar korunur). Değiştiyse true.
@@ -107,7 +127,8 @@ function countEntries(file: string): number {
 
 const configValue = (txt: string, key: string) => new RegExp(`^${key}=(.*)$`, 'm').exec(txt)?.[1]?.replace(/^"|"$/g, '') ?? '';
 const nfqwsStrategy = (txt: string) => /^NFQWS_OPT="([\s\S]*?)"/m.exec(txt)?.[1].trim() || '';
-// NFQWS_OPT'taki --new ile ayrılmış bölümlerden listeye (<HOSTLIST>/<HOSTLIST_NOAUTO>) bağlı olmayanların sayısı.
+// NFQWS_OPT'taki --new ile ayrılmış bölümlerden <HOSTLIST>/<HOSTLIST_NOAUTO> içermeyenlerin sayısı: o bölümde Hariç
+// Tutulanlar (--hostlist-exclude) uygulanmaz. Kapsam yine işaretle sınırlı (FILTER_MARK).
 const unlistedStrategyLines = (txt: string) =>
   nfqwsStrategy(txt).split(/\s--new(?:\s|$)/).filter(s => s.trim() && !s.includes('<HOSTLIST')).length;
 function setConfigKeys(txt: string, kv: Record<string, string>): string {
@@ -123,7 +144,7 @@ const serviceActive = async () =>
   (await execFileP('systemctl', ['is-active', 'zapret'], { timeout: 5000 }).then(r => r.stdout.trim(), e => String(e?.stdout || '').trim())) === 'active';
 
 export interface ZapretApplyResult {
-  ok: boolean; installed: boolean; hostlist: number; exclude: number; fromRouting: number; vpsDpiRules: number;
+  ok: boolean; installed: boolean; dpiRules: number; manual: number; exclude: number; fromRouting: number; vpsDpiRules: number;
   methodEnabled: boolean; restarted: boolean; warnings: string[]; error?: string; at: number;
 }
 let lastApply: ZapretApplyResult | null = null;
@@ -137,7 +158,7 @@ export function applyZapret(): Promise<ZapretApplyResult> {
 
 async function doApply(): Promise<ZapretApplyResult> {
   const res: ZapretApplyResult = {
-    ok: false, installed: false, hostlist: 0, exclude: 0, fromRouting: 0, vpsDpiRules: 0,
+    ok: false, installed: false, dpiRules: 0, manual: 0, exclude: 0, fromRouting: 0, vpsDpiRules: 0,
     methodEnabled: false, restarted: false, warnings: [], at: Date.now(),
   };
   try {
@@ -147,33 +168,33 @@ async function doApply(): Promise<ZapretApplyResult> {
       return res;
     }
     res.installed = true;
-    // Eksik kurulumda da listeler ve ayarlar yazılır (kurulum tamamlanınca hazır olsunlar); durum uyarıda söylenir.
+    // Eksik kurulumda da liste ve ayarlar yazılır (kurulum tamamlanınca hazır olsunlar); durum uyarıda söylenir.
     const issue = zapretInstallIssue();
     if (issue) res.warnings.push(issue);
-    const { hostlist, exclude, fromRouting, vpsDpiRules } = await collectDpiDomains();
-    Object.assign(res, { hostlist: hostlist.length, exclude: exclude.length, fromRouting: fromRouting.length, vpsDpiRules });
-    writeManagedBlock(USER_LIST, hostlist);
+    const { exclude, manual, fromRouting, dpiRules, vpsDpiRules } = await collectDpiDomains();
+    Object.assign(res, { dpiRules, manual: manual.length, exclude: exclude.length, fromRouting: fromRouting.length, vpsDpiRules });
     writeManagedBlock(EXCLUDE_LIST, exclude);
-
-    // Etkin toplam liste: kullanıcı dosyasının tamamı + Zapret'in kendi listesi (varsa)
+    const userList = retireUserList();
+    if (userList) res.warnings.push(userList);
     const ownList = ZAPRET_OWN.find(f => fs.existsSync(f));
-    const includeCount = countEntries(USER_LIST) + (ownList ? (ownList.endsWith('.gz') ? 1 : countEntries(ownList)) : 0);
-    if (ownList) res.warnings.push(`Zapret'in kendi listesi de etkin (${path.basename(ownList)})`);
+    if (ownList) res.warnings.push(`Zapret'in kendi listesi (${path.basename(ownList)}) etkin: DPI yalnız o listedeki sitelere uygulanır`);
 
-    const on = includeCount > 0;
-    if (!on) res.warnings.push('DPI listesi boş: Zapret hiçbir trafiğe dokunmaz (boş liste Zapret\'te "tüm trafik" demektir, bu yüzden yöntem kapalı tutuldu)');
+    // Kapsamı işaret belirler (FILTER_MARK): DPI'ı açık kural ya da ek site yoksa yöntem kapalı.
+    const on = dpiRules + manual.length > 0;
     const wan = (await detectInterfaces().catch(() => null))?.wan || 'eth0';
 
     const cur = fs.readFileSync(CONFIG, 'utf8');
     const loose = unlistedStrategyLines(cur);
-    if (loose) res.warnings.push(`Strateji satırlarından ${loose} tanesi listeye bağlı değil (<HOSTLIST> yok) — o satır tüm trafiğe uygulanır`);
+    if (loose) res.warnings.push(`Strateji satırlarından ${loose} tanesinde <HOSTLIST> yok — o satırda Hariç Tutulanlar uygulanmaz`);
     if (!fs.existsSync(BACKUP)) fs.writeFileSync(BACKUP, cur, { mode: 0o644 });
     // Yalnız nfqws: paketleri modem çıkışında işler, VPS tüneline giren trafiğe dokunmaz. tpws web trafiğini Pi'deki
     // vekile yönlendirir; bağlantı Pi'den yeniden açıldığı için VPS yönlendirme işareti (fwmark) kaybolur.
+    // FILTER_MARK NFQWS_ENABLE ile aynı yazımda: süzgeçsiz nfqws modemden çıkan tüm 80/443 trafiğini işlerdi.
     const next = setConfigKeys(cur, {
       NFQWS_ENABLE: on ? '1' : '0',
       TPWS_ENABLE: '0',
       MODE_FILTER: 'hostlist',
+      FILTER_MARK: `0x${DPI_MARK_BIT.toString(16)}`,
       IFACE_WAN: wan,
     });
     res.methodEnabled = on;
@@ -204,7 +225,7 @@ export async function zapretStatus() {
   const bcActive = await blockcheckRunning();
   let bcLog = '';
   try { bcLog = fs.readFileSync(BLOCKCHECK_LOG, 'utf8').split('\n').slice(-80).join('\n'); } catch { /* henüz yok */ }
-  const { fromRouting, fromLists } = await collectDpiDomains();
+  const { fromRouting, fromLists, manual, dpiRules, vpsDpiRules } = await collectDpiDomains();
   return {
     installed: true,
     installIssue: zapretInstallIssue(),
@@ -213,10 +234,13 @@ export async function zapretStatus() {
     nfqws: configValue(txt, 'NFQWS_ENABLE') === '1',
     tpws: configValue(txt, 'TPWS_ENABLE') === '1',
     modeFilter: configValue(txt, 'MODE_FILTER'),
+    filterMark: configValue(txt, 'FILTER_MARK'),
     iface: configValue(txt, 'IFACE_WAN'),
     strategy,
     unlistedLines: unlistedStrategyLines(txt),
-    userEntries: countEntries(USER_LIST),
+    dpiRules,
+    vpsDpiRules,
+    manualEntries: manual.length,
     excludeEntries: countEntries(EXCLUDE_LIST),
     fromRouting,
     fromLists,

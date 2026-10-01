@@ -5,7 +5,7 @@ import os from 'os';
 import { promises as dnsPromises } from 'dns';
 import sqlite3 from 'sqlite3';
 import { shq } from './util';
-import { encodeRouteMark, decodeVpsMark, decodeLegacyVpsMark, isManagedRuleMark, normFallback, DPI_ONLY_MARK, ISP_FALLBACK_BIT, type VpsMark } from './routeMarks';
+import { encodeRouteMark, decodeVpsMark, decodeLegacyVpsMark, isManagedRuleMark, normFallback, DPI_ONLY_MARK, LEGACY_DPI_ONLY_MARK, ISP_FALLBACK_BIT, ROUTE_MARK_MASK, type VpsMark } from './routeMarks';
 import { planListRouting, configureListDns, listSetForName, parseUpstreams, type ListRoute } from './listDns';
 import { collapsedList } from './categoryLists';
 
@@ -1987,13 +1987,12 @@ export async function applyDomainRouting(domains?: DomainRoute[], ranges: RangeR
     ipsetLines.push(`ipset=/${base}/${setName}`);
   }
 
-  // 1a. Hazır listeli satırlar (Yetişkin / Kumar — listDns.ts): VPS çıkışlıysa liste adları server= ile panelin
-  //     ileticisine gider, iletici adresleri kuralın setine ekler (ipset= ile 83 bin satır her sorguyu yavaşlatırdı).
-  //     Yalnız DPI ise liste Zapret'e gider (zapret.ts), burada satır yok. İşaret satırı setin değişimini izletir.
-  const listPlan = planListRouting(opts.lists || [], r => {
-    const mark = getFwmark(r.exit_node, r.dpi_bypass, r.vps_fallback);
-    return { mark, vps: !!decodeVpsMark(mark) };
-  }, collapsedList, d => VALID_DNSMASQ_DOMAIN.test(d));
+  // 1a. Hazır listeli satırlar (Yetişkin / Kumar — listDns.ts): işaretliyse (VPS çıkışı ya da yalnız DPI) liste adları
+  //     server= ile panelin ileticisine gider, iletici adresleri kuralın setine ekler (ipset= ile 83 bin satır her
+  //     sorguyu yavaşlatırdı). Yalnız DPI'da set 0x4000 işaretini verir, Zapret o işarete bakar. İşaret satırı setin
+  //     değişimini izletir.
+  const listPlan = planListRouting(opts.lists || [], r => getFwmark(r.exit_node, r.dpi_bypass, r.vps_fallback),
+    collapsedList, d => VALID_DNSMASQ_DOMAIN.test(d));
   for (const [mark, set] of listPlan.marks) if (!markSets.has(mark)) markSets.set(mark, set);
   ipsetLines.push(...listPlan.markers);
   if (listPlan.skipped.length) console.error(`[routing] hazır liste yüklenemedi, satır uygulanmadı: ${listPlan.skipped.join(', ')}`);
@@ -2030,10 +2029,13 @@ export async function applyDomainRouting(domains?: DomainRoute[], ranges: RangeR
   const wantedSets = new Set(markSets.values());
   for (const s of existingSets) {
     const lm = /^rt_m(\d+)$/.exec(s);
-    const legacy = lm ? decodeLegacyVpsMark(Number(lm[1])) : null;
-    if (!legacy) continue;
+    const n = lm ? Number(lm[1]) : NaN;
+    // v2.24.75: yalnız-DPI işareti 200 → 0x4000 (rt_m200 → rt_m16384) — aynı geçiş yolundan
+    const legacyDpi = n === LEGACY_DPI_ONLY_MARK;
+    const legacy = lm && !legacyDpi ? decodeLegacyVpsMark(n) : null;
+    if (!legacy && !legacyDpi) continue;
     legacySets.push(s);
-    const mark = encodeRouteMark(String(legacy.vpsId), legacy.dpi, 'block');
+    const mark = legacyDpi ? DPI_ONLY_MARK : legacy ? encodeRouteMark(String(legacy.vpsId), legacy.dpi, 'block') : null;
     if (mark === null || !wantedSets.has(`rt_m${mark}`)) continue;
     legacyAlias.set(s, mark);
     if (!existingSets.has(`rt_m${mark}`) && await copyHashIpSet(s, `rt_m${mark}`)) migrated.set(s, `rt_m${mark}`);
@@ -2380,10 +2382,13 @@ export function buildRoutingChainRestore(
   aliases: Map<string, number> = new Map(),
 ): string {
   const out = ['*mangle', ':PI5_ROUTING - [0:0]'];
+  // Yalnız alt 16 bit (ROUTE_MARK_MASK): üst bitler Zapret'in (0x40000000 kendi paketleri — OUTPUT'ta da buradan
+  // geçerler, 0x20000000 POSTNAT; bağlantı işaretine de yazar). Eskiden --set-mark / --save-mark tamamını eziyordu.
+  const m = `0x${ROUTE_MARK_MASK.toString(16)}`;
   const markRules = (set: string, mark: number) => [
-    `-A PI5_ROUTING -m set --match-set ${set} dst -j CONNMARK --restore-mark`,
-    `-A PI5_ROUTING -m set --match-set ${set} dst -j MARK --set-mark ${mark}`,
-    `-A PI5_ROUTING -m set --match-set ${set} dst -j CONNMARK --save-mark`,
+    `-A PI5_ROUTING -m set --match-set ${set} dst -j CONNMARK --restore-mark --nfmask ${m} --ctmask ${m}`,
+    `-A PI5_ROUTING -m set --match-set ${set} dst -j MARK --set-xmark 0x${mark.toString(16)}/${m}`,
+    `-A PI5_ROUTING -m set --match-set ${set} dst -j CONNMARK --save-mark --nfmask ${m} --ctmask ${m}`,
   ];
   for (const [mark, setName] of markSets) out.push(...markRules(setName, mark));
   for (const [set, mark] of aliases) out.push(...markRules(set, mark));
