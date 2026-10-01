@@ -13,7 +13,8 @@ type SatStatus = {
   name?: string; version?: string; sat_stage?: string; active?: boolean; bridge?: boolean; band?: string; channel?: number | null;
   backhaul?: 'wired' | 'mesh'; mesh_peers?: number; stations?: string[]; error?: string;
 };
-type Satellite = { id: string; name: string; mac: string | null; ip: string | null; last_seen: number | null; online: boolean; status: SatStatus | null };
+// proto: 2 = şifreli kanal (v2), 1 = eski eşleşme (taşıyıcı anahtar, şifresiz).
+type Satellite = { id: string; name: string; mac: string | null; ip: string | null; last_seen: number | null; online: boolean; status: SatStatus | null; proto?: number };
 type MainMesh = { capable: string[]; configured: boolean; id: string; channel: number | null; iface: boolean; wpa: boolean; attached: boolean; peers: number };
 type MainState = {
   role: 'main'; satellites: Satellite[]; pairing: { active: boolean; expires_at: number } | null; mesh: MainMesh;
@@ -22,7 +23,7 @@ type MainState = {
 type SatState = {
   role: 'satellite';
   satellite: {
-    paired: boolean; main: string; name: string; paired_at: number; last_sync: number; last_error: string; revoked: boolean;
+    paired: boolean; main: string; name: string; paired_at: number; last_sync: number; last_error: string; revoked: boolean; proto?: number;
     sat_stage: string; ssid: string; band: string; channel: number | null; active: boolean; bridge: boolean; ip: string; guard_result: string;
     mesh: { capable: string[]; configured: boolean; attached: boolean; peers: number };
   };
@@ -127,6 +128,9 @@ export function MeshPanel({ onChange }: { onChange?: () => void }) {
               {s.last_error && <Alert kind="err">{s.last_error}</Alert>}
               <dl className="hw-facts">
                 <div><dt>Ana cihaz</dt><dd className="rl-mono">{s.main}</dd></div>
+                {/* Kurulan kanal: eşleşmede v1'e düşürme uydu tarafında da görünsün. */}
+                <div><dt>Eşleşme</dt><dd>{s.proto === 2 ? <Badge variant="success">Şifreli</Badge>
+                  : s.proto === 1 ? <Badge variant="warning">Eski eşleşme (şifresiz)</Badge> : '—'}</dd></div>
                 <div><dt>Son senkron</dt><dd>{ago(s.last_sync)}</dd></div>
                 <div><dt>Yayın</dt><dd>{s.ssid ? `${s.ssid} · ${bandText(s.band)} · kanal ${s.channel || '—'}` : 'henüz açılmadı'}{s.ssid && !s.active ? ' (kapalı)' : ''}</dd></div>
                 <div><dt>Köprü</dt><dd className="rl-mono">{s.bridge ? `br0 ${s.ip || ''}` : s.sat_stage === 'none' ? '—' : `kurulamadı${s.guard_result ? ` (${s.guard_result})` : ''}`}</dd></div>
@@ -201,7 +205,7 @@ export function MeshPanel({ onChange }: { onChange?: () => void }) {
         )}
         {sats.length > 0 && (
           <table className="rl-table ms-table">
-            <thead><tr><th>Uydu</th><th>Adres</th><th>Durum</th><th>Yayın</th><th>Bağlantı</th><th className="rl-num">Cihaz</th><th /></tr></thead>
+            <thead><tr><th>Uydu</th><th>Adres</th><th>Durum</th><th>Yayın</th><th>Bağlantı</th><th>Eşleşme</th><th className="rl-num">Cihaz</th><th /></tr></thead>
             <tbody>
               {sats.map(s => (
                 <tr key={s.id}>
@@ -210,6 +214,8 @@ export function MeshPanel({ onChange }: { onChange?: () => void }) {
                   <td data-label="Durum">{s.online ? <Badge variant="success">Çevrimiçi</Badge> : <span className="rl-muted">Çevrimdışı · {ago(s.last_seen)}</span>}</td>
                   <td data-label="Yayın">{s.status?.active ? `${bandText(s.status.band)} · kanal ${s.status.channel || '—'}` : <span className="rl-muted">{s.status?.error || 'kapalı'}</span>}</td>
                   <td data-label="Bağlantı">{s.status?.backhaul === 'mesh' ? `Mesh (${s.status.mesh_peers || 0} komşu)` : 'Kablo'}</td>
+                  <td data-label="Eşleşme">{s.proto === 2 ? <Badge variant="success">Şifreli</Badge>
+                    : s.proto === 1 ? <Badge variant="warning">Eski eşleşme (şifresiz) — yeniden eşleştirin</Badge> : '—'}</td>
                   <td data-label="Cihaz" className="rl-num">{s.status?.stations?.length ?? 0}</td>
                   <td data-label="" className="rl-c">
                     <button className="icon-btn" title="Uyduyu kaldır" aria-label={`${s.name} uydusunu kaldır`} onClick={() => remove(s)} disabled={!!busy}><Trash2 size={14} /></button>

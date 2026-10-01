@@ -39,7 +39,7 @@ import { STARTUP_ROLE, isSatellite, readRole, writeRole, type DeviceRole } from 
 import {
   createPairing, cancelPairing, pairingState, pairSatellite, syncSatellite, listSatellites, removeSatellite, satelliteStations,
   checkOfflineSatellites, setMainWireless, mainMeshState, joinMain, syncOnce, leaveMain, satelliteState, startSatelliteAgent,
-  readSatState, MeshError, validSatId,
+  readSatState, MeshError, validSatId, removePeerKeys,
 } from './mesh';
 import { authGate, registerAuthRoutes } from './auth';
 import { validateSchedule, validateCommand, syncCronJobs, readJobStatuses, readSystemCron, syncCronOnStartup, runningJobs, jobOutput, startJobNow } from './cronSync';
@@ -3783,6 +3783,9 @@ app.post('/api/system/role', netAdminGuard, async (req, res) => {
       await leaveMain();
     }
     writeRole(role);
+    // Eşleşmiş uydu yok: peers/ altında yalnız kaldırılmış uyduların (mezar taşı) anahtarları kalabilir. Rol yazıldıktan
+    // sonra silinir — önceki bir adım düşerse cihaz ana cihaz kalır ve bekleyen imzalı "kaldırıldı" yanıtları verilebilir.
+    if (role === 'satellite') { try { removePeerKeys(); } catch { /* yalnız mezar taşı anahtarları */ } }
     await recordEvent('mesh', role === 'satellite' ? 'Cihaz rolü: uydu — panel yeniden başlıyor' : 'Cihaz rolü: ana cihaz — panel yeniden başlıyor');
     res.json({ success: true, restart: true });
     // spawn hatası (systemctl yok) dinlenmezse süreç düşerdi; yeniden başlatma olmazsa rol bir sonraki açılışta geçerli olur.
