@@ -16,6 +16,7 @@ import { Fail2banPanel } from './components/Fail2banPanel';
 import { SystemLogs } from './components/SystemLogs';
 import { BandwidthPanel } from './components/BandwidthPanel';
 import { DnsQueryLog } from './components/DnsQueryLog';
+import { VisitHistory } from './components/VisitHistory';
 import { SpeedTestPanel } from './components/SpeedTestPanel';
 import { AlertsPanel } from './components/AlertsPanel';
 import { NetworkToolsPanel } from './components/NetworkToolsPanel';
@@ -189,6 +190,7 @@ function App() {
       case 'docs': return <Suspense fallback={tabLoading}><DocsPanel /></Suspense>;
       case 'bandwidth': return <BandwidthPanel />;
       case 'dnslog': return <DnsQueryLog />;
+      case 'visits': return <VisitHistory />;
       case 'speedtest': return <SpeedTestPanel />;
       case 'ddns': return <DdnsPanel />;
       case 'alerts': return <AlertsPanel />;

@@ -61,6 +61,8 @@ import { vaultStatus, vaultJob, noteVaultJob, connectVault, saveSettings, startB
 import { rulesWithStatus as parentalRulesWithStatus, createRule as createParentalRule, updateRule as updateParentalRule,
   deleteRule as deleteParentalRule, startParental, CATEGORIES as PARENTAL_CATEGORIES } from './parental';
 import { noteContentView, contentForClients, contentStatus } from './contentActivity';
+import { startVisits, listVisits, clearVisits, visitStatus, RETENTION_DAYS as VISIT_RETENTION_DAYS } from './visits';
+import { SITE_CATS, siteCategoryInfo } from './siteCategories';
 import { LIST_TOKEN, LIST_IDS, ensureList, ensureLists, listInfo, type ListId } from './categoryLists';
 import { listDnsStats, type ListRoute } from './listDns';
 import type { ListSyncResult } from './piholeLists';
@@ -2551,6 +2553,41 @@ app.get('/api/dns/queries', async (req, res) => {
     };
     const queries = await getDnsQueries(limit, filters);
     res.json({ queries });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ─── Ziyaret Geçmişi ───
+// Hangi cihaz ne zaman hangi siteye girdi (visits.ts — Pi-hole sorgu kaydından, arka plan istekleri ayıklanmış; site düzeyi).
+// from / until: unix sn (varsayılan son 24 sa); bg=1 arka plan oturumlarını da getirir.
+app.get('/api/visits', async (req, res) => {
+  try {
+    const nowS = Math.floor(Date.now() / 1000);
+    const num = (v: unknown, d: number) => { const n = Number(v); return v !== undefined && v !== '' && Number.isFinite(n) ? n : d; };
+    const until = num(req.query.until, nowS + 60);
+    const from = num(req.query.from, until - 86400);
+    const out = await listVisits({
+      from, until,
+      device: req.query.device ? String(req.query.device).slice(0, 64) : undefined,
+      cat: req.query.cat ? String(req.query.cat).slice(0, 32) : undefined,
+      q: req.query.q ? String(req.query.q).trim().slice(0, 100) : undefined,
+      bg: req.query.bg === '1',
+      limit: Math.min(500, Math.max(1, Math.floor(num(req.query.limit, 200)))),
+      offset: Math.max(0, Math.floor(num(req.query.offset, 0))),
+    });
+    res.json({ ...out, cats: SITE_CATS, status: visitStatus(), lists: siteCategoryInfo(), retentionDays: VISIT_RETENTION_DAYS });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+// Geçmişi temizle (tümü ya da bir cihazınki)
+app.post('/api/visits/clear', async (req, res) => {
+  try {
+    const device = req.body?.device ? String(req.body.device).slice(0, 64) : undefined;
+    const removed = await clearVisits(device);
+    await recordEvent('visits', `Ziyaret geçmişi temizlendi${device ? ` (bir cihaz: ${device})` : ''}: ${removed} kayıt`);
+    res.json({ success: true, removed });
   } catch (e: any) {
     res.status(500).json({ error: e.message });
   }
@@ -5897,6 +5934,8 @@ const server = app.listen(Number(port), bindHost, () => {
   setInterval(() => { void refreshRoutingLists(); }, 3600 * 1000);
   // Zapret: yeni öğrenilen site mevcut yöntemle açılmazsa Blockcheck kendiliğinden (zapret.ts startAutoMethod).
   startAutoMethod();
+  // Ziyaret Geçmişi (visits.ts): Pi-hole sorgu kaydından 30 sn'de bir; Pi-hole listeleri eşitlendikten sonra. Uyduda yok.
+  if (!isSatellite()) setTimeout(() => { void startVisits().catch(e => console.error('[ziyaret]', e?.message || e)); }, 40000);
   // Zapret gece denetimi (zapret.ts runDpiCheck): her gün 04:00–05:00 arasında bir kez — strateji hâlâ işe yarıyor mu.
   let dpiCheckDay = '';
   setInterval(() => {

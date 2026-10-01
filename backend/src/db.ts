@@ -467,6 +467,16 @@ export const initDb = () => {
       key TEXT PRIMARY KEY, value TEXT DEFAULT ''
     )`);
 
+    // Ziyaret Geçmişi (visits.ts): cihaz × site oturumları; kind = visit (tarayıcıyla girilen) | background (nedeniyle).
+    // Zamanlar unix sn. 30 gün saklanır; yedeğe girmez (BACKUP_TABLES'ta yok).
+    db.run(`CREATE TABLE IF NOT EXISTS web_visits (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, device TEXT NOT NULL, ip TEXT, name TEXT, site TEXT NOT NULL, host TEXT,
+      category TEXT, first_at INTEGER NOT NULL, last_at INTEGER NOT NULL, queries INTEGER DEFAULT 1,
+      blocked INTEGER DEFAULT 0, kind TEXT NOT NULL DEFAULT 'visit', reason TEXT
+    )`);
+    db.run(`CREATE INDEX IF NOT EXISTS idx_web_visits_first ON web_visits(first_at)`);
+    db.run(`CREATE INDEX IF NOT EXISTS idx_web_visits_device ON web_visits(device, first_at)`);
+
     // ═══════════════════ CRON VARSAYILANLARI ═══════════════════
     // Varsayılan bakım görevleri (Sistem & Log → Cron) yalnız BİR KEZ eklenir. Eskiden her açılışta INSERT OR IGNORE ile
     // ekleniyordu ama cron_jobs.name UNIQUE olmadığından IGNORE hiç işlemedi: her yeniden başlatma/güncelleme listeye aynı

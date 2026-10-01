@@ -2,7 +2,7 @@ import {
   LayoutDashboard, Network, Route, Terminal, Server,
   ShieldBan, Zap, Flame, Globe, ShieldAlert, BookOpen,
   Activity, Search, Gauge, Bell, Wrench, Users, Sliders,
-  Database, Settings, MonitorSmartphone, TerminalSquare, Lightbulb, Monitor, Radio, Layers, HardDrive,
+  Database, Settings, MonitorSmartphone, TerminalSquare, Lightbulb, Monitor, Radio, Layers, HardDrive, History,
   type LucideIcon,
 } from 'lucide-react';
 import type { TabId } from './types';
@@ -25,6 +25,7 @@ export const NAV_TABS: NavTab[] = [
   { id: 'routing', label: 'Routing', icon: Route, mainOnly: true },
   { id: 'bandwidth', label: 'Bant Genisligi', icon: Activity, mainOnly: true },
   { id: 'dnslog', label: 'DNS Sorgu Logu', icon: Search, mainOnly: true },
+  { id: 'visits', label: 'Ziyaret Geçmişi', icon: History, mainOnly: true },
   { id: 'speedtest', label: 'Hız Testi', icon: Gauge },
   { id: 'ddns', label: 'DDNS', icon: Globe, mainOnly: true },
   { id: 'pihole', label: 'Pi-hole DNS', icon: ShieldBan, group: 'Güvenlik', mainOnly: true },

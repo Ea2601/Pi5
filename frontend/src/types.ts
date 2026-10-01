@@ -3,7 +3,7 @@ import type { TunnelInfo } from './vpsTunnel';
 export type TabId =
   | 'dashboard' | 'topology' | 'pihole' | 'dhcp' | 'zapret' | 'firewall' | 'routing' | 'vps'
   | 'unbound' | 'fail2ban' | 'maintenance' | 'docs'
-  | 'bandwidth' | 'dnslog' | 'speedtest' | 'ddns' | 'alerts' | 'nettools'
+  | 'bandwidth' | 'dnslog' | 'visits' | 'speedtest' | 'ddns' | 'alerts' | 'nettools'
   | 'parental' | 'devicecontrol' | 'trafficcontrol' | 'backup' | 'settings' | 'terminal'
   | 'casecontrol' | 'kiosk' | 'roles' | 'storage';
 

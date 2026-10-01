@@ -36,7 +36,7 @@ const isBlockedStatus = (s: string) =>
   /^(GRAVITY|REGEX|DENYLIST|SPECIAL_DOMAIN)(_CNAME)?$/.test(s) || s.startsWith('EXTERNAL_BLOCKED');
 
 // Arka plan gürültüsü: cihaz boştayken de sorulan adlar (Genel sayılsa her cihaz hep "Genel" görünürdü).
-const NOISE_SUFFIXES = [
+export const NOISE_SUFFIXES = [
   'in-addr.arpa', 'ip6.arpa', 'local', 'lan', 'home.arpa', 'localdomain', 'internal', 'home', 'localhost',
   // bağlantı / captive portal denetimi
   'connectivitycheck.gstatic.com', 'connectivitycheck.android.com', 'clients3.google.com', 'captive.apple.com',
