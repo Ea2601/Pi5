@@ -1,0 +1,32 @@
+/* Uydular (MeshPanel) — Klyrix cihaz keşfi: "Ağda ara" satırı, ana cihaz çipleri, ağdaki diğer cihazlar listesi.
+   Telefon öncelikli: çipler ve liste satırları sarar, yatay taşma yok. */
+.msd-find { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 10px 0 4px; }
+.msd-find-btn { display: inline-flex; align-items: center; gap: 6px; }
+.msd-chip {
+  display: inline-flex; align-items: center; gap: 6px; max-width: 100%; min-width: 0; padding: 4px 10px; border-radius: 999px;
+  font-family: var(--font-family); font-size: 12px; color: var(--text-primary); background: var(--input-bg-soft);
+  border: 1px solid var(--panel-border-hover); cursor: pointer; transition: border-color 0.15s ease, background 0.15s ease;
+}
+.msd-chip:hover { border-color: var(--accent-color); background: var(--accent-glow); }
+.msd-chip:focus-visible { outline: 2px solid var(--accent-ring); outline-offset: 2px; }
+.msd-chip-on { border-color: var(--success-color); background: var(--success-glow); }
+.msd-chip-name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.msd-chip .rl-mono { color: var(--text-secondary); }
+.msd-chip-tag {
+  padding: 1px 6px; border-radius: 999px; font-size: 10.5px; font-weight: 600; white-space: nowrap;
+  color: var(--success-color); background: var(--success-glow);
+}
+.msd-chip-warn {
+  padding: 1px 6px; border-radius: 999px; font-size: 10.5px; font-weight: 600; white-space: nowrap;
+  color: var(--warning-color); border: 1px solid var(--warning-color);
+}
+.msd-note { display: block; font-size: 11px; color: var(--warning-color); margin: 2px 0 6px; }
+.msd-list { list-style: none; margin: 4px 0 8px; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.msd-item {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; padding: 8px 10px; min-width: 0; font-size: 12.5px;
+  border-radius: var(--radius-sm); border: 1px solid var(--panel-border); background: var(--input-bg-soft);
+}
+.msd-item-name { overflow-wrap: anywhere; min-width: 0; }
+.msd-link { color: var(--accent-color); text-decoration: none; margin-left: auto; }
+.msd-link:hover { text-decoration: underline; color: var(--accent-hover); }
+.msd-item-hint { flex-basis: 100%; font-size: 11.5px; color: var(--text-secondary); overflow-wrap: anywhere; }

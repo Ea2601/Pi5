@@ -1,13 +1,15 @@
 import { useCallback, useEffect, useState } from 'react';
 import type { ReactNode } from 'react';
-import { Share2, AlertTriangle, CheckCircle, Info, Trash2 } from 'lucide-react';
+import { Share2, AlertTriangle, CheckCircle, Info, Trash2, Search } from 'lucide-react';
 import { getApi, postApi, deleteApi } from '../hooks/useApi';
 import { toast } from '../toast';
 import { Panel, Badge } from './ui';
+import './MeshPanel.css';
 
 // Uydular (R2 mesh): ana cihazda uydu ekleme (6 haneli kod), eşleşmiş uydular, kablosuz mesh omurgası; uyduda ana cihazla
 // eşleşme ve durum. Uydu ana cihazın ev Wi-Fi'ını aynı ağ adı ve şifreyle (farklı kanalda) yayınlar. Veri /api/mesh/state
-// (backend/src/mesh.ts); rol değişimi /api/system/role (backend yeniden başlar).
+// (backend/src/mesh.ts); rol değişimi /api/system/role (backend yeniden başlar). Ağdaki diğer Klyrix cihazları
+// /api/mesh/discover (ağ geçidi + mDNS): yalnız adres önerir — eşleşme yine kodla, rol yine o cihazın kendi panelinden.
 
 type SatStatus = {
   name?: string; version?: string; sat_stage?: string; active?: boolean; bridge?: boolean; band?: string; channel?: number | null;
@@ -15,7 +17,8 @@ type SatStatus = {
 };
 // proto: 2 = şifreli kanal (v2), 1 = eski eşleşme (taşıyıcı anahtar, şifresiz).
 type Satellite = { id: string; name: string; mac: string | null; ip: string | null; last_seen: number | null; online: boolean; status: SatStatus | null; proto?: number };
-type MainMesh = { capable: string[]; configured: boolean; id: string; channel: number | null; iface: boolean; wpa: boolean; attached: boolean; peers: number };
+// unknown: mesh.sh durumu okunamadı (kapalı demek değil).
+type MainMesh = { capable: string[]; configured: boolean; id: string; channel: number | null; iface: boolean; wpa: boolean; attached: boolean; peers: number; unknown?: boolean };
 type MainState = {
   role: 'main'; satellites: Satellite[]; pairing: { active: boolean; expires_at: number } | null; mesh: MainMesh;
   wifi: { stage: string; ssid: string; band: string; channel: number | null } | null; addresses: string[];
@@ -25,10 +28,15 @@ type SatState = {
   satellite: {
     paired: boolean; main: string; name: string; paired_at: number; last_sync: number; last_error: string; revoked: boolean; proto?: number;
     sat_stage: string; ssid: string; band: string; channel: number | null; active: boolean; bridge: boolean; ip: string; guard_result: string;
-    mesh: { capable: string[]; configured: boolean; attached: boolean; peers: number };
+    mesh: { capable: string[]; configured: boolean; attached: boolean; peers: number; unknown?: boolean };
   };
 };
 type State = MainState | SatState;
+// Keşif sonucu doğrulanmamıştır (kimlik yanıtını ağdaki herkes verebilir). conflict: aynı kimlik birden çok adreste
+// (cihazın birden çok adresi ya da taklit); mdns_blocked: bu cihazın güvenlik duvarı mDNS'e henüz izin vermiyor.
+type KlyrixDevice = { id: string; name: string; ip: string; role: 'main' | 'satellite'; paired: boolean; pairing: boolean; proto: number; source: 'gateway' | 'mdns'; conflict?: boolean };
+type Discovery = { devices: KlyrixDevice[]; mdns: 'ok' | 'unavailable'; mdns_blocked?: boolean };
+const IPV4 = /^\d{1,3}(\.\d{1,3}){3}$/;
 
 const EN = ({ children }: { children: ReactNode }) => <span lang="en">{children}</span>;
 const errText = (e: unknown, fb: string) => (e instanceof Error && e.message ? e.message : fb);
@@ -65,10 +73,26 @@ export function MeshPanel({ onChange }: { onChange?: () => void }) {
   const [meshCh, setMeshCh] = useState(36);
   const [mainAddr, setMainAddr] = useState('');
   const [joinCode, setJoinCode] = useState('');
+  const [disc, setDisc] = useState<Discovery | null>(null);
+  const [discErr, setDiscErr] = useState<string | null>(null);
+  const [finding, setFinding] = useState(false);
 
   const load = useCallback(async () => {
     try { setSt(await getApi<State>('/mesh/state')); setErr(null); } catch (e) { setErr(errText(e, 'durum okunamadı')); }
   }, []);
+  // Ağda ara (en çok ~9 sn: mDNS taraması + adayların kimlik yanıtı). Sonuç yalnız öneri; hiçbir şey değiştirmez.
+  const discover = useCallback(async () => {
+    setFinding(true);
+    try { setDisc(await getApi<Discovery>('/mesh/discover')); setDiscErr(null); } catch (e) { setDisc(null); setDiscErr(`Ağda aranamadı: ${errText(e, 'bilinmeyen hata')}`); }
+    setFinding(false);
+  }, []);
+  // Ana cihaz: diğer Klyrix cihazları listesi sayfa açılınca bir kez aranır (uyduda yalnız "Ağda ara" ile).
+  const role = st?.role;
+  useEffect(() => {
+    if (role !== 'main') return;
+    const t = setTimeout(() => { void discover(); }, 0);
+    return () => clearTimeout(t);
+  }, [role, discover]);
   const pairingActive = !!code && code.expires_at > now;
   useEffect(() => {
     const first = setTimeout(() => { void load(); }, 0);
@@ -98,6 +122,8 @@ export function MeshPanel({ onChange }: { onChange?: () => void }) {
       setJoinCode('');
       if (r?.applied) toast.error(`Eşleşildi ama yayın açılamadı: ${r.applied}`); else toast.success("Eşleşildi — ana cihazın Wi-Fi'ı bu uydudan da yayınlanıyor");
     });
+    // Ağda bulunan ana cihazlar: tıklanınca adres alanına yazılır; kod yine elle girilir (eşleşmenin tek güvencesi).
+    const mains = (disc?.devices || []).filter(d => d.role === 'main' && IPV4.test(d.ip));
     const leave = () => {
       if (!window.confirm('Eşleşme kaldırılacak ve bu uydunun yayını kapanacak. Devam edilsin mi?')) return;
       void act('leave', async () => { await postApi('/mesh/leave', {}); toast.info('Eşleşme kaldırıldı — yayın kapandı'); });
@@ -110,6 +136,26 @@ export function MeshPanel({ onChange }: { onChange?: () => void }) {
           {(!s.paired || s.revoked) && (
             <>
               <span className="dhcp-muted">Ana cihazın panelinde Cihaz Rolleri → Uydular → Uydu ekle'ye basın; gösterilen adresi ve kodu buraya yazın. İlk eşleştirme için uydu kabloyla bağlı olmalı.</span>
+              <div className="msd-find">
+                <button className="btn-outline btn-sm msd-find-btn" onClick={() => { void discover(); }} disabled={!!busy || finding}>
+                  <Search size={14} /> {finding ? 'Aranıyor…' : 'Ağda ara'}
+                </button>
+                {disc && !finding && (mains.length ? mains.map(d => (
+                  <button key={`${d.id}|${d.ip}`} type="button" className={`msd-chip${mainAddr.trim() === d.ip ? ' msd-chip-on' : ''}`} onClick={() => setMainAddr(d.ip)}
+                    aria-pressed={mainAddr.trim() === d.ip} title="Adres alanına yaz — ana cihazda Uydu ekle'ye basınca gösterilen adreslerden biri olmalı; kod yine gerekli">
+                    <span className="msd-chip-name">{d.name || 'Klyrix'}</span>
+                    <span className="rl-mono">{d.ip}</span>
+                    {d.pairing && <span className="msd-chip-tag">kod açık</span>}
+                    {d.conflict && <span className="msd-chip-warn">aynı kimlik</span>}
+                  </button>
+                )) : <span className="dhcp-muted">Ağda ana cihaz bulunamadı — adresi elle yazın. Ana cihazın güvenlik duvarı bu sürümden önce kurulduysa orada Firewall → Deploy Et (mDNS keşfi öyle açılır).</span>)}
+              </div>
+              {mains.some(d => d.conflict) && !finding && (
+                <span className="msd-note">Aynı kimlik birden çok adreste yanıt verdi — ana cihazın birden çok adresi olabilir ya da ağdaki biri onu taklit ediyor. Ana cihazda Uydu ekle'ye basınca gösterilen adreslerden birini seçin.</span>
+              )}
+              {disc?.mdns === 'unavailable' && !finding && <span className="msd-note">mDNS kullanılamıyor (avahi) — yalnız ağ geçidi yoklandı.</span>}
+              {disc?.mdns_blocked && !finding && <span className="msd-note">Bu cihazın güvenlik duvarı (eski kurallar) gelen mDNS'i engelliyor — ana cihaz yalnız ağ geçidiyse bulunur; bulunamazsa adresi elle yazın.</span>}
+              {discErr && !finding && <span className="msd-note">{discErr}</span>}
               <div className="hw-form ms-join">
                 <label className="hw-field"><span>Ana cihazın adresi</span>
                   <input className="config-input" type="text" inputMode="decimal" spellCheck={false} placeholder="192.168.1.153" value={mainAddr} onChange={e => setMainAddr(e.target.value)} /></label>
@@ -134,7 +180,7 @@ export function MeshPanel({ onChange }: { onChange?: () => void }) {
                 <div><dt>Son senkron</dt><dd>{ago(s.last_sync)}</dd></div>
                 <div><dt>Yayın</dt><dd>{s.ssid ? `${s.ssid} · ${bandText(s.band)} · kanal ${s.channel || '—'}` : 'henüz açılmadı'}{s.ssid && !s.active ? ' (kapalı)' : ''}</dd></div>
                 <div><dt>Köprü</dt><dd className="rl-mono">{s.bridge ? `br0 ${s.ip || ''}` : s.sat_stage === 'none' ? '—' : `kurulamadı${s.guard_result ? ` (${s.guard_result})` : ''}`}</dd></div>
-                <div><dt>Kablosuz mesh</dt><dd>{!s.mesh.capable.length ? 'radyo yok' : s.mesh.configured ? `${s.mesh.attached ? 'köprüde' : 'hazır (kablo bağlı)'} · ${s.mesh.peers} komşu` : 'ana cihazda kapalı'}</dd></div>
+                <div><dt>Kablosuz mesh</dt><dd>{s.mesh.unknown ? 'durum okunamadı' : !s.mesh.capable.length ? 'radyo yok' : s.mesh.configured ? `${s.mesh.attached ? 'köprüde' : 'hazır (kablo bağlı)'} · ${s.mesh.peers} komşu` : 'ana cihazda kapalı'}</dd></div>
               </dl>
               <div className="panel-auth-actions">
                 <button className="btn-outline btn-sm" onClick={() => act('sync', async () => { await postApi('/mesh/sync-now', {}); toast.success('Eşitlendi'); })} disabled={!!busy}>
@@ -171,6 +217,8 @@ export function MeshPanel({ onChange }: { onChange?: () => void }) {
     });
   };
   const m = st.mesh;
+  // Ağdaki diğer Klyrix cihazları (bu cihazın uydular tablosundakiler hariç): yalnız bilgi + kendi panellerine bağlantı.
+  const others = (disc?.devices || []).filter(d => IPV4.test(d.ip) && !sats.some(s => s.id === d.id));
   return (
     <Panel title="Uydular" icon={<Share2 size={18} style={{ marginRight: 8 }} />}
       actions={<Badge variant={sats.some(s => s.online) ? 'success' : 'neutral'}>{sats.length ? `${sats.length} uydu` : 'Uydu yok'}</Badge>}
@@ -225,8 +273,39 @@ export function MeshPanel({ onChange }: { onChange?: () => void }) {
             </tbody>
           </table>
         )}
+        <h4 className="rl-sub">Ağdaki diğer Klyrix cihazları</h4>
+        <div className="msd-find">
+          <button className="btn-outline btn-sm msd-find-btn" onClick={() => { void discover(); }} disabled={finding}>
+            <Search size={14} /> {finding ? 'Aranıyor…' : 'Yeniden ara'}
+          </button>
+          {disc?.mdns === 'unavailable' && !finding && <span className="msd-note">mDNS kullanılamıyor (avahi) — yalnız ağ geçidi yoklandı.</span>}
+          {disc?.mdns_blocked && !finding && <span className="msd-note">Bu cihazın güvenlik duvarı mDNS'e henüz izin vermiyor (kurallar bu sürümden önce yüklendi) — Firewall sayfasında Deploy Et; diğer cihazlar ancak öyle görünür ve bu cihazı bulur.</span>}
+          {discErr && !finding && <span className="msd-note">{discErr}</span>}
+        </div>
+        {others.length > 0 ? (
+          <>
+            <ul className="msd-list">
+              {others.map(d => (
+                <li key={`${d.id}|${d.ip}`} className="msd-item">
+                  <span className="rl-strong msd-item-name">{d.name || 'Klyrix'}</span>
+                  <Badge variant={d.role === 'main' ? 'info' : 'neutral'}>{d.role === 'main' ? 'Ana cihaz' : 'Uydu'}</Badge>
+                  {d.role === 'satellite' && <span className="rl-muted">{d.paired ? 'eşleşmiş' : 'eşleşmemiş'}</span>}
+                  {d.conflict && <span className="msd-chip-warn">aynı kimlik birden çok adreste</span>}
+                  <a className="rl-mono msd-link" href={`http://${d.ip}/`} target="_blank" rel="noopener noreferrer" title="Doğrulanmamış adres — o cihazın kendi ekranındaki adresle karşılaştırın">{d.ip}</a>
+                  <span className="msd-item-hint">{d.role === 'main'
+                    ? "O cihazın panelinde Cihaz Rolleri → Uyduya çevir; sonra burada Uydu ekle'ye basıp çıkan kodu o cihaza girin."
+                    : d.paired ? 'Başka bir ana cihaza bağlı — önce o cihazın panelinde Eşleşmeyi kaldır, sonra burada Uydu ekle.'
+                      : "Burada Uydu ekle'ye basın, kodu o cihazın panelinde (Cihaz Rolleri → Uydu) girin."}</span>
+                </li>
+              ))}
+            </ul>
+            <span className="dhcp-muted">Liste doğrulanmamıştır: ağdaki herhangi bir cihaz kendini böyle tanıtabilir. Kodu girmeden önce adresin o cihazın kendi ekranında (HDMI) ya da modemin DHCP listesinde yazanla aynı olduğunu kontrol edin.</span>
+          </>
+        ) : disc && !finding ? <span className="dhcp-muted">Ağda başka Klyrix cihazı bulunamadı.</span> : null}
         <h4 className="rl-sub">Kablosuz mesh</h4>
-        {!m.capable.length ? (
+        {m.unknown ? (
+          <span className="dhcp-muted">Kablosuz mesh durumu okunamadı — birazdan yeniden denenir; mesh ayarı değiştirilmedi.</span>
+        ) : !m.capable.length ? (
           <span className="dhcp-muted">Uydular kablo olmadan bağlanabilsin diye iki cihazda da mesh destekli <EN>Wi-Fi</EN> radyosu gerekir (ör. ALFA AWUS036ACM). Pi'nin dahili radyosu desteklemez.</span>
         ) : m.configured ? (
           <>

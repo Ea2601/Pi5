@@ -40,7 +40,7 @@ import { STARTUP_ROLE, isSatellite, readRole, writeRole, type DeviceRole } from 
 import {
   createPairing, cancelPairing, pairingState, pairSatellite, syncSatellite, listSatellites, removeSatellite, satelliteStations,
   checkOfflineSatellites, setMainWireless, mainMeshState, joinMain, syncOnce, leaveMain, satelliteState, startSatelliteAgent,
-  readSatState, MeshError, validSatId, removePeerKeys,
+  readSatState, MeshError, validSatId, removePeerKeys, meshHello, publishMdns, discoverKlyrix,
 } from './mesh';
 import { authGate, registerAuthRoutes } from './auth';
 import { validateSchedule, validateCommand, syncCronJobs, readJobStatuses, readSystemCron, syncCronOnStartup, runningJobs, jobOutput, startJobNow } from './cronSync';
@@ -4004,7 +4004,9 @@ app.post('/api/system/role', netAdminGuard, async (req, res) => {
       if ((await listSatellites()).length) return res.status(409).json({ error: 'Bu cihaza eşleşmiş uydular var — önce onları kaldırın' });
       const wg = await wgServerStatus().catch(() => null);
       if (wg && 'enabled' in wg && wg.enabled) await setServerEnabled(false);
-      if ((await mainMeshState()).configured) await setMainWireless(false, 0);
+      // Durum okunamadıysa da kapatma denenir (bilinmeyen "kapalı" sayılmaz); kapatılamazsa rol değişmez.
+      const ms = await mainMeshState();
+      if (ms.configured || ms.unknown) await setMainWireless(false, 0);
     } else {
       await leaveMain();
     }
@@ -4049,6 +4051,12 @@ app.post('/api/mesh/pairing', async (_req, res) => {
   try { res.json(await createPairing()); } catch (e: any) { meshFail(res, e); }
 });
 app.delete('/api/mesh/pairing', (_req, res) => { cancelPairing(); res.json({ success: true }); });
+// Kimlik yanıtı (keşif): diğer Klyrix cihazları bu cihazı bununla doğrular — iki rolde de. /pair yolu oturumsuzdur (auth.ts
+// EXEMPT, panel-auth.sh nginx haritası, yukarıdaki muafiyet; yöntemden bağımsız). Gizli bilgi ve sürüm yok.
+app.get('/api/mesh/pair', (_req, res) => {
+  res.set('Cache-Control', 'no-store');
+  res.json(meshHello(STARTUP_ROLE));
+});
 app.post('/api/mesh/pair', async (req, res) => {
   if (isSatellite()) return res.status(409).json({ error: 'Bu cihaz ana cihaz değil' });
   try { res.json(await pairSatellite(req.body, clientIp(req))); } catch (e: any) { meshFail(res, e); }
@@ -4070,6 +4078,11 @@ app.post('/api/mesh/wireless', async (req, res) => {
     await recordEvent('mesh', enabled ? 'Kablosuz mesh açıldı' : 'Kablosuz mesh kapatıldı');
     res.json({ success: true, mesh: await mainMeshState() });
   } catch (e: any) { meshFail(res, e); }
+});
+// Ağdaki diğer Klyrix cihazları (varsayılan ağ geçidi + mDNS; her aday kimlik yanıtıyla doğrulanır). Yalnız okuma —
+// eşleşme yine 6 haneli kodla, rol yine her cihazın kendi panelinden. GET: netAdminGuard geçirir, oturum kapısı geçerli.
+app.get('/api/mesh/discover', async (_req, res) => {
+  try { res.json(await discoverKlyrix()); } catch (e: any) { meshFail(res, e); }
 });
 // Uydu tarafı: ana cihaza katılma / ayrılma / hemen senkron.
 app.post('/api/mesh/join', async (req, res) => {
@@ -5719,6 +5732,8 @@ const server = app.listen(Number(port), bindHost, () => {
   })();
   // Uydu (R2): ağ geçidi işleri (yönlendirme kuralları, tüneller, cihaz engelleri, AS aralıkları, ağ haritası ölçümü,
   // trafik kaydı, Pi-hole listeleri, Ev VPN'i) çalışmaz — onlar ana cihazındır. Uydu ana cihazla senkron kalır.
+  // Ağda görünme (keşif, iki rolde de): avahi hizmet dosyası; rol değişince backend yeniden başlar ve yeniden yazılır.
+  if (isLinux) void publishMdns(STARTUP_ROLE).catch((e: any) => console.error('[mesh] mDNS yayını yazılamadı:', e?.message || e));
   if (isSatellite()) {
     console.log('[rol] uydu — ağ geçidi işleri kapalı, ana cihazla senkron');
     startSatelliteAgent();

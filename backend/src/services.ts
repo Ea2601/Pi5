@@ -119,6 +119,9 @@ export const systemServices = {
             { rule: 'tcp dport 80 accept', label: 'Panel (nginx)', kind: 'service' },
             { rule: 'udp dport 67 accept', label: 'DHCP (Pi DHCP sunucusu)', kind: 'service' },
             { rule: 'udp dport 123 accept', label: 'Saat (NTP)', kind: 'service' },
+            // mDNS yalnız özel ağ kaynaklarından: Klyrix cihazları birbirini bulur (mesh.ts keşif), klyrix.local çözülür.
+            // İnternet kartı (WAN) modunda üst ağ da özel adres olabilir (modem arkası): mDNS yalnız ev ağı kartlarından.
+            { rule: `${wanMode ? `iifname ${nftIfs(lanIfs)} ` : ''}ip saddr { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16 } udp dport 5353 accept`, label: 'mDNS (Klyrix cihaz keşfi, ağda görünme)', kind: 'service' },
             { rule: 'udp dport 51820 accept', label: "WireGuard (Ev VPN'i)", kind: 'service' },
         ];
         const forward: NftLine[] = [

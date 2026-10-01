@@ -10,15 +10,18 @@
 //    Eski (v1) eşleşmeler ve eski sürümlü cihazlar taşıyıcı anahtarla aynen çalışır.
 //  - Uydu: eşleşme bilgisi /etc/pi5-gateway/mesh/satellite.json (0600). Ayar değişince net-mode.sh sat on / apply;
 //    ilk açılış denemedir: köprü üzerinden ana cihaza yeniden ulaşınca "sat confirm", ulaşamazsa geri alınır.
+//  - Keşif: her cihaz mDNS'te _klyrix-gate._tcp duyurur, GET /api/mesh/pair kimlik yanıtı verir; ağ geçidi + mDNS
+//    adayları yalnız adres önerir (kod şart). v2 uydu, ana cihazın adresi değişirse onu kimliğiyle yeniden bulur.
 import crypto from 'crypto';
 import fs from 'fs';
 import http from 'http';
 import os from 'os';
-import { spawn } from 'child_process';
+import { execFile, spawn } from 'child_process';
 import { db, dbAll, dbGet, dbRun } from './db';
 import { readHomeStations } from './homeWifi';
 import { recordEvent, recordEventOnce } from './events';
 import { getLanIdentity } from './system';
+import { readDefaultRoute } from './topology';
 
 export const NET_MODE_SCRIPT = '/opt/pi5-gateway/scripts/net-mode.sh';
 export const MESH_SCRIPT = '/opt/pi5-gateway/scripts/mesh.sh';
@@ -190,24 +193,37 @@ async function mainWifi(): Promise<WifiConfig | null> {
   const channel = Number(r.kv.channel) || (r.kv.band === 'a' ? 36 : 6);
   return { ssid: r.kv.ssid, psk: r.kv.psk, band: r.kv.band === 'a' ? 'a' : 'bg', channel };
 }
-async function meshStatus(): Promise<Record<string, string>> {
+// mesh.sh status. null = durum BİLİNMİYOR (betik yok / güncellemede değişiyor, zaman aşımı, çalıştırılamadı, sıfır
+// olmayan çıkış, "configured=" satırı yok). Bilinmeyen durum "mesh kapalı" sayılmaz: ana cihaz uyduya mesh:null
+// göndermez (uydu omurgasını kapatır, kablosuz bağlı uydu bir daha ulaşamazdı), uydu mesh'ine dokunmaz.
+async function meshStatus(): Promise<Record<string, string> | null> {
   const r = await runKv(MESH_SCRIPT, ['status'], 15000);
-  return r.code === 0 ? r.kv : {};
+  return r.code === 0 && 'configured' in r.kv ? r.kv : null;
 }
 function readMeshPsk(): string | null {
   try { return /^\s*psk="([^"\\]{8,63})"/m.exec(fs.readFileSync(WPA_CONF, 'utf8'))?.[1] || null; } catch { return null; }
 }
+const MESH_UNKNOWN = 'Kablosuz mesh durumu okunamadı';
+// null = mesh kapalı (durum okundu: ayarlı değil ya da bu cihaz mesh'te ana cihaz değil). Durum okunamadıysa ya da
+// ayarlı görünüp ağ adı / parola / kanal okunamıyorsa 503: uydu yalnız hata görür, mevcut mesh'iyle devam eder.
 async function mainMesh(): Promise<MeshConfig | null> {
   const st = await meshStatus();
+  if (!st) throw new MeshError(503, MESH_UNKNOWN);
   if (st.configured !== '1' || st.role !== 'main') return null;
   const psk = readMeshPsk();
   const channel = Number(st.channel);
-  return psk && st.id && channel ? { id: st.id, psk, channel } : null;
+  if (!psk || !st.id || !channel) throw new MeshError(503, MESH_UNKNOWN);
+  return { id: st.id, psk, channel };
 }
 
-// Uydunun ayarı: ev Wi-Fi'ı (kanal uyduya göre planlanır) + kablosuz mesh omurgası.
-async function configFor(satId: string): Promise<SatConfig> {
+// Uydunun ayarı: ev Wi-Fi'ı (kanal uyduya göre planlanır) + kablosuz mesh omurgası. İki adım: ana cihazın durumu
+// (betikler; mesh bilinmiyorsa 503) ve kanal planı (veritabanı) — eşleşme durumu kod harcanmadan ÖNCE okur.
+type MainParts = { wifi0: WifiConfig | null; mesh: MeshConfig | null };
+async function mainParts(): Promise<MainParts> {
   const [wifi0, mesh] = await Promise.all([mainWifi(), mainMesh()]);
+  return { wifi0, mesh };
+}
+async function planConfig(satId: string, { wifi0, mesh }: MainParts): Promise<SatConfig> {
   let wifi: WifiConfig | null = null;
   if (wifi0) {
     const rows = await dbAll('SELECT id FROM mesh_satellites WHERE revoked_at IS NULL ORDER BY created_at, id');
@@ -215,6 +231,9 @@ async function configFor(satId: string): Promise<SatConfig> {
     wifi = { ...wifi0, channel: planChannel(wifi0.band, wifi0.channel, idx) };
   }
   return { rev: configRev(wifi, mesh), wifi, mesh };
+}
+async function configFor(satId: string): Promise<SatConfig> {
+  return planConfig(satId, await mainParts());
 }
 
 export async function createPairing(): Promise<{ code: string; expires_at: number }> {
@@ -258,6 +277,12 @@ export async function pairSatellite(body: any, ip: string): Promise<PairV1 | Pai
     const eph = x25519Pair();
     try { v2 = { mainId, pub: eph.pub, key: deriveKey(eph.privateKey, body.pub, body.id, mainId) }; } catch { throw new MeshError(400, 'Geçersiz uydu anahtarı'); }
   }
+  // Ana cihazın durumu kod harcanmadan, satır / anahtar yazılmadan ÖNCE: mesh durumu okunamazsa (503) kod geçerli kalır,
+  // yarım eşleşme kalmaz — uydu aynı kodla yeniden dener.
+  const parts = await mainParts();
+  // Beklerken aynı kodla gelen başka bir istek kodu harcadıysa (ya da kod iptal edildi / yenilendi / süresi doldu) ikinci
+  // eşleşme olmaz: kod yine tek kullanımlık.
+  if (pairing !== p || p.expires <= Date.now()) throw new MeshError(403, 'Etkin eşleştirme kodu yok — ana cihazda Cihaz Rolleri → Uydular → Uydu ekle');
   pairing = null; // tek kullanımlık
   // v2'de taşıyıcı anahtar uyduya verilmez: sütuna anahtarın özeti (keyFp) yazılır — Bearer hiç eşleşmez.
   const token = crypto.randomBytes(32).toString('hex');
@@ -271,7 +296,7 @@ export async function pairSatellite(body: any, ip: string): Promise<PairV1 | Pai
       proto = excluded.proto, last_seq = 0, revoked_at = NULL`,
   [body.id, name, mac, v2 ? keyFp(v2.key) : sha256(token), ip, now, now, v2 ? 2 : 1]);
   await recordEvent('mesh', `Uydu eklendi: ${name} (${ip})`);
-  const config = await configFor(body.id);
+  const config = await planConfig(body.id, parts); // kanal planı satır yazıldıktan sonra (yeni uydu sırada sonda)
   if (v2) return { proto: 2, main_id: v2.mainId, pub: v2.pub, box: seal(v2.key, `pair|${body.id}`, { config }) };
   let mainId = '';
   try { mainId = deviceId(); } catch { /* kimlik yazılamadı: eski yanıt aynen */ }
@@ -317,12 +342,16 @@ async function syncSatelliteV2(body: any, ip: string): Promise<{ proto: 2; box: 
   if (!(await dbChanges('UPDATE mesh_satellites SET last_seq = ? WHERE id = ? AND COALESCE(last_seq, 0) < ?', [seq, body.id, seq]))) {
     throw new MeshError(409, 'yeniden oynatma — bu istek daha önce işlendi (sürerse uyduyu yeniden eşleştirin)');
   }
+  // addrs: ana cihazın kendi (özel ağ) adresleri, zarfın içinde. Uydu yeniden keşifte yeni adresi ancak bu listede varsa
+  // kaydeder: doğrulanmış yanıt ana cihazın ürettiğini kanıtlar, hangi adreste durduğunu değil (araya giren aktarıcı).
+  const addrs = async () => [...new Set((await readIfaceNets()).map(n => n.ip).filter(isCandidateIp))];
   const reply = (obj: unknown) => ({ proto: 2 as const, box: seal(key, `resp|${body.id}|${seq}`, obj) });
-  if (row.revoked_at) return reply({ revoked: true });
+  if (row.revoked_at) return reply({ revoked: true, addrs: await addrs() });
   const status = satStatusOf(msg.status);
   await dbRun('UPDATE mesh_satellites SET ip = ?, last_seen = ?, status = ?, name = ? WHERE id = ?',
     [ip, Math.floor(Date.now() / 1000), JSON.stringify(status), status.name, body.id]);
-  return reply({ config: await configFor(body.id) });
+  const config = await configFor(body.id);
+  return reply({ config, addrs: await addrs() });
 }
 
 // Mezar taşları (kaldırılmış v2 uydular) listede, sayımlarda ve kanal planında yoktur.
@@ -390,14 +419,19 @@ export async function setMainWireless(enabled: boolean, channel: number): Promis
   }
   if (!CH_5.includes(channel)) throw new MeshError(400, 'Mesh kanalı 36, 40, 44 ya da 48 olmalı');
   const st = await meshStatus();
+  // Durum bilinmiyorsa açılmaz: "kapalı" sayılıp yeni ağ adı + parola üretilirse kablosuz bağlı uydular kopardı.
+  if (!st) throw new MeshError(503, `${MESH_UNKNOWN} — mevcut mesh ağ adı ve parolası korunsun diye değiştirilmedi; biraz sonra yeniden deneyin`);
   const id = st.role === 'main' && /^klyrix-[0-9a-f]{6}$/.test(st.id || '') ? st.id : `klyrix-${crypto.randomBytes(3).toString('hex')}`;
   const psk = (st.role === 'main' && readMeshPsk()) || crypto.randomBytes(24).toString('base64url');
   const r = await runKv(MESH_SCRIPT, ['configure', '--id', id, '--channel', String(channel), '--role', 'main'], 60000, `${psk}\n`);
   if (r.code !== 0) throw new MeshError(409, kvErr(r, 'kablosuz mesh açılamadı'));
 }
+// unknown: mesh.sh status okunamadı — diğer alanlar "kapalı" gibi görünür, ama kapalı sayılmamalı (rol değişimi, panel).
 export async function mainMeshState() {
-  const st = await meshStatus();
+  const ms = await meshStatus();
+  const st: Record<string, string> = ms || {};
   return {
+    unknown: !ms,
     capable: (st.capable || '').split(',').filter(Boolean), configured: st.configured === '1' && st.role === 'main',
     id: st.role === 'main' ? st.id || '' : '', channel: Number(st.channel) || null, service: st.service || '',
     iface: st.iface === '1', wpa: st.wpa === '1', attached: st.attached === '1', peers: Number(st.peers) || 0,
@@ -421,10 +455,15 @@ export function readSatState(): SatState | null {
 }
 // Aynı eşleşme mi (kimlik + v2 anahtarı / v1 jetonu)?
 const samePairing = (a: SatState, b: SatState) => a.id === b.id && (isV2(a) ? isV2(b) && a.key === b.key : !isV2(b) && a.token === b.token);
-function writeSatState(s: SatState) {
+// newMain: ana cihazın yeni adresi (yalnız doğrulanmış yeniden keşif, sendSyncV2).
+function writeSatState(s: SatState, newMain?: string) {
   // seq hiç geri gitmez: aynı eşleşmede başka bir akış (ön sınama, "Şimdi eşitle") bu arada daha büyük seq göndermiş olabilir.
   const disk = isV2(s) ? readSatState() : null;
   if (disk && samePairing(disk, s) && (Number(disk.seq) || 0) > (Number(s.seq) || 0)) s.seq = disk.seq;
+  // Ana cihazın adresi de aynı eşleşmede yalnız newMain ile değişir: bu arada başka bir akış ana cihazı yeni adreste
+  // bulduysa eski adresli bellek kopyası onu geri almaz.
+  if (disk && samePairing(disk, s)) s.main = newMain || disk.main;
+  else if (newMain) s.main = newMain;
   fs.mkdirSync(MESH_DIR, { recursive: true, mode: 0o700 });
   writeFileDurable(SAT_FILE, JSON.stringify(s));
 }
@@ -436,14 +475,48 @@ function writeIfCurrent(s: SatState): boolean {
   writeSatState(s);
   return true;
 }
-// Cihaz kimliği (iki rolde de): uydu eşleşmede bunu bildirir, ana cihaz v2 eşleşmede main_id olarak döner.
+// Cihaz kimliği (iki rolde de): uydu eşleşmede bunu bildirir, ana cihaz v2 eşleşmede main_id olarak döner; keşif (mDNS,
+// kimlik yanıtı) da bunu duyurur — bu yüzden ilk açılışta oluşur. Kimlik donanıma bağlıdır (id.hw: kartın seri numarasının
+// özeti): kullanılmış bir SD kart başka bir cihaza kopyalanırsa ve kopyada eşleşme yoksa kopya kendi kimliğini üretir —
+// iki cihaz aynı kimlikle görünmez, keşif birini "kendisi" sanıp atmaz, ana cihaz ikinci uyduyu birincinin üstüne
+// yazmaz. Eşleşme varsa (uydu dosyası ya da peers/ anahtarları) kimlik korunur: uydular onu main_id olarak sabitledi.
+// Seri numarası okunamazsa bağ yoktur (eskisi gibi); eski sürümden kalan kimlik bu cihazın sayılır ve bağlanır.
+const ID_FILE = `${MESH_DIR}/id`;
+const HW_FILE = `${MESH_DIR}/id.hw`;
+let hwCache: string | null = null;
+function hwTag(): string {
+  if (hwCache !== null) return hwCache;
+  hwCache = '';
+  for (const f of ['/sys/firmware/devicetree/base/serial-number', '/sys/class/dmi/id/product_uuid']) {
+    try {
+      const v = fs.readFileSync(f, 'utf8').replace(/\0/g, '').trim().toLowerCase();
+      if (/^[0-9a-f-]{8,64}$/.test(v) && /[1-9a-f]/.test(v)) { hwCache = sha256(`klyrix-hw|${v}`).slice(0, 32); break; }
+    } catch { /* yok / okunamadı */ }
+  }
+  return hwCache;
+}
+const holdsPairing = () => {
+  if (fs.existsSync(SAT_FILE)) return true;
+  try { return fs.readdirSync(PEERS_DIR).length > 0; } catch { return false; }
+};
+const writeHwTag = (hw: string) => { try { fs.writeFileSync(HW_FILE, `${hw}\n`, { mode: 0o600 }); } catch { /* bağ sonra yazılır */ } };
 export function deviceId(): string {
   const s = readSatState();
   if (s) return s.id;
-  try { const id = fs.readFileSync(`${MESH_DIR}/id`, 'utf8').trim(); if (validSatId(id)) return id; } catch { /* ilk kez */ }
-  const id = crypto.randomUUID();
+  const hw = hwTag();
+  let id = '';
+  try { id = fs.readFileSync(ID_FILE, 'utf8').trim(); } catch { /* ilk kez */ }
+  if (validSatId(id)) {
+    let tag = '';
+    try { tag = fs.readFileSync(HW_FILE, 'utf8').trim(); } catch { /* eski sürüm: bağ yok */ }
+    if (!hw || tag === hw || holdsPairing()) return id;
+    if (!tag) { writeHwTag(hw); return id; }
+    console.log('[mesh] cihaz kimliği başka bir donanımdan kopyalanmış (SD kart) ve eşleşme yok — bu cihaz için yeni kimlik');
+  }
+  id = crypto.randomUUID();
   fs.mkdirSync(MESH_DIR, { recursive: true, mode: 0o700 });
-  fs.writeFileSync(`${MESH_DIR}/id`, `${id}\n`, { mode: 0o600 });
+  fs.writeFileSync(ID_FILE, `${id}\n`, { mode: 0o600 });
+  if (hw) writeHwTag(hw);
   return id;
 }
 
@@ -473,6 +546,225 @@ export function postJson(main: string, path: string, body: unknown, token?: stri
   });
 }
 
+// ─── Keşif (R2): ağda görünme (mDNS) + ağdaki Klyrix cihazları ───
+// Keşif yalnız ADRES önerir: eşleşme yine 6 haneli kodla, rol yine her cihazın kendi panelinden değişir. mDNS kaydı ve
+// kimlik yanıtı doğrulanmamıştır (aynı ağdaki herkes duyurabilir); kimliği yalnız eşleşmenin anahtarı kanıtlar.
+
+// Kimlik yanıtı (GET /api/mesh/pair, oturumsuz): keşif adayları bununla doğrulanır. Sürüm yok (parmak izi çıkarılmasın).
+// pairing: ana cihazda şu an açık bir eşleştirme kodu var mı; paired: uydu bir ana cihazla eşleşmiş mi (kaldırılmamış).
+export function meshHello(role: 'main' | 'satellite') {
+  let id = '';
+  try { id = deviceId(); } catch { /* kimlik yazılamadı: keşif bu cihazı atlar */ }
+  const s = role === 'satellite' ? readSatState() : null;
+  return { klyrix: 1, proto: 2, id, role, name: os.hostname(), pairing: role === 'main' && !!pairingState(), paired: !!s && !s.revoked };
+}
+
+// mDNS yayını: avahi hizmet dosyası (share.sh'nin klyrix-smb.service'i gibi). Ad "Klyrix Gate on <makine adı>" (%h).
+export const MDNS_TYPE = '_klyrix-gate._tcp';
+const AVAHI_DIR = '/etc/avahi/services';
+const AVAHI_SVC = `${AVAHI_DIR}/klyrix-gate.service`;
+export function renderAvahiService(o: { id: string; role: 'main' | 'satellite'; proto: number }): string {
+  if (!validSatId(o.id) || (o.role !== 'main' && o.role !== 'satellite') || !Number.isSafeInteger(o.proto) || o.proto < 1) throw new Error('geçersiz mDNS kaydı');
+  return [
+    '<?xml version="1.0" standalone=\'no\'?>',
+    '<!DOCTYPE service-group SYSTEM "avahi-service.dtd">',
+    '<!-- Klyrix Gate cihaz keşfi (backend/src/mesh.ts yazar, elle düzenlemeyin): diğer Klyrix cihazları bu cihazı ağda bulur -->',
+    '<service-group>',
+    '  <name replace-wildcards="yes">Klyrix Gate on %h</name>',
+    '  <service>',
+    `    <type>${MDNS_TYPE}</type>`,
+    '    <port>80</port>',
+    '    <txt-record>txtvers=1</txt-record>',
+    `    <txt-record>id=${o.id}</txt-record>`,
+    `    <txt-record>role=${o.role}</txt-record>`,
+    `    <txt-record>proto=${o.proto}</txt-record>`,
+    '  </service>',
+    '</service-group>',
+    '',
+  ].join('\n');
+}
+// Açılışta bir kez (iki rolde de; rol yalnız backend yeniden başlayınca değişir). Dosya yalnız içerik değiştiyse yazılır
+// (tmp + rename; tmp adı .service ile bitmez, avahi okumaz) ve avahi yeniden okur. avahi yoksa dizin yoktur: atlanır.
+export async function publishMdns(role: 'main' | 'satellite'): Promise<'written' | 'unchanged' | 'skipped'> {
+  if (!fs.existsSync(AVAHI_DIR)) return 'skipped';
+  let xml: string;
+  try { xml = renderAvahiService({ id: deviceId(), role, proto: 2 }); } catch { return 'skipped'; }
+  let cur = '';
+  try { cur = fs.readFileSync(AVAHI_SVC, 'utf8'); } catch { /* ilk kez */ }
+  if (cur === xml) return 'unchanged';
+  const tmp = `${AVAHI_DIR}/.klyrix-gate.tmp-${process.pid}`;
+  fs.writeFileSync(tmp, xml, { mode: 0o644 });
+  fs.chmodSync(tmp, 0o644); // avahi-daemon kendi kullanıcısıyla okur
+  fs.renameSync(tmp, AVAHI_SVC);
+  await new Promise<void>(resolve => { execFile('avahi-daemon', ['--reload'], { timeout: 10000 }, () => resolve()); });
+  return 'written';
+}
+
+// avahi-browse -p kaçışları: \DDD (ondalık bayt) ve \<karakter> (\. \\ \" ...). Baytlar UTF-8 olarak çözülür.
+function avahiUnescape(s: string): string {
+  const out: Buffer[] = [];
+  for (let i = 0; i < s.length; i++) {
+    if (s[i] === '\\' && /^\d{3}$/.test(s.slice(i + 1, i + 4))) { out.push(Buffer.from([Number(s.slice(i + 1, i + 4)) & 0xff])); i += 3; continue; }
+    if (s[i] === '\\' && i + 1 < s.length) i++;
+    const ch = String.fromCodePoint(s.codePointAt(i)!);
+    out.push(Buffer.from(ch, 'utf8'));
+    i += ch.length - 1;
+  }
+  return Buffer.concat(out).toString('utf8');
+}
+// TXT alanı: "a=1" "b=2" (her kayıt tırnakta; içte \" \\ \DDD). Anahtarlar küçük harfe çevrilir; ilk geçen kazanır.
+function parseAvahiTxt(field: string): Record<string, string> {
+  const txt: Record<string, string> = {};
+  for (let i = 0; i < field.length; i++) {
+    if (field[i] !== '"') continue;
+    let raw = '';
+    for (i++; i < field.length && field[i] !== '"'; i++) {
+      if (field[i] === '\\' && i + 1 < field.length) { raw += field[i] + field[i + 1]; i++; } else raw += field[i];
+    }
+    const rec = avahiUnescape(raw);
+    const eq = rec.indexOf('=');
+    const k = (eq < 0 ? rec : rec.slice(0, eq)).toLowerCase();
+    if (k && !(k in txt)) txt[k] = eq < 0 ? '' : rec.slice(eq + 1);
+  }
+  return txt;
+}
+const IPV4_RE = /^(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}$/;
+const v4num = (ip: string) => ip.split('.').reduce((n, o) => n * 256 + Number(o), 0);
+const inV4 = (ip: string, base: string, bits: number) => Math.floor(v4num(ip) / 2 ** (32 - bits)) === Math.floor(v4num(base) / 2 ** (32 - bits));
+// Keşif adayı olabilecek adres: özel ağ (RFC 1918) ya da operatör NAT'ı (100.64/10). Bağlantı-yerel, döngü, genel yok.
+export const isCandidateIp = (ip: string) => IPV4_RE.test(ip)
+  && (inV4(ip, '10.0.0.0', 8) || inV4(ip, '172.16.0.0', 12) || inV4(ip, '192.168.0.0', 16) || inV4(ip, '100.64.0.0', 10));
+// `avahi-browse -rpt` çıktısı: yalnız çözülmüş "=" satırları ve IPv4 adres (IPv6 satırında da IPv4 adres gelebilir —
+// adrese bakılır), 169.254/16 ve döngü (127/8) atılır; aynı adres + ad bir kez. "+" / "-" satırları yok sayılır.
+// "=;arayüz;protokol;ad;tür;alan;makine;adres;port;txt"
+export type AvahiEntry = { iface: string; name: string; host: string; ip: string; port: number; txt: Record<string, string> };
+export function parseAvahiBrowse(stdout: string): AvahiEntry[] {
+  const out: AvahiEntry[] = [];
+  for (const line of String(stdout || '').split('\n')) {
+    const f = line.replace(/\r$/, '').split(';');
+    if (f[0] !== '=' || f.length < 10) continue;
+    const ip = f[7];
+    if (!IPV4_RE.test(ip) || inV4(ip, '169.254.0.0', 16) || inV4(ip, '127.0.0.0', 8)) continue;
+    const name = avahiUnescape(f[3]);
+    if (out.some(e => e.ip === ip && e.name === name)) continue;
+    out.push({ iface: f[1], name, host: f[6], ip, port: Number(f[8]) || 0, txt: parseAvahiTxt(f.slice(9).join(';')) });
+  }
+  return out;
+}
+// avahi-browse yoksa (paket yok), daemon çalışmıyorsa ya da hiçbir şey vermeden zaman aşımına uğrarsa: kullanılamaz.
+function avahiBrowse(): Promise<{ ok: boolean; out: string }> {
+  return new Promise(resolve => {
+    execFile('avahi-browse', ['-rpt', MDNS_TYPE], { timeout: 6000, maxBuffer: 256 * 1024 }, (err, stdout) => {
+      const out = String(stdout || '');
+      resolve({ ok: !err || out.trim().length > 0, out });
+    });
+  });
+}
+// Keşif yoklaması: GET http://<ip>/api/mesh/pair (nginx, port 80). Süre mutlak, gövde küçük — yavaş ya da büyük yanıt
+// veren bir aday (ör. modemin arayüzü) keşfi tutamaz.
+function getJson(host: string, path: string, timeoutMs: number, maxBytes = 4096): Promise<{ status: number; json: any }> {
+  return new Promise(resolve => {
+    let done = false;
+    let deadline: NodeJS.Timeout | undefined;
+    const finish = (status: number, json: any) => { if (done) return; done = true; clearTimeout(deadline); resolve({ status, json }); };
+    const req = http.request({ host, port: 80, path, method: 'GET', timeout: timeoutMs, headers: { Accept: 'application/json' } }, res => {
+      let s = '';
+      res.setEncoding('utf8');
+      res.on('data', d => { s += d; if (s.length > maxBytes) { finish(0, null); req.destroy(); } });
+      res.on('end', () => { let json: any = null; try { json = JSON.parse(s); } catch { /* JSON değil */ } finish(res.statusCode || 0, json); });
+      res.on('error', () => finish(0, null));
+      res.on('close', () => finish(0, null));
+    });
+    deadline = setTimeout(() => { finish(0, null); req.destroy(); }, timeoutMs);
+    req.on('timeout', () => req.destroy());
+    req.on('error', () => finish(0, null));
+    req.end();
+  });
+}
+
+// conflict: aynı kimlik birden çok adresten yanıt verdi. Cihazın kendisi birden çok adreste olabilir (ör. .153 +
+// 192.168.0.1) ya da ağdaki biri onun (gizli olmayan) kimliğini kopyalıyor — kimlik yanıtı ikisini ayıramaz. Bu yüzden
+// hiçbiri gizlenmez (ilk yanıt veren kazanmaz): panel hepsini uyarıyla gösterir, yeniden keşif hepsini dener.
+export type KlyrixDevice = {
+  id: string; name: string; ip: string; role: 'main' | 'satellite'; paired: boolean; pairing: boolean; proto: number; source: 'gateway' | 'mdns';
+  conflict: boolean;
+};
+// mdns_blocked: bu cihazın güvenlik duvarı (Firewall → Deploy Et, /etc/nftables.conf) bu sürümden önce kurulmuş: gelen
+// mDNS düşer (input policy drop, 5353 izni yeni), keşif yalnız ağ geçidini bulabilir — panel bunu söyler.
+export type Discovery = { devices: KlyrixDevice[]; mdns: 'ok' | 'unavailable'; mdns_blocked: boolean };
+const DISCOVER_MAX_CANDIDATES = 16; // sahte mDNS kayıtlarıyla yüzlerce adres yoklatılamasın
+const DISCOVER_PROBE_MS = 2500;
+const DISCOVER_CACHE_MS = 10000;
+// Bu cihazın IPv4 adresleri kartlarıyla (ip -j -4 addr): kendi adresleri + "aynı bağlantıda mı" denetimi.
+export type IfaceNet = { iface: string; ip: string; bits: number };
+function readIfaceNets(): Promise<IfaceNet[]> {
+  return new Promise(resolve => {
+    execFile('ip', ['-j', '-4', 'addr', 'show'], { timeout: 5000, maxBuffer: 1024 * 1024 }, (err, stdout) => {
+      const out: IfaceNet[] = [];
+      try {
+        if (!err) for (const l of JSON.parse(String(stdout)) as any[]) for (const a of l?.addr_info || []) {
+          if (IPV4_RE.test(String(a?.local)) && Number.isInteger(a?.prefixlen) && a.prefixlen >= 1 && a.prefixlen <= 32) out.push({ iface: String(l.ifname), ip: a.local, bits: a.prefixlen });
+        }
+      } catch { /* okunamadı: kendi adresi yok sayılır, mDNS adayı bağlantıda sayılmaz */ }
+      resolve(out);
+    });
+  });
+}
+const onLink = (nets: IfaceNet[], ip: string, iface?: string) => nets.some(n => (iface === undefined || n.iface === iface) && inV4(ip, n.ip, n.bits));
+// Yoklanacak adaylar (saf; birim testi). Önce varsayılan ağ geçidi (Pi DHCP / internet kartı / "Pi dağıtır": ana cihaz
+// çoğunlukla odur; mDNS güvenlik duvarında kapalı olsa da TCP 80'den bulunur) — her zaman sınırın içinde. Sonra mDNS:
+// yalnız kaydın duyulduğu kartın kendi ağındaki adres (avahi her adresi gösteren A kaydını geçirir — ağdaki biri bu cihazı
+// varsayılan rotadan / tünelden başka ağlara yoklatamasın), bu cihazın adresi ve kimliği hariç. Sıra: TXT kimliği
+// eşleşilen ana cihazınki (uydu, yeniden keşif), sonra TXT rolü ana cihaz, sonra diğerleri — kimlik taşımayan sahte
+// kayıt seli ana cihazı 16'lık sınırın dışına itemesin.
+export function pickCandidates(gw: string | null, entries: AvahiEntry[], o: { nets: IfaceNet[]; ownId: string; mainId: string }): { ip: string; source: KlyrixDevice['source'] }[] {
+  const own = new Set(o.nets.map(n => n.ip));
+  const cands: { ip: string; source: KlyrixDevice['source'] }[] = [];
+  const add = (ip: string, source: KlyrixDevice['source']) => {
+    if (isCandidateIp(ip) && !own.has(ip) && !cands.some(c => c.ip === ip) && cands.length < DISCOVER_MAX_CANDIDATES) cands.push({ ip, source });
+  };
+  if (gw) add(gw, 'gateway');
+  const rank = (e: AvahiEntry) => (o.mainId && e.txt.id === o.mainId ? 0 : e.txt.role === 'main' ? 1 : 2);
+  const ms = entries.filter(e => (!o.ownId || e.txt.id !== o.ownId) && onLink(o.nets, e.ip, e.iface)).map((e, i) => ({ e, i }));
+  ms.sort((a, b) => rank(a.e) - rank(b.e) || a.i - b.i);
+  for (const { e } of ms) add(e.ip, 'mdns');
+  return cands;
+}
+function fwBlocksMdns(): boolean {
+  try { const c = fs.readFileSync('/etc/nftables.conf', 'utf8'); return c.includes('table inet pi5_filter') && !c.includes('udp dport 5353'); } catch { return false; }
+}
+async function runDiscover(): Promise<Discovery> {
+  let ownId = '';
+  try { ownId = deviceId(); } catch { /* kimlik yok */ }
+  const sat = readSatState();
+  const mainId = sat && isV2(sat) && !sat.revoked && validSatId(sat.main_id) ? sat.main_id : '';
+  const [gw, nets, av] = await Promise.all([readDefaultRoute(), readIfaceNets(), avahiBrowse()]);
+  const cands = pickCandidates(gw?.ip || null, parseAvahiBrowse(av.out), { nets, ownId, mainId });
+  const replies = await Promise.all(cands.map(async c => ({ c, r: await getJson(c.ip, '/api/mesh/pair', DISCOVER_PROBE_MS) })));
+  const devices: KlyrixDevice[] = [];
+  for (const { c, r } of replies) {
+    const h = r.status === 200 && r.json && typeof r.json === 'object' ? r.json : null;
+    if (!h || h.klyrix !== 1 || !validSatId(h.id) || h.id === ownId || (h.role !== 'main' && h.role !== 'satellite')) continue;
+    devices.push({
+      id: h.id, name: String(h.name || '').replace(/[^\w .-]/g, '').trim().slice(0, 63), ip: c.ip, role: h.role,
+      paired: h.paired === true, pairing: h.pairing === true, proto: Number.isSafeInteger(h.proto) && h.proto > 0 ? h.proto : 1, source: c.source,
+      conflict: false,
+    });
+  }
+  for (const d of devices) d.conflict = devices.some(x => x.id === d.id && x.ip !== d.ip);
+  return { devices, mdns: av.ok ? 'ok' : 'unavailable', mdns_blocked: fwBlocksMdns() };
+}
+// Aynı anda tek keşif; sonuç 10 sn saklanır (panel ve uydu ajanı aynı anda isteyebilir).
+let discoverCache: { at: number; result: Discovery } | null = null;
+let discoverRun: Promise<Discovery> | null = null;
+export function discoverKlyrix(): Promise<Discovery> {
+  if (discoverCache && Date.now() - discoverCache.at < DISCOVER_CACHE_MS) return Promise.resolve(discoverCache.result);
+  discoverRun ??= runDiscover()
+    .then(result => { discoverCache = { at: Date.now(), result }; return result; })
+    .finally(() => { discoverRun = null; });
+  return discoverRun;
+}
+
 // Senkron isteği (uydu → ana cihaz). ok = ana cihaz yanıtı geçerli; revoked = eşleşme kaldırıldı.
 //  - v1: taşıyıcı anahtarla düz istek; 200 geçerli, 401 kaldırıldı (eskisi gibi).
 //  - v2: şifreli zarf, Authorization yok. seq göndermeden ÖNCE kaydedilir (yeniden başlasa da aynı seq bir daha
@@ -480,25 +772,35 @@ export function postJson(main: string, path: string, body: unknown, token?: stri
 //    yalnız hatadır — v2 uydu düz yanıta hiç dönmez, kaldırılma yalnız imzalı "revoked" ile olur. İstekler sırayla gider.
 //    Doğrulanmamış yanıtın metni gösterilmez (sahte bir yanıt panele yönlendirici yazı koyamasın): yalnız HTTP kodu.
 //  - stale: eşleşme istek sürerken değişti (kaldırıldı / yeniden eşleşildi) — çağıran eski durumu diske yazmaz.
-type SyncResult = { ok: boolean; status: number; error: string; config?: SatConfig; revoked?: boolean; stale?: boolean };
+//  - addr (yalnız v2, yeniden keşif): istek kayıtlı adres yerine buraya gider (süre 8 sn). Ana cihazın adresi ANCAK
+//    yanıt bu uydunun anahtarıyla açılırsa (doğrulanmış), ana cihaz zarfın içinde bu adresi kendi adresleri arasında
+//    sayarsa (addrs) ve aynı eşleşme hâlâ diskteyse güncellenir → moved. Listede değilse (araya giren düz bir aktarıcı ya
+//    da adres çevirisi) yanıt yine ana cihazındır ve işlenir, ama adres değişmez → mainAddrs (doğrulanmış liste).
+//  - authed: yanıt bu uydunun anahtarıyla açıldı (gerçekten ana cihazdan).
+type SyncResult = {
+  ok: boolean; status: number; error: string; config?: SatConfig; revoked?: boolean; stale?: boolean; authed?: boolean; moved?: { from: string; to: string };
+  mainAddrs?: string[];
+};
+const REDISCOVER_SYNC_MS = 8000;
 let v2Chain: Promise<unknown> = Promise.resolve();
-async function sendSync(s: SatState, status: unknown): Promise<SyncResult> {
+async function sendSync(s: SatState, status: unknown, addr?: string): Promise<SyncResult> {
   if (!isV2(s)) {
     const r = await postJson(s.main, '/api/mesh/sync', { id: s.id, status }, s.token);
     return { ok: r.status === 200, status: r.status, error: r.json?.error || '', config: r.json?.config, revoked: r.status === 401 };
   }
-  const run = v2Chain.then(() => sendSyncV2(s, status));
+  const run = v2Chain.then(() => sendSyncV2(s, status, addr));
   v2Chain = run.catch(() => undefined);
   return run;
 }
-async function sendSyncV2(s: SatState, status: unknown): Promise<SyncResult> {
+async function sendSyncV2(s: SatState, status: unknown, addr?: string): Promise<SyncResult> {
   const cur = readSatState();
   if (!cur || !isV2(cur) || cur.id !== s.id || cur.key !== s.key || cur.revoked) return { ok: false, status: 0, error: 'eşleşme bu arada değişti', stale: true };
   const seq = Math.max((Number(cur.seq) || 0) + 1, (Number(s.seq) || 0) + 1, Date.now());
   cur.seq = seq; s.seq = seq;
   writeSatState(cur);
   const key = Buffer.from(s.key!, 'hex');
-  const r = await postJson(cur.main, '/api/mesh/sync', { id: s.id, proto: 2, seq, box: seal(key, `sync|${s.id}|${seq}`, { status }) });
+  const r = await postJson(addr || cur.main, '/api/mesh/sync', { id: s.id, proto: 2, seq, box: seal(key, `sync|${s.id}|${seq}`, { status }) },
+    undefined, addr ? REDISCOVER_SYNC_MS : undefined);
   if (r.status !== 200) {
     // status 0: yerel hata (postJson: ulaşılamadı / zaman aşımı) — metni bu cihazın.
     const error = r.status === 0 ? String(r.json?.error || 'ana cihaza ulaşılamadı')
@@ -511,16 +813,31 @@ async function sendSyncV2(s: SatState, status: unknown): Promise<SyncResult> {
   try { msg = open(key, `resp|${s.id}|${seq}`, r.json?.box); } catch {
     return { ok: false, status: 200, error: 'ana cihazın yanıtı doğrulanamadı (şifresiz ya da başka anahtarla) — yok sayıldı' };
   }
+  // Yanıt bu uydunun anahtarıyla açıldı (gerçekten ana cihazdan). Yeni adres ana cihazın kendi adreslerindense kalıcı
+  // (bellekteki s de, ki çağıranın sonraki yazımı eski adresi geri getirmesin); değilse yalnız doğrulanmış liste döner.
+  let moved: SyncResult['moved'];
+  let mainAddrs: string[] | undefined;
+  if (addr && addr !== cur.main) {
+    const listed: string[] = Array.isArray(msg.addrs) ? msg.addrs.filter((a: unknown): a is string => typeof a === 'string' && isCandidateIp(a)).slice(0, 32) : [];
+    const now = readSatState();
+    if (!listed.includes(addr)) mainAddrs = listed;
+    else if (now && samePairing(now, s) && !now.revoked) {
+      moved = { from: now.main, to: addr };
+      writeSatState(now, addr);
+      s.main = addr;
+    }
+  }
   // Doğrulanmış kaldırma: ok değil (v1'deki 401 gibi deneme yayını geri alınır); syncOnce önce revoked'a bakar.
-  if (msg.revoked === true) return { ok: false, status: 200, error: 'ana cihaz bu uydunun eşleşmesini kaldırdı', revoked: true };
-  if (!msg.config || typeof msg.config !== 'object') return { ok: false, status: 200, error: 'ana cihazın yanıtında ayar yok' };
-  return { ok: true, status: 200, error: '', config: msg.config };
+  if (msg.revoked === true) return { ok: false, status: 200, error: 'ana cihaz bu uydunun eşleşmesini kaldırdı', revoked: true, authed: true, moved, mainAddrs };
+  if (!msg.config || typeof msg.config !== 'object') return { ok: false, status: 200, error: 'ana cihazın yanıtında ayar yok', authed: true, moved, mainAddrs };
+  return { ok: true, status: 200, error: '', config: msg.config, authed: true, moved, mainAddrs };
 }
 
 const versionOf = () => { try { return JSON.parse(fs.readFileSync('/opt/pi5-gateway/version.json', 'utf8')).version || ''; } catch { return ''; } };
 async function satStatusReport(err = '') {
-  const [n, m] = await Promise.all([runKv(NET_MODE_SCRIPT, ['status'], 30000), meshStatus()]);
+  const [n, ms] = await Promise.all([runKv(NET_MODE_SCRIPT, ['status'], 30000), meshStatus()]);
   const kv = n.code === 0 ? n.kv : {};
+  const m: Record<string, string> = ms || {}; // bildirim: durum okunamazsa eskisi gibi kablo / 0 komşu
   const stations = kv.sat_wifi && kv.sat_stage !== 'none' ? [...await readHomeStations(kv.sat_wifi, BRIDGE)] : [];
   return {
     name: os.hostname(), version: versionOf(), sat_stage: kv.sat_stage || 'none', active: kv.sat_active === '1', bridge: kv.sat_br === '1',
@@ -565,7 +882,10 @@ async function applyConfig(s: SatState, cfg: SatConfig): Promise<string> {
     }
   }
   const ms = await meshStatus();
-  if (cfg.mesh) {
+  if (!ms) {
+    // Durum okunamadı: omurgaya dokunulmaz (kapatılmaz, "radyo yok" sayılmaz, yeniden kurulmaz); sonraki senkronda yeniden.
+    if (cfg.mesh) errors.push('kablosuz mesh durumu okunamadı — mesh ayarı sonraki senkronda denenecek');
+  } else if (cfg.mesh) {
     const key = meshKey(cfg.mesh);
     if (!(ms.capable || '')) {
       if (s.applied_mesh !== 'no_radio') { s.applied_mesh = 'no_radio'; }
@@ -647,14 +967,87 @@ export async function joinMain(main: string, code: string): Promise<{ applied: s
   return { applied };
 }
 
+// Yeniden keşif (yalnız v2): kayıtlı adresten art arda DOĞRULANMIŞ yanıt gelmeyince (ulaşılamadı, başka bir cihazın
+// yanıtı — eski adres DHCP'yle başka bir cihaza geçmiş olabilir: 404 / 409 / 401 —, açılamayan 200 ya da ana cihazın
+// kendi adresinde 503) ana cihaz ağda (ağ geçidi + mDNS) eşleşmede sabitlenen kimliğiyle (main_id) aranır. Kimliği
+// taşıyan her adres sırayla denenir (ağ geçidi önce, en çok 4; her birine tek senkron): kimlik yanıtı doğrulanmamıştır ve
+// main_id gizli değildir — kimliği kopyalayan bir cihaz gerçeğini gizleyemesin. Adres ancak yanıt bu uydunun anahtarıyla
+// açılır VE ana cihaz zarfın içinde o adresi kendi adresi sayarsa değişir (sendSyncV2). Doğrulanmış yanıt başka bir
+// adresten (aktarıcı) geldiyse ana cihazın zarftaki adreslerinden bu cihazın ağındakiler önce denenir; hiçbiri olmazsa
+// o yanıt işlenir ama adres değişmez (sonraki senkronda yeniden). Sahte yanıt (401, şifresiz ayar, başka anahtar) yalnız
+// hata olur, eşleşmeye ve yayına dokunmaz.
+// v1 eşleşmelerde yok: ana cihaz kimliğini kanıtlayamaz (main_id yok, yanıt imzasız; 401 bile uyduyu kapatır) ve
+// taşıyıcı anahtar ağdaki başka bir adrese gönderilmiş olurdu — v1 uydu yeniden eşleştirilir.
+const REDISCOVER_AFTER = 3;
+const REDISCOVER_MAX_TRIES = 4;
+// Ardışık doğrulanmamış senkron sayısı (yalnız bellekte, eşleşmeye bağlı: yeniden eşleşince sıfırdan).
+let missRuns = { pairing: '', n: 0 };
+type Rediscovery = { result: SyncResult | null; tried: number; fails: string[] };
+async function rediscoverMain(s: SatState, status: unknown): Promise<Rediscovery | null> {
+  if (!isV2(s) || !validSatId(s.main_id)) return null;
+  const cur = readSatState();
+  if (!cur || !samePairing(cur, s) || cur.revoked) return null;
+  const curHost = cur.main.replace(/:80$/, ''); // keşif adresi port 80 (nginx): "A:80" ile "A" aynı adres
+  let queue: string[];
+  try {
+    // Keşif sırası korunur: ağ geçidi adayı başta, sonra TXT kimliği main_id olan mDNS kayıtları.
+    queue = (await discoverKlyrix()).devices.filter(d => d.id === s.main_id && d.role === 'main' && d.ip !== curHost).map(d => d.ip);
+  } catch { return null; }
+  if (!queue.length) return null;
+  const tried = new Set<string>();
+  const fails: string[] = [];
+  let relayed: SyncResult | null = null;
+  let nets: IfaceNet[] | null = null;
+  while (queue.length && tried.size < REDISCOVER_MAX_TRIES) {
+    const ip = queue.shift()!;
+    if (tried.has(ip)) continue;
+    tried.add(ip);
+    const r = await sendSync(s, status, ip);
+    if (r.stale || (r.authed && !r.mainAddrs)) return { result: r, tried: tried.size, fails };
+    if (r.authed) {
+      // Ana cihazın yanıtı, ama ana cihaz bu adresi kendi saymıyor: onun (doğrulanmış) adreslerinden bu cihazın
+      // ağındakiler sıranın başına.
+      relayed ??= r;
+      nets ??= await readIfaceNets();
+      const direct = r.mainAddrs!.filter(a => a !== curHost && !tried.has(a) && onLink(nets!, a));
+      queue = [...direct, ...queue.filter(q => !direct.includes(q))];
+    } else fails.push(r.status ? `HTTP ${r.status}` : 'ulaşılamadı');
+  }
+  return { result: relayed, tried: tried.size, fails };
+}
+
 // Dakikalık senkron (uydu). Eşleşme kaldırıldıysa yayın kapatılır: eski şifreyle yayın sürmesin (v1: 401; v2: yalnız
 // ana cihazın anahtarıyla imzalı "revoked" — sahte bir 401 ya da düz yanıt yalnız hata olarak görünür).
 export async function syncOnce(): Promise<void> {
   const s = readSatState();
   if (!s || s.revoked) return;
-  const r = await sendSync(s, await satStatusReport(s.last_error || ''));
+  const report = await satStatusReport(s.last_error || '');
+  let r = await sendSync(s, report);
   // Eşleşme istek sürerken değiştiyse (kaldırıldı / yeniden eşleşildi) bu sonuç artık geçerli eşleşmenin değil.
   if (r.stale) return;
+  const pairing = isV2(s) ? sha256(`${s.id}|${s.key}`) : '';
+  if (missRuns.pairing !== pairing) missRuns = { pairing, n: 0 };
+  missRuns.n = r.authed ? 0 : missRuns.n + 1;
+  let relayNote = '';
+  if (pairing && missRuns.n >= REDISCOVER_AFTER) {
+    const alt = await rediscoverMain(s, report);
+    if (alt?.result?.stale) return;
+    if (alt?.result?.authed) {
+      // Doğrulanmış yanıt: sonuç normal senkron gibi işlenir (ayar uygulanır ya da imzalı kaldırma).
+      r = alt.result;
+      if (alt.result.moved) {
+        missRuns.n = 0;
+        await recordEvent('mesh', `Ana cihaz yeni adreste bulundu: ${alt.result.moved.from} → ${alt.result.moved.to}`);
+      } else {
+        // Adres değişmedi: sayaç sürer, sonraki senkronda kayıtlı adres yine denenir, olmazsa yeniden aranır.
+        relayNote = 'kayıtlı adresten doğrulanmış yanıt yok; ana cihazın yanıtı başka bir adres üzerinden geldi — adres değiştirilmedi';
+      }
+    } else if (alt) {
+      // Adayların adresi ve yanıt metni gösterilmez (sahte olabilir): yalnız yerel açıklama.
+      const why = [...new Set(alt.fails)].join(', ') || 'yanıt yok';
+      r = { ...r, error: `${r.error} — ağda ana cihaz kimliğiyle bulunan ${alt.tried === 1 ? 'bir' : alt.tried} adres denendi, yanıtı doğrulanamadı (${why}); kayıtlı adres değişmedi` };
+    }
+  }
   if (r.revoked) {
     s.revoked = true;
     s.last_error = 'ana cihaz bu uydunun eşleşmesini kaldırdı — yayın kapatıldı';
@@ -671,7 +1064,7 @@ export async function syncOnce(): Promise<void> {
   }
   s.last_sync = Math.floor(Date.now() / 1000);
   const before = `${s.applied_wifi}|${s.applied_mesh}`;
-  s.last_error = await applyOnce(s, r.config);
+  s.last_error = [await applyOnce(s, r.config), relayNote].filter(Boolean).join('; ');
   if (!writeIfCurrent(s)) return;
   // Bir şey uygulandıysa ana cihaz yeni durumu bir sonraki dakikayı beklemeden görsün.
   if (`${s.applied_wifi}|${s.applied_mesh}` !== before) {
@@ -688,15 +1081,16 @@ export async function leaveMain(): Promise<void> {
 
 export async function satelliteState() {
   const s = readSatState();
-  const [n, m] = await Promise.all([runKv(NET_MODE_SCRIPT, ['status'], 30000), meshStatus()]);
+  const [n, ms] = await Promise.all([runKv(NET_MODE_SCRIPT, ['status'], 30000), meshStatus()]);
   const kv = n.code === 0 ? n.kv : {};
+  const m: Record<string, string> = ms || {};
   return {
     paired: !!s, main: s?.main || '', name: os.hostname(), paired_at: s?.paired_at || 0, last_sync: s?.last_sync || 0,
     last_error: s?.last_error || '', revoked: !!s?.revoked, proto: s ? (isV2(s) ? 2 : 1) : 0, // 2 = şifreli kanal, 1 = eski eşleşme
 
     sat_stage: kv.sat_stage || 'none', ssid: kv.sat_ssid || '', band: kv.sat_band || 'bg', channel: Number(kv.sat_channel) || null,
     active: kv.sat_active === '1', bridge: kv.sat_br === '1', ip: kv.sat_ip || '', guard_result: kv.guard_result || '',
-    mesh: { capable: (m.capable || '').split(',').filter(Boolean), configured: m.configured === '1', attached: m.attached === '1', peers: Number(m.peers) || 0 },
+    mesh: { capable: (m.capable || '').split(',').filter(Boolean), configured: m.configured === '1', attached: m.attached === '1', peers: Number(m.peers) || 0, unknown: !ms },
   };
 }
 

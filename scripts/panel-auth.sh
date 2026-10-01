@@ -180,7 +180,7 @@ http_code() { curl -s -o /dev/null -m 5 -w '%{http_code}' "$@" 2>/dev/null; }
 # testi geçici bir sonda kullanıcısıyla yapılır (kullanıcının şifresi bilinmez) — dosya izni / özet biçimi / nginx
 # okuma sorunları (500/403/sürekli 401) burada yakalanır. Reload eşzamansız olduğundan birkaç kez denenir.
 # Giriş sayfası ve /api/captive LAN'dan şifresiz 401 OLMAMALI (200; dosya/arka uç henüz güncellenmemişse 404 de kabul).
-# Mesh uydu ucu (/api/mesh/pair, GET) da 401 OLMAMALI: nginx sormaz, arka uç 404 döner (yalnız POST'u var).
+# Mesh uydu ucu (/api/mesh/pair, GET) da 401 OLMAMALI: nginx sormaz, arka uç 200 döner (cihaz keşfinin kimlik yanıtı).
 verify_enabled() {
   local ip probe_pw probe_hash a c d p k m i ok=1
   ip=$(lan_ip)

@@ -92,7 +92,7 @@ apt install -y -qq \
   qrencode speedtest-cli vnstat \
   ipset iptables wireguard-tools iputils-arping iw ppp \
   conntrack usb-modeswitch usbmuxd \
-  parprouted dhcp-helper dnsmasq-base avahi-daemon
+  parprouted dhcp-helper dnsmasq-base avahi-daemon avahi-utils
 
 # NetworkManager: sabit adres ve ağ rolleri (scripts/net-mode.sh) onunla yönetilir. Raspberry Pi OS'ta zaten kuruludur;
 # düz Debian'da (ifupdown / systemd-networkd, ör. x86) yoksa kurulur. Paketten ÖNCE no-auto-default yazılır: NM
