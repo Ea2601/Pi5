@@ -28,7 +28,7 @@ import { listForwards, addForward, setForwardEnabled, deleteForward, applyPortFo
 import { runSpeedTest, SpeedtestUnavailable, type SpeedResult } from './speedtest';
 import { ASN_TOKEN, getAsnPrefixes, normalizeCidr, refreshAsnIfStale } from './ipRanges';
 import { getRoutingSuggestions, MAX_HOURS as SUGGEST_MAX_HOURS } from './domainSuggest';
-import { startUpdate, getUpdateStatus } from './update';
+import { startUpdate, getUpdateStatus, getBuildMode, setBuildMode, isBuildMode } from './update';
 import { sampleBandwidth, neighborMacs, buildLive } from './bandwidth';
 import { buildTopology, readNeighbors, readNeighbors6, readHandshakes, readDefaultRoute, readIfaces, readLocalIps, noteActivity, inCidr, readPeerHandshakes } from './topology';
 import { startLinkProbe, probeSamples, probeBaseline, noteTopologyView, type ProbeTarget } from './linkProbe';
@@ -5643,6 +5643,30 @@ app.get('/api/system/update/status', async (_req, res) => {
     res.json(await getUpdateStatus());
   } catch (e: any) {
     res.status(500).json({ error: e.message });
+  }
+});
+
+// Güncelleme yöntemi: auto | local (Pi'de derle) | prebuilt (GitHub'ın hazır paketi) — scripts/prebuilt.sh. Cihaza özel
+// (/etc/pi5-gateway/build-mode, yedeğe girmez); uyduda da geçerli (uydu da kendini günceller). Yazma: netAdminGuard
+// (/api/system ön eki, yukarıda app.use). Sonraki güncellemeden itibaren etkili.
+app.get('/api/system/update/mode', async (_req, res) => {
+  try {
+    if (!isLinux) return res.json({ mode: 'auto', effective: 'local', auto: 'local', memClassMiB: 0, localOk: true });
+    res.json(await getBuildMode());
+  } catch (e: any) {
+    res.status(500).json({ error: `Güncelleme yöntemi okunamadı: ${e.message}` });
+  }
+});
+
+app.put('/api/system/update/mode', async (req, res) => {
+  const mode = req.body?.mode;
+  if (!isBuildMode(mode)) return res.status(400).json({ error: 'Geçersiz güncelleme yöntemi (auto, local ya da prebuilt)' });
+  if (!isLinux) return res.status(400).json({ error: 'Güncelleme yöntemi yalnız cihazda ayarlanır' });
+  try {
+    setBuildMode(mode);
+    res.json(await getBuildMode());
+  } catch (e: any) {
+    res.status(500).json({ error: `Güncelleme yöntemi kaydedilemedi: ${e.message}` });
   }
 });
 

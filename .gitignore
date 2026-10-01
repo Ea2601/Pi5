@@ -1,9 +1,10 @@
 node_modules/
 dist/
 backend/dist/
-# Güncellemenin geçici / önceki derlemeleri (scripts/update.sh)
+# Güncellemenin geçici / önceki derlemeleri (scripts/update.sh) ve hazır paketin indirme klasörü (scripts/prebuilt.sh)
 dist.next/
 dist.prev/
+.prebuilt.*/
 *.sqlite
 *.sqlite-journal
 .env

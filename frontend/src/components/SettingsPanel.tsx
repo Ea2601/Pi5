@@ -1,13 +1,14 @@
 import { useState, useEffect, useRef } from 'react';
 import {
   Settings, Palette, Globe, Bell, Zap, Info, Save, ChevronDown, ChevronRight,
-  Volume2, VolumeX, Clock, RefreshCw, Download, Loader2, Gauge
+  Volume2, VolumeX, Clock, RefreshCw, Download, Loader2, Gauge, AlertTriangle
 } from 'lucide-react';
 import { useApi, putApi } from '../hooks/useApi';
 import { Panel, Badge, Select } from './ui';
 import { BRAND } from '../brand';
 import { toast } from '../toast';
 import { startSystemUpdate, trackSystemUpdate, runningSystemUpdate } from '../systemUpdate';
+import './SettingsPanel.css';
 
 interface AppSettings {
   accentColor: string;
@@ -318,11 +319,32 @@ export function SettingsPanel() {
   );
 }
 
+// Güncelleme yöntemi (backend update.ts → scripts/prebuilt.sh mode). effective: şu an kullanılan; auto: Otomatik seçilirse
+// bu cihazın kullanacağı (1 GB sınıfı ve altında hazır paket); localOk: hazır paket alınamazsa Pi'de derlenebilir mi.
+type BuildSide = 'local' | 'prebuilt';
+interface BuildModeInfo { mode: 'auto' | BuildSide; effective: BuildSide; auto: BuildSide; memClassMiB: number; localOk: boolean }
+const BUILD_SIDE_LABEL: Record<BuildSide, string> = { local: "Pi'de derle", prebuilt: 'hazır paket' };
+const memClassLabel = (mib: number) => (mib >= 1024 ? `${mib / 1024} GB` : `${mib} MB`);
+
 // ─── Update Section ───
 function UpdateSection() {
   const { data: versionData } = useApi<{ version: string; build: number }>('/system/version', { version: '2.1.0', build: 0 });
+  const { data: buildMode, refetch: refetchBuildMode } = useApi<BuildModeInfo | null>('/system/update/mode', null);
+  const [modeSaving, setModeSaving] = useState(false);
   const [updating, setUpdating] = useState(false);
   const [phase, setPhase] = useState('');
+
+  const changeBuildMode = async (mode: string) => {
+    setModeSaving(true);
+    try {
+      await putApi('/system/update/mode', { mode });
+      toast.success('Güncelleme yöntemi kaydedildi — sonraki güncellemeden itibaren geçerli');
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Güncelleme yöntemi kaydedilemedi');
+    }
+    await refetchBuildMode();
+    setModeSaving(false);
+  };
 
   // Sayfa güncelleme sürerken açıldıysa (ör. yenilendi) süren işi izlemeye devam et.
   useEffect(() => {
@@ -362,7 +384,8 @@ function UpdateSection() {
         <div className="config-item-info">
           <span className="config-item-label">Sistemi Güncelle</span>
           <span className="config-item-desc">
-            {updating ? `Sürüyor: ${phase || 'başlatılıyor'} — sayfa kapansa da Pi'de devam eder` : 'Git pull + build + servis yeniden başlat'}
+            {updating ? `Sürüyor: ${phase || 'başlatılıyor'} — sayfa kapansa da Pi'de devam eder`
+              : buildMode?.effective === 'prebuilt' ? 'Git pull + hazır paket + servis yeniden başlat' : 'Git pull + build + servis yeniden başlat'}
           </span>
         </div>
         <div className="config-item-control">
@@ -374,6 +397,40 @@ function UpdateSection() {
             {updating ? <Loader2 size={13} className="spin" /> : <RefreshCw size={13} />}
             <span>{updating ? 'Güncelleniyor...' : 'Güncelle'}</span>
           </button>
+        </div>
+      </div>
+      <div className="config-item">
+        <div className="config-item-info">
+          <span className="config-item-label">Güncelleme Yöntemi</span>
+          <span className="config-item-desc">
+            {!buildMode ? 'Okunuyor…' : <>
+              Şu an: {buildMode.effective === 'prebuilt'
+                ? "hazır paket — GitHub'da derlenmiş paket indirilir, Pi'de derleme yapılmaz"
+                : "Pi'de derleniyor (TypeScript + Vite)"}
+              {buildMode.memClassMiB > 0 && ` · ${memClassLabel(buildMode.memClassMiB)} bellek sınıfı`}
+            </>}
+          </span>
+          {buildMode?.effective === 'prebuilt' && (
+            <span className="config-item-desc su-note">
+              Paket her commit için GitHub'da hazırlanır; henüz yoksa en çok 10 dk beklenir. Alınamazsa
+              {buildMode.localOk ? " Pi'de derlenir." : ' güncelleme yapılmaz, çalışan panel değişmez.'}
+            </span>
+          )}
+          {buildMode?.mode === 'local' && buildMode.auto === 'prebuilt' && (
+            <span className="config-item-desc su-note su-warn">
+              <AlertTriangle size={12} aria-hidden="true" />
+              <span>Bu cihazın belleği Pi'de derlemeye yetmeyebilir (derleme ~400 MB ister) — Otomatik önerilir</span>
+            </span>
+          )}
+        </div>
+        <div className="config-item-control">
+          <Select className="config-select su-mode-select" aria-label="Güncelleme yöntemi"
+            value={buildMode?.mode ?? 'auto'} disabled={!buildMode || modeSaving}
+            onChange={e => { void changeBuildMode(e.target.value); }}>
+            <option value="auto">{`Otomatik (bu cihaz: ${BUILD_SIDE_LABEL[buildMode?.auto ?? 'local']})`}</option>
+            <option value="local">Pi'de derle</option>
+            <option value="prebuilt">Hazır paket (GitHub)</option>
+          </Select>
         </div>
       </div>
     </div>

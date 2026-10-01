@@ -6,7 +6,7 @@ set -e
 # ║                                                              ║
 # ║  Kullanım:                                                   ║
 # ║    curl -fsSL https://raw.githubusercontent.com/             ║
-# ║      Ea2601/klyrix-gate/main/install.sh | bash                ║
+# ║      Ea2601/klyrix-gate/master/install.sh | bash              ║
 # ║                                                              ║
 # ║  veya:                                                       ║
 # ║    git clone https://github.com/Ea2601/klyrix-gate.git        ║
@@ -179,24 +179,69 @@ fi
 if bash "$INSTALL_DIR/scripts/ookla-ensure.sh"; then log "Hız testi: Ookla Speedtest CLI hazır"
 else warn "Ookla Speedtest CLI kurulamadı — hız testi speedtest-cli ile sürer (sonra: sudo bash $INSTALL_DIR/scripts/ookla-ensure.sh)"; fi
 
+# ─── Derleme yöntemi (scripts/prebuilt.sh — panelde Ayarlar → Sistem Güncellemesi → Güncelleme Yöntemi) ───
+# local: panel Pi'de derlenir (tsc + vite; ~400 MB bellek). prebuilt: GitHub'ın bu commit için derlediği hazır paket
+# indirilir — frontend'de hiç npm yok, backend'e yalnız üretim bağımlılıkları. auto (varsayılan): 1 GB sınıfı ve altında
+# hazır paket. KLYRIX_BUILD=auto|local|prebuilt ile elle seçilir ve /etc/pi5-gateway/build-mode'a yazılır (güncellemeler
+# de onu okur). Okunamazsa (eski depo / hata) bugünkü davranış: Pi'de derle.
+case "${KLYRIX_BUILD:-}" in
+  auto|local|prebuilt)
+    if { printf 'mode=%s\n' "$KLYRIX_BUILD" > /etc/pi5-gateway/build-mode; } 2>/dev/null; then log "Derleme yöntemi elle seçildi: $KLYRIX_BUILD"
+    else warn "Derleme yöntemi yazılamadı (/etc/pi5-gateway/build-mode)"; fi ;;
+  "") ;;
+  *) warn "KLYRIX_BUILD yalnız auto, local ya da prebuilt olabilir — yok sayıldı" ;;
+esac
+BUILD_EFFECTIVE=local
+BUILD_LOCAL_OK=1
+BMODE=$(bash "$INSTALL_DIR/scripts/prebuilt.sh" mode 2>/dev/null) || BMODE=""
+bmode() { printf '%s\n' "$BMODE" | sed -n "s/^$1=//p" | head -1; }
+if [ "$(bmode effective)" = prebuilt ]; then BUILD_EFFECTIVE=prebuilt; fi
+if [ "$(bmode local_ok)" = 0 ]; then BUILD_LOCAL_OK=0; fi
+if [ "$BUILD_EFFECTIVE" = prebuilt ]; then log "Derleme yöntemi: hazır paket (GitHub) — panel bu cihazda derlenmez"
+else log "Derleme yöntemi: Pi'de derle"; fi
+
 # ─── 4. Backend Kurulumu ───
 step "4/10 — Backend Kuruluyor"
 cd "$INSTALL_DIR/backend"
-npm ci --production=false 2>/dev/null || npm install
-# Derleme alt kabukta oom_score_adj 500 ile: bellek biterse çekirdek önce derlemeyi öldürür, DNS'i (pihole-FTL, Unbound) değil.
-( { echo 500 > /proc/self/oom_score_adj; } 2>/dev/null || true; npm run build ) || warn "Backend build hata verdi"
+# Hazır paket: yalnız üretim bağımlılıkları (sqlite3 yerel modül — pakete konamaz) + bu commit'in derlemesi. Paket
+# alınamazsa belleği yeten cihaz (2 GB sınıfı ve üstü) aşağıdaki yerel derlemeye düşer; yetmeyende kurulum durur.
+if [ "$BUILD_EFFECTIVE" = prebuilt ]; then
+  npm ci --omit=dev --no-audit --no-fund 2>/dev/null || npm install --omit=dev --no-audit --no-fund
+  if PB_OUT=$(bash "$INSTALL_DIR/scripts/prebuilt.sh" fetch "$(git -C "$INSTALL_DIR" rev-parse HEAD 2>/dev/null)" "$INSTALL_DIR"); then
+    for d in backend frontend; do
+      rm -rf "$INSTALL_DIR/$d/dist.prev"
+      if [ -d "$INSTALL_DIR/$d/dist" ]; then mv "$INSTALL_DIR/$d/dist" "$INSTALL_DIR/$d/dist.prev"; fi
+      mv "$INSTALL_DIR/$d/dist.next" "$INSTALL_DIR/$d/dist"
+    done
+    log "Hazır paket kuruldu: $(printf '%s\n' "$PB_OUT" | sed -n 's/^tag=//p' | head -1)"
+  elif [ "$BUILD_LOCAL_OK" = 1 ]; then
+    warn "Hazır paket alınamadı — panel bu cihazda derleniyor"
+    BUILD_EFFECTIVE=local
+  else
+    err "Hazır paket bulunamadı (GitHub derlemesi henüz bitmemiş olabilir) — birkaç dakika sonra yeniden çalıştırın"
+  fi
+fi
+if [ "$BUILD_EFFECTIVE" = local ]; then
+  npm ci --production=false 2>/dev/null || npm install
+  # Derleme alt kabukta oom_score_adj 500 ile: bellek biterse çekirdek önce derlemeyi öldürür, DNS'i (pihole-FTL, Unbound) değil.
+  ( { echo 500 > /proc/self/oom_score_adj; } 2>/dev/null || true; npm run build ) || warn "Backend build hata verdi"
+fi
 # Build çıktısı yoksa servisi başlatma — dist/index.js olmadan pi5-backend sonsuz crash-loop'a girer
 if [ ! -f "$INSTALL_DIR/backend/dist/index.js" ]; then
   err "Backend build başarısız (dist/index.js yok). Kurulum durduruldu — crash-loop önlendi. Logları kontrol edin."
 fi
-log "Backend derlendi"
+if [ "$BUILD_EFFECTIVE" = prebuilt ]; then log "Backend hazır paketten kuruldu"; else log "Backend derlendi"; fi
 
 # ─── 5. Frontend Kurulumu ───
 step "5/10 — Frontend Kuruluyor"
 cd "$INSTALL_DIR/frontend"
-npm ci --production=false 2>/dev/null || npm install
-( { echo 500 > /proc/self/oom_score_adj; } 2>/dev/null || true; npm run build )
-log "Frontend build tamamlandı"
+if [ "$BUILD_EFFECTIVE" = prebuilt ]; then
+  log "Frontend hazır paketten kuruldu (npm ve derleme yok)"
+else
+  npm ci --production=false 2>/dev/null || npm install
+  ( { echo 500 > /proc/self/oom_score_adj; } 2>/dev/null || true; npm run build )
+  log "Frontend build tamamlandı"
+fi
 
 # ─── 6. Ağ Servislerinin Kurulumu ───
 step "6/10 — Ağ Servisleri Kuruluyor"

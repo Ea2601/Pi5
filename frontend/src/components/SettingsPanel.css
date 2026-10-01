@@ -1,0 +1,10 @@
+/* Ayarlar → Sistem Güncellemesi: güncelleme yöntemi (Pi'de derle / hazır paket — scripts/prebuilt.sh). Uyarı rengi metinle
+   karıştırılır: açık temada sarı beyaz zeminde okunur kalsın (11 px yazı; KioskSettingsPanel.css ile aynı oran). */
+.su-note { display: flex; align-items: flex-start; gap: 5px; margin-top: 3px; line-height: 1.45; }
+.su-note svg { flex-shrink: 0; margin-top: 2px; }
+/* .config-item-desc (App.css, pakette sonra gelir) rengini ezmesin: iki sınıf */
+.su-note.su-warn { color: color-mix(in srgb, var(--warning-color) 55%, var(--text-primary)); }
+.su-mode-select { width: 240px; }
+@media (max-width: 768px) {
+  .su-mode-select { width: 100%; }
+}

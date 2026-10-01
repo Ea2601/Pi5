@@ -235,10 +235,12 @@ function ArchitectureDoc() {
         <p>
           <strong>Bellek sınıfı otomatik:</strong> kurulum ve panel belleği 512 MB, 1 GB, 2 GB … sınıflarından birine koyar
           (Cihaz Rolleri sayfasında görünür). 512 MB sınıfında (Pi Zero 2 W, Pi 3A+) HDMI ekranı (kiosk) açılmaz ve X11 /
-          Chromium kurulmaz; Unbound için küçük önbellek önerilir. Bu cihazlarda panelin kendi derlemesi belleği zorlar: hazır
-          paketler önerilir (sıradaki sürümde). 1 GB sınıfında HDMI ekranı yalnız uyarıyla açılır. 1 GB sınıfı ve altında
-          takas alanı hiç yoksa ve işletim sisteminin takas yöneticisi de yoksa (Raspberry Pi OS'ta rpi-swap vardır) kurulum /
-          güncelleme sırasında zram açılır; kapatmak için <code>/etc/pi5-gateway/zram.off</code> dosyası. Elle seçmek
+          Chromium kurulmaz; Unbound için küçük önbellek önerilir. 1 GB sınıfı ve altında panel cihazda derlenmez: kurulum ve
+          güncelleme, GitHub'ın aynı commit için derlediği <strong>hazır paketi</strong> indirir (özet bozuk indirmeyi, içerik
+          denetimi başka commit'in paketini yakalar; paketin kendisi GitHub Actions'a ve depoda sürüm yayımlayabilenlere
+          güvenir; Ayarlar → Sistem Güncellemesi → Güncelleme Yöntemi ile değiştirilir). 1 GB sınıfında HDMI ekranı yalnız uyarıyla
+          açılır. 1 GB sınıfı ve altında takas alanı hiç yoksa ve işletim sisteminin takas yöneticisi de yoksa (Raspberry Pi
+          OS'ta rpi-swap vardır) kurulum / güncelleme sırasında zram açılır; kapatmak için <code>/etc/pi5-gateway/zram.off</code> dosyası. Elle seçmek
           için: <code>/etc/pi5-gateway/profile</code> dosyasına <code>profile=lite</code> ya da <code>profile=standard</code>.
         </p>
       </DocBlock>

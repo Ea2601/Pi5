@@ -1,4 +1,5 @@
 import fs from 'fs';
+import path from 'path';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
 
@@ -43,12 +44,20 @@ const num = (v?: string) => (v && /^\d+$/.test(v) ? Number(v) : undefined);
 
 // update.sh'nin günlük satırlarından o anki adım. Adımlar sırayla ilerler: listedeki ilk eşleşme en ileri adımdır.
 // Bağımlılıklar derlemeden önce, kurulum adımları (post-update system) iki derleme de başarılıysa; eski update.sh
-// post-update'i derlemeden önce tek parça çalıştırır ("Post-update çalıştırılıyor").
+// post-update'i derlemeden önce tek parça çalıştırır ("Post-update çalıştırılıyor"). Hazır pakette (scripts/prebuilt.sh)
+// derleme yerine: indirme (gerekirse GitHub derlemesini bekleme) → bağımlılıklar (indirme başarılıysa; '@@PREBUILT='
+// satırından sonra) → paket doğrulama; alınamazsa Pi'de derlemeye düşülür.
 const PHASES: [RegExp, string][] = [
   [/=== Güncelleme tamamlandı ===/, 'Servis yeniden başlatılıyor'],
   [/Kurulum adımları çalıştırılıyor/, 'Kurulum adımları (paketler, ayarlar)'],
+  [/Paket doğrulanıyor/, 'Hazır paket doğrulanıyor'],
+  [/@@PREBUILT=[\s\S]*Bağımlılıklar denetleniyor/, 'Bağımlılıklar denetleniyor'],
   [/Frontend build\.\.\./, 'Arayüz derleniyor'],
   [/Backend build\.\.\./, 'Backend derleniyor'],
+  [/Hazır paket alınamadı — Pi'de derleniyor/, 'Bağımlılıklar denetleniyor (Pi\'de derlenecek)'],
+  [/Hazır paket yayımlandı/, 'Hazır paket indiriliyor (GitHub)'],
+  [/Hazır paket bekleniyor/, 'Hazır paket bekleniyor (GitHub derlemesi sürüyor)'],
+  [/Hazır paket indiriliyor/, 'Hazır paket indiriliyor (GitHub)'],
   [/Post-update çalıştırılıyor/, 'Kurulum adımları (paketler, ayarlar)'],
   [/Bağımlılıklar denetleniyor/, 'Bağımlılıklar denetleniyor'],
   [/Git (fetch|reset)/, 'Kod indiriliyor (git)'],
@@ -61,19 +70,42 @@ export function updatePhase(output: string): string {
 // update.sh düşülen adımı '@@STEP_FAILED=<adım> rc=N', post-update çıkış kodunu '@@POSTUPDATE_RC=N' ile bildirir
 // (eskiden çıktıdaki kelimelerden tahmin ediliyordu; 'Git OK: unknown' gibi durumlar görünmüyordu).
 // Derleme adımları geçici klasöre derler; başarısızsa kaynak önceki sürüme döner (update.sh) — çalışan panel değişmez.
-const STEP_LABEL: Record<string, string> = { hazirlik: 'Hazırlık', git: 'Git Pull', backend: 'Backend Build', frontend: 'Frontend Build', swap: 'Yeni derlemeye geçiş' };
+// Hazır pakette (update.sh '@@BUILD_MODE=prebuilt') derleme adımlarının yerine artifact (indirme) ve verify (takastan önce
+// node --check + sqlite3 + npm ls). Paket alınamayıp Pi'de derlemeye düşülürse son işaret '@@BUILD_MODE=local' olur.
+const STEP_LABEL: Record<string, string> = {
+  hazirlik: 'Hazırlık', git: 'Git Pull', backend: 'Backend Build', frontend: 'Frontend Build',
+  artifact: 'Hazır paket (GitHub)', verify: 'Paket doğrulama', swap: 'Yeni derlemeye geçiş',
+};
 const STEP_ORDER = ['hazirlik', 'git', 'backend', 'frontend', 'swap'];
+const STEP_ORDER_PREBUILT = ['hazirlik', 'git', 'artifact', 'verify', 'swap'];
+
+// Çıktıdaki son eşleşmenin ilk grubu (yoksa undefined).
+const lastMatch = (re: RegExp, text: string): string | undefined => {
+  let last: string | undefined;
+  for (const m of text.matchAll(re)) last = m[1];
+  return last;
+};
 
 // Biten işin adımları (panelin önceki yanıtıyla aynı biçim). kv: durum dosyası (state, rc, reason, restart).
 export function summarizeUpdate(output: string, kv: Record<string, string>): UpdateStep[] {
   const tail = output.trim().slice(-500);
   const steps: UpdateStep[] = [];
+  const prebuilt = lastMatch(/@@BUILD_MODE=(\w+)/g, output) === 'prebuilt';
+  // Hazır paket istendi ama alınamadı, Pi'de derlemeye geçildi
+  const fellBack = !prebuilt && /@@BUILD_MODE=prebuilt/.test(output);
+  const fallbackStep: UpdateStep = { step: STEP_LABEL.artifact, output: 'alınamadı — Pi\'de derlemeye geçildi (ayrıntı: core/update.log)', success: true, warning: true };
   if (kv.state === 'done' || kv.restart === 'failed') {
     const head = /Git OK: (\S+)/.exec(output)?.[1];
     const viaSudo = /Normal fetch başarısız/.test(output) ? ' — sudo ile' : '';
     steps.push({ step: 'Git Pull', output: head ? `OK (${head})${viaSudo}` : 'OK', success: true });
-    steps.push({ step: 'Backend Build', output: 'OK', success: true });
-    steps.push({ step: 'Frontend Build', output: tail, success: true });
+    if (prebuilt) {
+      const tag = lastMatch(/@@PREBUILT=(\S+)/g, output);
+      steps.push({ step: STEP_LABEL.artifact, output: tag ? `OK (${tag})` : 'OK', success: true });
+    } else {
+      if (fellBack) steps.push(fallbackStep);
+      steps.push({ step: 'Backend Build', output: 'OK', success: true });
+      steps.push({ step: 'Frontend Build', output: tail, success: true });
+    }
     const pu = /@@POSTUPDATE_RC=(\d+)/.exec(output);
     if (pu) steps.push({ step: 'Post-Update', output: `çıkış kodu ${pu[1]} — ayrıntı: core/update.log`, success: true, warning: true });
     steps.push(kv.restart === 'failed'
@@ -87,8 +119,12 @@ export function summarizeUpdate(output: string, kv: Record<string, string>): Upd
   if (kv.reason === 'start') return [{ step: 'Güncelleme başlatılamadı', output: tail, success: false }];
   if (kv.reason === 'storage') return [{ step: 'Güncelleme ertelendi', output: STORAGE_BUSY_MSG, success: false }];
   const failed = /@@STEP_FAILED=(\w+) rc=(\d+)/.exec(output);
-  if (failed && STEP_ORDER.includes(failed[1])) {
-    for (const s of STEP_ORDER.slice(1, STEP_ORDER.indexOf(failed[1]))) steps.push({ step: STEP_LABEL[s], output: 'OK', success: true });
+  const order = prebuilt ? STEP_ORDER_PREBUILT : STEP_ORDER;
+  if (failed && order.includes(failed[1])) {
+    for (const s of order.slice(1, order.indexOf(failed[1]))) {
+      steps.push({ step: STEP_LABEL[s], output: 'OK', success: true });
+      if (s === 'git' && fellBack) steps.push(fallbackStep);
+    }
     steps.push({ step: STEP_LABEL[failed[1]], output: tail, success: false });
   } else {
     steps.push({ step: 'Güncelleme', output: tail || 'çıktı yok — ayrıntı: core/update.log', success: false });
@@ -173,4 +209,38 @@ export function startUpdate(): Promise<UpdateStart> {
   if (pending) return pending.then(r => ({ ...r, started: false, running: true }));
   pending = launch().finally(() => { pending = null; });
   return pending;
+}
+
+// Güncelleme yöntemi (Ayarlar → Sistem Güncellemesi): auto | local (Pi'de derle) | prebuilt (GitHub'ın hazır paketi).
+// Ayar cihaza özel: /etc/pi5-gateway/build-mode (role dosyasıyla aynı biçim) — yedeğe / geri yüklemeye girmez. Etkin yöntem
+// ve otomatiğin bu cihazda ne seçtiği scripts/prebuilt.sh mode'dan (bellek eşikleri orada ve platform.sh'de).
+export type BuildMode = 'auto' | 'local' | 'prebuilt';
+export type BuildModeInfo = { mode: BuildMode; effective: 'local' | 'prebuilt'; auto: 'local' | 'prebuilt'; memClassMiB: number; localOk: boolean };
+export const BUILD_MODE_FILE = '/etc/pi5-gateway/build-mode';
+const PREBUILT_SCRIPT = path.resolve(__dirname, '../../scripts/prebuilt.sh');
+export const isBuildMode = (v: unknown): v is BuildMode => v === 'auto' || v === 'local' || v === 'prebuilt';
+
+// prebuilt.sh mode çıktısı (KEY=VALUE) → BuildModeInfo; eksik / bozuk değerde bugünkü davranış (Pi'de derle).
+export function parseBuildMode(text: string): BuildModeInfo {
+  const kv = parseKv(text);
+  const side = (v?: string): 'local' | 'prebuilt' => (v === 'prebuilt' ? 'prebuilt' : 'local');
+  return {
+    mode: isBuildMode(kv.mode) ? kv.mode : 'auto',
+    effective: side(kv.effective),
+    auto: side(kv.auto),
+    memClassMiB: num(kv.mem_class) ?? 0,
+    localOk: kv.local_ok !== '0',
+  };
+}
+
+export async function getBuildMode(): Promise<BuildModeInfo> {
+  const { stdout } = await execFileP('bash', [PREBUILT_SCRIPT, 'mode'], { timeout: 10000 });
+  return parseBuildMode(stdout);
+}
+
+export function setBuildMode(mode: BuildMode, file = BUILD_MODE_FILE): void {
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  const tmp = `${file}.tmp-${process.pid}`;
+  fs.writeFileSync(tmp, `mode=${mode}\n`, { mode: 0o644 });
+  fs.renameSync(tmp, file);
 }

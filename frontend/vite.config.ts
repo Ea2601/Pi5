@@ -6,9 +6,11 @@ import { readFileSync } from 'node:fs'
 // Derleme kimliği = derlenen git commit'i. Arayüze __APP_BUILD__ olarak gömülür, dist/build.json'a da yazılır: açık sayfa
 // build.json'u yoklar, kimlik değiştiyse Pi'de YENİ arayüz sunuluyordur (LiveVersionNotice). version.json kullanılmaz:
 // güncellemenin başında (git reset) değişir, arayüz ise dakikalar sonra derlenir. Aynı commit yeniden derlenirse kimlik
-// değişmez (boşuna yenileme yok). git yoksa 'dev' → izleme kapalı.
+// değişmez (boşuna yenileme yok). git yoksa 'dev' → izleme kapalı. Tam sha'nın ilk 7 hanesi (--short değil): git'in kısa
+// sha uzunluğu depodaki nesne sayısına göre değişir; GitHub'ın hazır paketi (sığ klon) ile Pi'deki derleme aynı commit'e
+// aynı kimliği vermeli (scripts/prebuilt.sh build.json'u bununla denetler).
 const BUILD_ID = (() => {
-  try { return execSync('git rev-parse --short HEAD', { stdio: ['ignore', 'pipe', 'ignore'] }).toString().trim() || 'dev' } catch { return 'dev' }
+  try { return execSync('git rev-parse HEAD', { stdio: ['ignore', 'pipe', 'ignore'] }).toString().trim().slice(0, 7) || 'dev' } catch { return 'dev' }
 })()
 const APP_VERSION = (() => {
   try { return String(JSON.parse(readFileSync(new URL('../version.json', import.meta.url), 'utf8')).version || '') } catch { return '' }

@@ -57,17 +57,37 @@ log "Git reset..."
 git reset --hard origin/master 2>&1 || sudo git reset --hard origin/master 2>&1
 log "Git OK: $(git rev-parse --short HEAD 2>/dev/null || sudo git rev-parse --short HEAD 2>/dev/null || echo 'unknown')"
 
+# Derleme yöntemi (scripts/prebuilt.sh mode; ayar /etc/pi5-gateway/build-mode): local = Pi'de derle (bugünkü yol),
+# prebuilt = GitHub'ın bu commit için derlediği hazır paket (1 GB sınıfı ve altında otomatik — tsc / vite orada sığmaz).
+# Betik yoksa / okunamazsa Pi'de derlenir. LOCAL_OK: hazır paket alınamazsa Pi'de derlemeye düşülebilir mi (2 GB sınıfı+).
+BUILD_MODE=local
+LOCAL_OK=1
+if [ -f "$BASE/scripts/prebuilt.sh" ]; then
+  PB_MODE=$(bash "$BASE/scripts/prebuilt.sh" mode 2>/dev/null) || PB_MODE=""
+  if [ "$(printf '%s\n' "$PB_MODE" | sed -n 's/^effective=//p' | head -1)" = prebuilt ]; then BUILD_MODE=prebuilt; fi
+  if [ "$(printf '%s\n' "$PB_MODE" | sed -n 's/^local_ok=//p' | head -1)" = 0 ]; then LOCAL_OK=0; fi
+fi
+log "@@BUILD_MODE=$BUILD_MODE"
+
 # Post-update iki parça: bağımlılıklar (npm; az bellekli cihazda zram) derlemeden önce, sistem değişiklikleri (servis birimleri, kiosk, ağ, cron …)
 # ancak iki derleme de başarılıysa. Derleme düşünce kaynak geri alınır ve yeni sürümün sistem değişiklikleri hiç yapılmamış
 # olur (eskiden derlemeden önce yapılıyordu: geri alınan kaynakta olmayan betiklere işaret eden birimler kalabilirdi).
-# Başarısızlığı güncellemeyi durdurmaz; çıkış kodu işaretlenir.
+# Başarısızlığı güncellemeyi durdurmaz; çıkış kodu işaretlenir. PI5_BUILD_MODE: hazır pakette yalnız backend'in üretim
+# bağımlılıkları kurulur (frontend'de npm yok).
 post_update() { # deps | system
   [ -f "$BASE/scripts/post-update.sh" ] || return 0
-  bash "$BASE/scripts/post-update.sh" "$1" 2>&1 || log "@@POSTUPDATE_RC=$?"
+  PI5_BUILD_MODE="$BUILD_MODE" bash "$BASE/scripts/post-update.sh" "$1" 2>&1 || log "@@POSTUPDATE_RC=$?"
 }
-STEP=postupdate
-log "Bağımlılıklar denetleniyor (npm)..."
-post_update deps
+# Hazır pakette bağımlılıklar paket indirildikten SONRA: paket yoksa / alınamazsa yeni sürümün paketleri canlı
+# node_modules'a hiç kurulmaz (geri almada yeniden kurmak da gerekmez — DEPS_RAN, build_failed).
+DEPS_RAN=0
+deps_sync() {
+  STEP=postupdate
+  log "Bağımlılıklar denetleniyor (npm)..."
+  post_update deps
+  DEPS_RAN=1
+}
+if [ "$BUILD_MODE" = local ]; then deps_sync; fi
 
 # Derleme geçici klasörlere (dist.next): canlı dist'lere (çalışan backend, nginx'in sunduğu arayüz) derleme sırasında
 # dokunulmaz — eskiden tsc hata verse de canlı dist'e yazıyordu, Vite de her derlemede nginx'in klasörünü boşaltıyordu.
@@ -82,11 +102,13 @@ build_step() { # dizin komut...
   return "$rc"
 }
 build_failed() { # adım çıkış_kodu
-  rm -rf "$BASE/backend/dist.next" "$BASE/frontend/dist.next"
+  rm -rf "$BASE/backend/dist.next" "$BASE/frontend/dist.next" "$BASE"/.prebuilt.*
   if [ -n "$PREV" ] && [ "$(git -C "$BASE" rev-parse HEAD 2>/dev/null)" != "$PREV" ]; then
     if git -C "$BASE" reset --hard "$PREV" >/dev/null 2>&1 || sudo git -C "$BASE" reset --hard "$PREV" >/dev/null 2>&1; then
       log "Derleme başarısız — kaynak önceki sürüme ($(git -C "$BASE" rev-parse --short HEAD 2>/dev/null)) döndü; çalışan panel değişmedi"
-      post_update deps # yeni sürüm paketleri değiştirdiyse önceki sürümünkiler geri kurulur (git diff HEAD@{1})
+      # yeni sürüm paketleri değiştirdiyse önceki sürümünkiler geri kurulur (git diff HEAD@{1}); bağımlılık adımı hiç
+      # koşmadıysa (hazır paket alınamadı) node_modules zaten önceki sürümün
+      if [ "$DEPS_RAN" = 1 ]; then post_update deps; fi
     else
       log "UYARI: derleme başarısız ve kaynak önceki sürüme döndürülemedi — çalışan panel değişmedi"
     fi
@@ -108,17 +130,56 @@ swap_dist() {
   fi
 }
 
-STEP=backend
-log "Backend build..."
-rm -rf "$BASE/backend/dist.next"
-rc=0; build_step "$BASE/backend" ./node_modules/.bin/tsc --noEmitOnError --outDir dist.next || rc=$?
-[ "$rc" = 0 ] || build_failed backend "$rc"
+# Hazır paket: bu commit'in GitHub derlemesi dist.next'lere indirilir (scripts/prebuilt.sh: commit bağı, sha256, tar
+# güvenliği); doğrulama, takas ve geri alma yerel derlemeyle aynı yol. Alınamazsa belleği yeten cihaz (LOCAL_OK=1) Pi'de
+# derler; yetmeyende güncelleme yapılmaz (kaynak önceki sürüme döner, çalışan panel değişmez). İndirme en çok 15 dk
+# (GitHub derlemesini bekleme 10 dk + indirme): güncelleme işinin 30 dk sınırına (RuntimeMaxSec) takılıp geri almadan
+# öldürülmesin; süre dolarsa (timeout → 124) paket alınamamış sayılır.
+if [ "$BUILD_MODE" = prebuilt ]; then
+  STEP=artifact
+  log "Hazır paket indiriliyor (GitHub)..."
+  rc=0; PB_OUT=$(PI5_PREBUILT_LOG="$LOGFILE" timeout 900 bash "$BASE/scripts/prebuilt.sh" fetch "$(git -C "$BASE" rev-parse HEAD 2>/dev/null)" "$BASE") || rc=$?
+  if [ "$rc" = 124 ]; then log "Hazır paket: 15 dk süre sınırı aşıldı"; fi
+  if [ "$rc" = 0 ]; then
+    log "@@PREBUILT=$(printf '%s\n' "$PB_OUT" | sed -n 's/^tag=//p' | head -1)"
+    deps_sync # yalnız backend'in üretim bağımlılıkları (PI5_BUILD_MODE=prebuilt)
+  elif [ "$LOCAL_OK" = 1 ]; then
+    log "Hazır paket alınamadı — Pi'de derleniyor"
+    BUILD_MODE=local
+    log "@@BUILD_MODE=local"
+    deps_sync # Pi'de derleme için devDependencies (tsc, vite) ve frontend paketleri
+  else
+    log "Hazır paket alınamadı — bu cihazın belleği Pi'de derlemeye yetmez, güncelleme yapılmadı"
+    build_failed artifact "$rc"
+  fi
+fi
 
-STEP=frontend
-log "Frontend build..."
-rm -rf "$BASE/frontend/dist.next"
-rc=0; build_step "$BASE/frontend" bash -c './node_modules/.bin/tsc -b && ./node_modules/.bin/vite build --outDir dist.next --emptyOutDir' || rc=$?
-[ "$rc" = 0 ] || build_failed frontend "$rc"
+if [ "$BUILD_MODE" = local ]; then
+  STEP=backend
+  log "Backend build..."
+  rm -rf "$BASE/backend/dist.next"
+  rc=0; build_step "$BASE/backend" ./node_modules/.bin/tsc --noEmitOnError --outDir dist.next || rc=$?
+  [ "$rc" = 0 ] || build_failed backend "$rc"
+
+  STEP=frontend
+  log "Frontend build..."
+  rm -rf "$BASE/frontend/dist.next"
+  rc=0; build_step "$BASE/frontend" bash -c './node_modules/.bin/tsc -b && ./node_modules/.bin/vite build --outDir dist.next --emptyOutDir' || rc=$?
+  [ "$rc" = 0 ] || build_failed frontend "$rc"
+fi
+
+# Hazır paket takastan ÖNCE denenir: backend'in söz dizimi, yerel sqlite3 modülünün bu cihazda (mimari / Node sürümü)
+# yüklendiği ve üretim bağımlılıklarının tam olduğu. Bozuk paket canlıya geçip pi5-backend'i çökertmesin. Bağımlılık:
+# post-update'in npm install'u düşerse yalnız uyarır; Pi'de derlemede eksik paketi tsc yakalar (TS2307), hazır pakette
+# npm ls (post-update.sh ile aynı ölçüt: yalnız "missing:" / "invalid:", fazladan paket engel değil).
+if [ "$BUILD_MODE" = prebuilt ]; then
+  STEP=verify
+  log "Paket doğrulanıyor (node --check, sqlite3, npm ls)..."
+  rc=0; build_step "$BASE/backend" node --check dist.next/index.js || rc=$?
+  if [ "$rc" = 0 ]; then build_step "$BASE/backend" node -e "require('sqlite3')" || rc=$?; fi
+  if [ "$rc" = 0 ]; then build_step "$BASE/backend" bash -c 'npm ls --omit=dev --depth=0 2>&1 | grep -E "missing:|invalid:" && exit 1; exit 0' || rc=$?; fi
+  [ "$rc" = 0 ] || build_failed verify "$rc"
+fi
 
 STEP=postupdate
 log "Kurulum adımları çalıştırılıyor (post-update)..."

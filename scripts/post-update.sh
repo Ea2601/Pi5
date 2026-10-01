@@ -57,17 +57,21 @@ pkg_ensure() {
 # --include=dev ŞART: panelden başlatılan güncelleme pi5-backend'in NODE_ENV=production ortamını devralır; npm 10 o
 # ortamda `npm install` ile kurulu devDependencies'i (tsc, vite) SİLER, `npm ls` de eksik devDependency'yi göstermez
 # (npm 10.9 ile denendi) → derleme her güncellemede düşer ve eksik paket hiç fark edilmezdi.
-npm_sync() {
-  local dir="$BASE/$1" name=$2 why="" out
+# Hazır paket (update.sh PI5_BUILD_MODE=prebuilt; scripts/prebuilt.sh): cihazda derleme yok → yalnız backend'in üretim
+# bağımlılıkları (--omit=dev; sqlite3 yerel modül, pakete konamaz), frontend'de hiç npm yok (233 MB node_modules ve ~400 MB
+# derleme belleği az bellekli cihazda sığmaz). Ortam değişkeni yoksa (elle çalıştırma, eski update.sh) bugünkü davranış.
+npm_sync() { # dizin ad [prod]
+  local dir="$BASE/$1" name=$2 why="" out scope=--include=dev
+  if [ "${3:-}" = prod ]; then scope=--omit=dev; fi
   [ -f "$dir/package.json" ] || return 0
   if git diff 'HEAD@{1}' --name-only 2>/dev/null | grep -q "$1/package"; then why="package.json değişti"
   elif [ ! -d "$dir/node_modules" ]; then why="node_modules yok"
   # Yalnız eksik / sürümü tutmayan paket (npm ls "missing:" / "invalid:"); fazladan paket (extraneous) kurulum sebebi değil.
-  elif (cd "$dir" && npm ls --depth=0 --include=dev 2>&1) | grep -qE "missing:|invalid:"; then why="eksik ya da uyumsuz paket"
+  elif (cd "$dir" && npm ls --depth=0 "$scope" 2>&1) | grep -qE "missing:|invalid:"; then why="eksik ya da uyumsuz paket"
   fi
   [ -n "$why" ] || return 0
   echo "  $name bağımlılıkları güncelleniyor ($why)..." >> "$LOG"
-  if out=$(cd "$dir" && npm install --include=dev --no-audit --no-fund 2>&1); then
+  if out=$(cd "$dir" && npm install "$scope" --no-audit --no-fund 2>&1); then
     printf '%s\n' "$out" | tail -3 >> "$LOG"
   else
     echo "  [npm] UYARI: $name npm install başarısız (derleme eksik paketle düşebilir):" >> "$LOG"
@@ -75,8 +79,12 @@ npm_sync() {
   fi
 }
 if [ "$MODE" != system ]; then
-  npm_sync backend Backend
-  npm_sync frontend Frontend
+  if [ "${PI5_BUILD_MODE:-local}" = prebuilt ]; then
+    npm_sync backend Backend prod
+  else
+    npm_sync backend Backend
+    npm_sync frontend Frontend
+  fi
 fi
 
 # 2b. zram: takas alanı hiç yoksa ve işletim sisteminin takas yöneticisi de yoksa (Raspberry Pi OS'ta rpi-swap var → hiçbir

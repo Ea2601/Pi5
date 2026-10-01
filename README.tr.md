@@ -11,7 +11,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/Ea2601/klyrix-gate/releases"><img src="https://img.shields.io/badge/version-2.24.87-38bdf8.svg?style=for-the-badge&logo=git&logoColor=white" alt="Version 2.24.87"></a>
+  <a href="https://github.com/Ea2601/klyrix-gate/releases"><img src="https://img.shields.io/badge/version-2.24.88-38bdf8.svg?style=for-the-badge&logo=git&logoColor=white" alt="Version 2.24.88"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-22c55e.svg?style=for-the-badge" alt="License MIT"></a>
   <img src="https://img.shields.io/badge/100%25-Free%20%26%20Open%20Source-ef4444.svg?style=for-the-badge&logo=opensourceinitiative&logoColor=white" alt="Free & Open Source">
   <img src="https://img.shields.io/badge/Telemetry-Zero-10b981.svg?style=for-the-badge" alt="Zero Telemetry">
@@ -138,10 +138,24 @@ flowchart TD
 Raspberry Pi OS (Bookworm / Debian 13) kurulu cihazınızda terminali açın ve çalıştırın:
 
 ```bash
-sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/Ea2601/klyrix-gate/main/install.sh)"
+sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/Ea2601/klyrix-gate/master/install.sh)"
 ```
 
 *Script gerekli bağımlılıkları (Node.js, Pi-hole, nftables, WireGuard vb.) otomatik olarak kurar, servisleri yapılandırır ve paneli ayağa kaldırır.*
+
+**Kurulum seçenekleri** — ortam değişkeniyle verilir, ör. `sudo KLYRIX_BUILD=prebuilt bash -c "$(curl -fsSL https://raw.githubusercontent.com/Ea2601/klyrix-gate/master/install.sh)"`:
+
+| Değişken | Değerler | Etkisi |
+|---|---|---|
+| `KLYRIX_BUILD` | `auto` (varsayılan), `local`, `prebuilt` | `prebuilt`, GitHub Actions'ın aynı commit için derlediği paneli indirir; cihaz TypeScript / Vite derlemesini (~400 MB bellek) hiç çalıştırmaz. `auto` bunu 1 GB sınıfı ve altındaki cihazlarda kullanır, üstünde Pi'de derler. `/etc/pi5-gateway/build-mode`'a yazılır; sonradan Ayarlar → Sistem Güncellemesi → Güncelleme Yöntemi'nden değiştirilir. |
+| `KLYRIX_PROFILE` | `lite`, `standard` | Belleğe göre seçilen donanım profilini ezer (`lite` = 512 MB sınıfı: HDMI ekranı / kiosk yok). `/etc/pi5-gateway/profile`'a yazılır. |
+
+*Hazır paket:* cihaz SHA256 özetini (yalnız bozuk ya da yarım indirmeyi yakalar), paketin yapısını ve paketin kurulan commit'e ait olduğunu denetler; paketi kimin derlediğini kanıtlayamaz. Bu yüzden hazır paket kipi GitHub Actions'a ve cihazın kurulduğu depoda sürüm yayımlayabilen herkese güvenir. Çatallar (fork) kendi paketlerini ancak çatalda Actions açılınca (Actions sekmesi) yayımlar.
+
+**Desteklenen donanım**
+- Raspberry Pi 5, 4 ve 3; USB Ethernet adaptörlü Raspberry Pi Zero 2 W. 64 bit işletim sistemi kullanın — Zero 2 W gibi 512 MB'lık kartlarda fiilen şart: `sqlite3`'ün armhf için hazır derlemesi yok, 32 bit sistem onu kaynaktan derler; bu, kurulumda ve `sqlite3` her yükseltildiğinde yaklaşık 400 MB boş bellek ister.
+- NetworkManager'lı Debian 13 çalıştıran x86_64 bilgisayarlar (NetworkManager yoksa kurulum kurar).
+- Debian 12 (Bookworm) sınırlı olarak çalışır.
 
 ### Alternatif: Git ile Kurulum
 

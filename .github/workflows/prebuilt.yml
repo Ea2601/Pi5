@@ -1,0 +1,162 @@
+# Klyrix Gate — hazır paket hattı. Her master commit'i için panelin derlemesi (backend/dist + frontend/dist) bir ön sürüme
+# (prerelease) konur; az bellekli cihazlar (1 GB sınıfı ve altı) tsc / vite çalıştırmaz, scripts/prebuilt.sh bunu indirir.
+# Derleme komutları scripts/update.sh'deki yerel derlemenin aynısı. Etiket b<build>-<sha7>, dosya klyrix-dist-<sha7>.tar.gz
+# + SHA256SUMS; cihaz yalnız /releases/download/<etiket>/<dosya> adresini kullanır (REST API'nin saatte 60 istek sınırı yok).
+# Güvenlik: build işi yalnız okuma yetkili ve npm kurulum betikleri kapalı (--ignore-scripts) derler; yazma yetkili publish
+# işi depo kodu / npm çalıştırmaz, yalnız ön sürümü oluşturur ve son 15'ini tutar. Eylemler commit SHA'sıyla sabit.
+# Güven: cihazdaki SHA256SUMS yalnız bozuk / yarım indirmeyi yakalar; paketi kimin derlediğini kanıtlamaz. Hazır paket
+# kipi, depoda sürüm yayımlayabilen herkese ve GitHub Actions'a güvenir. Depo ayarı: Settings → General → Releases →
+# "immutable releases" açık olmalı (yayımlanan sürümün dosyaları ve etiketi sonradan değiştirilemez); bu iş onunla uyumlu
+# (gh release create dosyaları taslağa yükleyip sonra yayımlar; eski sürüm silinince etiketi de silinebilir).
+name: prebuilt
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+# Commit başına grup: GitHub bir grupta en çok bir bekleyen çalıştırma tutar, yenisi gelince bekleyeni iptal eder — tek
+# grupta art arda üç gönderimin ortadakinin paketi hiç çıkmazdı. Her commit'in kendi etiketi var, aralarında sıra gerekmez;
+# aynı commit'in yeniden çalıştırmaları sıraya girer.
+concurrency:
+  group: prebuilt-${{ github.sha }}
+  cancel-in-progress: false
+
+permissions: {}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    outputs:
+      tag: ${{ steps.pack.outputs.tag }}
+      title: ${{ steps.pack.outputs.title }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+
+      # Tam sürüm: manifest.json Node sürümünü yazar; "22" yeni yamaya kayınca aynı commit'in yeniden derlemesi farklı
+      # paket verirdi (yeniden çalıştırmada eski paket ile yeni SHA256SUMS uyuşmazdı).
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22.23.3
+
+      - name: Bağımlılıklar (kilit dosyasından, kurulum betikleri olmadan)
+        run: |
+          (cd backend && npm ci --ignore-scripts --no-audit --no-fund)
+          (cd frontend && npm ci --ignore-scripts --no-audit --no-fund)
+
+      - name: Backend derlemesi (scripts/update.sh ile aynı komut)
+        working-directory: backend
+        run: ./node_modules/.bin/tsc --noEmitOnError --outDir dist
+
+      - name: Frontend derlemesi (scripts/update.sh ile aynı komut)
+        working-directory: frontend
+        run: ./node_modules/.bin/tsc -b && ./node_modules/.bin/vite build --outDir dist --emptyOutDir
+
+      # Deterministik paket: sabit sıra / sahip / izin ve tarih = commit zamanı (manifest'teki created de); aynı commit'in
+      # yeniden derlemesi bayt bayt aynı dosyayı verir. version.json pakete girmez (cihazda git'ten gelir).
+      - name: Paket
+        id: pack
+        env:
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          sha7=${SHA:0:7}
+          ct=$(git log -1 --format=%ct "$SHA")
+          version=$(node -p 'String(require("./version.json").version)')
+          build=$(node -p 'String(require("./version.json").build)')
+          tag="b$build-$sha7"
+          [[ $tag =~ ^b[0-9]+-[0-9a-f]{7}$ ]] || { echo "::error::geçersiz etiket: $tag"; exit 1; }
+          id=$(node -p 'require("./frontend/dist/build.json").id')
+          [ "$id" = "$sha7" ] || { echo "::error::build.json kimliği $id, beklenen $sha7"; exit 1; }
+          SHA="$SHA" CT="$ct" node -e '
+            const v = require("./version.json");
+            const m = { commit: process.env.SHA, version: String(v.version), build: Number(v.build),
+              node: process.version, created: new Date(Number(process.env.CT) * 1000).toISOString() };
+            require("fs").writeFileSync("manifest.json", JSON.stringify(m, null, 2) + "\n");
+            const first = Array.isArray(v.changelog) && v.changelog.length ? String(v.changelog[0]) : "";
+            require("fs").writeFileSync("notes.txt", first + "\n");'
+          mkdir -p out
+          asset="out/klyrix-dist-$sha7.tar.gz"
+          tar --sort=name --owner=0 --group=0 --numeric-owner --mtime="@$ct" --mode='u+rwX,go+rX,go-w' --format=gnu \
+            -cf - manifest.json backend/dist frontend/dist | gzip -9n > "$asset"
+          (cd out && sha256sum "klyrix-dist-$sha7.tar.gz" > SHA256SUMS)
+          mv notes.txt out/notes.txt
+          cat out/SHA256SUMS
+          { echo "tag=$tag"; echo "title=v$version (build $build) · hazır paket $sha7"; } >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: prebuilt
+          path: out/
+          if-no-files-found: error
+          retention-days: 3
+
+  # Yalnız master: başka daldan elle başlatılan (workflow_dispatch) çalıştırma derler ama yayımlamaz / temizlemez —
+  # incelenmemiş dal kodu resmi görünen bir ön sürüm olmasın, master paketlerini de sıradan düşürmesin.
+  publish:
+    needs: build
+    if: github.ref == 'refs/heads/master'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: prebuilt
+          path: out
+
+      # Yeniden çalıştırma (re-run) aynı etiketi bulursa var olan dosyaları bu derlemeyle karşılaştırır: aynıysa dokunmaz;
+      # taslaksa (yarıda kalmış yükleme) iki dosyayı bu derlemeden birlikte yükler (çift hep tek derlemeden) ve yayımlar;
+      # yayımlanmış ve farklıysa / eksikse değiştirmez, hata verir (cihazlar o sürümü indirmiş olabilir — elle incelenir).
+      - name: Ön sürüm
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+          TAG: ${{ needs.build.outputs.tag }}
+          TITLE: ${{ needs.build.outputs.title }}
+        run: |
+          set -euo pipefail
+          sha7=${SHA:0:7}
+          [[ $TAG =~ ^b[0-9]+-[0-9a-f]{7}$ ]] && [ "${TAG#*-}" = "$sha7" ] || { echo "::error::geçersiz etiket: $TAG"; exit 1; }
+          cd out
+          asset="klyrix-dist-$sha7.tar.gz"
+          sha256sum -c SHA256SUMS
+          if draft=$(gh release view "$TAG" --json isDraft --jq .isDraft 2>/dev/null); then
+            mkdir -p prev
+            gh release download "$TAG" -D prev -p "$asset" -p SHA256SUMS || true
+            if cmp -s "$asset" "prev/$asset" && cmp -s SHA256SUMS prev/SHA256SUMS; then
+              echo "$TAG zaten var — dosyalar bu derlemeyle aynı"
+            elif [ "$draft" = true ]; then
+              echo "$TAG taslak ve dosyaları eksik / farklı — iki dosya bu derlemeden yükleniyor"
+              gh release upload "$TAG" "$asset" SHA256SUMS --clobber
+            else
+              echo "::error::$TAG yayımlanmış ama dosyaları bu derlemeden farklı ya da eksik — değiştirilmedi, elle inceleyin"
+              exit 1
+            fi
+            if [ "$draft" = true ]; then
+              gh release edit "$TAG" --draft=false --prerelease
+            fi
+          else
+            gh release create "$TAG" "$asset" SHA256SUMS --target "$SHA" --prerelease --title "$TITLE" --notes-file notes.txt
+          fi
+
+      - name: Eski ön sürümleri temizle (son 15 kalır)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          gh release list --limit 200 --exclude-drafts --json tagName,createdAt \
+            --jq 'sort_by(.createdAt) | reverse | .[].tagName' > tags.txt
+          { grep -E '^b[0-9]+-[0-9a-f]{7}$' tags.txt || true; } | tail -n +16 > old.txt
+          while read -r t; do
+            gh release delete "$t" --cleanup-tag --yes || echo "::warning::$t silinemedi"
+          done < old.txt

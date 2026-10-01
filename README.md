@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/Ea2601/klyrix-gate/releases"><img src="https://img.shields.io/badge/version-2.24.87-38bdf8.svg?style=for-the-badge&logo=git&logoColor=white" alt="Version 2.24.87"></a>
+  <a href="https://github.com/Ea2601/klyrix-gate/releases"><img src="https://img.shields.io/badge/version-2.24.88-38bdf8.svg?style=for-the-badge&logo=git&logoColor=white" alt="Version 2.24.88"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-22c55e.svg?style=for-the-badge" alt="License MIT"></a>
   <img src="https://img.shields.io/badge/100%25-Free%20%26%20Open%20Source-ef4444.svg?style=for-the-badge&logo=opensourceinitiative&logoColor=white" alt="Free & Open Source">
   <img src="https://img.shields.io/badge/Telemetry-Zero-10b981.svg?style=for-the-badge" alt="Zero Telemetry">
@@ -137,10 +137,24 @@ flowchart TD
 Open a terminal on your Raspberry Pi OS (Bookworm / Debian 13) and execute:
 
 ```bash
-sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/Ea2601/klyrix-gate/main/install.sh)"
+sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/Ea2601/klyrix-gate/master/install.sh)"
 ```
 
 *The installer will resolve dependencies (Node.js, Pi-hole, nftables, WireGuard, Zapret), configure network daemons, compile the UI, and start the systemd services automatically.*
+
+**Install options** — set as environment variables, e.g. `sudo KLYRIX_BUILD=prebuilt bash -c "$(curl -fsSL https://raw.githubusercontent.com/Ea2601/klyrix-gate/master/install.sh)"`:
+
+| Variable | Values | Effect |
+|---|---|---|
+| `KLYRIX_BUILD` | `auto` (default), `local`, `prebuilt` | `prebuilt` downloads the panel that GitHub Actions built for the exact same commit, so the device never runs the TypeScript / Vite build (~400 MB RAM). `auto` uses it on 1 GB-class devices and smaller and builds locally above that. Saved to `/etc/pi5-gateway/build-mode`; change it later under Settings → System Update → Update Method. |
+| `KLYRIX_PROFILE` | `lite`, `standard` | Overrides the memory-based hardware profile (`lite` = 512 MB class: no HDMI kiosk display). Saved to `/etc/pi5-gateway/profile`. |
+
+*Prebuilt packages:* the device checks the SHA256 sum (it only catches corrupted or truncated downloads), the archive layout and that the package names the commit being installed; it cannot prove who built it. Prebuilt mode therefore trusts GitHub Actions and everyone who can publish releases on the repository the device was installed from. Forks publish their own packages only after Actions is enabled on the fork (Actions tab).
+
+**Supported hardware**
+- Raspberry Pi 5, 4 and 3; Raspberry Pi Zero 2 W with a USB Ethernet adapter. Use a 64-bit OS — on 512 MB boards such as the Zero 2 W it is effectively required: `sqlite3` ships no pre-built armhf binary, so a 32-bit system compiles it from source, which needs about 400 MB of free RAM during installation and again whenever `sqlite3` is upgraded.
+- x86_64 PCs running Debian 13 with NetworkManager (installed automatically when missing).
+- Debian 12 (Bookworm) works with limits.
 
 ### Manual / Git Setup
 
