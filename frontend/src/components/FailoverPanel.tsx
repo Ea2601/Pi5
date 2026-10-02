@@ -3,7 +3,7 @@ import type { ReactNode } from 'react';
 import { LifeBuoy, AlertTriangle, CheckCircle, Info } from 'lucide-react';
 import { getApi, postApi } from '../hooks/useApi';
 import { toast } from '../toast';
-import { Panel, Badge } from './ui';
+import { Panel, Badge, Select, SelectOption } from './ui';
 
 // Yedek hat (failover): ikinci internet bağlantısı — Ethernet kartı / VLAN (ikinci modem, 4G-5G router, ikinci operatör;
 // DHCP / sabit / PPPoE), USB 4G modem ya da telefonun USB paylaşımı, telefon hotspot'u. Kurulum hemen sınanır, olmazsa
@@ -201,10 +201,11 @@ export function FailoverPanel({ ports, onChange, initialKind = 'eth', initialPor
                 <>
                   <label className="hw-field">
                     <span>Kart</span>
-                    <select value={chosen} onChange={e => setPort(e.target.value)} disabled={!options.length}>
-                      {cands.map(p => <option key={p.name} value={p.name}>{p.name} · {p.bus === 'usb' ? 'USB' : 'dahili'} · {p.carrier ? 'kablo takılı' : p.carrier === false ? 'kablo yok' : '—'}</option>)}
-                      {lanInfo && <option value={lanInfo.name}>{lanInfo.name} · ev ağı kartı (VLAN anahtarı)</option>}
-                    </select>
+                    {/* Kart | bağlantı | tür | kablo — her bilgi kendi sütununda */}
+                    <Select value={chosen} onChange={e => setPort(e.target.value)} disabled={!options.length}>
+                      {cands.map(p => <SelectOption key={p.name} value={p.name} cols={[p.name, p.bus === 'usb' ? 'USB' : 'dahili', '', p.carrier ? 'kablo takılı' : p.carrier === false ? 'kablo yok' : '—']} />)}
+                      {lanInfo && <SelectOption value={lanInfo.name} cols={[lanInfo.name, '', 'ev ağı kartı (VLAN anahtarı)', '']} />}
+                    </Select>
                   </label>
                   <label className="hw-field">
                     <span>Bağlantı türü</span>

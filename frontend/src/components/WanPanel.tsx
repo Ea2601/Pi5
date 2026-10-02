@@ -3,7 +3,7 @@ import type { ReactNode } from 'react';
 import { Globe, AlertTriangle, CheckCircle, Info, Trash2 } from 'lucide-react';
 import { getApi, postApi, putApi, deleteApi } from '../hooks/useApi';
 import { toast } from '../toast';
-import { Panel, Badge } from './ui';
+import { Panel, Badge, Select, SelectOption } from './ui';
 
 // WAN router rolü (R3): ikinci Ethernet kartı (ör. USB adaptör) internete bağlanır — modem arkasında DHCP, sabit IP ya
 // da PPPoE; operatör isterse VLAN (öncelikli), MAC kopyalama, MTU. eth0 / br0 yalnız ev ağı olur (192.168.0.1 kalır).
@@ -285,12 +285,14 @@ export function WanPanel({ ports, radios = [], onChange, initialPort = '' }: { p
             <div className="hw-form">
               <label className="hw-field">
                 <span>İnternet kartı</span>
-                <select value={chosen} disabled={!options.length && !wifiOpts.length}
+                {/* Kart | bağlantı | tür | kablo — her bilgi kendi sütununda; USB / SIM'li modemler "tür" sütununda etiketlenir */}
+                <Select value={chosen} disabled={!options.length && !wifiOpts.length}
                   onChange={e => { setPort(e.target.value); if (type === 'pppoe' && wifiOpts.some(w => w.name === e.target.value)) setType('dhcp'); }}>
-                  {candidates.map(p => <option key={p.name} value={p.name}>{p.name} · {busText(p)}{p.kind === 'usb-modem' ? ' · USB modem' : p.kind === 'wwan' ? " · SIM'li modem" : ''} · {p.carrier ? 'kablo takılı' : p.carrier === false ? 'kablo yok' : '—'}</option>)}
-                  {lanPortInfo && <option value={lanPortInfo.name}>{lanPortInfo.name} · tek port (VLAN anahtarı)</option>}
-                  {wifiOpts.map(w => <option key={w.name} value={w.name}>{w.name} · Wi-Fi ({w.bus === 'usb' ? 'USB' : 'dahili'}) · repeater</option>)}
-                </select>
+                  {candidates.map(p => <SelectOption key={p.name} value={p.name}
+                    cols={[p.name, busText(p), p.kind === 'usb-modem' ? 'USB modem' : p.kind === 'wwan' ? "SIM'li modem" : '', p.carrier ? 'kablo takılı' : p.carrier === false ? 'kablo yok' : '—']} />)}
+                  {lanPortInfo && <SelectOption value={lanPortInfo.name} cols={[lanPortInfo.name, '', 'tek port (VLAN anahtarı)', '']} />}
+                  {wifiOpts.map(w => <SelectOption key={w.name} value={w.name} cols={[w.name, w.bus === 'usb' ? 'USB' : 'dahili', 'Wi-Fi (repeater)', '']} />)}
+                </Select>
               </label>
               <label className="hw-field">
                 <span>Bağlantı türü</span>
