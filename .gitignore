@@ -16,6 +16,11 @@ core/vps-wg.conf
 .DS_Store
 Thumbs.db
 
+# Lisans imzalama anahtarları ve aracı depo dışında durur (%USERPROFILE%\.klyrix\license-tool) — yanlışlıkla kopyalanırsa girmesin
+*.pem
+*.key
+license-tool/
+
 # Tooling / generated artifacts
 .agent/
 graphify-out/

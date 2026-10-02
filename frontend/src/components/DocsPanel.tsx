@@ -1,7 +1,7 @@
 import {
   BookOpen, ShieldBan, Zap, Flame, Globe, Server, ShieldAlert,
   Clock, Network, Route, ChevronDown, ChevronRight, Terminal,
-  AlertTriangle, CheckCircle, Info, Cpu, Smartphone, Cloud, Bell, Timer
+  AlertTriangle, CheckCircle, Info, Cpu, Smartphone, Cloud, Bell, Timer, KeyRound
 } from 'lucide-react';
 import { useState } from 'react';
 import { Panel, Badge } from './ui';
@@ -118,6 +118,12 @@ export function DocsPanel() {
       icon: <Cloud size={15} />,
       badge: 'Yedek',
       content: <VaultDoc />,
+    },
+    {
+      id: 'license',
+      title: 'Lisans',
+      icon: <KeyRound size={15} />,
+      content: <LicenseDoc />,
     },
     {
       id: 'troubleshooting',
@@ -632,6 +638,43 @@ Trafik izleme: Her cihazın anlık download/upload hızı gösterilir`}</CodeBlo
           </tbody>
         </table>
       </DocBlock>
+    </div>
+  );
+}
+
+function LicenseDoc() {
+  return (
+    <div className="doc-page">
+      <h3>Lisans</h3>
+      <p>Altyapı → Lisans: imzalı bir lisans anahtarını (KLX1. ile başlar) çevrimdışı doğrular. Şu an tüm özellikler herkese açıktır
+        (Topluluk); ücretli katmanlar sonra belirlenecek. Lisans olmadan, süresi bitince ya da kaldırılınca hiçbir özellik kapanmaz ve
+        çalışan hiçbir şey kesilmez.</p>
+
+      <DocBlock title="Etkinleştirme (çevrimdışı)">
+        <ul>
+          <li>Sayfadaki 32 haneli <strong>cihaz kodu</strong>nu kopyalayın; anahtarı aldığınız yere verin. Kod, Pi'nin seri numarasından
+            türetilen bir özettir; seri numarasının kendisi panelde gösterilmez. Seri numarası kısa ya da tahmin edilebilir olan
+            cihazlarda (ör. eski Pi modelleri) koddan seri numarası bulunabilir — kodu yalnız anahtarı aldığınız yerle paylaşın.</li>
+          <li>Aldığınız anahtarı yapıştırıp <strong>Etkinleştir</strong>'e basın. İmza, cihaz kodu ve süre Pi'de denetlenir; geçersizse
+            kaydedilmez. Anahtar /etc/pi5-gateway/license dosyasında yalnız root'un okuyabildiği biçimde durur; panel ayarlarına ve
+            yedeğe girmez, ekranda maskeli görünür.</li>
+          <li>Pi hiçbir lisans sunucusuna bağlanmaz ve hiçbir şey göndermez. Yenileme yeni anahtarı yapıştırarak yapılır; bitime 14 ve
+            3 gün kala Bildirimler'e yazılır.</li>
+          <li><strong>Kaldır</strong> anahtarı siler ve Topluluk sürümüne döner. Uydu cihazlarda lisans yalnız gösterilir; ana cihazda
+            yönetilir.</li>
+        </ul>
+      </DocBlock>
+
+      <DocBlock title="Saat">
+        <p>Pi'de pil destekli saat yoktur. Saat eşitliyken (NTP) süre gerçek saate göre değerlendirilir ve o an
+          /etc/pi5-gateway/license.seen dosyasına yazılır. Saat eşitli değilken (ör. açılışta, internet yokken) şimdiki saatle son
+          görülen zamanın büyüğü kullanılır; saati geri almak süreyi uzatmaz.</p>
+      </DocBlock>
+
+      <DocTip type="info">
+        Dürüst sınır: Klyrix Gate'in kaynağı açıktır ve cihazda yönetici (root) sizsiniz. Lisans denetimi kırılmaz bir koruma değildir;
+        kod değiştirilerek atlanabilir. Amacı dürüst kullanıcıyı doğru katmana yönlendirmektir.
+      </DocTip>
     </div>
   );
 }

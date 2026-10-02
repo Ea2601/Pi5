@@ -624,15 +624,25 @@ function writeIfCurrent(s: SatState): boolean {
 const ID_FILE = `${MESH_DIR}/id`;
 const HW_FILE = `${MESH_DIR}/id.hw`;
 let hwCache: string | null = null;
-function hwTag(): string {
-  if (hwCache !== null) return hwCache;
-  hwCache = '';
+let serialCache: string | null = null;
+// Donanım seri numarası (Pi: devicetree serial-number, x86: DMI product_uuid); geçerli değer yoksa ''. Ham değer yalnız
+// özetlenerek kullanılır (mesh kimliği bağı: hwTag; lisans cihaz kodu: license.ts deviceCodeFor) — hiçbir yanıtta dışarı
+// verilmez.
+export function hwSerial(): string {
+  if (serialCache !== null) return serialCache;
+  serialCache = '';
   for (const f of ['/sys/firmware/devicetree/base/serial-number', '/sys/class/dmi/id/product_uuid']) {
     try {
       const v = fs.readFileSync(f, 'utf8').replace(/\0/g, '').trim().toLowerCase();
-      if (/^[0-9a-f-]{8,64}$/.test(v) && /[1-9a-f]/.test(v)) { hwCache = sha256(`klyrix-hw|${v}`).slice(0, 32); break; }
+      if (/^[0-9a-f-]{8,64}$/.test(v) && /[1-9a-f]/.test(v)) { serialCache = v; break; }
     } catch { /* yok / okunamadı */ }
   }
+  return serialCache;
+}
+function hwTag(): string {
+  if (hwCache !== null) return hwCache;
+  const v = hwSerial();
+  hwCache = v ? sha256(`klyrix-hw|${v}`).slice(0, 32) : '';
   return hwCache;
 }
 const holdsPairing = () => {

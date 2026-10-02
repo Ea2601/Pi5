@@ -61,7 +61,7 @@ export const SOURCE_LABEL: Record<string, string> = {
   'netmode-bak': 'Yedek hat', 'netmode-bak-health': 'Yedek hat', 'netmode-wan': 'İnternet kartı', 'netmode-rep': 'Wi-Fi köprüsü',
   'netmode-home': "Ev Wi-Fi'ı", firewall: 'Güvenlik duvarı', fail2ban: 'Fail2Ban', 'routing-list': 'Yönlendirme listesi',
   'vps-tunnel': 'VPS tüneli', 'device-new': 'Yeni cihaz', 'wan-monitor': 'Hat kalitesi', notify: 'Dış bildirim',
-  pcap: 'Paket kaydı', geo: 'Geo-IP',
+  pcap: 'Paket kaydı', geo: 'Geo-IP', license: 'Lisans',
 };
 const head = (source: string) => String(source || '').split(':')[0];
 export const sourceLabel = (s: string) => SOURCE_LABEL[head(s)] || s || 'Sistem';

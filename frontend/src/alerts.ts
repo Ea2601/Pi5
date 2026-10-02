@@ -26,6 +26,7 @@ const SOURCE_LABEL: Record<string, string> = {
   unbound: 'Unbound', zapret: 'Zapret', pihole: 'Pi-hole', vps: 'VPS', device: 'Cihaz', cron: 'Cron', vpn: 'Ev VPN',
   mesh: 'Mesh', storage: 'Depolama', bandwidth: 'Bant genişliği', backup: 'Yedekleme', vault: 'Yedekleme',
   sync: 'Cihaz yedekleme', visits: 'Ziyaret Geçmişi', hotplug: 'Ağ kartı', 'wan-monitor': 'Hat kalitesi', calendar: 'Takvim',
+  license: 'Lisans',
 };
 export const sourceLabel = (s: string) => SOURCE_LABEL[(s || '').split(':')[0]] || s || 'Sistem';
 
@@ -43,6 +44,7 @@ const SOURCE_TAB: Record<string, TabId> = {
   hotplug: 'roles',
   'wan-monitor': 'speedtest',
   calendar: 'agenda',
+  license: 'license',
 };
 const SERVICE_TAB: Record<string, TabId> = {
   pihole: 'pihole', unbound: 'unbound', zapret: 'zapret', fail2ban: 'fail2ban', nftables: 'firewall', wireguard: 'vps',

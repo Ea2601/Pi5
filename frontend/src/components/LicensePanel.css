@@ -1,0 +1,70 @@
+/* Lisans (LicensePanel.tsx). Yalnız tema değişkenleri — açık tema index.css'teki karşılıklarıyla kendiliğinden uyar.
+   Düğme rengi = ne yaptığı: etkinleştiren yeşil, kaldıran kırmızı. */
+.lic-note {
+  display: flex; gap: 8px; align-items: flex-start; margin: 0 0 12px; padding: 9px 12px; border-radius: var(--radius-sm);
+  font-size: 12.5px; line-height: 1.55; border: 1px solid var(--panel-border); background: var(--input-bg-soft); color: var(--text-primary);
+}
+.lic-note svg { flex-shrink: 0; margin-top: 2px; }
+.lic-note.is-info svg { color: var(--accent-color); }
+.lic-note.is-error { background: var(--danger-glow); border-color: color-mix(in srgb, var(--danger-color) 35%, transparent); }
+.lic-note.is-error svg { color: var(--danger-color); }
+
+.lic-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr)); gap: 12px; margin-bottom: 12px; }
+.lic-card {
+  min-width: 0; padding: 14px; border-radius: var(--radius-sm); border: 1px solid var(--line-soft); background: var(--surface-soft);
+}
+.lic-card-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 10px; flex-wrap: wrap; }
+.lic-plan { font-size: 18px; font-weight: 700; color: var(--text-strong); }
+.lic-card-title { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; font-weight: 600; color: var(--text-primary); }
+
+.lic-rows { display: grid; grid-template-columns: max-content 1fr; gap: 6px 14px; margin: 0; font-size: 13px; }
+.lic-rows dt { color: var(--text-secondary); }
+.lic-rows dd { margin: 0; color: var(--text-primary); min-width: 0; overflow-wrap: anywhere; }
+.lic-mono { font-family: var(--font-mono); font-size: 12px; }
+.lic-muted { color: var(--text-muted); }
+.lic-small { margin: 8px 0 0; font-size: 12px; line-height: 1.5; }
+
+.lic-msg { margin: 10px 0 0; font-size: 12.5px; line-height: 1.5; color: var(--text-secondary); }
+.lic-msg.is-error { color: var(--danger-ink); }
+.lic-msg.is-warn { color: var(--warning-ink); }
+
+.lic-code-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.lic-code {
+  flex: 1 1 auto; min-width: 0; padding: 7px 10px; border-radius: var(--radius-sm); background: var(--input-bg);
+  border: 1px solid var(--panel-border); font-family: var(--font-mono); font-size: 13px; letter-spacing: 0.4px;
+  color: var(--text-primary); overflow-wrap: anywhere; user-select: all;
+}
+
+.lic-form { margin-bottom: 12px; }
+.lic-label { display: block; margin-bottom: 6px; font-size: 13px; font-weight: 600; color: var(--text-primary); }
+.lic-input {
+  display: block; width: 100%; box-sizing: border-box; resize: vertical; min-height: 64px; padding: 8px 10px;
+  border-radius: var(--radius-sm); border: 1px solid var(--panel-border); background: var(--input-bg); color: var(--text-primary);
+  font-family: var(--font-mono); font-size: 12px; line-height: 1.45; word-break: break-all;
+}
+.lic-input:focus { outline: none; border-color: var(--accent-color); box-shadow: 0 0 0 3px var(--accent-ring); }
+.lic-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+.lic-confirm {
+  margin-top: 10px; padding: 10px 12px; border-radius: var(--radius-sm); font-size: 12.5px; line-height: 1.5; color: var(--text-primary);
+  background: var(--danger-glow); border: 1px solid color-mix(in srgb, var(--danger-color) 35%, transparent);
+}
+.lic-confirm .lic-actions { margin-top: 8px; }
+
+.btn-primary.lic-on { background: color-mix(in srgb, var(--success-color) 65%, #000); color: #fff; }
+.btn-primary.lic-on:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--success-color) 70%, #000); box-shadow: 0 4px 12px var(--success-glow);
+}
+.btn-outline.lic-off {
+  border-color: var(--danger-color); background: color-mix(in srgb, var(--danger-color) 8%, transparent);
+  color: color-mix(in srgb, var(--danger-color) 75%, var(--text-primary));
+}
+.btn-outline.lic-off:hover:not(:disabled) {
+  border-color: var(--danger-color); background: color-mix(in srgb, var(--danger-color) 16%, transparent);
+  color: color-mix(in srgb, var(--danger-color) 75%, var(--text-primary));
+}
+.btn-outline.lic-off:disabled, .btn-primary.lic-on:disabled { opacity: 0.45; cursor: not-allowed; }
+
+.lic-details { margin-top: 4px; font-size: 12.5px; line-height: 1.55; color: var(--text-secondary); }
+.lic-details summary { cursor: pointer; color: var(--text-primary); font-weight: 600; padding: 4px 0; }
+.lic-details ul { margin: 6px 0 0; padding-left: 18px; }
+.lic-details li { margin-bottom: 4px; }
