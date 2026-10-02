@@ -4,7 +4,7 @@ import {
   Download, Upload, Archive, Check, Clock,
   Settings, Shield, Users, Globe, Calendar, Database, Trash2
 } from 'lucide-react';
-import { postApi } from '../hooks/useApi';
+import { postApi, useApi } from '../hooks/useApi';
 import { Panel, Badge } from './ui';
 import { toast } from '../toast';
 
@@ -39,8 +39,16 @@ interface BackupHistoryItem {
   id: string;
   date: string;
   size: string;
-  items: number;
+  items: number;     // tablo sayısı (eski kayıtlar yalnız bunu taşır)
+  records?: number;  // toplam kayıt
 }
+
+// "Yedeklenen bileşenler" listesi sunucudan (BACKUP_MANIFEST): eskiden burada sabitti ve eksik / yanlıştı
+interface BackupManifest { sections: { key: string; label: string; desc: string; count: number }[]; excluded?: string }
+const SECTION_ICONS: Record<string, ReactNode> = {
+  services: <Settings size={16} />, routing: <Globe size={16} />, devices: <Users size={16} />,
+  firewall: <Shield size={16} />, dns: <Database size={16} />, system: <Calendar size={16} />,
+};
 
 const BACKUP_HISTORY_KEY = 'pi5_backup_history';
 
@@ -49,6 +57,7 @@ export function BackupPanel() {
   const [importing, setImporting] = useState(false);
   const [history, setHistory] = useState<BackupHistoryItem[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const { data: manifest, error: manifestError, refetch: refetchManifest } = useApi<BackupManifest | null>('/backup/manifest', null);
 
   useEffect(() => {
     try {
@@ -80,7 +89,8 @@ export function BackupPanel() {
         id: crypto.randomUUID(),
         date: new Date().toLocaleString('tr-TR'),
         size: `${(blob.size / 1024).toFixed(1)} KB`,
-        items: Object.keys(data?.data || {}).length
+        items: Object.keys(data?.data || {}).length,
+        records: Object.values(data?.data || {}).reduce((a: number, v) => a + (Array.isArray(v) ? v.length : 0), 0),
       };
       saveHistory([newItem, ...history].slice(0, 20));
       toast.success('Yedek başarıyla indirildi.');
@@ -99,7 +109,7 @@ export function BackupPanel() {
       const data = JSON.parse(text);
       const when = typeof data?.created_at === 'string' ? new Date(data.created_at).toLocaleString('tr-TR') : 'tarihi bilinmiyor';
       // Kurallar ve listeler yedektekiyle DEĞİŞİR (yedekten sonra eklenenler silinir), ayarlar birleştirilir; sonra Pi'ye uygulanır.
-      if (!window.confirm(`Bu yedek geri yüklensin mi? (${when})\n\nYedekteki kurallar ve listeler şimdikilerin yerine geçer — yedekten sonra eklediğiniz kurallar silinir. Ayarlar birleştirilir.\n\nArdından yönlendirme kuralları, Cron görevleri, Pi-hole listeleri, Fail2Ban, Unbound ve (kuruluysa) güvenlik duvarı yeniden uygulanır.`)) {
+      if (!window.confirm(`Bu yedek geri yüklensin mi? (${when})\n\nYedekteki kurallar ve listeler şimdikilerin yerine geçer — yedekten sonra eklediğiniz kurallar silinir. Ayarlar birleştirilir.\n\nArdından yönlendirme kuralları, Cron görevleri, Pi-hole listeleri, sabit IP rezervasyonları, port yönlendirmeleri, Fail2Ban, Unbound ve (kuruluysa) güvenlik duvarı yeniden uygulanır.`)) {
         setImporting(false);
         if (fileInputRef.current) fileInputRef.current.value = '';
         return;
@@ -120,15 +130,6 @@ export function BackupPanel() {
   const clearHistory = () => {
     saveHistory([]);
   };
-
-  const backupSections = [
-    { icon: <Settings size={16} />, label: 'Servis Yapılandırmaları', desc: 'Pi-hole, Zapret, Unbound, Fail2Ban ayarları' },
-    { icon: <Globe size={16} />, label: 'Yönlendirme Kuralları', desc: 'Uygulama ve alan adı kuralları (VPS sunucuları ve anahtarları yedeğe girmez)' },
-    { icon: <Users size={16} />, label: 'Cihaz Kuralları', desc: 'Cihaz grupları, ebeveyn ve hız kuralları, statik DHCP kayıtları (cihaz listesi yedeğe girmez)' },
-    { icon: <Calendar size={16} />, label: 'Cron Görevleri', desc: 'Zamanlanmış görevler ve otomatik bakım' },
-    { icon: <Shield size={16} />, label: 'Güvenlik Duvarı', desc: 'Özel nftables kuralları' },
-    { icon: <Database size={16} />, label: 'DNS Listeleri', desc: 'Beyaz liste, kara liste ve yerel DNS kayıtları' },
-  ];
 
   return (
     <div className="fade-in">
@@ -203,21 +204,33 @@ export function BackupPanel() {
           <h3><Database size={18} style={{ marginRight: 8 }} />Yedeklenen Bileşenler</h3>
         </div>
         <div className="list-items">
-          {backupSections.map(section => (
-            <div key={section.label} className="list-item" style={{ gap: 12 }}>
+          {(manifest?.sections || []).map(section => (
+            <div key={section.key} className="list-item" style={{ gap: 12 }}>
               <div style={{
                 width: 34, height: 34, borderRadius: 8, background: 'rgba(59,130,246,0.1)',
                 display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--accent-color)', flexShrink: 0
               }}>
-                {section.icon}
+                {SECTION_ICONS[section.key] || <Database size={16} />}
               </div>
-              <div>
+              <div style={{ minWidth: 0 }}>
                 <strong style={{ fontSize: 13 }}>{section.label}</strong>
                 <div className="text-muted" style={{ fontSize: 12 }}>{section.desc}</div>
               </div>
-              <Check size={16} style={{ color: '#10b981', marginLeft: 'auto' }} />
+              <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
+                <Badge variant="neutral">{section.count} kayıt</Badge>
+                <Check size={16} style={{ color: 'var(--success-color)' }} />
+              </div>
             </div>
           ))}
+          {!manifest && manifestError && (
+            <div className="list-item" style={{ gap: 10 }}>
+              <span className="text-muted" style={{ fontSize: 13, flex: 1 }}>Liste okunamadı ({manifestError}).</span>
+              <button className="btn-outline btn-sm" onClick={() => { void refetchManifest(); }}>Yeniden dene</button>
+            </div>
+          )}
+          {manifest?.excluded && (
+            <div className="text-muted" style={{ fontSize: 12, padding: '10px 4px 2px' }}>{manifest.excluded}</div>
+          )}
         </div>
       </div>
 
@@ -240,7 +253,7 @@ export function BackupPanel() {
               </div>
               <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
                 <span className="text-muted" style={{ fontSize: 12 }}>{item.size}</span>
-                <Badge variant="neutral">{item.items} bileşen</Badge>
+                <Badge variant="neutral">{item.records !== undefined ? `${item.records} kayıt` : `${item.items} tablo`}</Badge>
               </div>
             </div>
           ))}

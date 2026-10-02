@@ -12,8 +12,6 @@ export const BRAND = {
   wordmarkSecondary: '/gate',
   // Slogan / alt başlık
   tagline: 'Secure Gateway',
-  // Sürüm rozeti (major.minor — version.json ile birlikte güncellenir)
-  version: 'v2.7',
   // Marka renkleri (klyrix/gate — düşük kromalı slate paleti)
   colors: {
     bgFrom: '#94A3B8',   // slate 400 — gradient başlangıcı

@@ -34,6 +34,10 @@ export function Topbar({ onShowAlerts, onMenu, menuOpen = false, title = '', onL
     isFailOpen: false, lastCheckTime: '', lastCheckResult: 'pending',
     checksTotal: 0, checksFailed: 0, uptimePercent: 100,
   }, 10000);
+  // Şifre penceresi modunda / korumasızken kullanıcı alanı: gerçek kullanıcı adı ya da "Şifresiz" uyarısı
+  // (eskiden her durumda sabit "Admin" yazıyordu). Giriş ekranı modunda ad oturumdan gelir (userName).
+  const { data: guard } = useApi<{ state?: string; user?: string } | null>('/panel-auth/status', null);
+  const unprotected = guard?.state === 'pending';
 
   const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(null);
   const [showUpdateModal, setShowUpdateModal] = useState(false);
@@ -166,9 +170,11 @@ export function Topbar({ onShowAlerts, onMenu, menuOpen = false, title = '', onL
               <LogOut size={14} />
             </button>
           ) : (
-            <div className="user-profile">
-              <User size={14} />
-              <span>Admin</span>
+            <div className="user-profile" title={unprotected
+              ? 'Panel şifresiz: ev ağındaki herkes açabilir — üstteki banttan şifre koyabilirsiniz'
+              : 'Panel tarayıcının şifre penceresiyle korunuyor'}>
+              {unprotected ? <ShieldAlert size={14} style={{ color: 'var(--warning-color)' }} /> : <User size={14} />}
+              <span>{unprotected ? 'Şifresiz' : guard?.user || 'admin'}</span>
             </div>
           )}
         </div>

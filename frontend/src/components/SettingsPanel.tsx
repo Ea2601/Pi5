@@ -6,6 +6,7 @@ import {
 import { useApi, putApi } from '../hooks/useApi';
 import { Panel, Badge, Select } from './ui';
 import { BRAND } from '../brand';
+import { setPrefs, desktopSupported } from '../prefs';
 import { toast } from '../toast';
 import { startSystemUpdate, trackSystemUpdate, runningSystemUpdate } from '../systemUpdate';
 import './SettingsPanel.css';
@@ -36,8 +37,9 @@ function parseApiSettings(raw: Record<string, string>): Partial<AppSettings> {
   return {
     accentColor: raw.accent_color || raw.accentColor || 'gray',
     language: raw.language || 'tr',
-    notificationSound: raw.notification_sound === 'true',
-    autoRefresh: raw.auto_refresh === 'true',
+    notificationSound: raw.notification_sound !== 'false',
+    desktopNotifications: raw.desktop_notifications === 'true',
+    autoRefresh: raw.auto_refresh !== 'false',
     refreshInterval: parseInt(raw.refresh_interval || '5000') || 5000,
     speedtestInterval: raw.speedtest_interval_min ? (parseInt(raw.speedtest_interval_min) || 0) : 360,
   };
@@ -49,6 +51,7 @@ function toApiSettings(s: AppSettings): Record<string, unknown> {
     accent_color: s.accentColor,
     language: s.language,
     notification_sound: String(s.notificationSound),
+    desktop_notifications: String(s.desktopNotifications),
     auto_refresh: String(s.autoRefresh),
     refresh_interval: String(s.refreshInterval),
     speedtest_interval_min: String(s.speedtestInterval),
@@ -75,6 +78,8 @@ export function SettingsPanel() {
   useEffect(() => {
     if (!loaded) return;
     if (skipFirstSave.current) { skipFirstSave.current = false; return; }
+    // Tercihler hemen geçerli olsun (yoklama hızı, ses, masaüstü bildirimi — prefs.ts)
+    setPrefs({ autoRefresh: settings.autoRefresh, refreshMs: settings.refreshInterval, sound: settings.notificationSound, desktop: settings.desktopNotifications });
     const t = setTimeout(async () => {
       setSaving(true);
       try {
@@ -108,10 +113,10 @@ export function SettingsPanel() {
   }, [loaded]);
 
   const requestDesktopNotifications = async () => {
-    if ('Notification' in window) {
-      const permission = await Notification.requestPermission();
-      setSettings(prev => ({ ...prev, desktopNotifications: permission === 'granted' }));
-    }
+    if (!desktopSupported()) return;
+    const permission = await Notification.requestPermission();
+    setSettings(prev => ({ ...prev, desktopNotifications: permission === 'granted' }));
+    if (permission !== 'granted') toast.error('Tarayıcı bildirim iznini vermedi (tarayıcının site ayarlarından açabilirsiniz)');
   };
 
   const accentColors = [
@@ -160,14 +165,10 @@ export function SettingsPanel() {
           <div className="config-item">
             <div className="config-item-info">
               <span className="config-item-label">Arayüz Dili</span>
-              <span className="config-item-desc">Panel arayüz dilini değiştir</span>
+              <span className="config-item-desc">Panel yalnız Türkçedir; başka dil desteği henüz yok</span>
             </div>
             <div className="config-item-control">
-              <Select className="config-select" value={settings.language}
-                onChange={e => setSettings(prev => ({ ...prev, language: e.target.value }))}>
-                <option value="tr">Türkçe</option>
-                <option value="en">English</option>
-              </Select>
+              <Badge variant="neutral">Türkçe</Badge>
             </div>
           </div>
         </div>
@@ -188,7 +189,7 @@ export function SettingsPanel() {
           <div className="config-item">
             <div className="config-item-info">
               <span className="config-item-label">Bildirim Sesi</span>
-              <span className="config-item-desc">Uyarı ve bildirimlerde ses çal</span>
+              <span className="config-item-desc">Yeni bir uyarı gelince kısa bir ses çal (panel açıkken)</span>
             </div>
             <div className="config-item-control" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
               {settings.notificationSound ? <Volume2 size={14} /> : <VolumeX size={14} />}
@@ -203,11 +204,20 @@ export function SettingsPanel() {
           <div className="config-item">
             <div className="config-item-info">
               <span className="config-item-label">Masaüstü Bildirimleri</span>
-              <span className="config-item-desc">Tarayıcı masaüstü bildirimlerini etkinleştir</span>
+              <span className="config-item-desc">
+                {desktopSupported()
+                  ? 'Yeni bir uyarı gelince tarayıcı bildirimi göster (panel bir sekmede açıkken)'
+                  : 'Tarayıcılar masaüstü bildirimini yalnız HTTPS ile açılan sayfada izin verir; panel şu an HTTP ile açık'}
+              </span>
             </div>
-            <div className="config-item-control">
-              {settings.desktopNotifications ? (
-                <Badge variant="success">Etkin</Badge>
+            <div className="config-item-control" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              {!desktopSupported() ? (
+                <Badge variant="neutral">Kullanılamıyor</Badge>
+              ) : settings.desktopNotifications ? (
+                <>
+                  <Badge variant="success">Etkin</Badge>
+                  <button className="btn-outline btn-sm" onClick={() => setSettings(prev => ({ ...prev, desktopNotifications: false }))}>Kapat</button>
+                </>
               ) : (
                 <button className="btn-outline btn-sm" onClick={requestDesktopNotifications}>
                   <Bell size={13} /> İzin Ver
@@ -227,7 +237,7 @@ export function SettingsPanel() {
           <div className="config-item">
             <div className="config-item-info">
               <span className="config-item-label">Otomatik Yenileme</span>
-              <span className="config-item-desc">Verileri belirli aralıklarla otomatik güncelle</span>
+              <span className="config-item-desc">Sayfalar arka planda kendiliğinden güncellensin (kapalıysa yalnız sayfa açılınca yüklenir)</span>
             </div>
             <div className="config-item-control">
               <button
@@ -240,16 +250,22 @@ export function SettingsPanel() {
           </div>
           <div className="config-item">
             <div className="config-item-info">
-              <span className="config-item-label">Yenileme Aralığı</span>
-              <span className="config-item-desc">Otomatik yenileme süresi (milisaniye)</span>
+              <span className="config-item-label">Yenileme Hızı</span>
+              <span className="config-item-desc">Tüm sayfaların yenilenme sıklığı (yavaş: Pi'ye ve tarayıcıya daha az yük)</span>
             </div>
             <div className="config-item-control" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
               <Clock size={14} />
-              <input className="config-input" type="number" value={settings.refreshInterval}
+              <Select className="config-select" value={String(settings.refreshInterval)}
                 onChange={e => setSettings(prev => ({ ...prev, refreshInterval: Number(e.target.value) }))}
-                style={{ width: 100 }}
-                min={1000} step={1000}
-                disabled={!settings.autoRefresh} />
+                disabled={!settings.autoRefresh}>
+                <option value="2500">Hızlı (2 kat)</option>
+                <option value="5000">Normal</option>
+                <option value="10000">Yavaş (yarı hız)</option>
+                <option value="30000">Çok yavaş (6'da 1)</option>
+                {![2500, 5000, 10000, 30000].includes(settings.refreshInterval) && (
+                  <option value={String(settings.refreshInterval)}>Özel ({settings.refreshInterval} ms)</option>
+                )}
+              </Select>
               <span className="text-muted" style={{ fontSize: 12 }}>ms</span>
             </div>
           </div>
@@ -328,7 +344,7 @@ const memClassLabel = (mib: number) => (mib >= 1024 ? `${mib / 1024} GB` : `${mi
 
 // ─── Update Section ───
 function UpdateSection() {
-  const { data: versionData } = useApi<{ version: string; build: number }>('/system/version', { version: '2.1.0', build: 0 });
+  const { data: versionData } = useApi<{ version: string; build: number }>('/system/version', { version: '', build: 0 });
   const { data: buildMode, refetch: refetchBuildMode } = useApi<BuildModeInfo | null>('/system/update/mode', null);
   const [modeSaving, setModeSaving] = useState(false);
   const [updating, setUpdating] = useState(false);
@@ -377,7 +393,7 @@ function UpdateSection() {
           <span className="config-item-desc">{BRAND.name} Panel</span>
         </div>
         <div className="config-item-control">
-          <Badge variant="info"><span lang="en">v{versionData.version} (build {versionData.build})</span></Badge>
+          <Badge variant="info"><span lang="en">{versionData.version ? `v${versionData.version} (build ${versionData.build})` : '…'}</span></Badge>
         </div>
       </div>
       <div className="config-item">
@@ -439,8 +455,8 @@ function UpdateSection() {
 
 // ─── About Section ───
 function AboutSection() {
-  const { data } = useApi<{ version: string; build: number; date: string; changelog: string[] }>(
-    '/system/version', { version: '2.1.0', build: 0, date: '', changelog: [] }
+  const { data } = useApi<{ version: string; build: number; date: string; changelog: string[]; model?: string }>(
+    '/system/version', { version: '', build: 0, date: '', changelog: [] }
   );
 
   return (
@@ -458,10 +474,10 @@ function AboutSection() {
       <div className="config-item">
         <div className="config-item-info">
           <span className="config-item-label">Platform</span>
-          <span className="config-item-desc">Raspberry Pi 5 — React 19 + Vite 8 + Express 5</span>
+          <span className="config-item-desc">{data.model || 'Cihaz'} — React 19 + Vite 8 + Express 5</span>
         </div>
         <div className="config-item-control">
-          <Badge variant="neutral"><span lang="en">Pi 5</span></Badge>
+          <Badge variant="neutral"><span lang="en">{(data.model || '').replace(/^Raspberry Pi /, 'Pi ').replace(/ Model B.*$/, '') || '—'}</span></Badge>
         </div>
       </div>
       {data.date && (

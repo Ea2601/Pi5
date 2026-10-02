@@ -28,7 +28,7 @@ import {
   legacyRoutingCleanupDue,
 } from './system';
 import type { RangeRoute } from './system';
-import { listForwards, addForward, setForwardEnabled, deleteForward, applyPortForwards } from './wan';
+import { listForwards, addForward, setForwardEnabled, deleteForward, applyPortForwards, prepareForwardRestore } from './wan';
 import { runSpeedTest, SpeedtestUnavailable, type SpeedResult } from './speedtest';
 import { ASN_TOKEN, getAsnPrefixes, normalizeCidr, refreshAsnIfStale } from './ipRanges';
 import { getRoutingSuggestions, MAX_HOURS as SUGGEST_MAX_HOURS } from './domainSuggest';
@@ -4479,7 +4479,22 @@ const BACKUP_TABLES = [
   'service_config', 'service_status', 'traffic_routing', 'domain_routing', 'routing_rules',
   'pihole_lists', 'zapret_domains', 'bandwidth_limits', 'parental_rules', 'traffic_schedules',
   'device_groups', 'device_group_members', 'throttle_rules', 'app_settings', 'cron_jobs', 'dhcp_leases',
-  'domain_suggestion_dismissed',
+  'domain_suggestion_dismissed', 'port_forwards', 'device_names',
+];
+// device_names gerçek tablo değil: devices'tan yalnız elle verilen adlar (name_manual = 1) — cihaz listesinin kendisi
+// (IP, son görülme) çalışma kaydıdır, yedekten gelmez; geri yüklemede yalnız adlar birleştirilir.
+// Yedekleme sayfasının listesi buradan (eskiden arayüzde sabit ve eksik / yanlıştı).
+const BACKUP_MANIFEST: { key: string; label: string; desc: string; tables: string[] }[] = [
+  { key: 'services', label: 'Servis ayarları', desc: 'Pi-hole, Unbound, Fail2Ban ve güvenlik duvarı ayar satırları, servislerin açık / kapalı durumu',
+    tables: ['service_config', 'service_status'] },
+  { key: 'routing', label: 'Yönlendirme', desc: 'Uygulama ve alan adı kuralları, zamanlayıcı pencereleri, Zapret siteleri, gizlenen öneriler',
+    tables: ['traffic_routing', 'domain_routing', 'traffic_schedules', 'zapret_domains', 'domain_suggestion_dismissed'] },
+  { key: 'devices', label: 'Cihazlar', desc: 'Gruplar, ebeveyn kuralları, hız / kota sınırları, sabit IP rezervasyonları, elle verilen cihaz adları',
+    tables: ['device_groups', 'device_group_members', 'parental_rules', 'bandwidth_limits', 'throttle_rules', 'dhcp_leases', 'device_names'] },
+  { key: 'firewall', label: 'Güvenlik duvarı', desc: 'Özel kurallar ve internet kartı port yönlendirmeleri', tables: ['routing_rules', 'port_forwards'] },
+  { key: 'dns', label: 'DNS listeleri', desc: 'Beyaz / kara liste, bloklisteleri ve yerel DNS kayıtları', tables: ['pihole_lists'] },
+  { key: 'system', label: 'Panel ayarları ve Cron', desc: 'Görünüm, bildirimler, hız testi, kiosk ve diğer panel ayarları; zamanlanmış görevler',
+    tables: ['app_settings', 'cron_jobs'] },
 ];
 const BACKUP_TABLE_SET = new Set(BACKUP_TABLES);
 // Ayar tabloları birleştirilir (yedekte olmayan anahtar kalır: rol, eşleştirme, sürüm gibi çalışma anahtarları eski bir
@@ -4494,6 +4509,21 @@ const BACKUP_SKIP_SETTINGS = new Set(['last_seen_version', 'pihole_hosts_managed
 
 async function restoreTable(table: string, rows: any[]): Promise<number> {
   if (!Array.isArray(rows)) return 0;
+  // Elle verilen cihaz adları: yalnız ad birleştirilir (cihaz yoksa ad ile eklenir), cihaz listesi silinmez
+  if (table === 'device_names') {
+    let n = 0;
+    for (const r of rows) {
+      const mac = String(r?.mac_address ?? '').toLowerCase();
+      const name = String(r?.hostname ?? '').trim();
+      // PUT /api/devices/:mac/name ile aynı kural
+      if (!isValidMac(mac) || !name || [...name].length > 40 || /[\x00-\x1f\x7f<>]/.test(name)) continue;
+      // Önce güncelle (kayıt büyük harfli MAC'le de olabilir), yoksa ekle
+      const upd = await dbRunChanges('UPDATE devices SET hostname = ?, name_manual = 1 WHERE lower(mac_address) = ?', [name, mac]);
+      if (!upd) await dbRun('INSERT OR IGNORE INTO devices (mac_address, hostname, name_manual) VALUES (?, ?, 1)', [mac, name]);
+      n++;
+    }
+    return n;
+  }
   // Bilinmeyen sütunlar atlanır (eski / yeni sürümün yedeği de yüklenir; eskiden tek sütun tüm geri yüklemeyi bozuyordu).
   const known = new Set((await dbAll(`PRAGMA table_info(${table})`) as any[]).map(c => String(c.name)));
   if (!BACKUP_MERGE_TABLES.has(table)) {
@@ -4554,8 +4584,20 @@ async function applyRestored(tables: Set<string>, keys: Set<string>, req: expres
       if (err) throw new Error(err);
     });
   }
-  if (tables.has('traffic_routing') || tables.has('domain_routing') || tables.has('zapret_domains')) {
+  if (tables.has('traffic_routing') || tables.has('domain_routing') || tables.has('zapret_domains') || tables.has('traffic_schedules')) {
     await step('Yönlendirme kuralları', () => applyAllRoutingRules());
+  }
+  if (tables.has('dhcp_leases')) {
+    await step('Sabit IP rezervasyonları', async () => {
+      const err = await applyStaticLeases();
+      if (err) throw new Error(err);
+    });
+  }
+  if (tables.has('port_forwards')) {
+    await step('Port yönlendirmeleri', async () => {
+      const r = await applyPortForwards();
+      if (r.error) throw new Error(r.error);
+    });
   }
   if (tables.has('pihole_lists')) {
     await step('Pi-hole listeleri', async () => {
@@ -4599,9 +4641,10 @@ async function applyRestored(tables: Set<string>, keys: Set<string>, req: expres
 async function buildBackupExport(): Promise<{ backup_version: number; created_at: string; data: Record<string, any[]> }> {
   const configTables: Record<string, any[]> = {};
   for (const t of BACKUP_TABLES) {
-    configTables[t] = t === 'dhcp_leases'
-      ? await dbAll('SELECT * FROM dhcp_leases WHERE is_static = 1')
-      : await dbAll(`SELECT * FROM ${t}`);
+    // Tablo yoksa (ör. port_forwards ilk kullanımda kurulur) boş: yedek bütünüyle düşmesin
+    configTables[t] = await (t === 'dhcp_leases' ? dbAll('SELECT * FROM dhcp_leases WHERE is_static = 1')
+      : t === 'device_names' ? dbAll('SELECT mac_address, hostname FROM devices WHERE name_manual = 1')
+        : dbAll(`SELECT * FROM ${t}`)).catch(() => []);
   }
 
   return {
@@ -4610,6 +4653,19 @@ async function buildBackupExport(): Promise<{ backup_version: number; created_at
     data: configTables,
   };
 }
+
+// Yedekleme sayfasının "neler yedeklenir" listesi: bölüm başına kayıt sayısı (BACKUP_MANIFEST)
+app.get('/api/backup/manifest', async (_req, res) => {
+  try {
+    const exp = await buildBackupExport();
+    res.json({
+      sections: BACKUP_MANIFEST.map(m => ({ key: m.key, label: m.label, desc: m.desc, count: m.tables.reduce((a, t) => a + (exp.data[t]?.length || 0), 0) })),
+      excluded: 'VPS sunucuları ve WireGuard anahtarları, Ev VPN anahtarları ve DDNS hesapları bu dosyaya girmez (gizli anahtar). Bulut Yedeği\'nde «gizli anahtarlar» seçeneğiyle şifreli yedeklenebilir.',
+    });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
 
 app.get('/api/backup/export', async (_req, res) => {
   try {
@@ -4650,6 +4706,18 @@ async function importBackupData(backup: any, req: express.Request): Promise<Back
         fw.disabled ? `eski sürümün ${fw.disabled} engelle kuralı kapalı geldi — Güvenlik Duvarı sayfasında gözden geçirip açın` : '',
       ].filter(Boolean);
       if (parts.length) notes.push({ item: 'Güvenlik duvarı kuralları', ok: true, detail: parts.join('; ') });
+    }
+  }
+
+  // Port yönlendirmeleri de önce doğrulanır (nft kuralına dönüşür); tablo da burada, işlemden önce kurulur
+  if (present.includes('port_forwards')) {
+    const pf = await prepareForwardRestore(data.port_forwards);
+    if (pf.error) {
+      present = present.filter(t => t !== 'port_forwards');
+      notes.push({ item: 'Port yönlendirmeleri', ok: false, detail: `geri yüklenmedi, mevcutlar kaldı — ${pf.error}` });
+    } else {
+      data.port_forwards = pf.rows;
+      if (pf.skipped) notes.push({ item: 'Port yönlendirmeleri', ok: true, detail: `${pf.skipped} kayıt atlandı (geçersiz ya da çakışan)` });
     }
   }
 
@@ -5197,18 +5265,24 @@ app.get('/api/settings', async (_req, res) => {
   }
 });
 
+const UI_SETTING_KEYS = new Set(['accent_color', 'language', 'notification_sound', 'desktop_notifications', 'auto_refresh',
+  'refresh_interval', 'speedtest_interval_min', 'theme', 'dhcp_client_test']);
 app.put('/api/settings', async (req, res) => {
   try {
     const { settings } = req.body;
     if (!settings || typeof settings !== 'object') {
       return res.status(400).json({ error: 'settings nesnesi gerekli' });
     }
+    // Yalnız arayüzün yazdığı anahtarlar: iç ayarlar (kiosk_config, unbound_settings, dns_guard_all, pihole_hosts_managed …)
+    // kendi uçlarından, doğrulamayla yazılır — buradan ezilemez (eskiden her anahtar kabul ediliyordu).
+    const bad = Object.keys(settings).filter(k => !UI_SETTING_KEYS.has(k));
+    if (bad.length) return res.status(400).json({ error: `Bu ayar buradan değiştirilemez: ${bad.join(', ')}` });
     for (const [key, value] of Object.entries(settings)) {
-      await dbRun('INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)', [key, String(value)]);
+      await dbRun('INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)', [key, String(value).slice(0, 500)]);
     }
     // Hız testi aralığı değiştiyse zamanlayıcıyı restart'sız yeniden planla
     if (Object.prototype.hasOwnProperty.call(settings, 'speedtest_interval_min')) {
-      rescheduleSpeedtest().catch(() => {});
+      rescheduleSpeedtest().catch((e: any) => console.error('[hız testi] yeniden planlanamadı:', e?.message || e));
     }
     res.json({ success: true, message: 'Ayarlar güncellendi.' });
   } catch (e: any) {
@@ -5919,11 +5993,19 @@ app.put('/api/system/timezone', async (req, res) => {
 // ─── Update Check (git fetch + compare) ───
 app.get('/api/system/version', async (_req, res) => {
   try {
+    const fs = require('fs');
     const versionPath = require('path').resolve(__dirname, '../../version.json');
-    const data = JSON.parse(require('fs').readFileSync(versionPath, 'utf8'));
-    res.json(data);
-  } catch {
-    res.json({ version: '2.1.0', build: 0, date: 'unknown', changelog: [] });
+    const data = JSON.parse(fs.readFileSync(versionPath, 'utf8'));
+    // Kart modeli (Ayarlar → Hakkında): Raspberry Pi'de device-tree, x86'da DMI ürün adı
+    let model = '';
+    for (const f of ['/proc/device-tree/model', '/sys/class/dmi/id/product_name']) {
+      try { model = String(fs.readFileSync(f, 'utf8')).replace(/\0/g, '').trim(); } catch { /* yok */ }
+      if (model) break;
+    }
+    res.json({ ...data, model });
+  } catch (e: any) {
+    // Eskiden sahte "2.1.0" dönüyordu: güncelleme ve hata ayıklama yanlış sürüme bakıyordu
+    res.status(500).json({ error: `version.json okunamadı: ${e?.message || e}` });
   }
 });
 

@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
+import { effectivePoll, onPrefsChange } from '../prefs';
 
 const API_BASE = '/api';
 
@@ -32,10 +33,18 @@ export function useApi<T>(endpoint: string, initialData: T, pollInterval?: numbe
     setLoading(true);
     setError(null);
     fetchData();
-    if (pollInterval) {
-      const id = setInterval(fetchData, pollInterval);
-      return () => clearInterval(id);
-    }
+    if (!pollInterval) return;
+    // Ayarlar → Performans: otomatik yenileme kapalıysa yoklama yok, yenileme hızı aralığı ölçekler (prefs.ts); tercih
+    // değişince (ya da açılışta yüklenince) aralık yeniden kurulur.
+    let id: ReturnType<typeof setInterval> | undefined;
+    const arm = () => {
+      if (id) clearInterval(id);
+      const ms = effectivePoll(pollInterval);
+      id = ms ? setInterval(fetchData, ms) : undefined;
+    };
+    arm();
+    const off = onPrefsChange(arm);
+    return () => { if (id) clearInterval(id); off(); };
     // initialData bilerek bağımlılık dışı (her render yeni referans olur)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [fetchData, pollInterval]);

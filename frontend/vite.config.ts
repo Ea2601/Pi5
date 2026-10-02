@@ -28,6 +28,8 @@ export default defineConfig({
   ],
   define: {
     __APP_BUILD__: JSON.stringify(BUILD_ID),
+    // Kenar çubuğundaki sürüm rozeti (eskiden brand.ts'te elle yazılmış "v2.7" kalmıştı)
+    __APP_VERSION__: JSON.stringify(APP_VERSION),
   },
   server: {
     port: 3000,

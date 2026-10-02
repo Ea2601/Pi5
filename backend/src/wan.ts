@@ -132,6 +132,23 @@ export async function setForwardEnabled(id: number, enabled: boolean): Promise<v
   await applyPortForwards();
 }
 
+// Yedekten geri yükleme: her satır elle eklenmiş gibi doğrulanır (bozuk / elle düzenlenmiş yedek nft kuralına karışmasın);
+// geçersiz ya da öncekilerle çakışan satır atlanır, açık / kapalı durumu korunur. Ev ağı bilinmiyorsa (sabit adres kaydı
+// yok) hiçbiri doğrulanamaz: error döner, tablo geri yüklenmez (mevcutlar kalır). Tablo burada (işlemden önce) kurulur.
+export async function prepareForwardRestore(rows: any[]): Promise<{ rows: Omit<PortForward, 'id'>[]; skipped: number; error?: string }> {
+  await ensureTables();
+  const client = clientNet();
+  if (rows.length && !client) return { rows: [], skipped: 0, error: 'ev ağı (sabit adres kaydı) bilinmiyor' };
+  const ok: PortForward[] = [];
+  let skipped = 0;
+  for (const row of rows) {
+    const v = row && typeof row === 'object' ? validateForward(row, client, ok) : null;
+    if (!v || !v.ok) { skipped++; continue; }
+    ok.push({ id: -1 - ok.length, ...v.value, enabled: Number(row.enabled ?? 1) ? 1 : 0 });
+  }
+  return { rows: ok.map(({ id: _id, ...r }) => r), skipped };
+}
+
 export async function deleteForward(id: number): Promise<void> {
   await ensureTables();
   await dbRun('DELETE FROM port_forwards WHERE id = ?', [id]);

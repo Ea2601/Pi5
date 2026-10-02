@@ -5,6 +5,7 @@ import { useApi, postApi } from '../hooks/useApi';
 import { toast } from '../toast';
 import { type AlertItem, type AlertsPage, parseAlertTime, relativeTime, severityMeta, sourceLabel, notifyAlertsChanged, onAlertsChanged } from '../alerts';
 import { AlertDetailModal, DETAIL_HOST_CLASS } from './AlertDetailModal';
+import { alertSound, desktopNotify } from '../prefs';
 
 // Üst çubuktaki zil: tıklanınca son bildirimler zilin altında açılır (telefonda ekran genişliğinde). Güncelleme varsa en
 // üstte o durur (güncelleme penceresini açar). Açıkken 10 sn'de bir yenilenir; okundu bilgisi Bildirimler sayfasıyla
@@ -25,6 +26,16 @@ export function NotificationBell({ updateCount, onOpenUpdate, onShowAll }: Props
   const btnRef = useRef<HTMLButtonElement>(null);
   const { data: unread, refetch: refetchUnread } = useApi<{ count: number }>('/alerts/unread-count', { count: 0 }, 30000);
   useEffect(() => onAlertsChanged(() => { void refetchUnread(); }), [refetchUnread]);
+  // Yeni okunmamış uyarı: Ayarlar → Bildirimler'e göre kısa ses ve tarayıcı bildirimi (ilk yüklemede değil, artışta)
+  const prevUnread = useRef<number | null>(null);
+  useEffect(() => {
+    const c = unread.count;
+    if (prevUnread.current !== null && c > prevUnread.current) {
+      alertSound();
+      desktopNotify('Klyrix Gate', c === 1 ? '1 okunmamış bildirim' : `${c} okunmamış bildirim`);
+    }
+    prevUnread.current = c;
+  }, [unread.count]);
   const close = useCallback((focusBell = false) => {
     setOpen(false);
     if (focusBell) btnRef.current?.focus();

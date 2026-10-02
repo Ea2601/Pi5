@@ -4,6 +4,9 @@ import type { TabId } from '../types';
 import { BRAND } from '../brand';
 import { NAV_TABS, type NavTab } from '../nav';
 
+// Derlenen version.json sürümü (vite.config.ts define)
+declare const __APP_VERSION__: string;
+
 interface SidebarProps {
   activeTab: TabId;
   onTabChange: (tab: TabId) => void;
@@ -98,7 +101,7 @@ export function Sidebar({ activeTab, onTabChange, open, onClose, onLogout, tabs 
               <LogOut size={17} /><span>Çıkış yap</span>
             </button>
           )}
-          <div className="version-badge">{BRAND.name} {BRAND.version}</div>
+          <div className="version-badge">{BRAND.name}{__APP_VERSION__ ? ` v${__APP_VERSION__}` : ''}</div>
         </div>
       </nav>
     </>
