@@ -263,7 +263,9 @@ export function retryAfter(last: Record<string, string>, error: string, startedD
   if (last.attempt !== startedDay || !TRANSIENT.test(error) || (numOf(last.retries) ?? 0) >= RETRY_MAX) return '';
   return String(nowS + RETRY_GAP_S);
 }
-// Sonraki otomatik yedek (sn): bugün denenmediyse bugünün saati (geçtiyse şimdi), bekleyen yeniden deneme, yoksa yarın
+// Sonraki otomatik yedek (sn): bugün denenmediyse bugünün saati (geçtiyse şimdi), bekleyen yeniden deneme, yoksa yarın.
+// Yeniden deneme yalnız denendiği gün yapılır (retryDue: attempt === bugün): gece yarısını aşan yeniden deneme saati
+// geldiğinde gün değişmiştir, o an yedek alınmaz — sıradaki yedek yarının saatidir (yalnız gösterim; zamanlayıcı tick'tedir).
 export function nextAutoRun(schedule: string, last: Record<string, string>, now: Date): number {
   const [h, m] = schedule.split(':').map(Number);
   const at = new Date(now);
@@ -271,7 +273,9 @@ export function nextAutoRun(schedule: string, last: Record<string, string>, now:
   const nowS = Math.floor(now.getTime() / 1000);
   if (last.attempt !== ymd(now)) return Math.max(Math.floor(at.getTime() / 1000), nowS);
   const retry = numOf(last.retry_at);
-  if (retry && (numOf(last.retries) ?? 0) < RETRY_MAX) return Math.max(retry, nowS);
+  if (retry && (numOf(last.retries) ?? 0) < RETRY_MAX && (retry <= nowS || ymd(new Date(retry * 1000)) === last.attempt)) {
+    return Math.max(retry, nowS);
+  }
   at.setDate(at.getDate() + 1);
   return Math.floor(at.getTime() / 1000);
 }
@@ -505,8 +509,9 @@ export async function noteVaultJob(): Promise<void> {
     if (kv.files_skipped === 'backup' && !msg.includes('yedek hatt')) msg += ' · yedek hattayken dosyalar atlandı';
     if (j.state === 'done') await recordEvent('vault', msg, /okunamadı|geri yüklenemedi/.test(msg) ? 'warning' : 'info');
     else {
+      // Yeniden deneme yalnız denendiği gün yapılır (retryDue): gece yarısını aşan saat duyurulmaz (nextAutoRun gibi)
       const retry = numOf(next.retry_at);
-      const when = retry ? ` — yeniden denenecek (${new Date(retry * 1000).toLocaleTimeString('tr-TR', { hour: '2-digit', minute: '2-digit' })})` : '';
+      const when = retry && ymd(new Date(retry * 1000)) === next.attempt ? ` — yeniden denenecek (${new Date(retry * 1000).toLocaleTimeString('tr-TR', { hour: '2-digit', minute: '2-digit' })})` : '';
       await recordEvent('vault', `${label} başarısız: ${j.error || 'ayrıntı Yedekleme sayfasında'}${when}`, 'warning');
     }
   } catch (e: any) {

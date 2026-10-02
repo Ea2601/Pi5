@@ -3,7 +3,7 @@ import {
   Settings, Palette, Globe, Bell, Zap, Info, Save, ChevronDown, ChevronRight,
   Volume2, VolumeX, Clock, RefreshCw, Download, Loader2, Gauge, AlertTriangle
 } from 'lucide-react';
-import { useApi, putApi } from '../hooks/useApi';
+import { useApi, putApi, getApi } from '../hooks/useApi';
 import { Panel, Badge, Select, SelectOption } from './ui';
 import { BRAND } from '../brand';
 import { setPrefs, desktopSupported } from '../prefs';
@@ -32,6 +32,11 @@ const defaultSettings: AppSettings = {
   speedtestInterval: 360,
 };
 
+// Hız testi aralığı backend'in kullandığı değere çekilir (index.ts getSpeedtestIntervalMin: 0 = kapalı, 15–10080 dk): eski
+// sürümden ya da yedekten kalan aralık dışı değer otomatik kayıtta geri gönderilip bütün ayarların kaydını reddettirmesin
+const clampSpeedtest = (n: number) => (n > 0 ? Math.min(10080, Math.max(15, n)) : 0);
+const SPEEDTEST_OPTIONS = [0, 30, 60, 180, 360, 720, 1440]; // aşağıdaki seçenekler
+
 // API key-value nesnesini AppSettings'e dönüştür
 function parseApiSettings(raw: Record<string, string>): Partial<AppSettings> {
   return {
@@ -41,7 +46,7 @@ function parseApiSettings(raw: Record<string, string>): Partial<AppSettings> {
     desktopNotifications: raw.desktop_notifications === 'true',
     autoRefresh: raw.auto_refresh !== 'false',
     refreshInterval: parseInt(raw.refresh_interval || '5000') || 5000,
-    speedtestInterval: raw.speedtest_interval_min ? (parseInt(raw.speedtest_interval_min) || 0) : 360,
+    speedtestInterval: raw.speedtest_interval_min ? clampSpeedtest(parseInt(raw.speedtest_interval_min) || 0) : 360,
   };
 }
 
@@ -286,6 +291,10 @@ export function SettingsPanel() {
                 <option value={360}>6 saatte bir</option>
                 <option value={720}>12 saatte bir</option>
                 <option value={1440}>Günde bir</option>
+                {/* Listede olmayan kayıtlı aralık (eski sürüm / yedek) olduğu gibi görünür */}
+                {!SPEEDTEST_OPTIONS.includes(settings.speedtestInterval) && (
+                  <option value={settings.speedtestInterval}>{`${settings.speedtestInterval} dakikada bir`}</option>
+                )}
               </Select>
             </div>
           </div>
@@ -552,12 +561,26 @@ function TimezoneSection() {
     if (data.timezone && !selected) setSelected(data.timezone);
   }, [data.timezone]);
 
+  // Panel yeni dilimi ancak yeniden başlayınca kullanır (backend yanıttan sonra kendini yeniden başlatır). Sayfa yeni süreç
+  // yanıt verince yenilenir (/api/status'taki açılış anı değişir; ağ hataları yok sayılır) — körlemesine beklemede yavaş
+  // açılışta sayfa backend kapalıyken yüklenip boş kalıyordu. İş sürüyorsa (depolama / güncelleme) yeniden başlatma iş bitince.
   const handleSave = async () => {
     if (!selected) return;
     setSaving(true);
     try {
-      await putApi('/system/timezone', { timezone: selected });
-      toast.success('Saat dilimi güncellendi');
+      const r = await putApi('/system/timezone', { timezone: selected });
+      if (r.restarting) {
+        const tid = toast.info('Panel yeni saat dilimiyle yeniden başlatılıyor…', { duration: 0 });
+        for (let i = 0; i < 60; i++) {
+          await new Promise(ok => setTimeout(ok, 1500));
+          try {
+            if ((await getApi<{ started?: number }>('/status')).started !== r.started) return location.reload();
+          } catch { /* yeniden başlıyor */ }
+        }
+        toast.dismiss(tid);
+        toast.error('Panel henüz yeniden başlamadı — sayfayı birazdan yenileyin');
+      } else if (r.restartDeferred) toast.info(`Saat dilimi güncellendi. ${r.restartReason || ''}`, { duration: 12000 });
+      else toast.success('Saat dilimi güncellendi');
     } catch {
       toast.error('Güncelleme başarısız');
     }

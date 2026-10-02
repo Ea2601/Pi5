@@ -355,12 +355,18 @@ function CronView() {
                       {job.status === 'running' && <Badge variant="info">Çalışıyor</Badge>}
                       {job.status === 'success' && <Badge variant="success">Başarılı</Badge>}
                       {job.status === 'error' && <Badge variant="error">Hata</Badge>}
+                      {job.schedule_error && <Badge variant="warning">Zamanlama geçersiz</Badge>}
                     </div>
                     <span className="cron-desc">{job.description}</span>
                     <div className="cron-details">
                       <code className="cron-schedule">{job.schedule}</code>
                       <span className="cron-command">{job.command}</span>
                     </div>
+                    {job.schedule_error && (
+                      <span className="cron-desc" style={{ color: 'var(--warning-ink)' }}>
+                        Zamanlayıcıya yazılmadı, bu görev çalışmaz (diğer görevler çalışır) — düzenleyip düzeltin: {job.schedule_error}
+                      </span>
+                    )}
                     {job.last_run && (
                       <span className="cron-desc">Son çalışma: {fmtRun(job.last_run)}</span>
                     )}

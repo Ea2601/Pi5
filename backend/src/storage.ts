@@ -345,6 +345,8 @@ export function holdJobGate(owner: 'storage' | 'vault'): string {
 export function freeJobGate(owner: 'storage' | 'vault'): void {
   if (jobGate === owner) jobGate = '';
 }
+// Kapıyı şu an tutan ('' = boş) — yalnız okuma (index.ts: saat dilimi değişince panel bir iş başlatılırken yeniden başlamasın)
+export const jobGateHolder = (): string => jobGate;
 
 let launching = false;
 // script / scriptCmd: paylaşım işi (share.ts) aynı birimi ve durum dosyasını scripts/share.sh ile kullanır.

@@ -56,13 +56,13 @@ import { validateListValue, normalizeListValue, syncPiholeLists, lastListSync, e
   ADLIST_PRESETS, setAdlistPreset, ensureDefaultAdlistPreset } from './piholeLists';
 import { applyZapret, zapretStatus, startBlockcheck, blockcheckRunning, zapretInstalled, zapretInstallIssue, zapretBrief, cleanDpiDomain, removeAutoHost, runDpiCheck, removeSiteStrategy, startAutoMethod, ZAPRET_CHECK_HOUR } from './zapret';
 import type { ZapretApplyResult } from './zapret';
-import { registerAgendaRoutes } from './agenda';
+import { registerAgendaRoutes, processTimeZone, readSystemTimeZone, namedZone, zonesDiffer } from './agenda';
 import { unboundStatus, applyUnboundSettings, validateUnboundSettings, savedUnboundSettings } from './unbound';
 import { recordEvent, recordEventOnce, recordVersionChange, serviceLabel } from './events';
 import { wgServerStatus, setServerEnabled, addPeer, updatePeerRole, deletePeer, peerConfig, reapplyWgServer,
   validatePeerName, validRole, WG_PORT, WG_IFACE, reachabilityTest } from './wgServer';
 import { startReachWatch, noteReachResult, reachWatchState, REACH_WATCH_INTERVAL_H } from './wgWatch';
-import { storageStatus, storageJob, noteStorageJob, startArchive, startPrepare, startMigrate, startStorageWatch } from './storage';
+import { storageStatus, storageJob, noteStorageJob, startArchive, startPrepare, startMigrate, startStorageWatch, jobGateHolder } from './storage';
 import { applyKiosk, kioskSupport } from './kiosk';
 import { shareStatus, enableShare, disableShare, setSharePassword, addUsbShare, removeUsbShare, setTimeMachine, startShareWatch } from './share';
 import { piholeConfigView, applyPiholeSettings, getBlocking, setBlocking, migratePiholeConfigRows, type ConfigRow } from './piholeConfig';
@@ -204,8 +204,10 @@ startCronJobs();
 setTimeout(() => { void migratePiholeConfigRows().catch(e => console.error('[pihole] ayar satırları:', e?.message || e)); }, 5000);
 
 // ─── System ───
+// started: bu sürecin açılış anı (ms) — panel yeniden başlatılınca (saat dilimi) arayüz yeni sürecin yanıt verdiğini bununla anlar
+const PANEL_STARTED = Date.now();
 app.get('/api/status', (_req, res) => {
-  res.json({ status: 'operational', message: 'Pi 5 Router Backend is operational' });
+  res.json({ status: 'operational', message: 'Pi 5 Router Backend is operational', started: PANEL_STARTED });
 });
 
 app.get('/api/system/health', (_req, res) => {
@@ -466,6 +468,9 @@ app.get('/api/cron/jobs', async (_req, res) => {
         j.status = st.rc === 0 ? 'success' : 'error';
       }
       if (running.has(Number(j.id))) j.status = 'running';
+      // Zamanlaması geçersiz (eski sürümün kaydettiği "1/2", yedekten gelen satır): zamanlayıcıya yazılmaz — listede uyarı
+      const se = validateSchedule(j.schedule);
+      if (se) j.schedule_error = se;
     }
     res.json({ jobs, system: readSystemCron() });
   } catch (e: any) {
@@ -496,6 +501,13 @@ app.put('/api/cron/jobs/:id', async (req, res) => {
     const { enabled, name, schedule, command, description } = req.body;
     const bad = (schedule !== undefined && validateSchedule(schedule)) || (command !== undefined && validateCommand(command));
     if (bad) return res.status(400).json({ error: bad });
+    // Zamanlaması geçersiz kayıtlı görev (eski sürümün kaydettiği "1/2", yedekten gelen satır) zamanlama düzeltilmeden
+    // açılmaz: zamanlayıcıya yazılmaz, çalışmazdı (kapatmak ve düzenlemek serbest)
+    if (enabled && schedule === undefined) {
+      const row = await dbGet('SELECT schedule FROM cron_jobs WHERE id = ?', [req.params.id]);
+      const se = row ? validateSchedule(row.schedule) : null;
+      if (se) return res.status(400).json({ error: `Önce zamanlamayı düzeltin (Düzenle): ${se}` });
+    }
     const updates: string[] = [];
     const params: any[] = [];
     if (enabled !== undefined) { updates.push('enabled = ?'); params.push(enabled ? 1 : 0); }
@@ -2812,16 +2824,34 @@ registerWanMonitorRoutes(app);
 let speedtestTimer: ReturnType<typeof setTimeout> | null = null;
 // Sıradaki otomatik ölçümün anı (ms) — yalnız okunur (Ağ Ajandası, agenda.ts); zamanlamaya etkisi yok. Kapalıyken null.
 let speedtestNextAt: number | null = null;
+// Geçerli aralık: 0 (kapalı) ya da 15 dk – 7 gün. Daha büyüğü setTimeout'un 32 bit sınırını (~24,8 gün) aşardı: Node süreyi
+// 1 ms'ye düşürür, ölçüm ardı ardına sürekli çalışırdı. PUT /api/settings aralık dışını reddeder; veritabanında zaten
+// kalmış değer (eski sürüm) okunurken, yedekten gelen değer geri yüklenirken (restoreTable) sınırlara çekilir.
+const SPEEDTEST_MIN_INTERVAL = 15;
+const SPEEDTEST_MAX_INTERVAL = 10080;
+const validSpeedtestInterval = (v: unknown): boolean => {
+  const s = String(v).trim();
+  if (!/^\d{1,6}$/.test(s)) return false;
+  const n = Number(s);
+  return n === 0 || (n >= SPEEDTEST_MIN_INTERVAL && n <= SPEEDTEST_MAX_INTERVAL);
+};
+// Kayıtlı değerin etkin aralığı (dk; 0 = kapalı); sayı değilse null
+const clampSpeedtestInterval = (raw: unknown): number | null => {
+  if (raw == null || raw === '') return null;
+  const v = Number(raw);
+  if (!Number.isFinite(v)) return null;
+  const min = Math.max(0, Math.round(v)); // 0 = kapalı
+  return min === 0 ? 0 : Math.min(SPEEDTEST_MAX_INTERVAL, Math.max(SPEEDTEST_MIN_INTERVAL, min));
+};
 
 async function getSpeedtestIntervalMin(): Promise<number> {
   try {
     const row = await dbGet("SELECT value FROM app_settings WHERE key = 'speedtest_interval_min'");
-    if (row && row.value != null && row.value !== '') {
-      const v = Number(row.value);
-      if (Number.isFinite(v)) return Math.max(0, Math.round(v)); // 0 = kapalı
-    }
+    const v = clampSpeedtestInterval(row?.value);
+    if (v !== null) return v;
   } catch { /* yoksay */ }
-  return Number(process.env.SPEEDTEST_INTERVAL_MIN) || 360;
+  // Ortam değişkeni (geliştirme / test): alt sınır yok, yalnız taşma sınırı
+  return Math.min(SPEEDTEST_MAX_INTERVAL, Number(process.env.SPEEDTEST_INTERVAL_MIN) || 360);
 }
 
 async function runAutoSpeedtest(): Promise<void> {
@@ -4646,8 +4676,11 @@ async function restoreTable(table: string, rows: any[]): Promise<number> {
     if (table === 'app_settings' && BACKUP_SKIP_SETTINGS.has(String(row.key))) continue;
     const cols = Object.keys(row).filter(c => /^[a-zA-Z0-9_]+$/.test(c) && known.has(c));
     if (!cols.length) continue;
+    // Hız testi aralığı PUT /api/settings'in kabul ettiği aralığa çekilir: yedekteki aralık dışı değer (5, 50000 dk)
+    // Ayarlar sayfasının otomatik kaydını reddettirmesin (sayı değilse eskisi gibi olduğu gibi)
+    const st = table === 'app_settings' && row.key === 'speedtest_interval_min' ? clampSpeedtestInterval(row.value) : null;
     const sql = `INSERT OR REPLACE INTO ${table} (${cols.join(', ')}) VALUES (${cols.map(() => '?').join(', ')})`;
-    await dbRun(sql, cols.map(c => row[c]));
+    await dbRun(sql, cols.map(c => (st !== null && c === 'value' ? String(st) : row[c])));
     n++;
   }
   return n;
@@ -5409,6 +5442,9 @@ app.put('/api/settings', async (req, res) => {
     // kendi uçlarından, doğrulamayla yazılır — buradan ezilemez (eskiden her anahtar kabul ediliyordu).
     const bad = Object.keys(settings).filter(k => !UI_SETTING_KEYS.has(k));
     if (bad.length) return res.status(400).json({ error: `Bu ayar buradan değiştirilemez: ${bad.join(', ')}` });
+    if (Object.prototype.hasOwnProperty.call(settings, 'speedtest_interval_min') && !validSpeedtestInterval(settings.speedtest_interval_min)) {
+      return res.status(400).json({ error: `Hız testi aralığı 0 (kapalı) ya da ${SPEEDTEST_MIN_INTERVAL}–${SPEEDTEST_MAX_INTERVAL} dakika (en çok 7 gün) olmalı` });
+    }
     for (const [key, value] of Object.entries(settings)) {
       await dbRun('INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)', [key, String(value).slice(0, 500)]);
     }
@@ -6227,6 +6263,60 @@ app.get('/api/system/timezone', async (_req, res) => {
   }
 });
 
+// Saat dilimi değişince panel yeniden başlatılır: Node dilimi açılışta okur, çalışan süreç eski dilimde kalır — ebeveyn,
+// kota, Trafik Zamanlayıcı, bulut yedeği ve Zapret saatleri yeniden başlatmaya kadar eski dilimle hesaplanırdı (cron yeni
+// dilime hemen geçer). Rol değişimindeki gibi önce yanıt gider; ~3 sn sonra pi5-backend'in dışındaki geçici birimden
+// (systemd-run → systemctl restart: panel durdurulurken istek kesilmez). Yapılmaz:
+// Linux dışında, süreç pi5-backend birimi değilse (geliştirme / test: aynı makinedeki asıl panel yeniden başlamasın) ve süreç
+// zaten yeni dilimle aynı saati veriyorsa (aynı ad ya da eş ad). Ertelenir (30 sn'de bir yeniden bakılır, iş bitince yapılır):
+// depolama işi sürerken (hazırlama / taşıma paneli kendisi durdurup başlatır — update-job.sh de bekler), panel güncellemesi
+// sürerken (sonunda paneli kendisi yeniden başlatır) ve bir depolama / bulut yedeği işi başlatılırken (storage.ts kapısı).
+// Süren bulut yedeği beklenmez: iş pi5-backend'in dışında sürer, açılışta yeniden izlenir (vault.ts; güncelleme de beklemez).
+// Zamanlanan an geldiğinde sistem dilimi okunamazsa (timedatectl yanıt vermedi) dilimin geri alınıp alınmadığı bilinmez:
+// vazgeçilmez, 30 sn sonra yeniden bakılır. Arayüz yeni süreci /api/status'taki açılış anından (started) tanır.
+const TZ_RESTART_DELAY_MS = 3000;
+const TZ_RESTART_RETRY_MS = 30000;
+const TZ_JOB_UNKNOWN = 'İş durumu okunamadı';
+let tzRestartTimer: ReturnType<typeof setTimeout> | null = null;
+let tzDeferredWhy = '';   // günlüğe neden değişince bir kez
+const runsAsPanelService = (): boolean => {
+  try { return /\/pi5-backend\.service$/m.test(require('fs').readFileSync('/proc/self/cgroup', 'utf8')); } catch { return false; }
+};
+const tzNeedsRestart = (tz: string): boolean => {
+  const proc = processTimeZone();
+  if (tz === proc) return false;
+  if (!namedZone(tz) || !namedZone(proc)) return true;   // Intl tanımıyorsa karşılaştırılamaz: yeniden başlat
+  return zonesDiffer(tz, proc, Date.now(), Date.now() + 400 * 86400000);
+};
+async function panelRestartBlocker(): Promise<string | null> {
+  if (jobGateHolder()) return 'Bir depolama / bulut yedeği işi başlatılıyor';
+  const [st, up] = await Promise.all([storageJob().catch(() => null), getUpdateStatus().catch(() => null)]);
+  if (!st || !up) return TZ_JOB_UNKNOWN;
+  if (st.state === 'running') return 'Depolama işi sürüyor (disk hazırlama / veri taşıma)';
+  if (up.state === 'running') return 'Panel güncellemesi sürüyor';
+  return null;
+}
+function scheduleTzRestart(ms: number): void {
+  if (tzRestartTimer) clearTimeout(tzRestartTimer);
+  tzRestartTimer = setTimeout(() => {
+    tzRestartTimer = null;
+    void (async () => {
+      const tz = await readSystemTimeZone();
+      if (tz !== null && !tzNeedsRestart(tz)) return;   // dilim geri alındı
+      const why = tz === null ? 'Saat dilimi okunamadı (timedatectl)' : await panelRestartBlocker();
+      if (why) {
+        if (why !== tzDeferredWhy) console.log(`[saat dilimi] yeniden başlatma ertelendi: ${why}`);
+        tzDeferredWhy = why;
+        scheduleTzRestart(TZ_RESTART_RETRY_MS);
+        return;
+      }
+      console.log(`[saat dilimi] panel yeni dilimle (${tz}) yeniden başlatılıyor`);
+      _execFile('systemd-run', ['--quiet', '--collect', `--unit=pi5-tz-restart-${Date.now()}`, '/bin/systemctl', 'restart', 'pi5-backend'],
+        { timeout: 15000 }, err => { if (err) console.error('[saat dilimi] panel yeniden başlatılamadı:', err.message); });
+    })().catch(e => console.error('[saat dilimi] yeniden başlatma:', e?.message || e));
+  }, ms);
+}
+
 app.put('/api/system/timezone', async (req, res) => {
   try {
     const { timezone } = req.body;
@@ -6234,6 +6324,15 @@ app.put('/api/system/timezone', async (req, res) => {
     if (!isValidTimezone(timezone)) return res.status(400).json({ error: 'Geçersiz zaman dilimi' });
     if (isLinux) {
       await execFileP('timedatectl', ['set-timezone', timezone], { timeout: 5000 });
+    }
+    if (isLinux && runsAsPanelService() && tzNeedsRestart(timezone)) {
+      const why = await panelRestartBlocker();
+      scheduleTzRestart(why ? TZ_RESTART_RETRY_MS : TZ_RESTART_DELAY_MS);
+      return res.json(why
+        ? { success: true, timezone, restarting: false, restartDeferred: true, restartReason: why === TZ_JOB_UNKNOWN
+          ? `${why} — panel 30 sn'de bir yeniden bakar, yeni saat dilimiyle kendiliğinden yeniden başlar`
+          : `${why} — panel iş bitince yeni saat dilimiyle kendiliğinden yeniden başlatılacak` }
+        : { success: true, timezone, restarting: true, started: PANEL_STARTED });
     }
     res.json({ success: true, timezone });
   } catch (e: any) {

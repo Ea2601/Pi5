@@ -11,6 +11,7 @@ import path from 'path';
 import { execFile } from 'child_process';
 import { dbAll, dbRun } from './db';
 import { isLinux } from './system';
+import { recordEventOnce } from './events';
 
 const CRON_FILE = '/etc/cron.d/pi5-panel';
 const LEGACY_FILE = '/etc/cron.d/pi5-maintenance';
@@ -29,23 +30,48 @@ export const GRAVITY_CMD = 'systemctl is-active --quiet pi5-gravity || systemd-r
 const FIELD_NAMES = ['dakika', 'saat', 'ayın günü', 'ay', 'haftanın günü'];
 const RANGES: [number, number][] = [[0, 59], [0, 23], [1, 31], [1, 12], [0, 7]];
 const MACROS = new Set(['@hourly', '@daily', '@weekly', '@monthly', '@yearly', '@annually', '@midnight']);
+// Debian cron (3.0pl1 entry.c get_number): sayı en çok 999 karakter (MAX_TEMPSTR); adım C atoi'siyle okunur — 64 bit long
+// (Pi 5, arm64): 2^63−1'i aşan değer kırpılır, int'e çevrilince alt 32 bit kalır. Adım ≤ 0 çıkarsa ya da aralığın başına
+// eklenince int taşarsa (get_range döngüsü "i += step") cron satırı reddeder.
+const MAX_NUM_LEN = 999;
+const INT_MAX = 2147483647;
+const LONG_MAX = BigInt('9223372036854775807');
+const cAtoi = (digits: string): number => {
+  const v = BigInt(digits);
+  return Number(BigInt.asIntN(32, v > LONG_MAX ? LONG_MAX : v));
+};
 
-// Hatalı bir satır cron'un bütün dosyayı yok saymasına yol açabilir: yalnız sayısal biçim (ör. "*/10 * * * *") ve
-// @daily gibi kısaltmalar kabul edilir. Hata metni döner, geçerliyse null.
+// Hatalı bir satır cron'un bütün dosyayı yok saymasına yol açar (Debian user.c: "this crontab file will be ignored" — o
+// dosyadaki hiçbir görev çalışmaz): yalnız Debian cron'un kabul ettiği sayısal biçim (ör. "*/10 * * * *") ve @daily gibi
+// kısaltmalar kabul edilir. Hata metni döner, geçerliyse null.
+//  - Adım yalnız '*' ya da aralığa verilir: "1/2" Debian'da "bad minute" (doğrusu "1-59/2" ya da "*/2").
+//  - Alanlar boşluk / sekmeyle ayrılır: başka bir boşluk karakteri (kopyalanan metindeki bölünmez boşluk, satır sonu) cron'da
+//    alanları kaydırır. Alanın SONUNDAKİ böyle bir karakteri cron atlar (satır sonu hariç) — eskisi gibi kabul edilir.
 export function validateSchedule(raw: unknown): string | null {
   const s = String(raw ?? '').trim();
   if (MACROS.has(s)) return null;
-  const fields = s.split(/\s+/);
+  const fields = s.split(/[ \t]+/).map(f => f.replace(/[^\S\n]+$/, ''));
+  if (fields.some(f => /\s/.test(f))) {
+    return 'Zamanlamanın alanları yalnız boşlukla ayrılmalı — metinde bölünmez boşluk ya da satır sonu var (kopyalanmış olabilir), elle yeniden yazın';
+  }
   if (fields.length !== 5) return 'Zamanlama 5 alandan oluşmalı: dakika saat gün ay haftanın_günü (ör. 0 3 * * *)';
   for (let i = 0; i < 5; i++) {
     const [lo, hi] = RANGES[i];
     for (const part of fields[i].split(',')) {
       const m = /^(\*|(\d+)(?:-(\d+))?)(?:\/(\d+))?$/.exec(part);
       if (!m) return `Geçersiz ${FIELD_NAMES[i]} alanı: "${fields[i]}"`;
+      if ([m[2], m[3], m[4]].some(v => v !== undefined && v.length > MAX_NUM_LEN)) return `${FIELD_NAMES[i]} alanında sayı çok uzun`;
       const nums = [m[2], m[3]].filter(v => v !== undefined).map(Number);
       if (nums.some(n => n < lo || n > hi)) return `${FIELD_NAMES[i]} ${lo}-${hi} arasında olmalı`;
       if (m[3] !== undefined && Number(m[3]) < Number(m[2])) return `${FIELD_NAMES[i]} aralığı ters: "${part}"`;
       if (m[4] !== undefined && Number(m[4]) < 1) return 'Adım (/n) en az 1 olmalı';
+      if (m[4] !== undefined) {
+        const step = cAtoi(m[4]);
+        if (step < 1 || step > INT_MAX - (m[1] === '*' ? lo : Number(m[2]))) return `Adım çok büyük: "/${m[4]}" (cron bu değeri okuyamaz)`;
+      }
+      if (m[4] !== undefined && m[1] !== '*' && m[3] === undefined) {
+        return `Adım yalnız * ya da aralığa verilebilir: ${FIELD_NAMES[i]} alanında "${part}" yerine "${m[2]}-${hi}/${m[4]}" ya da "*/${m[4]}" yazın`;
+      }
     }
   }
   return null;
@@ -68,12 +94,15 @@ function writeAtomic(file: string, content: string, mode: number): void {
   fs.renameSync(tmp, file);
 }
 
-// Veritabanındaki görevleri zamanlayıcıya yazar. Yazılamazsa hata fırlatır (çağıran kullanıcıya bildirir).
+// Veritabanındaki görevleri zamanlayıcıya yazar. Yazılamazsa hata fırlatır (çağıran kullanıcıya bildirir). Zamanlaması
+// geçersiz görev (eski sürümün kaydettiği "1/2", yedekten gelen satır) dosyaya YAZILMAZ — dosyanın geri kalanı çalışır —
+// ve Bildirimler'e günde en çok bir kez (görev + zamanlama başına) uyarı düşer.
 export async function syncCronJobs(): Promise<void> {
   if (!isLinux) return;
   const jobs = await dbAll('SELECT id, name, schedule, command, enabled FROM cron_jobs ORDER BY id') as any[];
   fs.mkdirSync(JOB_DIR, { recursive: true, mode: 0o700 });
   const keep = new Set<number>();
+  const skipped: { id: number; name: string; schedule: string; error: string }[] = [];
   const lines = [
     '# Klyrix Gate — panelden yönetilen görevler (Sistem & Log → Cron). Elle düzenlemeyin: panel her değişiklikte yeniden yazar.',
     'SHELL=/bin/bash',
@@ -86,8 +115,10 @@ export async function syncCronJobs(): Promise<void> {
     keep.add(id);
     writeAtomic(path.join(JOB_DIR, `${id}.sh`), `# name: ${oneLine(j.name)}\n# Klyrix Gate cron görevi — panel yazar, elle düzenlemeyin\n${j.command}\n`, 0o700);
     if (!j.enabled) continue;
-    if (validateSchedule(j.schedule)) {
+    const bad = validateSchedule(j.schedule);
+    if (bad) {
       console.warn(`[cron] "${oneLine(j.name)}" zamanlaması geçersiz, zamanlayıcıya yazılmadı: ${j.schedule}`);
+      skipped.push({ id, name: oneLine(j.name), schedule: oneLine(j.schedule).trim(), error: bad });
       continue;
     }
     lines.push(`# ${id}: ${oneLine(j.name)}`, `${String(j.schedule).trim()} root /bin/bash ${RUNNER} ${id}`);
@@ -98,6 +129,10 @@ export async function syncCronJobs(): Promise<void> {
     if (m && !keep.has(Number(m[1]))) fs.rmSync(path.join(JOB_DIR, f), { force: true });
   }
   writeAtomic(CRON_FILE, lines.join('\n') + '\n', 0o644);
+  for (const s of skipped) {
+    await recordEventOnce(`cron:${s.id}`, `Cron görevi "${s.name}" geçersiz zamanlama ("${s.schedule}") nedeniyle atlandı; diğer görevler `
+      + `çalışıyor — Sistem & Log → Cron görevleri'nden düzeltin: ${s.error}`, 'warning', 24 * 60);
+  }
 }
 
 // Zamanlayıcının son çalıştırma sonuçları (cron-run.sh yazar): id → { rc, at (epoch sn) }.

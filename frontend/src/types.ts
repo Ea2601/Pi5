@@ -158,6 +158,7 @@ export interface CronJob {
   last_run: string;
   next_run: string;
   status: 'idle' | 'running' | 'success' | 'error';
+  schedule_error?: string; // zamanlama geçersiz: zamanlayıcıya yazılmıyor (yalnız bu görev çalışmaz)
 }
 
 export interface AlertItem {

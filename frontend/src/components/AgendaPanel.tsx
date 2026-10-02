@@ -168,7 +168,9 @@ export function AgendaPanel() {
           <AlertTriangle size={14} />
           <span>Pi'nin saat dilimi <b>{view.tz}</b>, ama panel hâlâ <b>{view.processTz}</b> ile çalışıyor: ebeveyn, trafik ve kota
             pencereleri, bulut yedeği, hız testi ve Zapret denetimi eski dilime göre uygulanıyor; cron görevleri ise yeni dilime göre
-            çalışıyor (aşağıdaki saatler buna göre). Panel yeniden başlayınca (Pi'yi yeniden başlatın) düzelir.</span>
+            çalışıyor (aşağıdaki saatler buna göre). Panel yeni dilimle yeniden başlayınca düzelir: saat dilimi Ayarlar'dan
+            değiştirildiyse panel bunu kendiliğinden yapar (bir depolama işi ya da panel güncellemesi sürüyorsa iş bitince — o
+            sırada Pi'yi yeniden başlatmayın); başka yoldan değiştirildiyse süren bir iş yokken Pi'yi yeniden başlatın.</span>
         </div>
       )}
       {failed.map(s => (

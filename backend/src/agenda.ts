@@ -9,7 +9,9 @@
 //  - Panel ve sistem cron'u: cronNext — cronSync.ts validateSchedule'ın kabul ettiği alt küme, Debian cron (3.0pl1)
 //    anlamıyla: ayın günü ve haftanın günü ikisi de kısıtlıysa VEYA, biri '*' ile başlıyorsa VE; 0 ve 7 Pazar. Adımı tek
 //    sayıya verilmiş satırı ("1/2") Debian cron reddeder ("bad minute") ve o satırın bulunduğu DOSYANIN TAMAMINI yok sayar
-//    (user.c: "this crontab file will be ignored"): o dosyadaki hiçbir görev çalışmaz, öyle gösterilir. Yaz saati geçişi
+//    (user.c: "this crontab file will be ignored"). Panel böyle bir görevi kaydetmez ve dosyaya yazmaz (syncCronJobs atlar:
+//    yalnız o görev çalışmaz, öyle gösterilir); sistem dosyasındaki (Pi-hole …) böyle bir satır o dosyanın hiçbir görevini
+//    çalıştırmaz, öyle gösterilir. Yaz saati geçişi
 //    Debian cron'un kendi kuralıyla (cron.c): ileri alınınca atlanan dakikadaki sabit saatli iş geçiş anında, geri alınınca
 //    tekrarlanan saatte joker iş iki kez. Hesaplanamayan satır için tahmin yapılmaz.
 //  - Motorlar (ebeveyn, trafik, kota, Zapret, bulut yedeği) Node sürecinin saat dilimiyle çalışır, burada da onunla
@@ -200,8 +202,13 @@ export function parseCron(raw: unknown): CronSpec | null {
     domStar: f[2].startsWith('*'), dowStar: f[4].startsWith('*'), wild: f[0].startsWith('*') || f[1].startsWith('*'),
   };
 }
-export const isStepWithoutRange = (raw: unknown) =>
-  validateSchedule(raw) === null && String(raw ?? '').trim().split(/\s+/).some(fld => fld.split(',').some(p => /^\d+\/\d+$/.test(p)));
+// Başka bakımdan geçerli, adımı tek sayıya verilmiş ("1/2") zamanlama — validateSchedule bu biçimi reddettiği için ("1/2" →
+// "1-1/2" yazılınca geçerli mi) bakılır. Sistem cron dosyalarında aranır (panel görevleri dosyaya yazılmadan önce süzülür).
+export const isStepWithoutRange = (raw: unknown) => {
+  const s = String(raw ?? '').trim();
+  const asRange = s.replace(/(^|[\s,])(\d+)\/(\d+)(?=$|[\s,])/g, '$1$2-$2/$3');
+  return asRange !== s && validateSchedule(asRange) === null;
+};
 
 // Duvar takvimi günü (UTC alanlarıyla kodlanmış gece yarısı) eşleşiyor mu
 function cronDayMatch(c: CronSpec, wd: Date): boolean {
@@ -276,16 +283,20 @@ export function cronPeriodic(c: CronSpec): boolean {
 
 // ── Saat dilimi ──────────────────────────────────────────────────────────────
 export const processTimeZone = () => Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
-// /api/system/timezone ile aynı kaynak (timedatectl); okunamazsa süreç dilimi.
-async function systemTimeZone(): Promise<string> {
+// /api/system/timezone ile aynı kaynak (timedatectl); okunamazsa ya da geçersizse null (Linux dışında süreç dilimi).
+export async function readSystemTimeZone(): Promise<string | null> {
   if (!isLinux) return processTimeZone();
   try {
     const { stdout } = await execFileP('timedatectl', ['show', '--property=Timezone', '--value'], { timeout: 5000 });
     const tz = stdout.trim();
-    return tz && isValidTimezone(tz) ? tz : processTimeZone();
+    return tz && isValidTimezone(tz) ? tz : null;
   } catch {
-    return processTimeZone();
+    return null;
   }
+}
+// Okunamazsa süreç dilimi
+async function systemTimeZone(): Promise<string> {
+  return (await readSystemTimeZone()) ?? processTimeZone();
 }
 // Sistem dilimi ile sürecin dilimi aralıkta farklı saat veriyor mu (adlar farklı ama kurallar aynıysa uyarı yok)
 export function zonesDiffer(a: string, b: string, from: number, to: number): boolean {
@@ -422,7 +433,6 @@ async function srcTraffic(c: Ctx): Promise<AgendaItem[]> {
 
 const fmtEvery = (sec: number) => (sec % 86400 === 0 ? `${sec / 86400} gün` : sec % 3600 === 0 ? `${sec / 3600} sa` : sec % 60 === 0 ? `${sec / 60} dk` : `${sec} sn`);
 const CRON_LINK: AgendaLink = { tab: 'maintenance', sub: 'cron' };
-const STEP_FIX = 'adımı * ya da aralıkla yazın, ör. "1/2" yerine "1-59/2"';
 // Debian cron'un yok saydığı dosyadaki görev: çalışmaz (özete, zaman yok)
 const deadJob = (c: Ctx, id: string, source: 'cron' | 'system', title: string, note: string) =>
   c.periodic.push({ id, source, kind: 'periodic', title, everySec: null, next: null, note, link: CRON_LINK, dead: true });
@@ -462,33 +472,28 @@ function expandCron(c: Ctx, key: string, source: 'cron' | 'system', title: strin
 }
 
 // (c) Panel Cron görevleri (Sistem & Log → Cron) — /etc/cron.d/pi5-panel'e yazılanlar (cronSync.ts syncCronJobs süzgeci);
-// varsayılan "Pi-hole Gravity" (04:00) de buradadır. Dosyaya yazılan satırlardan biri Debian cron'un reddettiği biçimdeyse
-// ("1/2") cron dosyanın TAMAMINI yok sayar: hiçbir panel görevi çalışmaz.
+// varsayılan "Pi-hole Gravity" (04:00) de buradadır. Zamanlaması geçersiz görev (eski sürümün kaydettiği "1/2", yedekten
+// gelen satır) dosyaya yazılmaz: yalnız o görev çalışmaz, öbür görevler listelenir.
 async function srcCron(c: Ctx): Promise<AgendaItem[]> {
   const jobs = await dbAll('SELECT id, name, schedule, command, enabled FROM cron_jobs ORDER BY id') as any[];
   const listed = jobs.filter(j => Number.isInteger(Number(j.id)) && Number(j.id) > 0 && j.enabled && !validateCommand(j.command));
-  const bad = listed.find(j => !validateSchedule(j.schedule) && isStepWithoutRange(j.schedule));
-  const badRef = bad ? `görev #${bad.id} "${String(bad.schedule).trim()}"` : '';
-  if (bad) {
-    c.warnings.set('cron', `${String(bad.name || `Görev #${bad.id}`)} (${badRef}) Debian cron'da geçersiz: cron /etc/cron.d/pi5-panel `
-      + `dosyasının tamamını yok sayar, hiçbir panel görevi çalışmaz. Sistem & Log → Cron'da düzeltin (${STEP_FIX}).`);
-  }
   const out: AgendaItem[] = [];
+  const skipped: string[] = [];
   for (const j of listed) {
     const title = String(j.name || `Görev #${j.id}`);
     const sched = String(j.schedule).trim();
-    if (validateSchedule(j.schedule)) {
-      c.periodic.push({ id: `cron:${j.id}`, source: 'cron', kind: 'periodic', title, everySec: null,
-        next: null, note: 'Zamanlama geçersiz — zamanlayıcıya yazılmadı, çalışmaz', link: CRON_LINK, dead: true });
-      continue;
-    }
+    const bad = validateSchedule(j.schedule);
     if (bad) {
-      deadJob(c, `cron:${j.id}`, 'cron', title, isStepWithoutRange(sched)
-        ? `Zamanlama "${sched}" Debian cron'da geçersiz (${STEP_FIX}) — cron bu yüzden /etc/cron.d/pi5-panel dosyasının tamamını yok sayar: hiçbir panel görevi çalışmaz`
-        : `Çalışmaz: ${badRef} Debian cron'da geçersiz — cron /etc/cron.d/pi5-panel dosyasının tamamını yok sayar`);
+      skipped.push(`${title} ("${sched}")`);
+      c.periodic.push({ id: `cron:${j.id}`, source: 'cron', kind: 'periodic', title, everySec: null,
+        next: null, note: `Zamanlama geçersiz (zamanlayıcıya yazılmadı, yalnız bu görev çalışmaz) — ${bad}`, link: CRON_LINK, dead: true });
       continue;
     }
     out.push(...expandCron(c, String(j.id), 'cron', title, sched, CRON_LINK));
+  }
+  if (skipped.length) {
+    c.warnings.set('cron', `${skipped.join(', ')}: zamanlama geçersiz, zamanlayıcıya yazılmadı — yalnız ${skipped.length > 1 ? 'bu görevler' : 'bu görev'} `
+      + 'çalışmaz, diğer panel görevleri çalışıyor. Sistem & Log → Cron görevleri\'nden düzeltin.');
   }
   return out;
 }
@@ -543,14 +548,10 @@ async function srcVault(c: Ctx): Promise<AgendaItem[]> {
   const attempt = st.last?.attempt || '';
   const first = nextRun * 1000;
   const slotOn = (d: Date, plus: number) => new Date(d.getFullYear(), d.getMonth(), d.getDate() + plus, Math.floor((slot ?? 0) / 60), (slot ?? 0) % 60);
-  // Bugün denenmiş ve bekleyen yeniden deneme gece yarısını aşıyorsa nextAutoRun o anı döner; ama yeniden deneme yalnız
-  // denendiği gün yapılır (vault.ts retryDue: attempt === bugün) ve o saat günün yedek saatinden önceyse (scheduleDue) o an
-  // yedek alınmaz → listelenmez. Günün asıl yedeği aşağıdaki döngüden gelir.
+  // nextRun yalnız gerçekten çalışacak anı verir (vault.ts nextAutoRun: gece yarısını aşan yeniden deneme yapılmaz, o zaman
+  // yarının saati döner)
   const fd = new Date(first);
-  const ghost = slot !== null && attempt === ymd(new Date(c.now)) && ymd(fd) !== attempt
-    && fd.getHours() * 60 + fd.getMinutes() < slot;
-  const runs: { t: number; note?: string }[] = ghost ? []
-    : [{ t: first, note: first <= c.now + MIN_MS ? 'Kaçırılan yedek — birkaç dakika içinde' : undefined }];
+  const runs: { t: number; note?: string }[] = [{ t: first, note: first <= c.now + MIN_MS ? 'Kaçırılan yedek — birkaç dakika içinde' : undefined }];
   if (slot !== null) {
     // Sonraki yedekler: nextRun'ın gününden başlayarak her gün ayarlı saatte — nextRun'dan sonra ve o gün denenmediyse
     // (aynı gün yeniden deneme, kaçırılan yedek, gece yarısını aşan yeniden deneme durumlarının hepsi)
