@@ -6,7 +6,7 @@ import {
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { useApi, getApi, postApi, putApi, deleteApi } from '../hooks/useApi';
 import { ServiceSettings } from './ui/ServiceSettings';
-import { Select } from './ui';
+import { Select, SelectOption } from './ui';
 import { toast } from '../toast';
 import type { VpsServer } from '../types';
 import { PiVpnServer } from './PiVpnServer';
@@ -1250,7 +1250,7 @@ export function VpsSetup() {
             <Select value={selectedVpsId} onChange={e => setSelectedVpsId(e.target.value ? Number(e.target.value) : '')}>
               <option value="">Sunucu secin...</option>
               {clientServers.map(s => (
-                <option key={s.id} value={s.id}>{s.ip} ({s.location || s.username})</option>
+                <SelectOption key={s.id} value={s.id} cols={[s.location || s.username, s.ip]} />
               ))}
             </Select>
           </div>

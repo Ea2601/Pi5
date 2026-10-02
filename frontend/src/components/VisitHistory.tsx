@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { History, Search, Trash2, Loader2, AlertTriangle, Info, ShieldOff, ShieldCheck } from 'lucide-react';
 import { useApi, postApi } from '../hooks/useApi';
-import { Panel, Select, Modal } from './ui';
+import { Panel, Select, SelectOption, Modal } from './ui';
 import { toast } from '../toast';
 import './VisitHistory.css';
 
@@ -168,7 +168,7 @@ export function VisitHistory() {
         </div>
         <Select className="config-input vh-select" value={device} onChange={e => pick(setDevice)(e.target.value)} aria-label="Cihaz">
           <option value="">Tüm cihazlar</option>
-          {data.devices.map(d => <option key={d.device} value={d.device}>{d.name} ({d.n})</option>)}
+          {data.devices.map(d => <SelectOption key={d.device} value={d.device} cols={[d.name, d.n]} />)}
         </Select>
         <Select className="config-input vh-select" value={cat} onChange={e => pick(setCat)(e.target.value)} aria-label="İçerik türü">
           <option value="">Tüm türler</option>

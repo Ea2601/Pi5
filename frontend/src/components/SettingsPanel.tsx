@@ -4,7 +4,7 @@ import {
   Volume2, VolumeX, Clock, RefreshCw, Download, Loader2, Gauge, AlertTriangle
 } from 'lucide-react';
 import { useApi, putApi } from '../hooks/useApi';
-import { Panel, Badge, Select } from './ui';
+import { Panel, Badge, Select, SelectOption } from './ui';
 import { BRAND } from '../brand';
 import { setPrefs, desktopSupported } from '../prefs';
 import { toast } from '../toast';
@@ -581,10 +581,10 @@ function TimezoneSection() {
           <span className="config-item-desc">Sistem saatini değiştir</span>
         </div>
         <div className="config-item-control" style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
-          <Select className="config-select" value={selected} onChange={e => setSelected(e.target.value)}
+          <Select className="config-select" value={selected} onChange={e => setSelected(e.target.value)} columns={['mono', 'text']}
             style={{ minWidth: 200 }}>
             {TIMEZONES.map(tz => (
-              <option key={tz.zone} value={tz.zone}>{tz.gmt} — {tz.label}</option>
+              <SelectOption key={tz.zone} value={tz.zone} cols={[tz.gmt, tz.label]} />
             ))}
           </Select>
           <button className="btn-primary btn-sm" onClick={handleSave} disabled={saving || selected === data.timezone}>

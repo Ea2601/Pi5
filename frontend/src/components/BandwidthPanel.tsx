@@ -1,7 +1,7 @@
 import { Activity, AlertTriangle, ArrowDown, ArrowUp, Edit3, Gauge, Plus, RotateCcw, Trash2, Wifi } from 'lucide-react';
 import { useApi, putApi, postApi, deleteApi } from '../hooks/useApi';
 import { useMemo, useState } from 'react';
-import { Panel, StatCard, Badge, Modal, Select } from './ui';
+import { Panel, StatCard, Badge, Modal, Select, SelectOption } from './ui';
 import { toast } from '../toast';
 import { BANDWIDTH_TAB_KEY } from '../nav';
 
@@ -108,7 +108,7 @@ const toForm = (t: EditorTarget): EditorForm => {
 };
 
 function LimitEditor({ target, choices, onClose, onSaved }: {
-  target: EditorTarget; choices: { mac: string; label: string }[]; onClose: () => void; onSaved: () => void;
+  target: EditorTarget; choices: { mac: string; name: string; ip: string }[]; onClose: () => void; onSaved: () => void;
 }) {
   const [f, setF] = useState<EditorForm>(() => toForm(target));
   const [saving, setSaving] = useState(false);
@@ -153,7 +153,7 @@ function LimitEditor({ target, choices, onClose, onSaved }: {
             <label>Cihaz</label>
             <Select className="config-select" value={f.mac} onChange={e => set({ mac: e.target.value })}>
               <option value="">Cihaz seçin…</option>
-              {choices.map(c => <option key={c.mac} value={c.mac}>{c.label}</option>)}
+              {choices.map(c => <SelectOption key={c.mac} value={c.mac} cols={[c.name, c.mac, c.ip]} />)}
             </Select>
             {!choices.length && <span className="bw-help">Sınır eklenebilecek cihaz yok (hepsinin sınırı var ya da cihaz listesi boş).</span>}
           </div>
@@ -257,17 +257,19 @@ export function BandwidthPanel() {
   // Modem / Pi: sınır konamaz (tüm evin trafiği bu adresten geçer).
   const protectedMacs = useMemo(() => new Set((limitsData.protected_macs || []).map(m => m.toLowerCase())), [limitsData.protected_macs]);
   // "Cihaz ekle" seçenekleri: cihaz listesi + canlı tabloda görülen (MAC'i bilinen) cihazlar; sınırı olanlar hariç.
+  // Ad, MAC ve IP ayrı alan: açılır listede her biri kendi sütununda hizalı görünür.
   const choices = useMemo(() => {
-    const m = new Map<string, string>();
+    const m = new Map<string, { name: string; ip: string }>();
     for (const d of devicesData.devices || []) {
       const mac = String(d.mac_address || '').toLowerCase();
-      if (isMac(mac)) m.set(mac, `${d.hostname || 'Adsız cihaz'} — ${mac}${d.ip_address ? ` (${d.ip_address})` : ''}`);
+      if (isMac(mac)) m.set(mac, { name: d.hostname || 'Adsız cihaz', ip: d.ip_address || '' });
     }
     for (const e of liveData.live) {
       const mac = e.device_mac.toLowerCase();
-      if (isMac(mac) && !m.has(mac)) m.set(mac, `${e.hostname || 'Adsız cihaz'} — ${mac}`);
+      if (isMac(mac) && !m.has(mac)) m.set(mac, { name: e.hostname || 'Adsız cihaz', ip: '' });
     }
-    return [...m].filter(([mac]) => !limitOf.has(mac) && !protectedMacs.has(mac)).map(([mac, label]) => ({ mac, label })).sort((a, b) => a.label.localeCompare(b.label, 'tr'));
+    return [...m].filter(([mac]) => !limitOf.has(mac) && !protectedMacs.has(mac)).map(([mac, v]) => ({ mac, ...v }))
+      .sort((a, b) => a.name.localeCompare(b.name, 'tr') || a.mac.localeCompare(b.mac));
   }, [devicesData.devices, liveData.live, limitOf, protectedMacs]);
 
   const totalIn = liveData.live.reduce((s, d) => s + d.speed_in_kbps, 0);

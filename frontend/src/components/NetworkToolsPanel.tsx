@@ -1,7 +1,7 @@
 import { Wrench, Power, Search, Server, Plus, Loader, Trash2 } from 'lucide-react';
 import { useApi, postApi, deleteApi } from '../hooks/useApi';
 import { useState } from 'react';
-import { Panel, Badge, Select } from './ui';
+import { Panel, Badge, Select, SelectOption } from './ui';
 import { toast } from '../toast';
 import type { Device } from '../types';
 
@@ -133,9 +133,8 @@ export function NetworkToolsPanel() {
                   style={{ flex: 2 }}>
                   <option value="">Cihaz secin...</option>
                   {devicesData.devices.map(d => (
-                    <option key={d.mac_address} value={d.mac_address}>
-                      {d.hostname || d.ip_address} ({d.mac_address})
-                    </option>
+                    <SelectOption key={d.mac_address} value={d.mac_address}
+                      cols={[d.hostname || 'Adsız cihaz', d.ip_address, d.mac_address]} />
                   ))}
                 </Select>
                 <button className="btn-primary btn-sm" onClick={handleWol}

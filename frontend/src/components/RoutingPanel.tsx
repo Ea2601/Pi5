@@ -5,7 +5,7 @@ import {
 } from 'lucide-react';
 import { useApi, getApi, putApi, postApi, deleteApi } from '../hooks/useApi';
 import { useState, useRef, useCallback, useEffect } from 'react';
-import { Panel, Badge, Select } from './ui';
+import { Panel, Badge, Select, SelectOption } from './ui';
 import { AppLogo } from './AppLogos';
 import { CAT_ICON } from './contentCategories';
 import { toast } from '../toast';
@@ -381,7 +381,7 @@ function AppRoutingView({ onApplied }: { onApplied: () => void }) {
                           >
                             <option value="isp">ISP (Direkt)</option>
                             {vpsList.map(v => (
-                              <option key={v.id} value={String(v.id)}>VPS {v.location} ({v.ip})</option>
+                              <SelectOption key={v.id} value={String(v.id)} cols={[`VPS ${v.location}`, v.ip]} />
                             ))}
                           </Select>
                         </div>
@@ -677,7 +677,7 @@ function DomainRoutingView({ onApplied }: { onApplied: () => void }) {
                 <Select className="config-select" value={newExitNode} onChange={e => setNewExitNode(e.target.value)}>
                   <option value="isp">ISP (Direkt)</option>
                   {vpsList.map(v => (
-                    <option key={v.id} value={String(v.id)}>VPS {v.location} ({v.ip})</option>
+                    <SelectOption key={v.id} value={String(v.id)} cols={[`VPS ${v.location}`, v.ip]} />
                   ))}
                 </Select>
               </div>
@@ -782,7 +782,7 @@ function DomainRoutingView({ onApplied }: { onApplied: () => void }) {
                   >
                     <option value="isp">ISP (Direkt)</option>
                     {vpsList.map(v => (
-                      <option key={v.id} value={String(v.id)}>VPS {v.location} ({v.ip})</option>
+                      <SelectOption key={v.id} value={String(v.id)} cols={[`VPS ${v.location}`, v.ip]} />
                     ))}
                   </Select>
                 </div>

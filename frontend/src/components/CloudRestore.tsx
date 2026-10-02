@@ -3,7 +3,7 @@ import {
   CloudDownload, Loader2, CheckCircle2, XCircle, AlertTriangle, Info, KeyRound, ListChecks, FolderDown, Trash2, Play, MinusCircle,
 } from 'lucide-react';
 import { postApi, useApi } from '../hooks/useApi';
-import { Modal, Panel, Select } from './ui';
+import { Modal, Panel, Select, SelectOption } from './ui';
 import { toast } from '../toast';
 import './CloudRestore.css';
 
@@ -649,15 +649,15 @@ function FilesSection({ job, running, lowMem, onJob }: { job: Job | null; runnin
         <div className="cb-grid">
           <div className="form-group">
             <label htmlFor="cr-fsnap">Klasör yedeği</label>
-            <Select id="cr-fsnap" value={snap} onChange={e => setSnap(e.target.value)}>
-              {snaps.slice(0, 40).map(s => <option key={s.id} value={s.id}>{at(s.time)} · {s.hostname}{s.bytes ? ` · ${size(s.bytes)}` : ''}</option>)}
+            <Select id="cr-fsnap" value={snap} onChange={e => setSnap(e.target.value)} columns={['mono', 'text', 'num']}>
+              {snaps.slice(0, 40).map(s => <SelectOption key={s.id} value={s.id} cols={[at(s.time), s.hostname, s.bytes ? size(s.bytes) : '']} />)}
             </Select>
           </div>
           <div className="form-group">
             <label htmlFor="cr-froot">Hedef disk</label>
             {roots.length ? (
               <Select id="cr-froot" value={rootSel} onChange={e => setRoot(e.target.value)}>
-                {roots.map(r => <option key={r.path} value={r.path}>{r.label}{r.avail != null ? ` · ${size(r.avail)} boş` : ''}</option>)}
+                {roots.map(r => <SelectOption key={r.path} value={r.path} cols={[r.label, r.avail != null ? `${size(r.avail)} boş` : '']} />)}
               </Select>
             ) : <p className="cb-hint cb-bad">Bağlı paylaşım alanı ya da ağda paylaşılan USB disk yok — Depolama sayfasından hazırlayın.</p>}
           </div>

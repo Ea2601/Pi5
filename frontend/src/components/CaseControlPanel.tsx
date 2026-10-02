@@ -4,7 +4,7 @@ import {
 } from 'lucide-react';
 import { useState, useEffect } from 'react';
 import { useApi, putApi } from '../hooks/useApi';
-import { Panel, Badge, Select } from './ui';
+import { Panel, Badge, Select, SelectOption } from './ui';
 import { BRAND } from '../brand';
 import { toast } from '../toast';
 
@@ -464,7 +464,7 @@ export function CaseControlPanel() {
                     }}
                     style={{ width: 'auto', minWidth: 150, fontSize: 11 }} title="Sistemde bulunan bağlama noktaları">
                     <option value="" disabled>+ Bulunanlardan ekle</option>
-                    {hints.mounts.map(m => <option key={m.path} value={m.path}>{m.name} — {m.path}</option>)}
+                    {hints.mounts.map(m => <SelectOption key={m.path} value={m.path} cols={[m.name, m.path]} />)}
                   </Select>
                 )}
               </div>

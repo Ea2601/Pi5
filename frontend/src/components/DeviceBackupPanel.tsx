@@ -4,7 +4,7 @@ import {
   HardDrive, Trash2, Pause, Play, Check, X, FolderSync, ShieldCheck, Settings2, Link2, Info, ArchiveRestore, CloudUpload,
 } from 'lucide-react';
 import { postApi } from '../hooks/useApi';
-import { Modal, Panel, Select } from './ui';
+import { Modal, Panel, Select, SelectOption } from './ui';
 import { toast } from '../toast';
 import { copyText } from '../clipboard';
 import { MobileBackupCard } from './MobileBackupCard';
@@ -426,9 +426,8 @@ function PendingFolders({ list, targets, onChanged }: { list: PendingFolder[]; t
                   <label>Hedef disk</label>
                   <Select value={c.target} onChange={e => set({ target: e.target.value })} disabled={!usable.length}>
                     {targets.map(t => (
-                      <option key={t.key} value={t.key} disabled={!t.mounted}>
-                        {targetLabel(t)}{t.mounted ? ` — ${size(t.free)} boş` : ' (takılı değil)'}
-                      </option>
+                      <SelectOption key={t.key} value={t.key} disabled={!t.mounted}
+                        cols={[targetLabel(t), t.mounted ? `${size(t.free)} boş` : 'takılı değil']} />
                     ))}
                   </Select>
                 </div>

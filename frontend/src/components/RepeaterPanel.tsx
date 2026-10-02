@@ -3,7 +3,7 @@ import type { ReactNode } from 'react';
 import { Repeat, AlertTriangle, CheckCircle, Info } from 'lucide-react';
 import { getApi, postApi } from '../hooks/useApi';
 import { toast } from '../toast';
-import { Panel, Badge } from './ui';
+import { Panel, Badge, Select, SelectOption } from './ui';
 import type { WanRadio } from './WanPanel';
 
 // Wi-Fi köprüsü (aynı ağ, R4 C): Pi üst Wi-Fi'a (modem / router) istemci olarak bağlanır; kalıcı yapılınca eth0'a takılan
@@ -198,10 +198,10 @@ export function RepeaterPanel({ radios = [], onChange }: { radios?: WanRadio[]; 
             </dl>
             <div className="hw-form">
               <label className="hw-field"><span><EN>Wi-Fi</EN> kartı</span>
-                <select value={chosen} onChange={e => setPort(e.target.value)} disabled={!wifiOpts.length}>
-                  {wifiOpts.map(w => <option key={w.name} value={w.name}>{w.name} · {w.bus === 'usb' ? 'USB' : 'dahili'}</option>)}
+                <Select value={chosen} onChange={e => setPort(e.target.value)} disabled={!wifiOpts.length}>
+                  {wifiOpts.map(w => <SelectOption key={w.name} value={w.name} cols={[w.name, w.bus === 'usb' ? 'USB' : 'dahili']} />)}
                   {!wifiOpts.length && <option value="">boşta kart yok</option>}
-                </select></label>
+                </Select></label>
               <label className="hw-field"><span>Cihazların adresi</span>
                 <select value={dhcp} onChange={e => setDhcp(e.target.value as Dhcp)}>
                   <option value="relay">Modem verir (Pi aktarır) — önerilen</option>

@@ -5,7 +5,7 @@ import {
 } from 'lucide-react';
 import { CAT_ICON, type ContentCat } from './contentCategories';
 import { useApi, postApi, putApi, deleteApi } from '../hooks/useApi';
-import { Modal, Panel, Badge, Select } from './ui';
+import { Modal, Panel, Badge, Select, SelectOption } from './ui';
 import { toast } from '../toast';
 import type { Device } from '../types';
 import './ParentalPanel.css';
@@ -288,13 +288,13 @@ function RuleEditor({ initial, id, cats, devices, groups, targetsText, onClose, 
           ))}
           {!r.targets.devices.length && !r.targets.groups.length && <span className="pc-muted">Henüz seçilmedi</span>}
         </div>
-        <Select className="config-input" value="" onChange={e => addTarget(e.target.value)}>
+        <Select className="config-input" value="" onChange={e => addTarget(e.target.value)} columns={['text', 'mono', 'muted']}>
           <option value="">+ Cihaz ya da grup ekle…</option>
           {grpOpts.length > 0 && <optgroup label="Gruplar (Cihaz Yönetimi)">
-            {grpOpts.map(g => <option key={g.id} value={`g:${g.id}`}>{`${g.name} (${g.members?.length ?? 0} cihaz)`}</option>)}
+            {grpOpts.map(g => <SelectOption key={g.id} value={`g:${g.id}`} cols={[g.name, '', `${g.members?.length ?? 0} cihaz`]} />)}
           </optgroup>}
           <optgroup label="Cihazlar">
-            {devOpts.map(d => <option key={d.mac_address} value={d.mac_address.toLowerCase()}>{`${deviceLabel(d)} · ${d.ip_address || d.mac_address}`}</option>)}
+            {devOpts.map(d => <SelectOption key={d.mac_address} value={d.mac_address.toLowerCase()} cols={[d.hostname || 'Adsız cihaz', d.ip_address || d.mac_address, '']} />)}
           </optgroup>
         </Select>
         {!groups.length && <p className="pc-hint">Birden çok cihazı birlikte yönetmek için Cihaz Yönetimi'nden grup (ör. "Çocuklar") oluşturabilirsiniz.</p>}

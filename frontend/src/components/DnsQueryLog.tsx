@@ -4,7 +4,7 @@ import {
   Search, ShieldOff, ShieldCheck, ShieldBan, Pause, Play, X, Loader2, AlertTriangle, Info, Activity, Percent, MonitorSmartphone,
 } from 'lucide-react';
 import { useApi } from '../hooks/useApi';
-import { Panel, Select, StatCard } from './ui';
+import { Panel, Select, SelectOption, StatCard } from './ui';
 import './DnsQueryLog.css';
 
 // DNS sorgu kaydı (backend system.ts getDnsQueries): Pi-hole FTL veritabanındaki en yeni sorgular, yeniden eskiye. FTL diske
@@ -122,7 +122,7 @@ export function DnsQueryLog() {
     if (device) ips.add(device);
     return [...ips].map(ip => {
       const nm = nameOf(names, ip);
-      return { ip, sort: nm || ip, label: `${nm ? `${nm} · ` : ''}${ip} (${stats.perClient.get(ip) ?? 0})` };
+      return { ip, name: nm, n: stats.perClient.get(ip) ?? 0, sort: nm || ip };
     }).sort((a, b) => a.sort.localeCompare(b.sort, 'tr', { numeric: true }));
   }, [stats.perClient, device, names]);
 
@@ -189,9 +189,10 @@ export function DnsQueryLog() {
               </button>
             ))}
           </div>
-          <Select className="dq-select" value={device} onChange={e => setDevice(e.target.value)} aria-label="Cihaz">
+          <Select className="dq-select" value={device} onChange={e => setDevice(e.target.value)} aria-label="Cihaz" columns={['text', 'mono', 'num']}>
             <option value="">Tüm cihazlar</option>
-            {deviceOpts.map(o => <option key={o.ip} value={o.ip}>{o.label}</option>)}
+            {/* Ad | IP | sorgu sayısı — her biri kendi sütununda hizalı; adı bilinmeyen cihaz "Adsız cihaz" */}
+            {deviceOpts.map(o => <SelectOption key={o.ip} value={o.ip} cols={[o.name || 'Adsız cihaz', o.ip, o.n]} />)}
           </Select>
           <label className="dq-search">
             <Search size={14} aria-hidden="true" />

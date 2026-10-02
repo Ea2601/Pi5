@@ -3,7 +3,7 @@ import {
   Clock, Gauge, BarChart3, Plus, Check, X, Trash2, Activity, Shield
 } from 'lucide-react';
 import { useApi, postApi, putApi, deleteApi } from '../hooks/useApi';
-import { Panel, Badge, Select } from './ui';
+import { Panel, Badge, Select, SelectOption } from './ui';
 import type { TrafficRule, TrafficSchedule } from '../types';
 import { TrafficAnalytics } from './TrafficAnalytics';
 import { toast } from '../toast';
@@ -155,7 +155,7 @@ function SchedulerView() {
                   onChange={e => setNewSchedule({ ...newSchedule, traffic_routing_id: Number(e.target.value) })}>
                   <option value={0}>Kural secin...</option>
                   {rulesData.rules.map(r => (
-                    <option key={r.id} value={r.id}>{r.app_name} ({r.category})</option>
+                    <SelectOption key={r.id} value={r.id} cols={[r.app_name, r.category]} />
                   ))}
                 </Select>
               </div>
@@ -165,7 +165,7 @@ function SchedulerView() {
                   onChange={e => setNewSchedule({ ...newSchedule, schedule_exit_node: e.target.value })}>
                   <option value="isp">ISP (Direkt)</option>
                   {vpsList.map(v => (
-                    <option key={v.id} value={String(v.id)}>VPS {v.location} ({v.ip})</option>
+                    <SelectOption key={v.id} value={String(v.id)} cols={[`VPS ${v.location}`, v.ip]} />
                   ))}
                 </Select>
               </div>

@@ -12,7 +12,18 @@ import { Check, ChevronDown } from 'lucide-react';
 
 export type SelectChangeEvent = { target: { value: string; name?: string }; currentTarget: { value: string; name?: string } };
 
-type Opt = { value: string; label: string; disabled: boolean; group?: string };
+// Sütun türü: text = ad (esner, sığmazsa …), mono = IP / MAC / yol, num = sayı (sağa yaslı; tetikleyicide gösterilmez),
+// muted = ikincil yazı
+export type SelectColumn = 'text' | 'mono' | 'num' | 'muted';
+
+type Opt = { value: string; label: string; disabled: boolean; group?: string; cols?: string[] };
+
+// Çok sütunlu seçenek: birden çok veri türü (ad, IP, MAC, sayı …) listede kendi sütununda hizalı durur — tek metinde
+// "ad · ip (sayı)" birleştirince satırlar kayıyordu. <Select columns={['text', 'mono', 'num']}> içinde
+// <SelectOption value={ip} cols={[ad, ip, sayı]} />; düz <option> aynı listede kalabilir (bütün sütunlara yayılır).
+// Kendisi bir şey çizmez: Select seçenekleri çocuklarından okur.
+export interface SelectOptionProps { value: string | number; cols: (string | number | null | undefined)[]; disabled?: boolean }
+export const SelectOption: (props: SelectOptionProps) => null = () => null;
 
 export interface SelectProps {
   value?: string | number;
@@ -25,6 +36,8 @@ export interface SelectProps {
   name?: string;
   id?: string;
   'aria-label'?: string;
+  // SelectOption sütunlarının türleri (sırayla); verilmezse ilk sütun text, diğerleri muted
+  columns?: SelectColumn[];
   children?: ReactNode;
 }
 
@@ -46,6 +59,11 @@ function collect(children: ReactNode, group?: string, out: Opt[] = []): Opt[] {
       out.push({ value: el.props.value !== undefined ? String(el.props.value) : label, label, disabled: !!el.props.disabled, group });
     } else if (el.type === 'optgroup') {
       collect(el.props.children, el.props.label || '', out);
+    } else if (el.type === SelectOption) {
+      const p = el.props as unknown as SelectOptionProps;
+      const cols = p.cols.map(c => (c == null ? '' : String(c)));
+      // Tetikleyici yedeği ve harfle arama için düz metin (ilk sütunla başlar)
+      out.push({ value: String(p.value), label: cols.filter(Boolean).join(' · '), cols, disabled: !!p.disabled, group });
     } else {
       collect(el.props.children, group, out); // Fragment vb.
     }
@@ -53,8 +71,24 @@ function collect(children: ReactNode, group?: string, out: Opt[] = []): Opt[] {
   return out;
 }
 
-export function Select({ value, defaultValue, onChange, className = '', style, disabled, title, name, id, children, ...rest }: SelectProps) {
+export function Select({ value, defaultValue, onChange, className = '', style, disabled, title, name, id, columns, children, ...rest }: SelectProps) {
   const opts = useMemo(() => collect(children), [children]);
+  // Sütunlu liste: tek ızgara, satırlar onun alt ızgarası (subgrid) → her sütun bütün satırlarda aynı hizada. İlk sütun kalan
+  // genişliği alır ve sığmazsa kısalır; IP / sayı sütunları içerik kadar; son iz seçim işareti için.
+  const colCount = useMemo(() => opts.reduce((n, o) => Math.max(n, o.cols?.length ?? 0), 0), [opts]);
+  // Türü verilmemiş sütun değerlerine göre: hepsi tam sayıysa num, IP / MAC / yol gibiyse mono, değilse muted (ilk sütun text)
+  const inferred = useMemo(() => Array.from({ length: colCount }, (_, ci): SelectColumn => {
+    if (ci === 0) return 'text';
+    const vals = opts.map(o => o.cols?.[ci]).filter((v): v is string => !!v);
+    if (vals.length && vals.every(v => /^\d+$/.test(v))) return 'num';
+    if (vals.length && vals.every(v => /^([\d.]+|[0-9a-f:]{6,}|\/\S*)$/i.test(v))) return 'mono';
+    return 'muted';
+  }), [opts, colCount]);
+  const roleOf = (ci: number): SelectColumn => columns?.[ci] ?? inferred[ci] ?? 'muted';
+  const colTemplate = Array.from({ length: colCount }, (_, ci) => {
+    const r = roleOf(ci);
+    return ci === 0 ? 'minmax(0, 1fr)' : r === 'mono' || r === 'num' ? 'max-content' : 'minmax(0, max-content)';
+  }).join(' ');
   const controlled = value !== undefined;
   const [inner, setInner] = useState<string>(() => (defaultValue !== undefined ? String(defaultValue) : opts[0]?.value ?? ''));
   const current = controlled ? String(value) : inner;
@@ -143,6 +177,15 @@ export function Select({ value, defaultValue, onChange, className = '', style, d
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, active]);
 
+  // Sütunlu liste içeriği kadar genişler (tetikleyiciden geniş olabilir): ekranın sağından taşarsa sola kaydır
+  useLayoutEffect(() => {
+    const el = listRef.current;
+    if (!open || !colCount || !el) return;
+    const r = el.getBoundingClientRect();
+    const over = r.right - (window.innerWidth - 8);
+    if (over > 0) el.style.left = `${Math.max(8, r.left - over)}px`;
+  }, [open, colCount, pos]);
+
   const typeAhead = (key: string) => {
     const now = Date.now();
     typed.current = { s: (now - typed.current.t < 600 ? typed.current.s : '') + key.toLowerCase(), t: now };
@@ -200,7 +243,13 @@ export function Select({ value, defaultValue, onChange, className = '', style, d
         onClick={() => (open ? close() : openList())}
         onKeyDown={onKey}
       >
-        <span className="ui-select-value">{selected?.label ?? ''}</span>
+        <span className="ui-select-value">
+          {selected?.cols
+            ? selected.cols.map((c, ci) => (ci === 0
+              ? <span key={ci}>{c}</span>
+              : roleOf(ci) !== 'num' && c ? <span key={ci} className={`ui-select-sub is-${roleOf(ci)}`}>{c}</span> : null))
+            : selected?.label ?? ''}
+        </span>
         <ChevronDown size={14} className={`ui-select-chevron ${open ? 'is-open' : ''}`} aria-hidden="true" />
       </button>
       {open && pos && createPortal(
@@ -208,15 +257,18 @@ export function Select({ value, defaultValue, onChange, className = '', style, d
           ref={listRef}
           id={listId}
           role="listbox"
-          className={`ui-select-pop ${pos.up ? 'is-up' : ''}`}
+          className={`ui-select-pop ${pos.up ? 'is-up' : ''} ${colCount ? 'is-cols' : ''}`}
           style={{
-            left: pos.left, width: pos.width, maxHeight: pos.maxH, fontFamily: pos.font,
+            left: pos.left, maxHeight: pos.maxH, fontFamily: pos.font,
+            ...(colCount
+              ? { minWidth: pos.width, width: 'max-content', maxWidth: 'calc(100vw - 16px)', ...({ '--ui-cols': `${colTemplate} 14px` } as CSSProperties) }
+              : { width: pos.width }),
             ...(pos.up ? { bottom: window.innerHeight - pos.top } : { top: pos.top }),
           }}
           onMouseDown={e => e.preventDefault() /* odak düğmede kalsın */}
         >
           {opts.map((o, i) => (
-            <div key={`${i}-${o.value}`}>
+            <div key={`${i}-${o.value}`} className="ui-select-row">
               {o.group !== undefined && (i === 0 || opts[i - 1].group !== o.group) && (
                 <div className="ui-select-group" role="presentation">{o.group}</div>
               )}
@@ -229,7 +281,9 @@ export function Select({ value, defaultValue, onChange, className = '', style, d
                 onMouseEnter={() => { if (!o.disabled) setActive(i); }}
                 onClick={() => choose(i)}
               >
-                <span className="ui-select-opt-label">{o.label}</span>
+                {o.cols
+                  ? o.cols.map((c, ci) => <span key={ci} className={`ui-select-cell is-${roleOf(ci)}`}>{c}</span>)
+                  : <span className="ui-select-opt-label">{o.label}</span>}
                 {i === selIdx && <Check size={14} className="ui-select-check" aria-hidden="true" />}
               </div>
             </div>

@@ -4,7 +4,7 @@ import {
   Wifi, WifiOff, Check, X, Monitor, Smartphone, HardDrive, Palette, Trash2, Pencil
 } from 'lucide-react';
 import { useApi, getApi, postApi, putApi, deleteApi } from '../hooks/useApi';
-import { Panel, Badge, Select } from './ui';
+import { Panel, Badge, Select, SelectOption } from './ui';
 import type { Device } from '../types';
 import { toast } from '../toast';
 
@@ -257,9 +257,7 @@ function GroupsView() {
                         onChange={e => setSelectedMac(e.target.value)}>
                         <option value="">Cihaz seçin...</option>
                         {devicesData.devices.map(d => (
-                          <option key={d.mac_address} value={d.mac_address}>
-                            {deviceLabel(d)} ({d.ip_address})
-                          </option>
+                          <SelectOption key={d.mac_address} value={d.mac_address} cols={[deviceLabel(d), d.ip_address]} />
                         ))}
                       </Select>
                       <button className="btn-primary btn-sm" onClick={() => handleAddMember(group.id)}>
@@ -431,9 +429,7 @@ function HistoryView() {
             style={{ maxWidth: 400 }}>
             <option value="">Cihaz seçin...</option>
             {devicesData.devices.map(d => (
-              <option key={d.mac_address} value={d.mac_address}>
-                {deviceLabel(d)} ({d.ip_address})
-              </option>
+              <SelectOption key={d.mac_address} value={d.mac_address} cols={[deviceLabel(d), d.ip_address]} />
             ))}
           </Select>
         </div>

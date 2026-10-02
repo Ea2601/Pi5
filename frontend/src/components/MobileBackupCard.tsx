@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { Smartphone, Loader2, Plus, Trash2, Power, AlertTriangle, Info, QrCode, Copy } from 'lucide-react';
 import { useApi, postApi, getApi } from '../hooks/useApi';
-import { Modal, Select } from './ui';
+import { Modal, Select, SelectOption } from './ui';
 import { toast } from '../toast';
 import { copyText } from '../clipboard';
 
@@ -93,7 +93,7 @@ export function MobileBackupCard() {
             </div>
             <Select className="config-select" value={data.target} disabled={!!busy}
               onChange={e => void post('t', '/mobile/settings', { target: e.target.value }, 'Hedef disk değişti')}>
-              {data.targets.map(t => <option key={t.key} value={t.key} disabled={!t.mounted}>{targetLabel(t)}{t.mounted ? '' : ' (bağlı değil)'}</option>)}
+              {data.targets.map(t => <SelectOption key={t.key} value={t.key} disabled={!t.mounted} cols={[targetLabel(t), t.mounted ? '' : 'bağlı değil']} />)}
             </Select>
           </div>
           {data.devices.map(d => (
