@@ -4,11 +4,11 @@ import { AESEncryptionKey, AESSealedData, aesDecryptAsync, aesEncryptAsync, Cryp
 import { hmacSha256, type Cipher } from '../core/crypto.ts';
 
 const SEALED = { ivLength: 12, tagLength: 16 } as const;
+export const sha256 = async (b: Uint8Array): Promise<Uint8Array> => new Uint8Array(await digest(CryptoDigestAlgorithm.SHA256, b as Uint8Array<ArrayBuffer>));
 
 export async function makeCipher(raw: Uint8Array): Promise<Cipher> {
   if (raw.length !== 32) throw new Error('Şifreleme anahtarı 32 bayt olmalı');
   const key = await AESEncryptionKey.import(raw);
-  const sha256 = async (b: Uint8Array) => new Uint8Array(await digest(CryptoDigestAlgorithm.SHA256, b as Uint8Array<ArrayBuffer>));
   return {
     async seal(plain, aad) {
       const s = await aesEncryptAsync(plain, key, { nonce: { length: SEALED.ivLength }, tagLength: SEALED.tagLength, additionalData: aad });

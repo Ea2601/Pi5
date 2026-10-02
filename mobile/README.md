@@ -14,10 +14,17 @@ listelenir, telefona geri yüklenir ve silinir. Pi tarafı: `backend/src/mobile.
 - **Yedek (anlık görüntü):** her turda kitaplık taranır, Pi'de olmayanlar şifrelenip yüklenir (kesilen yükleme kaldığı
   parçadan sürer), sonra o anki durumun içerik listesi (şifreli) yazılır. Telefonda değişiklik yoksa yeni yedek yazılmaz.
   Pi eski yedekleri seyreltir (son 14 gün günlük, 8 hafta haftalık, 12 ay aylık); silinen yedek 30 gün çöpte kalır.
-- **Geri yükleme:** yedeğin içerik listesi açılır, telefonda olmayanlar indirilip çözülür ve «Klyrix Gate Sync» albümüne eklenir.
-  Telefonda hiçbir şey silinmez ya da değişmez.
+- **Yedeklenecekler (Ayarlar):** fotoğraflar hep; videolar, ses kayıtları ve müzik (Android), kişiler (rehberin tamamı, kişi
+  fotoğrafları hariç), takvim (düzenlenebilir takvimler, 5 yıl geri / 2 yıl ileri) ve klasörler isteğe bağlı. Klasör: Android'de
+  seçilen klasörler (kalıcı izin, alt klasörleriyle); iOS'ta Dosyalar'daki «Bu iPhone'da → Klyrix/Gate Sync» klasörü (iOS kalıcı
+  klasör izni vermez). Kişiler ve takvim tek bir şifreli öğe: değişmedikçe yeniden yüklenmez. Seçili bir türe erişilemezse
+  (izin düştü, klasör silindi) tur durur — o tür eksik bir yedek yazılmaz.
+- **Geri yükleme:** yedeğin içerik listesi açılır, her tür ayrı geri yüklenir; telefonda hiçbir şey silinmez ya da üzerine
+  yazılmaz. Fotoğraf / video «Klyrix Gate Sync», ses «Klyrix Gate Sync Ses» albümüne; dosyalar seçilen hedef klasöre
+  (yedekteki klasör yapısıyla); kişiler ve takvim etkinlikleri yalnız eksikse (ad + telefon / e-posta, başlık + başlangıç
+  eşleşmesi; etkinlikler «Klyrix Gate Sync» takvimine). Yedek bu telefonunsa telefonda duran fotoğraf / ses yinelenmez.
 - **Arka plan:** `expo-background-task` (Android yaklaşık saatte bir — sistem pil için erteleyebilir; iOS sistemin seçtiği zamanlarda, çoğunlukla gece).
-  Ayarlar: kendiliğinden yedekle, yalnız Wi-Fi'da, videolar.
+  Ayarlar: kendiliğinden yedekle, yalnız Wi-Fi'da.
 - **Ağ:** Pi'ye ev ağında ya da Ev VPN'iyle HTTP (port 8095) ile bağlanılır — panelin kendisi gibi; içerik zaten şifreli.
 
 ## Klasörler
@@ -25,8 +32,8 @@ listelenir, telefona geri yüklenir ve silinir. Pi tarafı: `backend/src/mobile.
 | Yol | İçerik |
 | --- | --- |
 | `src/core/` | Saf TypeScript: şifreleme biçimi ve kurtarma anahtarı (`crypto.ts`), Pi v2 istemcisi (`api.ts`), yedek (`snapshot.ts`), geri yükleme (`restore.ts`), eşleştirme kodu (`protocol.ts`) — Node testleriyle aynı kod |
-| `src/platform/` | Expo bağdaştırıcıları: AES-GCM (`expo-crypto`), ağ (`expo/fetch`), medya kitaplığı ve galeri, güvenli depo, kimlik önbelleği, arka plan görevi |
-| `src/ui/` | Kurulum (anahtar adımı dahil), Yedekleme, Yedekler (liste, ayrıntı, geri yükleme, çöp), Ayarlar |
+| `src/platform/` | Expo bağdaştırıcıları: AES-GCM (`expo-crypto`), ağ (`expo/fetch`), medya kitaplığı ve galeri, klasörler (SAF), kişiler (`expo-contacts`), takvim (`expo-calendar`), güvenli depo, kimlik önbelleği, arka plan görevi |
+| `src/ui/` | Kurulum (anahtar adımı dahil), Yedekleme, Yedekler (liste, ayrıntı, tür tür geri yükleme, çöp), Ayarlar (yedeklenecekler) |
 | `test/core.test.ts`, `test/v2.test.ts` | Birim testleri (`npm test`; şifreleme Node'un AES-GCM'iyle aynı biçimde) |
 | `test/pi-v2.ts` | Gerçek Pi'ye karşı uçtan uca test (`PANEL=http://<pi>:3001 STORE=<disk>/.klyrix-mobil node test/pi-v2.ts`, Pi'de) |
 | `preview/`, `scripts/preview.mjs` | Web önizlemesi (yalnız geliştirme, sahte Pi verisi) |
@@ -63,4 +70,5 @@ ucunu yeni sürüm yayılana dek açık tutar ve panelde o telefonları ayrı li
 ## Durum
 
 Çekirdek Node'da birim testlerinden ve gerçek Pi arka ucuna karşı uçtan uca testten (test kabı) geçti; ekranlar web
-önizlemesinde denetlendi. Gerçek telefonda (expo-crypto AES-GCM, medya izni, galeriye yazma, arka plan görevi) henüz denenmedi.
+önizlemesinde denetlendi. Gerçek telefonda (expo-crypto AES-GCM, medya / kişi / takvim izinleri, klasör seçimi, galeriye ve
+rehbere yazma, arka plan görevi) henüz denenmedi.

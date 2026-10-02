@@ -1,10 +1,14 @@
 // Bir yedekleme turu (ön planda düğmeyle ya da arka plan görevinde): koşullar (eşleşme, anahtar, izin, Wi-Fi) → Pi'ye bağlan →
 // tara → Pi'de olmayanları şifreleyip yükle → telefondaki durum değiştiyse anlık görüntü (yedek) yaz → özeti kaydet.
-// Aynı anda tek tur. Telefonda hiçbir şey silinmez ya da değişmez.
+// Kaynaklar ayardan: fotoğraf (+ video, ses), klasörler, kişiler, takvim. Seçili bir kaynağa erişilemezse (izin düştü,
+// klasör yok) tur durur — o tür eksik bir yedek yazılmaz. Aynı anda tek tur. Telefonda hiçbir şey silinmez ya da değişmez.
 import { Platform } from 'react-native';
 import * as Network from 'expo-network';
 import { PiError } from './core/client.ts';
 import { runSnapshot, type SnapshotProgress, type SnapshotResult } from './core/snapshot.ts';
+import { calendarSource } from './platform/calendar.ts';
+import { contactsSource } from './platform/contacts.ts';
+import { folderSource } from './platform/folders.ts';
 import { loadIdCache } from './platform/idcache.ts';
 import { mediaAccess, mediaSource } from './platform/media.ts';
 import { loadLastSnap, loadPairing, loadSettings, saveLast, saveLastSnap } from './platform/store.ts';
@@ -33,7 +37,13 @@ export function backupOnce(o: { deadline?: number; background?: boolean; onProgr
     const last = await loadLastSnap();
     let phase: SnapshotProgress['phase'] = 'scan';
     try {
-      const r = await runSnapshot(api, cipher, [mediaSource({ videos: s.videos })], {
+      const sources = [
+        mediaSource({ videos: s.videos, audio: s.audio && Platform.OS === 'android' }),
+        ...(s.folders.length ? [folderSource(s.folders)] : []),
+        ...(s.contacts ? [contactsSource()] : []),
+        ...(s.calendar ? [calendarSource()] : []),
+      ];
+      const r = await runSnapshot(api, cipher, sources, {
         device: pr.deviceName, platform: Platform.OS, deadline: o.deadline, shouldStop: () => stopFlag, ids,
         onProgress: p => { phase = p.phase; o.onProgress?.(p); },
         // Telefondaki durum bu telefonun son yedeğiyle aynıysa ve o yedek Pi'de duruyorsa yenisi yazılmaz

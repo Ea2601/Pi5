@@ -17,7 +17,9 @@
               "NSExceptionAllowsInsecureHTTPLoads": true
             }
           }
-        }
+        },
+        "UIFileSharingEnabled": true,
+        "LSSupportsOpeningDocumentsInPlace": true
       }
     },
     "android": {
@@ -41,12 +43,26 @@
         "expo-media-library",
         {
           "photosPermission": "Fotoğraf ve videolarınızı Klyrix Gate'e yedeklemek için okunur; hiçbiri silinmez ya da değiştirilmez.",
-          "savePhotosPermission": false,
+          "savePhotosPermission": "Yedekten geri yüklenen fotoğraf ve videolar galerinize eklenir.",
           "isAccessMediaLocationEnabled": true,
           "granularPermissions": [
             "photo",
-            "video"
+            "video",
+            "audio"
           ]
+        }
+      ],
+      [
+        "expo-contacts",
+        {
+          "contactsPermission": "Kişilerinizi Klyrix Gate'e şifreli yedeklemek ve yedekten geri yüklemek için kullanılır."
+        }
+      ],
+      [
+        "expo-calendar",
+        {
+          "calendarPermission": "Takviminizi Klyrix Gate'e şifreli yedeklemek ve yedekten geri yüklemek için kullanılır.",
+          "remindersPermission": false
         }
       ],
       [

@@ -14,7 +14,8 @@ export interface SourceItem {
   created: number | null;   // ms
   modified: number | null;  // ms
   album?: string;
-  path?: string;            // klasördeki göreli yol (S2b)
+  path?: string;            // klasör yedeğinde "<klasör>/<alt klasör>/<ad>"
+  count?: number;           // tek öğedeki kayıt sayısı (kişiler, takvim etkinlikleri)
 }
 export interface Reader { size: number; read(offset: number, length: number): Promise<Uint8Array>; close?(): void }
 export interface Source {
@@ -138,7 +139,8 @@ export async function runSnapshot(api: Api, c: Cipher, sources: Source[], o: Sna
   for (const x of manifest.items) {
     stats.bytes += x.size;
     if (x.kind === 'photo') stats.photos++; else if (x.kind === 'video') stats.videos++; else if (x.kind === 'audio') stats.audio++;
-    else if (x.kind === 'file') stats.files++; else if (x.kind === 'contacts') stats.contacts++; else if (x.kind === 'calendar') stats.events++;
+    else if (x.kind === 'file') stats.files++;
+    else if (x.kind === 'contacts') stats.contacts += x.count ?? 1; else if (x.kind === 'calendar') stats.events += x.count ?? 1;
   }
   const { id } = await api.createSnapshot({ manifest: mid, objects: [...new Set(stored.map(x => x.id)), mid], stats });
   p.phase = 'done'; emit();

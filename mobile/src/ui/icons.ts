@@ -2,10 +2,13 @@
 // paketine koyuyordu (paket 1,6 MB → 4 MB). Yeni ikon gerekirse buraya ekleyin.
 export { default as Archive } from 'lucide-react-native/icons/archive';
 export { default as ArchiveRestore } from 'lucide-react-native/icons/archive-restore';
+export { default as CalendarDays } from 'lucide-react-native/icons/calendar-days';
 export { default as Check } from 'lucide-react-native/icons/check';
 export { default as ChevronLeft } from 'lucide-react-native/icons/chevron-left';
+export { default as Contact } from 'lucide-react-native/icons/contact';
 export { default as Eye } from 'lucide-react-native/icons/eye';
 export { default as Film } from 'lucide-react-native/icons/film';
+export { default as FolderOpen } from 'lucide-react-native/icons/folder-open';
 export { default as HardDriveUpload } from 'lucide-react-native/icons/hard-drive-upload';
 export { default as ImageIcon } from 'lucide-react-native/icons/image';
 export { default as Info } from 'lucide-react-native/icons/info';
@@ -14,8 +17,10 @@ export { default as KeyRound } from 'lucide-react-native/icons/key-round';
 export { default as Lock } from 'lucide-react-native/icons/lock';
 export { default as Monitor } from 'lucide-react-native/icons/monitor';
 export { default as Moon } from 'lucide-react-native/icons/moon';
+export { default as Music } from 'lucide-react-native/icons/music';
 export { default as Palette } from 'lucide-react-native/icons/palette';
 export { default as Play } from 'lucide-react-native/icons/play';
+export { default as Plus } from 'lucide-react-native/icons/plus';
 export { default as QrCode } from 'lucide-react-native/icons/qr-code';
 export { default as RefreshCw } from 'lucide-react-native/icons/refresh-cw';
 export { default as RotateCcw } from 'lucide-react-native/icons/rotate-ccw';

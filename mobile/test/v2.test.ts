@@ -9,7 +9,7 @@ import {
 } from '../src/core/crypto.ts';
 import type { Api, Snapshot } from '../src/core/api.ts';
 import { runSnapshot, type Source, type SourceItem } from '../src/core/snapshot.ts';
-import { loadManifest, restoreItems, type Sink } from '../src/core/restore.ts';
+import { downloadItem, loadManifest, restoreItems, type Sink } from '../src/core/restore.ts';
 
 export function nodeCipher(key: Uint8Array): Cipher {
   return {
@@ -176,6 +176,25 @@ test('kimlik önbelleği ve değişiklik yoksa yeni anlık görüntü yazılmaz'
   const r4 = await runSnapshot(pi.api, c, [memSource([])], { device: 'T', platform: 'android' });
   assert.equal(r4.empty, true);
   assert.equal(r4.snapshotId, null);
+});
+
+test('kişiler / takvim: tek öğede kayıt sayısı istatistiğe girer, küçük öğe bütün olarak indirilir', async () => {
+  const c = nodeCipher(key());
+  const pi = fakePi();
+  const json = new TextEncoder().encode(JSON.stringify({ v: 1, contacts: [{ givenName: 'Ayşe' }, { givenName: 'Ali' }] }));
+  const files = [
+    { item: { kind: 'contacts', src: 'contacts:abc', name: 'Kişiler.json', created: null, modified: null, count: 2 } as SourceItem, data: json },
+    { item: { kind: 'calendar', src: 'calendar:def', name: 'Takvim.json', created: null, modified: null, count: 40 } as SourceItem, data: new Uint8Array(10) },
+    { item: { kind: 'file', src: 'content://x/1', name: 'a.pdf', path: 'Belgeler/alt/a.pdf', created: null, modified: 5 } as SourceItem, data: new Uint8Array(3) },
+  ];
+  await runSnapshot(pi.api, c, [memSource(files)], { device: 'T', platform: 'android' });
+  const s = pi.snaps[0].stats;
+  assert.deepEqual([s.contacts, s.events, s.files, s.items], [2, 40, 1, 3]);
+  const m = await loadManifest(pi.api, c, (await pi.api.snapshots())[0]);
+  const ci = m.items.find(x => x.kind === 'contacts')!;
+  assert.equal(ci.count, 2);
+  assert.equal(m.items.find(x => x.kind === 'file')!.path, 'Belgeler/alt/a.pdf');
+  assert.deepEqual(await downloadItem(pi.api, c, ci), json);
 });
 
 test('yarıda kalınca anlık görüntü yazılmaz; sonraki tur kaldığı parçadan sürer', async () => {

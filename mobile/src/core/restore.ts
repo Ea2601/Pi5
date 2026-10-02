@@ -2,7 +2,7 @@
 // platformun yazıcısına verir (galeride "Klyrix/Gate Sync" albümü, klasör …). Varsayılan: telefonda zaten olanlar atlanır.
 import type { Api, Snapshot } from './api.ts';
 import { PiError } from './client.ts';
-import { chunkAad, chunkAt, chunkCount, fromUtf8, openBytes, type Cipher } from './crypto.ts';
+import { chunkAad, chunkAt, chunkCount, fromUtf8, openBytes, sealedSize, type Cipher } from './crypto.ts';
 import type { Manifest, ManifestItem } from './snapshot.ts';
 
 export async function loadManifest(api: Api, c: Cipher, s: Snapshot): Promise<Manifest> {
@@ -17,6 +17,11 @@ export async function loadManifest(api: Api, c: Cipher, s: Snapshot): Promise<Ma
   }
   if (m?.v !== 1 || !Array.isArray(m.items)) throw new Error('Yedeğin içerik listesi tanınmadı');
   return m;
+}
+
+// Küçük öğenin (kişiler, takvim) tamamı bellekte: indir + çöz
+export async function downloadItem(api: Api, c: Cipher, item: ManifestItem): Promise<Uint8Array> {
+  return openBytes(c, item.id, await api.getRange(item.id, 0, sealedSize(item.size)));
 }
 
 export interface Writer { write(bytes: Uint8Array): Promise<void>; finish(): Promise<void>; abort(): Promise<void> }

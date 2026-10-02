@@ -1,4 +1,4 @@
-// Ayarlar sekmesi: yedekleme tercihleri, görünüm (Sistem / Koyu / Açık — panelin iki teması), kişi ve telefonları,
+// Ayarlar sekmesi: yedekleme tercihleri, yedeklenecekler (ContentCard), görünüm (Sistem / Koyu / Açık — panelin iki teması), kişi ve telefonları,
 // şifreleme (kurtarma anahtarını gösterme), Pi bağlantısı, hakkında, eşleştirmeyi kaldırma (kırmızı).
 import { useState } from 'react';
 import { Alert, Platform, ScrollView, Text } from 'react-native';
@@ -10,6 +10,7 @@ import { dropIdCache } from '../platform/idcache.ts';
 import { forgetPairing, loadKey, type Settings, type ThemePref } from '../platform/store.ts';
 import { setAutoBackup } from '../platform/task.ts';
 import { when } from './BackupTab.tsx';
+import { ContentCard } from './ContentCard.tsx';
 import { APP_NAME } from './Header.tsx';
 import { Btn, Card, KV, Segmented, ToggleRow } from './kit.tsx';
 import type { PiState } from './Main.tsx';
@@ -51,13 +52,14 @@ export function SettingsTab({ pairing, settings, onSettings, pi, onForget }: {
       <Card title="Yedekleme" icon={<HardDriveUpload size={18} color={ic} />}>
         <ToggleRow label="Kendiliğinden yedekle" hint="Arka planda, sistemin uygun gördüğü zamanlarda" value={settings.auto} onChange={v => onSettings({ auto: v })} />
         <ToggleRow label="Yalnız Wi-Fi'da" value={settings.wifiOnly} onChange={v => onSettings({ wifiOnly: v })} />
-        <ToggleRow label="Videoları da yedekle" value={settings.videos} onChange={v => onSettings({ videos: v })} />
         <Text style={s.small}>
           {Platform.OS === 'ios'
             ? 'iOS arka planda yedeklemeyi sistemin seçtiği zamanlarda (çoğunlukla gece, şarjdayken) kısa süreler için çalıştırır; büyük arşivler için uygulamayı açık tutun.'
             : 'Android arka planda yaklaşık saatte bir yedekler (sistem pil için erteleyebilir); pil tasarrufu uygulamayı kısıtlarsa açık tutun.'}
         </Text>
       </Card>
+
+      <ContentCard settings={settings} onSettings={onSettings} />
 
       <Card title="Görünüm" icon={<Palette size={18} color={ic} />}>
         <Segmented<ThemePref> value={pref} onChange={setPref} options={[

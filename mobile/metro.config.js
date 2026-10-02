@@ -10,7 +10,7 @@ if (process.env.KLYRIX_PREVIEW) {
   const mocks = {
     'expo-secure-store': 'secure-store', 'expo-media-library': 'media-library', 'expo-camera': 'camera',
     'expo-background-task': 'background-task', 'expo-task-manager': 'task-manager', 'expo-network': 'network',
-    'expo-device': 'device', 'expo-file-system': 'file-system',
+    'expo-device': 'device', 'expo-file-system': 'file-system', 'expo-contacts': 'contacts', 'expo-calendar': 'calendar',
   };
   const upstream = config.resolver.resolveRequest;
   config.resolver.resolveRequest = (ctx, name, platform) => {

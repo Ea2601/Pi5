@@ -1,22 +1,24 @@
-// Yedekler sekmesi: kişinin yedekleri (bu telefonun ve kişinin diğer telefonlarının), ayrıntı, telefona geri yükleme,
-// çöpe taşıma; çöpte 30 gün içinde geri alma. Pi eski yedekleri seyreltir (backend mobileStore.ts).
+// Yedekler sekmesi: kişinin yedekleri (bu telefonun ve kişinin diğer telefonlarının), ayrıntı, telefona geri yükleme
+// (RestorePanel: her tür ayrı), çöpe taşıma; çöpte 30 gün içinde geri alma. Pi eski yedekleri seyreltir (backend mobileStore.ts).
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Alert, Pressable, ScrollView, Text, View } from 'react-native';
-import { Archive, ArchiveRestore, ChevronLeft, Film, ImageIcon, RotateCcw, Square, Trash } from './icons.ts';
-import type { Pairing2, Snapshot } from '../core/api.ts';
+import { Archive, ChevronLeft, Film, ImageIcon, RotateCcw, Trash } from './icons.ts';
+import type { Pairing2, Snapshot, SnapshotStats } from '../core/api.ts';
 import { fmtBytes } from '../core/protocol.ts';
-import { loadManifest, restoreItems, type RestoreProgress, type RestoreResult } from '../core/restore.ts';
-import type { ManifestItem } from '../core/snapshot.ts';
-import { gallerySink, RESTORE_ALBUM } from '../platform/media.ts';
 import { openSession, type Session } from '../session.ts';
 import { when } from './BackupTab.tsx';
 import { Btn, Card, Chip, KV, Segmented } from './kit.tsx';
 import type { PiState } from './Main.tsx';
+import { RestorePanel } from './RestorePanel.tsx';
 import { FONT } from './theme.ts';
 import { useTheme } from './ThemeContext.tsx';
 
 const msg = (e: unknown) => (e instanceof Error ? e.message : String(e));
 const daysLeft = (iso: string | null) => (iso ? Math.max(0, Math.ceil((Date.parse(iso) - Date.now()) / 86_400_000)) : 0);
+// Fotoğraf / video dışındaki türler (varsa): "Ses 12 · Dosya 340 · Kişi 312 · Etkinlik 85"
+const extras = (st: SnapshotStats) => [
+  st.audio ? `Ses ${st.audio}` : '', st.files ? `Dosya ${st.files}` : '', st.contacts ? `Kişi ${st.contacts}` : '', st.events ? `Etkinlik ${st.events}` : '',
+].filter(Boolean).join(' · ');
 
 export function SnapshotsTab({ pairing, pi }: { pairing: Pairing2; pi: PiState }) {
   const { s, p } = useTheme();
@@ -67,6 +69,7 @@ export function SnapshotsTab({ pairing, pi }: { pairing: Pairing2; pi: PiState }
 
 function SnapRow({ snap, mine, onPress }: { snap: Snapshot; mine: boolean; onPress: () => void }) {
   const { s, p } = useTheme();
+  const more = extras(snap.stats);
   return (
     <Pressable onPress={onPress} accessibilityRole="button" style={({ pressed }) => [s.card, { gap: 8, opacity: pressed ? 0.85 : 1 }]}>
       <View style={s.row}>
@@ -85,54 +88,20 @@ function SnapRow({ snap, mine, onPress }: { snap: Snapshot; mine: boolean; onPre
         </View>
         <Text style={[s.p, { flex: 1, textAlign: 'right', fontFamily: FONT.medium, color: p.text }]}>{fmtBytes(snap.stats.bytes)}</Text>
       </View>
+      {more ? <Text style={s.small}>{more}</Text> : null}
       {snap.deletedAt ? <Text style={s.small}>{daysLeft(snap.purgeAt)} gün sonra kalıcı olarak silinir</Text> : null}
     </Pressable>
   );
 }
 
-type Phase = 'idle' | 'opening' | 'counting' | 'ready' | 'running' | 'done';
 function SnapshotDetail({ snap, pairing, onBack, onChanged }: { snap: Snapshot; pairing: Pairing2; onBack: () => void; onChanged: () => void }) {
   const { s, p } = useTheme();
   const mine = snap.deviceId === pairing.deviceId;
-  const [phase, setPhase] = useState<Phase>('idle');
-  const [total, setTotal] = useState(0);
-  const [missing, setMissing] = useState<ManifestItem[]>([]);
-  const [prog, setProg] = useState<RestoreProgress | null>(null);
-  const [result, setResult] = useState<RestoreResult | null>(null);
   const [busy, setBusy] = useState(false);
+  const [restoring, setRestoring] = useState(0);
   const [err, setErr] = useState('');
-  const stop = useRef(false);
   const session = useRef<Session | null>(null);
-  const sink = useRef(gallerySink({ sameDevice: mine }));
   const sess = async () => (session.current ??= await openSession());
-
-  const prepare = async () => {
-    setErr(''); setPhase('opening');
-    try {
-      const ss = await sess();
-      const m = await loadManifest(ss.api, ss.cipher, snap);
-      setTotal(m.items.length);
-      setPhase('counting');
-      const out: ManifestItem[] = [];
-      for (const it of m.items) if (!(await sink.current.exists(it))) out.push(it);
-      setMissing(out);
-      setPhase('ready');
-    } catch (e) {
-      setErr(msg(e));
-      setPhase('idle');
-    }
-  };
-  const run = async () => {
-    stop.current = false; setErr(''); setProg(null); setPhase('running');
-    try {
-      const ss = await sess();
-      setResult(await restoreItems(ss.api, ss.cipher, missing, sink.current, { onlyMissing: false, shouldStop: () => stop.current, onProgress: setProg }));
-      setPhase('done');
-    } catch (e) {
-      setErr(msg(e));
-      setPhase('ready');
-    }
-  };
   const act = async (f: (ss: Session) => Promise<void>) => {
     setBusy(true); setErr('');
     try {
@@ -148,17 +117,19 @@ function SnapshotDetail({ snap, pairing, onBack, onChanged }: { snap: Snapshot; 
     { text: 'Vazgeç', style: 'cancel' },
     { text: 'Çöpe taşı', style: 'destructive', onPress: () => void act(ss => ss.api.deleteSnapshot(snap.id)) },
   ]);
-
-  const running = phase === 'running';
-  const pct = prog && prog.total ? Math.round(((prog.done + prog.skipped + prog.failed) / prog.total) * 100) : 0;
+  const st = snap.stats;
   return (
     <ScrollView style={s.screen} contentContainerStyle={s.scroll}>
-      <Btn kind="neutral" icon={ChevronLeft} label="Yedekler" disabled={running} onPress={onBack} style={{ alignSelf: 'flex-start' }} />
+      <Btn kind="neutral" icon={ChevronLeft} label="Yedekler" disabled={restoring > 0} onPress={onBack} style={{ alignSelf: 'flex-start' }} />
       <Card title={when(snap.createdAt)} icon={<Archive size={18} color={p.textSecondary} />}>
         <KV label="Telefon" value={mine ? `${snap.device} (bu telefon)` : snap.device} />
-        <KV label="Fotoğraf" value={String(snap.stats.photos)} />
-        <KV label="Video" value={String(snap.stats.videos)} />
-        <KV label="Boyut" value={fmtBytes(snap.stats.bytes)} />
+        <KV label="Fotoğraf" value={String(st.photos)} />
+        <KV label="Video" value={String(st.videos)} />
+        {st.audio ? <KV label="Ses" value={String(st.audio)} /> : null}
+        {st.files ? <KV label="Dosya" value={String(st.files)} /> : null}
+        {st.contacts ? <KV label="Kişi" value={String(st.contacts)} /> : null}
+        {st.events ? <KV label="Takvim etkinliği" value={String(st.events)} /> : null}
+        <KV label="Boyut" value={fmtBytes(st.bytes)} />
       </Card>
 
       {snap.deletedAt ? (
@@ -169,44 +140,9 @@ function SnapshotDetail({ snap, pairing, onBack, onChanged }: { snap: Snapshot; 
         </Card>
       ) : (
         <>
-          <Card title="Telefona geri yükle" icon={<ArchiveRestore size={18} color={p.textSecondary} />}>
-            <Text style={s.p}>
-              {mine
-                ? `Bu telefonda artık olmayan fotoğraf ve videolar «${RESTORE_ALBUM}» albümüne eklenir; telefonda duranlar yinelenmez.`
-                : `Başka bir telefonun (${snap.device}) yedeği: öğelerin hepsi bu telefonun «${RESTORE_ALBUM}» albümüne eklenir.`}
-            </Text>
-            {phase === 'idle' ? <Btn kind="on" icon={ArchiveRestore} label="Geri yüklemeyi hazırla" onPress={() => void prepare()} /> : null}
-            {phase === 'opening' ? <Text style={s.h}>Yedeğin içerik listesi açılıyor…</Text> : null}
-            {phase === 'counting' ? <Text style={s.h}>Telefondakiler karşılaştırılıyor…</Text> : null}
-            {phase === 'ready' ? (
-              <>
-                <Text style={s.h}>{mine ? `${total} öğeden ${missing.length} tanesi bu telefonda yok.` : `${total} öğe geri yüklenecek.`}</Text>
-                <Btn kind="on" icon={ArchiveRestore} label={missing.length ? `${missing.length} öğeyi geri yükle` : 'Geri yüklenecek öğe yok'}
-                  disabled={!missing.length} onPress={() => void run()} />
-              </>
-            ) : null}
-            {running ? (
-              <>
-                <Text style={s.h}>Geri yükleniyor {prog ? prog.done + prog.failed : 0} / {missing.length}</Text>
-                <View style={s.bar}><View style={[s.barFill, { width: `${pct}%` }]} /></View>
-                {prog?.current ? <Text style={s.small} numberOfLines={1}>{prog.current}</Text> : null}
-                <Text style={s.small}>Geri yükleme sürerken uygulamayı açık tutun.</Text>
-                <Btn kind="off" icon={Square} label="Durdur" onPress={() => { stop.current = true; }} />
-              </>
-            ) : null}
-            {phase === 'done' && result ? (
-              <>
-                <KV label="Geri yüklenen" value={`${result.restored} öğe`} tone="ok" />
-                {result.failed ? <KV label="Geri yüklenemeyen" value={String(result.failed)} tone="bad" /> : null}
-                {result.error ? <Text style={s.small}>{result.error}</Text> : null}
-                {result.stopped ? <Text style={s.small}>Durduruldu; yeniden hazırlayınca kalanlar geri yüklenir.</Text> : null}
-                <Text style={s.small}>Fotoğraflar uygulamasında «{RESTORE_ALBUM}» albümüne bakın.</Text>
-                <Btn kind="neutral" label="Yeniden hazırla" onPress={() => { setResult(null); void prepare(); }} />
-              </>
-            ) : null}
-            {err ? <Text style={s.err}>{err}</Text> : null}
-          </Card>
-          <Btn kind="off" icon={Trash} label="Çöpe taşı" busy={busy} disabled={running} onPress={toTrash} />
+          <RestorePanel snap={snap} mine={mine} session={sess} onBusy={b => setRestoring(n => Math.max(0, n + (b ? 1 : -1)))} />
+          <Btn kind="off" icon={Trash} label="Çöpe taşı" busy={busy} disabled={restoring > 0} onPress={toTrash} />
+          {err ? <Text style={s.err}>{err}</Text> : null}
         </>
       )}
     </ScrollView>
