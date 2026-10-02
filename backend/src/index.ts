@@ -5324,6 +5324,7 @@ function curlGet(req: CurlRequest): Promise<string> {
       if (code !== 0) return reject(new Error(`bağlantı hatası (curl çıkış kodu ${code})`));
       resolve(out.trim());
     });
+    child.stdin.on('error', () => { /* curl yapılandırmayı okumadan çıktı (EPIPE): sonuç 'close' ile */ });
     child.stdin.end(config);
   });
 }

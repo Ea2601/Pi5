@@ -73,6 +73,7 @@ function runInput(cmd: string, args: string[], input: string, timeout = 10000): 
       if (code === 0) resolve(Buffer.concat(out));
       else reject(new Error(`${cmd} (${code}): ${err.trim()}`));
     });
+    p.stdin.on('error', () => { /* komut stdin'i okumadan çıktı (EPIPE): sonuç 'close' ile */ });
     p.stdin.end(input);
   });
 }

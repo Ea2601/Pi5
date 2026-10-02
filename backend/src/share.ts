@@ -59,6 +59,7 @@ async function run(args: string[], input?: string, timeout = 60000): Promise<{ k
       else if (code !== 0) reject(new Error(se.trim().split('\n').pop() || `share.sh çıkış kodu ${code}`));
       else resolve(so);
     });
+    p.stdin.on('error', () => { /* betik stdin'i okumadan çıktı (EPIPE): sonuç 'close' ile */ });
     p.stdin.end(input ?? '');
   });
   const kv: Record<string, string> = {};
@@ -144,6 +145,7 @@ async function nft(script: string): Promise<void> {
     p.stderr.on('data', d => { se += d; });
     p.on('error', reject);
     p.on('close', c => (c === 0 ? resolve() : reject(new Error(se.trim() || `nft çıkış ${c}`))));
+    p.stdin.on('error', () => { /* nft stdin'i okumadan çıktı (EPIPE): sonuç 'close' ile */ });
     p.stdin.end(script);
   });
 }

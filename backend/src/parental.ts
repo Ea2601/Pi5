@@ -361,6 +361,9 @@ function nft(args: string[], input?: string): Promise<{ code: number; out: strin
     p.stderr.on('data', d => { out += d; });
     p.on('error', e => resolve({ code: -1, out: String(e.message) }));
     p.on('close', code => resolve({ code: code ?? -1, out }));
+    // nft stdin'i okumadan çıkarsa (ör. `list table` yoksa hemen çıkar) yazma EPIPE verir; dinleyicisiz 'error' olayı tüm
+    // backend'i düşürüyordu (canlıda 30 sn'lik zamanlayıcıda 26 saatte 9 kez). Sonuç yine 'close' ile bildirilir.
+    p.stdin.on('error', () => { /* nft stdin'i okumadan çıktı */ });
     p.stdin.end(input ?? '');
   });
 }

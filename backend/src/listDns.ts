@@ -245,6 +245,7 @@ function ipsetAdd(set: string, ips: string[]): Promise<void> {
     p.stderr.on('data', d => { err += d; });
     p.on('error', e => { clearTimeout(t); reject(e); });
     p.on('close', code => { clearTimeout(t); if (code === 0) resolve(); else reject(new Error(err.trim() || `çıkış ${code}`)); });
+    p.stdin.on('error', () => { /* ipset stdin'i okumadan çıktı (EPIPE): sonuç 'close' ile */ });
     p.stdin.end(ips.map(ip => `add ${set} ${ip}\n`).join(''));
   });
 }
