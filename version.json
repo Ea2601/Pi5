@@ -1,6 +1,6 @@
 {
-  "version": "2.24.120",
-  "build": 197,
+  "version": "2.24.121",
+  "build": 198,
   "date": "2026-10-02",
   "changelog": [
     "Klyrix/Gate Sync artık fotoğraf ve videoların yanında başka verileri de yedekliyor (uygulamanın yeni sürümüyle). Ayarlar → Yedeklenecekler'den seçilir; varsayılan olarak hepsi kapalıdır. Seçilebilenler: ses kayıtları ve müzik (Android), kişiler, takvim ve klasörler. Kişiler için rehberin tamamı yedeklenir, kişi fotoğrafları hariç. Takvim için kendi takvimleriniz 5 yıl geriye ve 2 yıl ileriye kadar yedeklenir; resmî tatil gibi abonelikler alınmaz. Android'de istediğiniz klasörü (Belgeler, İndirilenler, WhatsApp…) alt klasörleriyle ekleyebilirsiniz. iPhone'da bunun yerine Dosyalar uygulamasındaki «Klyrix/Gate Sync» klasörü kullanılır. Her şey yine telefonda şifrelenip gönderilir. Kişiler ve takvim değişmedikçe yeniden yüklenmez. Geri yükleme artık türe göre ayrı ayrı yapılıyor ve telefondaki hiçbir şeyi silmez ya da üzerine yazmaz. Fotoğraf ve videolar «Klyrix Gate Sync», ses dosyaları «Klyrix Gate Sync Ses» albümüne eklenir. Dosyalar seçtiğiniz klasöre eski klasör yapısıyla yazılır. Kişiler ve takvim etkinliklerinden yalnız telefonda olmayanlar eklenir; aynı ad ve telefona (ya da aynı başlık ve saate) sahip kayıt atlanır ve eklemeden önce kaç kayıt ekleneceği gösterilir. Seçili bir türe erişilemezse (izin geri alındı, klasör silindi) yedekleme durur ve nedenini söyler, böylece o tür eksik bir yedek yazılmaz. iPhone'da geri yüklenen fotoğrafların galeriye yazılabilmesi için gereken izin metni de eklendi. Telefonda henüz denenmedi.",
