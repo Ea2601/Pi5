@@ -1,0 +1,124 @@
+/* Koruma Şablonları (TemplatesPanel.tsx; tembel sekme). Yalnız tema değişkenleri — açık tema index.css'teki karşılıklarıyla uyar.
+   Düğme rengi = ne yaptığı: Uygula / Aç yeşil (.btn-on), Geri al / Kapat kırmızı (.btn-off — App.css). Mobil önce; 1024 px'te iki sütun. */
+.tp-lead { margin: 4px 0 0; font-size: 13px; line-height: 1.6; color: var(--text-secondary); }
+.tp-lead strong { color: var(--text-primary); }
+.tp-grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: 14px; margin-top: 14px; align-items: start; }
+@media (min-width: 1024px) { .tp-grid { grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); } }
+.tp-card { padding: 16px; min-width: 0; }
+.tp-ss { margin-top: 14px; }
+.tp-card-head { display: flex; align-items: center; gap: 8px; min-width: 0; flex-wrap: wrap; }
+.tp-card-head h4 { display: flex; align-items: center; gap: 8px; margin: 0; font-size: 15px; color: var(--text-primary); min-width: 0; }
+.tp-card-head h4 > svg { flex-shrink: 0; color: var(--accent-color); }
+.tp-state {
+  margin-left: auto; padding: 2px 9px; border-radius: 999px; font-size: 11px; font-weight: 600; white-space: nowrap;
+  color: var(--text-primary); background: var(--bg-surface); border: 1px solid var(--panel-border);
+}
+.tp-state.is-on { color: var(--success-ink); border-color: color-mix(in srgb, var(--success-color) 40%, transparent); }
+.tp-state.is-warn { color: var(--warning-ink); border-color: color-mix(in srgb, var(--warning-color) 45%, transparent); }
+.tp-state.is-busy { display: inline-flex; align-items: center; gap: 5px; border-color: var(--accent-color); }
+.tp-desc { margin: 8px 0 4px; font-size: 13px; line-height: 1.55; color: var(--text-secondary); overflow-wrap: anywhere; }
+.tp-hint { margin: 6px 0 0; font-size: 12px; line-height: 1.5; color: var(--text-secondary); overflow-wrap: anywhere; }
+.tp-hint.is-bad { color: var(--danger-color); }
+.tp-muted { font-size: 12px; color: var(--text-secondary); }
+.tp-empty { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; font-size: 13px; color: var(--text-secondary); }
+.tp-empty .btn-sm { display: inline-flex; align-items: center; gap: 6px; }
+.tp-gaps { margin-top: 10px; }
+
+/* Adımlar (sıralı: kime → ne → ek korumalar → önizle / uygula). Yalnız sıradaki adım parlak (.is-active); biten adım sönük + ✓
+   (.is-done, düzenlenebilir); kilitli adım soluk ve "Önce N. adım" (.is-locked) — DhcpWizard'ın deseni. */
+.tp-form { display: flex; flex-direction: column; gap: 12px; margin-top: 10px; }
+.tp-step { padding: 12px; border-radius: var(--radius-sm); background: var(--input-bg-soft); border: 1px solid var(--panel-border); min-width: 0; }
+.tp-step h5 { display: flex; align-items: center; gap: 8px; margin: 0 0 10px; font-size: 13px; color: var(--text-primary); }
+.tp-num {
+  display: inline-flex; align-items: center; justify-content: center; width: 20px; height: 20px; border-radius: 50%; flex-shrink: 0;
+  font-size: 11px; font-weight: 700; color: var(--text-secondary); background: var(--surface-soft);
+}
+.tp-step.is-active { border-color: var(--accent-color); box-shadow: 0 0 0 3px var(--accent-glow); }
+.tp-step.is-active .tp-num { color: var(--accent-contrast); background: var(--accent-color); }
+.tp-step.is-done .tp-num { color: var(--success-color); background: var(--success-glow); }
+.tp-step.is-locked { opacity: 0.6; }
+.tp-step.is-locked h5 { margin-bottom: 6px; color: var(--text-secondary); }
+.tp-lock { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-secondary); }
+.tp-lock svg { flex-shrink: 0; }
+
+/* Bölümlü seçim (hedef, kategori kullanımı) */
+.tp-seg { display: inline-flex; flex-wrap: wrap; gap: 4px; padding: 3px; border-radius: var(--radius-sm); background: var(--surface-soft); border: 1px solid var(--panel-border); max-width: 100%; }
+.tp-seg button {
+  display: inline-flex; align-items: center; gap: 5px; padding: 5px 10px; border: 0; border-radius: 6px; cursor: pointer;
+  font: inherit; font-size: 12px; color: var(--text-secondary); background: transparent;
+}
+.tp-seg button:hover:not(:disabled) { color: var(--text-primary); }
+.tp-seg button.is-on { color: var(--text-primary); background: var(--bg-surface); box-shadow: 0 0 0 1px var(--panel-border-hover); font-weight: 600; }
+.tp-seg button:disabled { opacity: 0.45; cursor: not-allowed; }
+.tp-seg button:focus-visible { outline: 2px solid var(--accent-ring); outline-offset: 1px; }
+.tp-seg-wide { margin-bottom: 4px; }
+
+.tp-chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0; }
+.tp-chip {
+  display: inline-flex; align-items: center; gap: 5px; padding: 3px 4px 3px 8px; border-radius: 999px; font-size: 12px; max-width: 100%;
+  color: var(--text-primary); background: var(--bg-surface); border: 1px solid var(--panel-border); overflow-wrap: anywhere;
+}
+.tp-chip small { color: var(--text-secondary); }
+.tp-chip button { display: inline-flex; padding: 2px; border: 0; border-radius: 50%; cursor: pointer; color: var(--text-secondary); background: transparent; }
+.tp-chip button:hover { color: var(--danger-color); }
+
+.tp-check { display: flex; gap: 8px; align-items: flex-start; padding: 6px 0; font-size: 13px; color: var(--text-primary); cursor: pointer; min-width: 0; }
+.tp-check input { flex-shrink: 0; margin-top: 3px; accent-color: var(--success-color); }
+.tp-check span { min-width: 0; overflow-wrap: anywhere; }
+.tp-check small { display: block; margin-top: 2px; font-size: 12px; line-height: 1.45; color: var(--text-secondary); }
+.tp-cat { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; padding: 6px 0; }
+.tp-cat-name { font-size: 13px; color: var(--text-primary); min-width: 120px; }
+.tp-window { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin-top: 6px; padding-top: 8px; border-top: 1px solid var(--line-soft); }
+.tp-days { display: flex; flex-wrap: wrap; gap: 4px; }
+.tp-days button {
+  min-width: 38px; padding: 4px 6px; border-radius: 6px; cursor: pointer; font: inherit; font-size: 12px;
+  color: var(--text-secondary); background: var(--bg-surface); border: 1px solid var(--panel-border);
+}
+.tp-days button.is-on { color: var(--text-primary); border-color: var(--accent-color); font-weight: 600; }
+.tp-times { display: flex; align-items: center; gap: 6px; }
+.tp-times input { width: 110px; padding: 5px 8px; border-radius: 6px; font: inherit; font-size: 13px; color: var(--text-primary); background: var(--input-bg); border: 1px solid var(--panel-border); }
+
+.tp-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.tp-actions .btn-sm { display: inline-flex; align-items: center; gap: 6px; }
+/* Kilitli nötr düğme (ör. eksik seçimde «Önizle») tıklanabilir görünmesin; dolu düğmelerin kilidi index.css'te */
+.tp .btn-outline:disabled { opacity: 0.45; cursor: not-allowed; }
+.tp-changes { list-style: none; margin: 10px 0 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.tp-changes li { display: flex; gap: 8px; align-items: flex-start; font-size: 12.5px; line-height: 1.5; color: var(--text-primary); }
+.tp-changes li > svg { flex-shrink: 0; margin-top: 3px; color: var(--success-color); }
+.tp-changes li.is-keep > svg, .tp-changes li.is-info > svg { color: var(--accent-color); }
+.tp-changes li.is-warn > svg { color: var(--warning-color); }
+.tp-changes li span { min-width: 0; overflow-wrap: anywhere; }
+
+/* Uygulanmış şablon özeti */
+.tp-applied { margin-top: 10px; }
+.tp-list { list-style: none; margin: 8px 0 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.tp-list li { display: flex; gap: 8px; align-items: flex-start; font-size: 13px; color: var(--text-primary); }
+.tp-list li > svg { flex-shrink: 0; margin-top: 3px; color: var(--success-color); }
+.tp-list li.is-dim { color: var(--text-secondary); }
+.tp-list li.is-dim > svg { color: var(--warning-color); }
+.tp-list li span { min-width: 0; overflow-wrap: anywhere; }
+.tp-foot { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; margin-top: 14px; }
+.tp-foot .btn-sm { display: inline-flex; align-items: center; gap: 6px; }
+
+/* Uyarı / bilgi kutuları */
+.tp-note {
+  display: flex; gap: 8px; align-items: flex-start; margin-top: 8px; padding: 8px 10px; border-radius: var(--radius-sm);
+  font-size: 12px; line-height: 1.5; color: var(--text-primary); background: var(--input-bg-soft); border: 1px solid var(--panel-border);
+}
+.tp-note > svg, .tp-note summary > svg { flex-shrink: 0; margin-top: 2px; color: var(--accent-color); }
+.tp-note span { min-width: 0; overflow-wrap: anywhere; }
+.tp-note.is-bad { background: var(--danger-glow); border-color: transparent; }
+.tp-note.is-bad > svg { color: var(--danger-color); }
+.tp-note.is-warn { background: var(--warning-glow); border-color: transparent; }
+.tp-note.is-warn > svg { color: var(--warning-color); }
+.tp-conf { display: block; }
+.tp-conf summary { display: flex; gap: 8px; align-items: flex-start; cursor: pointer; list-style: none; }
+.tp-conf summary::-webkit-details-marker { display: none; }
+.tp-conf ul { margin: 6px 0 0 22px; padding: 0; }
+.tp-conf li { margin: 2px 0; overflow-wrap: anywhere; }
+.tp-conf code { font-family: var(--font-mono); font-size: 11.5px; padding: 0 4px; border-radius: 4px; background: var(--surface-code); }
+
+.tp-provs { display: grid; grid-template-columns: minmax(0, 1fr); gap: 2px 16px; margin-top: 8px; }
+@media (min-width: 768px) { .tp-provs { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+.tp-locked { opacity: 0.85; }
+.tp-locked .tp-card-head h4 > svg { color: var(--text-secondary); }

@@ -11,10 +11,13 @@
 //    Kural açık olduğu sürece (saatinden bağımsız) geçerlidir.
 //  - Zamanlayıcı 30 sn'de bir durumu hesaplar, yalnız değişeni uygular. Kural değişince ve açılışta tam eşitleme.
 //  - Eski (v1) kurallar kapalı olarak yeni biçime taşınır: güncellemeyle birden devreye girmesinler.
+//  - Tüm ağ hedefi (targets.all; Koruma Şablonları — templates.ts): yalnız kategori / site ve "her zaman". Kayıtlar Pi-hole'un
+//    Default grubuna bağlanır (dns_guard_all dalının deseni); kendi grubu, istemcisi ve güvenlik duvarı kuralı yoktur.
+//    Şablonun oluşturduğu kural template_id taşır (geri alma yalnız onu ve yalnız değişmemişse siler).
 // Pi-hole kayıtları açıklamada "klyrix-ebeveyn" ile işaretlenir; piholeLists.ts'in eşitlemesi ("klyrix" / "klyrix:")
 // bunları kendisininki saymaz. Başkasının (kullanıcının) kaydına yalnız kendi grubumuz eklenir / çıkarılır.
 import { spawn } from 'child_process';
-import { dbAll, dbGet, dbRun } from './db';
+import { dbAll, dbGet, dbInsert, dbRun } from './db';
 import { isLinux } from './system';
 import { openFtl, startGravity, type Ftl } from './piholeLists';
 import { LIST_SOURCES } from './categoryLists';
@@ -25,10 +28,12 @@ export type CategoryId = 'social' | 'video' | 'gaming' | 'messaging' | 'adult' |
 export interface TimeWindow { days: Day[]; start: string; end: string }
 export interface ParentalRule {
   id: number; name: string; enabled: boolean;
-  targets: { devices: string[]; groups: number[] };
+  // all: tüm ağ (Pi-hole Default grubu) — yalnız true olarak bulunur; cihaz / grup listeleri o zaman boş
+  targets: { devices: string[]; groups: number[]; all?: true };
   blockAll: boolean; categories: CategoryId[]; sites: string[];
   mode: Mode; windows: TimeWindow[];
   legacy: boolean;   // eski sürümden taşındı (kapalı geldi, gözden geçirilmeli)
+  templateId?: number;   // Koruma Şablonları kaydı (policy_templates.id); yalnız şablonun oluşturduğu kuralda bulunur
 }
 export interface RuleStatus { active: boolean; nextChange: string | null; devices: number }
 
@@ -124,7 +129,10 @@ export function validateRule(body: any): { rule: Omit<ParentalRule, 'id' | 'lega
   const groups = [...new Set((Array.isArray(body?.targets?.groups) ? body.targets.groups : []).map(Number))] as number[];
   if (devices.some(m => !MAC.test(m))) return { error: 'Geçersiz cihaz (MAC adresi)' };
   if (groups.some(g => !Number.isInteger(g) || g <= 0)) return { error: 'Geçersiz cihaz grubu' };
-  if (!devices.length && !groups.length) return { error: 'En az bir cihaz ya da grup seçin' };
+  // Tüm ağ (yalnız açıkça true): cihaz / grup seçimiyle birlikte olamaz. Yoksa eskisi gibi en az bir hedef.
+  const all = body?.targets?.all === true;
+  if (all && (devices.length || groups.length)) return { error: 'Tüm ağ hedefi cihaz ya da grup seçimiyle birlikte kullanılamaz' };
+  if (!all && !devices.length && !groups.length) return { error: 'En az bir cihaz ya da grup seçin' };
   if (devices.length > 100 || groups.length > 50) return { error: 'Çok fazla hedef' };
   const blockAll = !!body?.blockAll;
   const categories = [...new Set(Array.isArray(body?.categories) ? body.categories : [])] as CategoryId[];
@@ -149,9 +157,13 @@ export function validateRule(body: any): { rule: Omit<ParentalRule, 'id' | 'lega
     windows.push({ days: ALL_DAYS.filter(d => days.includes(d)), start: String(w.start), end: String(w.end) });
   }
   if (mode !== 'always' && !windows.length) return { error: 'En az bir saat aralığı ekleyin' };
+  // Tüm ağda "tüm internet" modemi ve Pi'yi de keserdi; saat aralığı Pi-hole'un Default grubunu aç / kapa gerektirirdi
+  // (grup panelin değil, kapanırsa tüm evin reklam engeli de kalkar).
+  if (all && blockAll) return { error: 'Tüm ağda tüm internet engellenemez — kategori ya da site seçin' };
+  if (all && mode !== 'always') return { error: 'Tüm ağ hedefi yalnız "her zaman" ile kullanılabilir — saat aralığı için cihaz ya da grup seçin' };
   return {
     rule: {
-      name, enabled: body?.enabled === undefined ? true : !!body.enabled, targets: { devices, groups },
+      name, enabled: body?.enabled === undefined ? true : !!body.enabled, targets: all ? { devices: [], groups: [], all: true } : { devices, groups },
       blockAll, categories: blockAll ? [] : categories, sites: blockAll ? [] : sites, mode, windows: mode === 'always' ? [] : windows,
     },
   };
@@ -194,7 +206,7 @@ function ensureSchema(): Promise<void> {
     schemaReady = (async () => {
       const cols = ["name TEXT DEFAULT ''", "targets TEXT DEFAULT ''", 'block_all INTEGER DEFAULT 0', "categories TEXT DEFAULT ''",
         "sites TEXT DEFAULT ''", "windows TEXT DEFAULT ''", "schedule_mode TEXT DEFAULT 'always'", 'version INTEGER DEFAULT 1',
-        'legacy INTEGER DEFAULT 0'];
+        'legacy INTEGER DEFAULT 0', 'template_id INTEGER DEFAULT NULL'];
       for (const c of cols) await dbRun(`ALTER TABLE parental_rules ADD COLUMN ${c}`).catch(() => { /* zaten var */ });
     })();
   }
@@ -206,14 +218,16 @@ const LEGACY_CATEGORY: Record<string, CategoryId> = {
 };
 const parseJson = <T>(s: unknown, dflt: T): T => { try { const v = JSON.parse(String(s || '')); return v ?? dflt; } catch { return dflt; } };
 
+// all ve templateId yalnız varsa eklenir: şablonsuz kuralların nesnesi (API yanıtı) eskisiyle aynı kalır.
 function rowToRule(r: any): ParentalRule {
-  const t = parseJson<{ devices?: string[]; groups?: number[] }>(r.targets, {});
+  const t = parseJson<{ devices?: string[]; groups?: number[]; all?: boolean }>(r.targets, {});
   const mode = r.schedule_mode === 'during' || r.schedule_mode === 'outside' ? r.schedule_mode : 'always';
   return {
     id: Number(r.id), name: String(r.name || ''), enabled: !!r.enabled,
-    targets: { devices: Array.isArray(t.devices) ? t.devices : [], groups: Array.isArray(t.groups) ? t.groups : [] },
+    targets: { devices: Array.isArray(t.devices) ? t.devices : [], groups: Array.isArray(t.groups) ? t.groups : [], ...(t.all === true ? { all: true as const } : {}) },
     blockAll: !!r.block_all, categories: parseJson<CategoryId[]>(r.categories, []).filter(c => CATEGORY_IDS.includes(c)),
     sites: parseJson<string[]>(r.sites, []), mode, windows: parseJson<TimeWindow[]>(r.windows, []), legacy: !!r.legacy,
+    ...(r.template_id !== null && r.template_id !== undefined ? { templateId: Number(r.template_id) } : {}),
   };
 }
 
@@ -250,14 +264,20 @@ export async function listRules(): Promise<ParentalRule[]> {
 const ruleParams = (r: Omit<ParentalRule, 'id' | 'legacy'>) => [r.name, JSON.stringify(r.targets), r.blockAll ? 1 : 0,
   JSON.stringify(r.categories), JSON.stringify(r.sites), JSON.stringify(r.windows), r.mode, r.enabled ? 1 : 0];
 
-export async function createRule(body: any): Promise<ParentalRule> {
+// opts.templateId: Koruma Şablonları'nın oluşturduğu kural (templates.ts) — işaret ayrı yazılır, INSERT eskisiyle aynı.
+export async function createRule(body: any, opts: { templateId?: number } = {}): Promise<ParentalRule> {
   const v = validateRule(body);
   if ('error' in v) throw new Error(v.error);
   await ensureSchema();
-  // Eski sütunlar (yedek / geriye dönük okuma için) özet değerle doldurulur
-  await dbRun(`INSERT INTO parental_rules (name, targets, block_all, categories, sites, windows, schedule_mode, enabled,
+  // Eski sütunlar (yedek / geriye dönük okuma için) özet değerle doldurulur. Satır INSERT'ün kendi id'siyle okunur ("en son
+  // satır" değil): aynı anda kaydedilen başka bir kuralı şablon kendisininki saymasın.
+  const id = await dbInsert(`INSERT INTO parental_rules (name, targets, block_all, categories, sites, windows, schedule_mode, enabled,
     version, legacy, device_mac_or_group, rule_type, value) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 2, 0, '', 'v2', '')`, ruleParams(v.rule));
-  const row = await dbGet('SELECT * FROM parental_rules ORDER BY id DESC LIMIT 1');
+  let row = await dbGet('SELECT * FROM parental_rules WHERE id = ?', [id]);
+  if (opts.templateId !== undefined && row) {
+    await dbRun('UPDATE parental_rules SET template_id = ? WHERE id = ?', [opts.templateId, row.id]);
+    row = { ...row, template_id: opts.templateId };
+  }
   requestApply('kural eklendi');
   return rowToRule(row);
 }
@@ -386,6 +406,9 @@ interface DnsPlan {
   clients: Map<string, Set<string>>;        // MAC (büyük harf) → gruplar
   regex: Map<string, Set<string>>;          // düzenli ifade → gruplar
   lists: Map<string, Set<string>>;          // bloklistesi → gruplar
+  // Yalnız tüm ağ kuralı varken: Default grubunu o kural için isteyen ifade / listeler (kullanıcının kaydına Default ekleme
+  // kaydı — syncPihole). Tüm ağ kuralı yokken alan hiç bulunmaz (plan eskisiyle aynı nesne).
+  allItems?: { regex: Set<string>; lists: Set<string> };
 }
 
 export function planDns(rules: ParentalRule[], targets: Map<number, Set<string>>, now: Date, all = false): DnsPlan {
@@ -394,6 +417,20 @@ export function planDns(rules: ParentalRule[], targets: Map<number, Set<string>>
   const guard = new Set<string>();
   for (const r of rules) {
     if (!r.enabled || !hasDnsPart(r)) continue;
+    // Tüm ağ kuralı: kategori / site Pi-hole'un Default grubuna (herkes), "Tüm ağda şifreli DNS engeli" dalı gibi — grup
+    // oluşturulmaz, istemci ve DNS koruma grubu eklenmez. Yalnız "her zaman" (validateRule; yedekten gelen başka kip uygulanmaz).
+    if (r.targets.all) {
+      if (r.mode !== 'always') continue;
+      const fromAll = (p.allItems ||= { regex: new Set(), lists: new Set() });
+      const rx = (x: string) => { add(p.regex, x, DEFAULT_GROUP); fromAll.regex.add(x); };
+      for (const c of r.categories) {
+        const cat = CATEGORIES[c];
+        if (cat.domains?.length) rx(domainRegex(cat.domains));
+        for (const l of cat.lists || []) { add(p.lists, l, DEFAULT_GROUP); fromAll.lists.add(l); }
+      }
+      for (const s of r.sites) rx(domainRegex([s]));
+      continue;
+    }
     const macs = targets.get(r.id) || new Set();
     if (!macs.size) continue;
     const g = `${GROUP_PREFIX}${r.id}`;
@@ -420,6 +457,19 @@ export function planDns(rules: ParentalRule[], targets: Map<number, Set<string>>
 }
 
 const isOurGroup = (name: string) => name.startsWith(GROUP_PREFIX);
+// Default defteri (syncPihole 3–4): panelin çalışma kaydı — yedekten geri gelmez (index.ts BACKUP_SKIP_SETTINGS); tüm ağ kuralı
+// hiç kullanılmadıysa anahtar hiç yazılmaz.
+const DEFAULT_LEDGER_KEY = 'parental_default_added';
+async function readDefaultLedger(): Promise<{ regex: Set<string>; lists: Set<string> }> {
+  const r = await dbGet('SELECT value FROM app_settings WHERE key = ?', [DEFAULT_LEDGER_KEY]).catch(() => undefined) as { value?: string } | undefined;
+  const j = parseJson<{ regex?: unknown; lists?: unknown }>(r?.value, {});
+  const set = (x: unknown) => new Set(Array.isArray(x) ? x.map(String) : []);
+  return { regex: set(j.regex), lists: set(j.lists) };
+}
+async function writeDefaultLedger(l: { regex: Set<string>; lists: Set<string> }): Promise<void> {
+  await dbRun('INSERT INTO app_settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value',
+    [DEFAULT_LEDGER_KEY, JSON.stringify({ regex: [...l.regex].sort(), lists: [...l.lists].sort() })]);
+}
 const apiErr = (r: { status: number; json: any }, what: string) =>
   `${what}: HTTP ${r.status}${r.json?.error?.message ? ` — ${r.json.error.message}` : ''}`;
 const sameSet = (a: number[], b: number[]) => a.length === b.length && [...a].sort().join(',') === [...b].sort().join(',');
@@ -471,8 +521,16 @@ async function syncPihole(plan: DnsPlan, ftl: Ftl): Promise<{ errors: string[]; 
     }
   }
 
-  // 3) Düzenli ifadeler (deny/regex) ve 4) bloklisteleri: aynı desen
+  // 3) Düzenli ifadeler (deny/regex) ve 4) bloklisteleri: aynı desen. Kullanıcının kaydına (açıklaması bizim değil) tüm ağ
+  //    kuralı için Default grubunu BİZ eklediysek (önceden yoktu) defterde tutulur: kural kalkınca yalnız o Default bağı
+  //    çıkarılır — kaydı kullanıcı zaten Default'ta tutuyorsa ya da Default'u şifreli DNS engeli istediyse dokunulmaz.
+  const defId = byName.get(DEFAULT_GROUP)?.id as number | undefined;
+  const ledger = await readDefaultLedger();
+  const ledgerBefore = JSON.stringify([[...ledger.regex].sort(), [...ledger.lists].sort()]);
   const syncItems = async (kind: 'regex' | 'lists', want: Map<string, Set<string>>) => {
+    const added = ledger[kind];
+    const fromAll = plan.allItems?.[kind];
+    const ours = (k: string) => (g: number) => ourIds.has(g) || (g === defId && added.has(k));
     const cur = await ftl.call('GET', kind === 'regex' ? 'domains/deny/regex' : 'lists?type=block');
     if (cur.status !== 200) throw new Error(apiErr(cur, kind === 'regex' ? 'Pi-hole alan adları okunamadı' : 'Pi-hole listeleri okunamadı'));
     const rows: any[] = kind === 'regex' ? cur.json?.domains || [] : (cur.json?.lists || []).filter((l: any) => l.type === 'block');
@@ -490,11 +548,18 @@ async function syncPihole(plan: DnsPlan, ftl: Ftl): Promise<{ errors: string[]; 
         continue;
       }
       const cur2: number[] = (h.groups || []).map(Number);
-      const next = h.comment === MARK ? ids : [...new Set([...cur2.filter(g => !ourIds.has(g)), ...ids])];
+      const mine = ours(k);
+      const next = h.comment === MARK ? ids : [...new Set([...cur2.filter(g => !mine(g)), ...ids])];
       if (!sameSet(cur2, next) || (h.comment === MARK && !h.enabled)) {
         const r = await ftl.call('PUT', path(k), { comment: h.comment ?? '', groups: next, enabled: h.comment === MARK ? true : !!h.enabled });
         if (r.status >= 300) errors.push(apiErr(r, k.slice(0, 60)));
-        else if (kind === 'lists') listsChanged = true;
+        else {
+          if (kind === 'lists') listsChanged = true;
+          if (h.comment !== MARK && defId !== undefined) {
+            if (fromAll?.has(k) && next.includes(defId) && !cur2.includes(defId)) added.add(k);
+            else if (!next.includes(defId)) added.delete(k);
+          }
+        }
       }
     }
     for (const [k, h] of have) {
@@ -504,14 +569,21 @@ async function syncPihole(plan: DnsPlan, ftl: Ftl): Promise<{ errors: string[]; 
         const r = await ftl.call('DELETE', path(k));
         if (r.status >= 300 && r.status !== 404) errors.push(apiErr(r, k.slice(0, 60)));
         else if (kind === 'lists') listsChanged = true;
-      } else if (cur2.some(g => ourIds.has(g))) {
-        const r = await ftl.call('PUT', path(k), { comment: h.comment ?? '', groups: cur2.filter(g => !ourIds.has(g)), enabled: !!h.enabled });
+      } else if (cur2.some(ours(k))) {
+        const r = await ftl.call('PUT', path(k), { comment: h.comment ?? '', groups: cur2.filter(g => !ours(k)(g)), enabled: !!h.enabled });
         if (r.status >= 300) errors.push(apiErr(r, k.slice(0, 60)));
+        else added.delete(k);
       }
     }
+    for (const k of [...added]) if (!have.has(k)) added.delete(k);   // kullanıcı kaydını silmiş
   };
-  await syncItems('regex', plan.regex);
-  await syncItems('lists', plan.lists);
+  try {
+    await syncItems('regex', plan.regex);
+    await syncItems('lists', plan.lists);
+  } finally {
+    // Liste okuma hatası (fırlatır) ifadelerde yapılan Default eklemesinin kaydını kaybettirmesin
+    if (JSON.stringify([[...ledger.regex].sort(), [...ledger.lists].sort()]) !== ledgerBefore) await writeDefaultLedger(ledger);
+  }
 
   // 5) Artık gerekmeyen gruplarımız (bağları grup silinince Pi-hole kendisi kaldırır)
   for (const g of byName.values()) {
@@ -609,6 +681,12 @@ function runApply(reason: string): Promise<void> {
 function requestApply(reason: string): void {
   forceFull = true;
   void runApply(reason);
+}
+// Tam eşitleme ve bitmesini bekleme (Koruma Şablonları: uygulama / geri alma yanıtı Pi-hole sonucunu bildirsin).
+export async function applyParentalNow(reason: string): Promise<ParentalHealth> {
+  forceFull = true;
+  if (isLinux) await runApply(reason);
+  return parentalHealth();
 }
 
 // ── Tüm ağda şifreli DNS engeli ──────────────────────────────────────────────

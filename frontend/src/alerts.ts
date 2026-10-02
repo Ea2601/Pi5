@@ -27,6 +27,7 @@ const SOURCE_LABEL: Record<string, string> = {
   mesh: 'Mesh', storage: 'Depolama', bandwidth: 'Bant genişliği', backup: 'Yedekleme', vault: 'Yedekleme',
   sync: 'Cihaz yedekleme', visits: 'Ziyaret Geçmişi', hotplug: 'Ağ kartı', 'wan-monitor': 'Hat kalitesi', calendar: 'Takvim',
   license: 'Lisans',
+  templates: 'Koruma şablonları',
 };
 export const sourceLabel = (s: string) => SOURCE_LABEL[(s || '').split(':')[0]] || s || 'Sistem';
 
@@ -45,6 +46,7 @@ const SOURCE_TAB: Record<string, TabId> = {
   'wan-monitor': 'speedtest',
   calendar: 'agenda',
   license: 'license',
+  templates: 'templates',
 };
 const SERVICE_TAB: Record<string, TabId> = {
   pihole: 'pihole', unbound: 'unbound', zapret: 'zapret', fail2ban: 'fail2ban', nftables: 'firewall', wireguard: 'vps',

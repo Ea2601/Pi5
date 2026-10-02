@@ -17,11 +17,12 @@ import './ParentalPanel.css';
 type Day = 'mon' | 'tue' | 'wed' | 'thu' | 'fri' | 'sat' | 'sun';
 type Mode = 'always' | 'during' | 'outside';
 interface TimeWindow { days: Day[]; start: string; end: string }
+// targets.all: tüm ağ (Koruma Şablonları — Pi-hole'un Default grubu); templateId: kuralı şablon oluşturdu (geri alma orada)
 interface RuleBody {
-  name: string; enabled: boolean; targets: { devices: string[]; groups: number[] };
+  name: string; enabled: boolean; targets: { devices: string[]; groups: number[]; all?: boolean };
   blockAll: boolean; categories: string[]; sites: string[]; mode: Mode; windows: TimeWindow[];
 }
-interface Rule extends RuleBody { id: number; legacy: boolean; status: { active: boolean; nextChange: string | null; devices: number } }
+interface Rule extends RuleBody { id: number; legacy: boolean; templateId?: number; status: { active: boolean; nextChange: string | null; devices: number } }
 interface Category { id: string; label: string; desc: string; list: boolean }
 interface Health { nft: boolean; pihole: boolean | null; error: string | null; at: number; gravityPending: boolean }
 interface Group { id: number; name: string; color?: string; members?: { device_mac: string }[] }
@@ -90,6 +91,7 @@ export function ParentalPanel() {
   const later = () => setTimeout(() => { void refetch(); }, 2500);   // uygulama arka planda: sonucu (sağlık) biraz sonra oku
 
   const targetsText = (r: RuleBody) => {
+    if (r.targets.all) return "Tüm ağ (Pi-hole'u kullanan her cihaz)";
     const names = [...r.targets.groups.map(g => groups.find(x => x.id === g)?.name || `grup #${g}`),
       ...r.targets.devices.map(m => deviceLabel(devices.find(d => d.mac_address.toLowerCase() === m), m))];
     return names.length > 3 ? `${names.slice(0, 3).join(', ')} ve ${names.length - 3} hedef daha` : names.join(', ') || 'hedef yok';
@@ -159,7 +161,7 @@ export function ParentalPanel() {
                   aria-label={r.enabled ? 'Kuralı kapat' : 'Kuralı aç'}><div className="toggle-knob" /></button>
               </div>
               <div className="pc-rule-rows">
-                <div className="pc-row"><Target size={14} /><span>{targetsText(r)}{r.enabled ? ` · ${r.status?.devices ?? 0} cihaz` : ''}</span></div>
+                <div className="pc-row"><Target size={14} /><span>{targetsText(r)}{r.enabled && !r.targets.all ? ` · ${r.status?.devices ?? 0} cihaz` : ''}</span></div>
                 <div className="pc-row"><Ban size={14} />
                   <span className="pc-tags">
                     {r.blockAll ? <span className="pc-tag pc-tag-strong">Tüm internet</span> : null}
@@ -171,10 +173,14 @@ export function ParentalPanel() {
                 <div className="pc-row"><CalendarClock size={14} /><span>{r.mode === 'always' ? 'Her zaman' : `${r.mode === 'during' ? 'Engellenir' : 'Yalnız açık'}: ${r.windows.map(windowText).join(' · ')}`}</span></div>
               </div>
               {r.legacy && <div className="pc-legacy"><Info size={13} /> Eski sürümden taşındı ve kapalı geldi — düzenleyip açın.</div>}
+              {r.templateId !== undefined && <p className="pc-hint"><Info size={13} /> Koruma Şablonları (Okul / Aile) oluşturdu — geri alma orada; burada değiştirirseniz geri almada silinmez.</p>}
+              {/* Tüm ağ kuralının güvenlik duvarı kuralı yok (parental.ts planDns): başlıktaki "dış DNS / DoH kullanamaz" ona uymaz */}
+              {r.targets.all && <p className="pc-hint"><Info size={13} /> {r.templateId === undefined ? 'Tüm ağ kuralı burada düzenlenemez (açıp kapatabilir ya da silebilirsiniz). ' : ''}
+                Bu kuralda dış DNS ve şifreli DNS (DoH) engellenmez — Ziyaret Geçmişi'ndeki «tüm ağda şifreli DNS engeli» bunu kapatır (yalnız IPv4).</p>}
               <div className="pc-rule-foot">
-                <button className="btn-outline btn-sm" onClick={() => setEditing({ id: r.id, body: { name: r.name, enabled: r.enabled, targets: r.targets, blockAll: r.blockAll, categories: r.categories, sites: r.sites, mode: r.mode, windows: r.windows } })}>
+                {!r.targets.all && <button className="btn-outline btn-sm" onClick={() => setEditing({ id: r.id, body: { name: r.name, enabled: r.enabled, targets: r.targets, blockAll: r.blockAll, categories: r.categories, sites: r.sites, mode: r.mode, windows: r.windows } })}>
                   <Pencil size={13} /> Düzenle
-                </button>
+                </button>}
                 <button className="btn-outline btn-sm pc-danger" onClick={() => setRemoving(r)}><Trash2 size={13} /> Sil</button>
               </div>
             </section>

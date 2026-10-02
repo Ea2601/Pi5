@@ -462,6 +462,15 @@ export const initDb = () => {
       days_of_week TEXT DEFAULT '', enabled INTEGER DEFAULT 1
     )`);
 
+    // Koruma Şablonları (templates.ts): uygulanan şablon başına bir satır — params: kullanıcının seçimi, created: şablonun
+    // oluşturduğu nesneler (kural id + içerik özeti, ayar değerleri), prev: değiştirdiği ayarların önceki değeri (geri alma).
+    // state: applied | undone. Kural işareti ayrıca parental_rules.template_id'de (parental.ts ensureSchema).
+    db.run(`CREATE TABLE IF NOT EXISTS policy_templates (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      tkey TEXT NOT NULL, params TEXT DEFAULT '{}', created TEXT DEFAULT '{}', prev TEXT DEFAULT '{}',
+      applied_at DATETIME DEFAULT CURRENT_TIMESTAMP, state TEXT DEFAULT 'applied'
+    )`);
+
     db.run(`CREATE TABLE IF NOT EXISTS traffic_schedules (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       traffic_routing_id INTEGER, schedule_route_type TEXT, schedule_vps_id INTEGER,

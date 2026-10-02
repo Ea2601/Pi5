@@ -1182,7 +1182,9 @@ function writeIfChanged(file: string, content: string): boolean {
 // Kurulum Wi-Fi'ı DHCP'si (07): Pi-hole'un dnsmasq'ı AP ağına adres dağıtır. Listede olduğu için DNS güvenlik ağı
 // (yeniden başlatma sonrası DNS gelmezse) onu da 05/06 ile birlikte boşaltır; sonraki uygulama yeniden yazar.
 const AP_DNSMASQ = '/etc/dnsmasq.d/07-pi5-ap.conf';
-const DNSMASQ_D_FILES = ['/etc/dnsmasq.d/05-domain-routing.conf', '/etc/dnsmasq.d/06-domain-redirect.conf', AP_DNSMASQ];
+// Güvenli arama (09; safeSearch.ts yazar): yalnız açıkken vardır. Güvenlik ağı onu da boşaltır, /etc/dnsmasq.d okumasını o da açtırır.
+export const SAFESEARCH_DNSMASQ = '/etc/dnsmasq.d/09-pi5-safesearch.conf';
+const DNSMASQ_D_FILES = ['/etc/dnsmasq.d/05-domain-routing.conf', '/etc/dnsmasq.d/06-domain-redirect.conf', AP_DNSMASQ, SAFESEARCH_DNSMASQ];
 // İşletim sistemlerinin bağlantı denetimi adları (Android, Apple, Windows, Firefox, GNOME): kurulum Wi-Fi'ı açıkken nginx
 // bunları giriş sayfasına yönlendirir → telefon "ağa giriş yap" sayfasını kendiliğinden açar. www.google.com ve
 // www.apple.com bilerek yok (sıradan siteler; denetim için yukarıdakiler yeter).
@@ -1241,7 +1243,8 @@ let legacyHeld = new Set<string>();
 // Pi-hole v6 (FTL) /etc/dnsmasq.d'yi varsayılan olarak OKUMAZ (misc.etc_dnsmasq_d = false); routing (05-)
 // ve redirect (06-) dosyalarımız oradan yüklenir. Değer: 'true' | 'false'; v5'te `--config` yoktur → başka
 // çıktı → dokunulmaz (v5 dnsmasq.d'yi zaten okur).
-async function readDnsmasqDirKey(): Promise<string> {
+// Dışa açık: güvenli arama (safeSearch.ts) açarken okumanın önceki durumunu kaydeder (ftlConfigGet "_" içeren anahtarı kabul etmez)
+export async function readDnsmasqDirKey(): Promise<string> {
   return (await run('pihole-FTL --config misc.etc_dnsmasq_d 2>/dev/null || true')).split('\n').pop()!.trim();
 }
 
@@ -1602,13 +1605,20 @@ async function restartFtlNow(): Promise<boolean> {
   const healthy = await waitFtlHealthy((await ftlUnitState()).restarts);
   await warm;
   if (healthy) return true;
-  console.error('[routing] FTL yeniden başlatıldıktan sonra yerel DNS yanıt vermiyor — 05/06/07 dnsmasq dosyaları boşaltılıyor');
+  console.error('[routing] FTL yeniden başlatıldıktan sonra yerel DNS yanıt vermiyor — 05/06/07/09 dnsmasq dosyaları boşaltılıyor');
+  // Yalnız güvenli arama dosyasında satır vardıysa yönlendirme kuralı kaybolmadı: hata onu söyler (stickyRoutingError)
+  clearedOnlySafeSearch = fileHasEntries(SAFESEARCH_DNSMASQ) && !DNSMASQ_D_FILES.some(f => f !== SAFESEARCH_DNSMASQ && fileHasEntries(f));
   for (const f of DNSMASQ_D_FILES) writeIfChanged(f, '');
   routingFilesCleared = true;
   await withFtlStopped(async () => {});
   await ensureFtlActive();
+  // Dosyası boşaltılan modüller (SafeSearch askıya alınır: sonraki yeniden başlatmalarda 09'u yeniden yazmasın)
+  for (const fn of dnsFilesCleared) await fn().catch((e: any) => console.error('[routing] güvenlik ağı kancası:', e?.message || e));
   return false;
 }
+// Güvenlik ağı dosyaları boşalttığında haber alan modüller (SafeSearch — safeSearch.ts)
+const dnsFilesCleared: (() => Promise<void>)[] = [];
+export function onDnsFilesCleared(fn: () => Promise<void>): void { dnsFilesCleared.push(fn); }
 
 // Eski şema takma adları bekliyor ve FTL artık güncel dosyalarla çalışıyor (DNS işi bitti): yeniden uygulama takma adları
 // kaldırır, eski setleri siler. İzleyici (index.ts) sorar ve routing kuyruğunda uygular.
@@ -1621,10 +1631,16 @@ export async function legacyRoutingCleanupDue(): Promise<boolean> {
 // Güvenlik ağı 05/06'yı boşalttı ve o günden beri hiçbir uygulama dosyaları DB'den yeniden yazmadı: routing kapalı.
 // Sonraki işler (boş dosyalarla sağlıklı açılsa da) 'Hazır' değil hata bildirir; uygulama dosyayı yazınca temizlenir.
 let routingFilesCleared = false;
+// Boşaltmada yalnız güvenli arama dosyası (09) doluydu: yönlendirme kuralı kaybolmadı — hata güvenli aramayı söyler ve sonraki
+// sağlıklı yeniden başlatma kaldırır (güvenli arama kendini askıya alır, kullanıcı oradan yeniden uygular).
+let clearedOnlySafeSearch = false;
 // Kalıcı routing hatası (bu durumlar sürdükçe panel 'Hazır' demez): dosyalar boşaltılmış ya da Pi-hole /etc/dnsmasq.d'yi
 // okumuyor (açma denemesi DNS'i düşürdüğü için geri alınmış).
 async function stickyRoutingError(): Promise<string> {
   if (routingFilesCleared) {
+    if (clearedOnlySafeSearch) {
+      return 'DNS yenilemesinden sonra yanıt gelmediği için güvenli arama dosyası boşaltıldı ve güvenli arama askıya alındı — Koruma Şablonları → Güvenli arama → «Şimdi uygula» ile yeniden deneyin';
+    }
     return 'DNS yenilemesinden sonra yanıt gelmediği için yönlendirme kuralları geçici olarak kapatıldı — kuralı yeniden kaydedin';
   }
   if (fs.existsSync(DNSMASQ_D_REVERTED) && hasDnsmasqEntries() && (await readDnsmasqDirKey()) === 'false') {
@@ -1663,10 +1679,34 @@ async function enableDnsmasqDirNow(): Promise<string> {
 }
 
 // Dosyalarımızda yüklenecek bir satır var mı? Yoksa /etc/dnsmasq.d anahtarına hiç dokunulmaz.
+function fileHasEntries(f: string): boolean {
+  try { return fs.readFileSync(f, 'utf8').split('\n').some(l => l.trim() && !l.startsWith('#')); } catch { return false; }
+}
 function hasDnsmasqEntries(): boolean {
-  return DNSMASQ_D_FILES.some(f => {
-    try { return fs.readFileSync(f, 'utf8').split('\n').some(l => l.trim() && !l.startsWith('#')); } catch { return false; }
+  return DNSMASQ_D_FILES.some(fileHasEntries);
+}
+
+// Güvenli arama kapatılırken (safeSearch.ts): okumayı o açtırdıysa geri kapatılabilir mi — /etc/dnsmasq.d'nin HİÇBİR
+// dosyasında (kullanıcınınkiler dahil) yüklenecek satır yok ve okuma açık.
+export async function dnsmasqDirOffRestorable(): Promise<boolean> {
+  if (!isLinux) return false;
+  let any = false;
+  try { any = fs.readdirSync('/etc/dnsmasq.d').some(f => f.endsWith('.conf') && fileHasEntries(`/etc/dnsmasq.d/${f}`)); } catch { /* dizin yok */ }
+  return !any && (await readDnsmasqDirKey()) === 'true';
+}
+// /etc/dnsmasq.d okumasını FTL DURMUŞKEN geri kapatır (açarken olduğu gibi: çalışan FTL pihole.toml değişikliğinde kendini
+// yeniden başlatırdı). Yalnız güvenli arama kapatılırken ve okumayı o açtırdıysa (Pi-hole açmadan önceki yapılandırmasına döner).
+async function disableDnsmasqDirNow(): Promise<string> {
+  await withFtlStopped(async () => {
+    await flushPendingSets();
+    await run('pihole-FTL --config misc.etc_dnsmasq_d false 2>/dev/null');
   });
+  await ensureFtlActive();
+  if (await waitFtlHealthy((await ftlUnitState()).restarts)) {
+    console.log('[routing] Pi-hole v6: misc.etc_dnsmasq_d geri kapatıldı (güvenli arama kapandı, /etc/dnsmasq.d boş)');
+    return '';
+  }
+  return "Pi-hole /etc/dnsmasq.d okuması kapatıldıktan sonra DNS yanıt vermedi";
 }
 
 async function dnsmasqDirNeedsEnable(): Promise<boolean> {
@@ -1722,8 +1762,14 @@ function scheduleDnsRestart(): void {
         return;
       }
       setRoutingPhase('restarting');
-      if (await dnsmasqDirNeedsEnable()) error = await enableDnsmasqDirNow();
-      else await restartFtlNow();
+      // Diğer modüllerin dosyaları (SafeSearch 09) bu yeniden başlatmada güncel çakışmalarla yüklensin
+      for (const fn of beforeDnsRestart) await fn().catch((e: any) => console.error('[routing] DNS öncesi kanca:', e?.message || e));
+      // Güvenli arama kapandı ve okumayı o açtırmıştı: /etc/dnsmasq.d hâlâ boşsa okuma bu yeniden başlatmada geri kapatılır
+      const restoreOff = restoreDirOffWanted;
+      restoreDirOffWanted = false;
+      if (restoreOff && await dnsmasqDirOffRestorable()) error = await disableDnsmasqDirNow();
+      else if (await dnsmasqDirNeedsEnable()) error = await enableDnsmasqDirNow();
+      else if (await restartFtlNow() && clearedOnlySafeSearch) { routingFilesCleared = false; clearedOnlySafeSearch = false; }
       if (!error) error = await stickyRoutingError();
     } catch (e: any) {
       error = `DNS yeniden başlatılamadı: ${e?.message || e}`;
@@ -1736,6 +1782,21 @@ function scheduleDnsRestart(): void {
       else if (!dnsJobPending) setRoutingPhase('idle');
     }
   });
+}
+
+// /etc/dnsmasq.d'ye kendi dosyasını yazan başka modül (SafeSearch 09 — safeSearch.ts): dosya değişince aynı birleştirilmiş
+// yeniden başlatma işi (aralık, /etc/dnsmasq.d okumasını açma, DNS gelmezse dosyaları boşaltan güvenlik ağı). Kanca, iş FTL'i
+// yeniden başlatmadan hemen önce çağrılır: modül dosyasını güncel duruma göre yeniden yazar (ör. kullanıcı aynı ad için
+// Routing'de yönlendirme ekledi) — ayrı bir yeniden başlatma gerekmez.
+const beforeDnsRestart: (() => Promise<void>)[] = [];
+export function onBeforeDnsRestart(fn: () => Promise<void>): void { beforeDnsRestart.push(fn); }
+// opts.restoreDnsmasqDirOff: güvenli arama kapandı, okumayı (misc.etc_dnsmasq_d) o açtırmıştı — iş anında hâlâ boşsa geri kapat
+let restoreDirOffWanted = false;
+export function requestDnsRestart(opts: { restoreDnsmasqDirOff?: boolean } = {}): void {
+  if (!isLinux) return;
+  if (opts.restoreDnsmasqDirOff) restoreDirOffWanted = true;
+  routingStatus.apply_seq++;
+  scheduleDnsRestart();
 }
 
 // FTL'i kendisi durdurup başlatan dış işler (ör. Pi DHCP betiği: pihole.toml yalnız FTL durmuşken yazılır) aynı zincire
@@ -2071,6 +2132,7 @@ export async function applyDomainRouting(domains?: DomainRoute[], ranges: RangeR
   const aliases = legacyAlias.size && (routingChanged || dnsJobPending || dnsJobRunning || ftlStale) ? legacyAlias : new Map<string, number>();
   legacyHeld = new Set(aliases.keys());
   routingFilesCleared = false; // dosya artık DB'deki kuralları yansıtıyor
+  clearedOnlySafeSearch = false;
   const newRoutingLines = new Set(ipsetLines);
   const setsWithRemovals = new Set<string>();
   const oldSets = new Set<string>();

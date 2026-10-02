@@ -80,6 +80,8 @@ import { vaultStatus, vaultJob, noteVaultJob, connectVault, saveSettings, startB
 import { rulesWithStatus as parentalRulesWithStatus, createRule as createParentalRule, updateRule as updateParentalRule,
   deleteRule as deleteParentalRule, startParental, CATEGORIES as PARENTAL_CATEGORIES, dnsGuardStatus, setDnsGuardAll, listRules as listParentalRules } from './parental';
 import { noteContentView, contentForClients, contentStatus } from './contentActivity';
+import { registerTemplateRoutes, templatesRestoreNote, reconcileTemplateMarks } from './templates';
+import { startSafeSearch, applyRestoredSafeSearch } from './safeSearch';
 import { startVisits, listVisits, clearVisits, visitStatus, RETENTION_DAYS as VISIT_RETENTION_DAYS } from './visits';
 import { SITE_CATS, siteCategoryInfo } from './siteCategories';
 import { LIST_TOKEN, LIST_IDS, ensureList, ensureLists, listInfo, type ListId } from './categoryLists';
@@ -189,6 +191,9 @@ registerNotifyRoutes(app, { guard: (req, res, next) => { void netAdminGuard(req,
 registerPcapRoutes(app, { guard: (req, res, next) => { void netAdminGuard(req, res, next); }, writeLimiter, protectedMacs: blockProtectedMacs });
 // Lisans (licenseRoutes.ts, G3.2): /api/license — GET dışı yazma sınırı + netAdminGuard, uyduda PUT/DELETE 409 (GET bilgi).
 registerLicenseRoutes(app, { guard: (req, res, next) => { void netAdminGuard(req, res, next); }, writeLimiter });
+// Koruma Şablonları + güvenli arama (templates.ts, safeSearch.ts): /api/templates, /api/safesearch — GET dışı yazma sınırı +
+// netAdminGuard, uyduda 409 (gövdeler modülde).
+registerTemplateRoutes(app, { guard: (req, res, next) => { void netAdminGuard(req, res, next); }, writeLimiter });
 
 // Graceful shutdown. Hat Kalitesi açıksa (wanMonitor.ts) bekleyen ölçümler yazılır ve hat durumu kaydedilir (en çok 2 sn);
 // kapalıyken hemen çıkılır.
@@ -4658,7 +4663,7 @@ const BACKUP_TABLES = [
   'service_config', 'service_status', 'traffic_routing', 'domain_routing', 'routing_rules',
   'pihole_lists', 'zapret_domains', 'bandwidth_limits', 'parental_rules', 'traffic_schedules',
   'device_groups', 'device_group_members', 'throttle_rules', 'app_settings', 'cron_jobs', 'dhcp_leases',
-  'domain_suggestion_dismissed', 'port_forwards', 'device_names', 'calendar_sources',
+  'domain_suggestion_dismissed', 'port_forwards', 'device_names', 'calendar_sources', 'policy_templates',
 ];
 // device_names gerçek tablo değil: devices'tan yalnız elle verilen adlar (name_manual = 1) — cihaz listesinin kendisi
 // (IP, son görülme) çalışma kaydıdır, yedekten gelmez; geri yüklemede yalnız adlar birleştirilir.
@@ -4677,6 +4682,9 @@ const BACKUP_MANIFEST: { key: string; label: string; desc: string; tables: strin
   // Yalnız bağlı takvim varken listelenir (manifest ucu); gizli takvim adresi yedeğe girmez
   { key: 'calendar', label: 'Takvim bağlantıları', desc: 'Dış takvimlerin adı, rengi ve eşitleme aralığı — gizli takvim adresi yedeğe girmez, geri yüklemeden sonra yeniden girilir',
     tables: ['calendar_sources'] },
+  // Yalnız uygulanmış koruma şablonu varken listelenir (templates.ts); şablonun ebeveyn kuralları "Cihazlar" bölümündedir
+  { key: 'templates', label: 'Koruma şablonları', desc: 'Uygulanan koruma şablonlarının kaydı (geri alma için: oluşturduğu kurallar ve değiştirdiği ayarların önceki değeri)',
+    tables: ['policy_templates'] },
 ];
 const BACKUP_TABLE_SET = new Set(BACKUP_TABLES);
 // Ayar tabloları birleştirilir (yedekte olmayan anahtar kalır: rol, eşleştirme, sürüm gibi çalışma anahtarları eski bir
@@ -4689,7 +4697,10 @@ const BACKUP_MERGE_TABLES = new Set(['service_config', 'service_status', 'app_se
 // wan_monitor: hatta özgü ölçüm ayarı — başka bir cihazın / kotalı hattın yedeğiyle kendiliğinden ping başlatmasın.
 // sqm_config: hatta özgü bant (akıllı kuyruk) — başka bir cihaza / hatta geri yüklenip hattı yanlış bantla kısmasın.
 const BACKUP_SKIP_SETTINGS = new Set(['last_seen_version', 'pihole_hosts_managed', 'storage_job_notified', 'wg_reach_watch',
-  'cron_defaults_seeded', 'accent_gray_migrated', 'hotplug_watch', 'wan_monitor', 'sqm_config']);
+  'cron_defaults_seeded', 'accent_gray_migrated', 'hotplug_watch', 'wan_monitor', 'sqm_config',
+  // Koruma şablonları: bu Pi-hole'un çalışma kayıtları (Default grubunu eklediğimiz kullanıcı kayıtları, /etc/dnsmasq.d okumasını
+  // güvenli arama mı açtırdı) — başka bir cihazın durumunu taşımasınlar (parental.ts, safeSearch.ts)
+  'parental_default_added', 'safesearch_dir_was_off']);
 
 async function restoreTable(table: string, rows: any[]): Promise<number> {
   if (!Array.isArray(rows)) return 0;
@@ -4823,6 +4834,21 @@ async function applyRestored(tables: Set<string>, keys: Set<string>, req: expres
   }
   // Takvimler kapalı gelir; yedekte olmayanların gizli adresi / önbelleği silinir, zamanlayıcılar yeniden kurulur
   if (tables.has('calendar_sources')) await step('Takvim bağlantıları', () => afterCalendarRestore());
+  // Koruma şablonları / güvenli arama (templates.ts, safeSearch.ts): yalnız yedekte varsa. Güvenli arama ayarı Pi'ye uygulanır
+  // (adresler yeniden çözülür, DNS bir kez yeniden başlar); kuralı yedekte olmayan şablon "bozuk" gösterilir.
+  // Ters yöndeki sarkan referans: etkin şablon kaydına ait olmayan kural işareti (template_id) kaldırılır — işaretli kural yoksa
+  // (şablon hiç kullanılmadıysa) hiçbir şey yazılmaz ve adım eklenmez.
+  const unmarked = tables.has('parental_rules') || tables.has('policy_templates') ? await reconcileTemplateMarks().catch(() => 0) : 0;
+  const unmarkedNote = unmarked ? `${unmarked} kuralın şablon işareti kaldırıldı (şablon kaydı yedekte yok) — Ebeveyn Kontrol'de sıradan kural` : '';
+  if (tables.has('policy_templates') || keys.has('safesearch_config')) {
+    await step('Koruma şablonları / güvenli arama', async () => {
+      const parts = [await templatesRestoreNote(), unmarkedNote];
+      if (keys.has('safesearch_config')) parts.push(await applyRestoredSafeSearch());
+      return parts.filter(Boolean).join('; ');
+    });
+  } else if (unmarked) {
+    await step('Koruma şablonları', async () => unmarkedNote);
+  }
   return out;
 }
 
@@ -4838,6 +4864,14 @@ async function buildBackupExport(): Promise<{ backup_version: number; created_at
   }
   // Takvim bağlantıları yalnız varsa (adres yok — yalnız ad, renk, açık, aralık); takvimsiz kurulumun yedeği eskisiyle aynı
   if (!configTables.calendar_sources?.length) delete configTables.calendar_sources;
+  // Koruma şablonları da yalnız kayıt varsa; şablonun oluşturmadığı ebeveyn kuralının boş template_id'si yazılmaz (şablonsuz
+  // kurulumun yedeği eskisiyle aynı; eski sürüm bilinmeyen sütunu zaten atlar)
+  if (!configTables.policy_templates?.length) delete configTables.policy_templates;
+  configTables.parental_rules = (configTables.parental_rules || []).map(r => {
+    if (r?.template_id !== null && r?.template_id !== undefined) return r;
+    const { template_id: _t, ...rest } = r || {};
+    return rest;
+  });
 
   return {
     backup_version: 2,
@@ -4852,7 +4886,7 @@ app.get('/api/backup/manifest', async (_req, res) => {
     const exp = await buildBackupExport();
     res.json({
       sections: BACKUP_MANIFEST.map(m => ({ key: m.key, label: m.label, desc: m.desc, count: m.tables.reduce((a, t) => a + (exp.data[t]?.length || 0), 0) }))
-        .filter(m => m.key !== 'calendar' || m.count > 0),
+        .filter(m => (m.key !== 'calendar' && m.key !== 'templates') || m.count > 0),
       excluded: 'VPS sunucuları ve WireGuard anahtarları, Ev VPN anahtarları ve DDNS hesapları bu dosyaya girmez (gizli anahtar). Bulut Yedeği\'nde «gizli anahtarlar» seçeneğiyle şifreli yedeklenebilir.',
     });
   } catch (e: any) {
@@ -6778,6 +6812,12 @@ const server = app.listen(Number(port), bindHost, () => {
   startImportGuardWatch();
   // Dış bildirim (notify.ts): yalnız açık kanal varsa (varsayılan yok) 10 sn'de bir olay geçmişi okunur.
   startNotify();
+  // Güvenli arama (safeSearch.ts): kapalıyken yalnız 30 dk'da bir ayar okunur; açıkken adresler 6 saatte bir, değişen adres
+  // dosyaya yalnız gece 03–06'da yazılır.
+  startSafeSearch();
+  // Koruma şablonları (templates.ts): etkin bir şablon kaydına ait olmayan kural işareti kaldırılır (eski / kısmi yedek). İşaretli
+  // kural yoksa yalnız tek sorgu, hiçbir şey yazılmaz.
+  void reconcileTemplateMarks().catch(e => console.error('[şablon]', e?.message || e));
   // Ağ haritası: cihazların kablolu / Wi-Fi ayrımı için arka planda ARP yanıt süresi ölçümü (linkProbe.ts). Taban çizgisi
   // Pi'nin kabloyla bağlı olduğu ağ geçidi; Pi'nin çıkışı kablosuzsa taban çizgisi alınmaz. Kurulum Wi-Fi'ı istemcileri
   // ölçülmez (kesin bilinir), modem ve Pi'nin kendisi de.

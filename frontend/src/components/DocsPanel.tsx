@@ -1,7 +1,7 @@
 import {
   BookOpen, ShieldBan, Zap, Flame, Globe, Server, ShieldAlert,
   Clock, Network, Route, ChevronDown, ChevronRight, Terminal,
-  AlertTriangle, CheckCircle, Info, Cpu, Smartphone, Cloud, Bell, Timer, KeyRound
+  AlertTriangle, CheckCircle, Info, Cpu, Smartphone, Cloud, Bell, Timer, KeyRound, ShieldCheck
 } from 'lucide-react';
 import { useState } from 'react';
 import { Panel, Badge } from './ui';
@@ -80,6 +80,13 @@ export function DocsPanel() {
       icon: <ShieldAlert size={15} />,
       badge: 'Güvenlik',
       content: <Fail2banDoc />,
+    },
+    {
+      id: 'templates',
+      title: 'Koruma Şablonları',
+      icon: <ShieldCheck size={15} />,
+      badge: 'Güvenlik',
+      content: <TemplatesDoc />,
     },
     {
       id: 'routing',
@@ -674,6 +681,71 @@ function LicenseDoc() {
       <DocTip type="info">
         Dürüst sınır: Klyrix Gate'in kaynağı açıktır ve cihazda yönetici (root) sizsiniz. Lisans denetimi kırılmaz bir koruma değildir;
         kod değiştirilerek atlanabilir. Amacı dürüst kullanıcıyı doğru katmana yönlendirmektir.
+function TemplatesDoc() {
+  return (
+    <div className="doc-page">
+      <h3>Koruma Şablonları ve güvenli arama</h3>
+      <p>Koruma Şablonları sayfası hazır koruma demetleri sunar. Şablon yeni bir engelleme motoru değildir: Ebeveyn Kontrol kuralını, tüm ağda
+        şifreli DNS engelini ve güvenli aramayı sizin için birlikte kurar. Sıra her zaman aynı: seç → <strong>Önizle</strong> (hiçbir şey
+        değişmez, yapılacaklar listelenir) → <strong>Uygula</strong>. Bunlar uyuma yardımcı kontrollerdir; panel bir mevzuata ya da
+        standarda «uyumlu» olduğunu söylemez.</p>
+
+      <DocBlock title="Okul / Aile">
+        <ul>
+          <li><strong>Hedef:</strong> tüm ağ (Pi-hole'u DNS olarak kullanan, Pi-hole'un Default grubundaki her cihaz) ya da seçili cihazlar ve
+            Cihaz Yönetimi grupları. Tüm ağda yalnız «her zaman» engeli vardır; saat aralığı yalnız cihaz / grup hedefinde.</li>
+          <li><strong>Kategoriler:</strong> Yetişkin içerik ve Kumar (StevenBlack hazır listeleri) varsayılan; sosyal medya ve oyun isteğe bağlı,
+            her zaman ya da bir saat aralığında (ör. hafta içi 08:00–16:00).</li>
+          <li><strong>Güvenli arama</strong> (varsayılan açık) ve <strong>tüm ağda şifreli DNS engeli</strong> (isteğe bağlı, varsayılan kapalı —
+            Android'de «Özel DNS» sabitlenmiş telefonların internetini keser).</li>
+          <li>Oluşan kurallar Ebeveyn Kontrol sayfasında «Koruma Şablonları oluşturdu» notuyla görünür.</li>
+          <li>Tüm ağ kuralının güvenlik duvarı kuralı yoktur: kendi DNS'ini (ör. 8.8.8.8) ya da şifreli DNS kullanan cihaz onu atlatır — tüm ağda
+            şifreli DNS engeli bunu kapatır (yalnız IPv4). Cihaz / grup hedefinde seçilen cihazların dış DNS'i ve bilinen DoH sunucuları kuralla kesilir.</li>
+        </ul>
+      </DocBlock>
+
+      <DocBlock title="Geri al">
+        <p>Uygulanmış şablonun kartındaki <strong>Geri al</strong> yalnız şablonun kurduklarını kaldırır: eklediği kurallar silinir, açtığı
+          ayarlar önceki değerine döner (güvenli arama kapanır, 09 dosyası silinir; şifreli DNS engeli kapanır). Sonradan değiştirdiğiniz kural
+          ya da ayar <strong>silinmez</strong> — sıradan bir kural olarak kalır ve size söylenir. Eski bir yedekten geri yüklemede şablonun
+          kuralı yoksa şablon «bozuk» görünür; Geri al kalanları temizler, aynı numaralı başka bir kurala dokunmaz.</p>
+      </DocBlock>
+
+      <DocBlock title="Güvenli arama (SafeSearch)">
+        <p>Google (Güvenli Arama), YouTube (Sıkı kısıtlı mod), Bing ve DuckDuckGo'nun adları Pi-hole'da sağlayıcının kısıtlı sunucusunun adresine
+          yerel kayıt olur (<code>/etc/dnsmasq.d/09-pi5-safesearch.conf</code>, <code>host-record</code>). CNAME bilerek kullanılmaz: aynı ad için
+          sonradan eklenen bir Pi-hole CNAME'i DNS'i düşürmez, sizin kaydınız kazanır. Kullanıcı tarayıcıda kapatamaz. Tüm ağ içindir.</p>
+        <ul>
+          <li>Açma / kapama / sağlayıcı değişikliği hemen uygulanır: Pi-hole bir kez yeniden başlar (DNS birkaç saniye kesilir). Kapatınca 09
+            silinir; /etc/dnsmasq.d okumasını güvenli arama açtırdıysa ve orada yüklenecek başka satır yoksa o da geri kapatılır.</li>
+          <li>Sağlayıcı adresleri 6 saatte bir Unbound'dan yeniden çözülür. Değişirse dosya yalnız gece 03–06'da yazılır; gündüz son geçerli
+            adres kullanılır. Çözülemezse son geçerli kayıt korunur ve Bildirimler'e uyarı düşer.</li>
+          <li>Aynı ad için başka bir kayıt ya da yönlendirme varsa o ad atlanır ve listelenir — sizin kaydınız geçerli kalır: Routing → alan adı
+            yönlendirmesi ya da VPS / DPI çıkışı (yerel yanıt yönlendirme setine girmez, trafik VPS / Zapret yerine operatörden çıkardı), Pi-hole
+            Yerel DNS / CNAME kaydı, /etc/hosts, /etc/dnsmasq.d'deki başka bir dosya. Yeni eklenen kayıt en geç 30 dakikada, gece beklenmeden
+            uygulanır (tek yeniden başlatma); kaldırılan kaydın adı gece ya da «Şimdi uygula» ile geri gelir.</li>
+          <li>Yeniden başlatmadan sonra DNS yanıt vermezse güvenlik ağı dosyayı boşaltır ve güvenli arama <strong>askıya alınır</strong>: kayıtlar
+            ne gece ne başka bir DNS yenilemesinde yeniden yazılır (aynı kesinti tekrarlanmasın). Kartta «Şimdi uygula» ile yeniden denenir.</li>
+        </ul>
+      </DocBlock>
+
+      <DocBlock title="Bu panelin karşılamadığı denetimler">
+        <p>Şablonlar bu yüzden «uyumlu» değil, «uyuma yardımcı» diye anılır:</p>
+        <ul>
+          <li>Tek ortak yönetici hesabı (kişi başına hesap ve yetki yok).</li>
+          <li>Panel yalnız HTTP (80) üzerinden sunulur — TLS (HTTPS) yok.</li>
+          <li>İki aşamalı doğrulama (MFA) yok.</li>
+          <li>Olay geçmişi 30 gün tutulur.</li>
+          <li>Panel koruması (şifre) kurulumda kapalı gelir — panelin üst bandından açılır.</li>
+        </ul>
+      </DocBlock>
+
+      <DocTip type="warning">
+        Atlatılabilir: şifreli DNS (DoH / DoT) kullanan, Pi-hole'u kullanmayan ya da IPv6 üzerinden başka bir DNS alan cihaz. Tüm ağda şifreli
+        DNS engeli bunu büyük ölçüde kapatır (yalnız IPv4). Gizli (rastgele) Wi-Fi adresi kullanan telefon cihaz hedefli kurala girmeyebilir.
+        Acil durumda SSH: <code>sudo rm /etc/dnsmasq.d/09-pi5-safesearch.conf &amp;&amp; sudo systemctl restart pihole-FTL</code> — bu komut
+        geçicidir: ayar açık kaldığı için dosya gece 03–06'da ya da sonraki DNS yenilemesinde yeniden yazılır. Kalıcı kapatmak için ardından
+        panelde Koruma Şablonları → Güvenli arama → <strong>Kapat</strong> (ya da şablonu Geri al).
       </DocTip>
     </div>
   );

@@ -41,7 +41,7 @@ import { Toaster } from './toast';
 import './index.css';
 import './App.css';
 
-// Büyük sayfalar (Belgeler, WireGuard, Cihaz Rolleri, Ziyaret Geçmişi, Ağ Ajandası, Lisans) ayrı parça olarak yalnız sekme açılınca yüklenir:
+// Büyük sayfalar (Belgeler, WireGuard, Cihaz Rolleri, Ziyaret Geçmişi, Ağ Ajandası, Lisans, Koruma Şablonları) ayrı parça olarak yalnız sekme açılınca yüklenir:
 // ana paket Vite'ın 1000 kB uyarı sınırının altında kalsın. Güncellemeden sonra açık kalmış eski sekmede eski adlı parça
 // artık yoktur: sayfa bir kez kendiliğinden yenilenir ve yeni sürümü alır (#sekme adreste kalır). React.lazy başarısız
 // yüklemeyi saklar ("Tekrar Dene" yeniden indirmez); yenilemeden sonra da yüklenemezse sekmenin hata sınırı Türkçe nedeni
@@ -64,6 +64,7 @@ const RolesPanel = lazyTab(() => import('./components/RolesPanel').then(m => m.R
 const VisitHistory = lazyTab(() => import('./components/VisitHistory').then(m => m.VisitHistory), 'Ziyaret Geçmişi');
 const AgendaPanel = lazyTab(() => import('./components/AgendaPanel').then(m => m.AgendaPanel), 'Ağ Ajandası');
 const LicensePanel = lazyTab(() => import('./components/LicensePanel').then(m => m.LicensePanel), 'Lisans');
+const TemplatesPanel = lazyTab(() => import('./components/TemplatesPanel').then(m => m.TemplatesPanel), 'Koruma Şablonları');
 const tabLoading = (
   <div style={{ textAlign: 'center', padding: 30, color: 'var(--text-muted)' }}><Loader2 size={20} className="spin" /></div>
 );
@@ -206,6 +207,7 @@ function App() {
       case 'alerts': return <AlertsPanel />;
       case 'nettools': return <NetworkToolsPanel />;
       case 'parental': return <ParentalPanel />;
+      case 'templates': return <Suspense fallback={tabLoading}><TemplatesPanel /></Suspense>;
       case 'devicecontrol': return <DeviceControlPanel />;
       case 'trafficcontrol': return <TrafficControlPanel />;
       case 'agenda': return <Suspense fallback={tabLoading}><AgendaPanel /></Suspense>;
