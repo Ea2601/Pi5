@@ -114,6 +114,18 @@ async function run(args: string[], timeout = 60000): Promise<Record<string, stri
   return kv;
 }
 
+// Mobil yedekleme (mobile.ts) bu altyapının üstüne kurulur: açık mı, hedef kökü (sync.sh target)
+export const syncEnabled = (): boolean => confEnabled();
+export async function prepareTargetRoot(target: string): Promise<string> {
+  let args: string[];
+  if (target === 'internal') args = ['target', '--internal'];
+  else if (/^usb:[A-Za-z0-9_-]{1,40}$/.test(target)) args = ['target', '--usb', target.slice(4)];
+  else throw new Error('Hedef disk seçin');
+  const root = (await run(args, 30000)).path;
+  if (!root || !targetOf(path.posix.join(root, 'x'))) throw new Error('Hedef klasör hazırlanamadı');
+  return root;
+}
+
 function confEnabled(): boolean {
   let txt = '';
   try { txt = fs.readFileSync(CONF, 'utf8'); } catch { return false; }
@@ -319,6 +331,11 @@ async function nameResolves(): Promise<boolean> {
 let qrCache: { id: string; data: string } | null = null;
 async function deviceQr(id: string): Promise<string> {
   if (qrCache?.id === id) return qrCache.data;
+  qrCache = { id, data: await qrDataUrl(id) };
+  return qrCache.data;
+}
+// Metnin QR kodu (PNG data: adresi) — mobil yedekleme eşleştirmesi de kullanır
+export async function qrDataUrl(text: string): Promise<string> {
   const png = await new Promise<Buffer>((resolve, reject) => {
     const p = spawn('qrencode', ['-t', 'PNG', '-s', '6', '-m', '2', '-o', '-'], { stdio: ['pipe', 'pipe', 'ignore'] });
     const out: Buffer[] = [];
@@ -328,10 +345,9 @@ async function deviceQr(id: string): Promise<string> {
     p.on('close', c => { clearTimeout(t); if (c === 0) resolve(Buffer.concat(out)); else reject(new Error(`qrencode ${c}`)); });
     // Süreç girdiyi okumadan kapanırsa yazma EPIPE atar: dinleyicisiz 'error' panel servisini çökertir (sonuç close'tan gelir)
     p.stdin.on('error', () => {});
-    p.stdin.end(id);
+    p.stdin.end(text);
   });
-  qrCache = { id, data: `data:image/png;base64,${png.toString('base64')}` };
-  return qrCache.data;
+  return `data:image/png;base64,${png.toString('base64')}`;
 }
 
 // ── durum ────────────────────────────────────────────────────────────────────

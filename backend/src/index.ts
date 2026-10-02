@@ -63,6 +63,7 @@ import { shareStatus, enableShare, disableShare, setSharePassword, addUsbShare, 
 import { piholeConfigView, applyPiholeSettings, getBlocking, setBlocking, migratePiholeConfigRows, type ConfigRow } from './piholeConfig';
 import { syncStatus, enableSync, disableSync, acceptDevice, rejectDevice, removeDevice, acceptFolder, rejectFolder, removeFolder,
   updateFolder, setCloud, syncBlocksSatellite, startSyncWatch } from './sync';
+import { mobileStatus, setMobile, startPairing, cancelPairing as cancelMobilePairing, removeMobileDevice, mobileBlocksSatellite, startMobile } from './mobile';
 import { vaultStatus, vaultJob, noteVaultJob, connectVault, saveSettings, startBackup, listSnapshots, disableVault,
   startVaultWatch, vaultLeftover, vaultBlocksSatellite, resumeVault, restoreFetch, restorePreview, applyRestore, discardRestore,
   restoreFiles, listKeys, removeOldKey } from './vault';
@@ -168,7 +169,7 @@ app.use('/api', authGate);
 // terminali çalıştıramasın). Ağ uçlarındaki (netmode, wan …) denetimin aynısı; localhost (kiosk) ve IP güvenilir.
 // netAdminGuard aşağıda tanımlı: istek anında çağrılır.
 app.use(['/api/terminal', '/api/cron', '/api/backup', '/api/system', '/api/services', '/api/storage', '/api/firewall',
-  '/api/fail2ban', '/api/unbound', '/api/bandwidth', '/api/vault', '/api/sync', '/api/pihole/blocking'], (req, res, next) => { void netAdminGuard(req, res, next); });
+  '/api/fail2ban', '/api/unbound', '/api/bandwidth', '/api/vault', '/api/sync', '/api/mobile', '/api/pihole/blocking'], (req, res, next) => { void netAdminGuard(req, res, next); });
 // Uzaktan yönetim anahtarı (VPS istemcisine panel erişimi, remoteAccess.ts): yalnız bu yol — /api/vps'in geri kalanı değil.
 app.use('/api/vps/:id/clients/:clientId/panel-access', writeLimiter, (req, res, next) => { void netAdminGuard(req, res, next); });
 registerAuthRoutes(app);
@@ -4263,7 +4264,7 @@ app.post('/api/system/role', netAdminGuard, async (req, res) => {
       const vb = await vaultBlocksSatellite();
       if (vb) return res.status(409).json({ error: vb });
       // Cihaz yedekleme de ana cihazdadır (uyduda uçlar 409, izleme çalışmaz)
-      const sb = syncBlocksSatellite();
+      const sb = syncBlocksSatellite() || mobileBlocksSatellite();
       if (sb) return res.status(409).json({ error: sb });
       const ns = readNetModeState();
       if (ns && ns.stage !== 'none') return res.status(409).json({ error: 'Önce menü → DHCP Ayarları\'ndan otomatik adrese dönün (sabit adres ana cihaz içindir)' });
@@ -4946,6 +4947,26 @@ app.post('/api/sync/folders/remove', syncRoute(req => removeFolder(req.body?.id)
 app.post('/api/sync/folders/update', syncRoute(req => updateFolder(req.body || {}).then(() => ({}))));
 app.post('/api/sync/cloud', syncRoute(req => setCloud(req.body?.enabled)));
 startSyncWatch();
+
+// Mobil yedekleme (mobile.ts): Klyrix uygulaması telefonun fotoğraf / videolarını ayrı bir porttan (8095) yükler; panel
+// açar / kapatır, hedef diski seçer, eşleştirme kodu (QR) üretir, cihaz kaldırır. Kapılar /api/sync ile aynı.
+app.use('/api/mobile', (req, res, next) => {
+  if (isSatellite()) return res.status(409).json({ error: 'Bu cihaz uydu — mobil yedekleme ana cihazdadır' });
+  if (req.method !== 'GET') return writeLimiter(req, res, next);
+  next();
+});
+app.get('/api/mobile', async (_req, res) => {
+  try {
+    res.json(await mobileStatus());
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+app.post('/api/mobile/settings', syncRoute(req => setMobile(req.body || {}).then(() => ({}))));
+app.post('/api/mobile/pair', syncRoute(() => startPairing()));
+app.post('/api/mobile/pair/cancel', syncRoute(async () => { cancelMobilePairing(); return {}; }));
+app.post('/api/mobile/devices/remove', syncRoute(req => removeMobileDevice(req.body?.id).then(() => ({}))));
+startMobile();
 
 // ─── Parental Controls ───
 // Ebeveyn kontrolleri (parental.ts): kural = kime (cihaz / grup) × neyi (tüm internet | kategori + site) × ne zaman. Kurallar

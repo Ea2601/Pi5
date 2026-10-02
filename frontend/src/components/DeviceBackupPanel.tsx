@@ -7,6 +7,7 @@ import { postApi } from '../hooks/useApi';
 import { Modal, Panel, Select } from './ui';
 import { toast } from '../toast';
 import { copyText } from '../clipboard';
+import { MobileBackupCard } from './MobileBackupCard';
 import './DeviceBackupPanel.css';
 
 // Cihaz Yedekleme (backend sync.ts → scripts/sync.sh, Syncthing): bilgisayar / telefon / tabletlerdeki seçilen klasörler
@@ -302,6 +303,7 @@ function OnView({ st, onChanged }: { st: SyncStatus; onChanged: () => void }) {
       {pf.length > 0 && <PendingFolders list={pf} targets={targets} onChanged={onChanged} />}
       <Devices list={devices} folders={folders} onChanged={onChanged} />
       <Folders list={folders} targets={targets} share={st.share} onChanged={onChanged} />
+      <MobileBackupCard />
       {folders.length > 0 && <CloudCard cloud={st.cloud} onChanged={onChanged} />}
       <h4 className="dv-h"><HardDrive size={14} /> Yedek alanı</h4>
       <Targets targets={targets} />

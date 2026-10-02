@@ -66,7 +66,7 @@ LINE_POLL=${PI5_VAULT_LINE_POLL:-30}
 # /root, /opt kopyaları (parola özetleri, SSH / WireGuard anahtarları, eski panelin veritabanı) klasör yedeğine girmez
 # Cihaz yedekleme (Syncthing) yardımcıları: eski sürümler (.stversions — bulutta restic'in kendi anlık görüntüleri var,
 # iki kez yüklenmesin), yarım aktarımlar ve klasör işareti
-SYNC_EXCLUDES=(--exclude '.stversions' --exclude '.syncthing.*.tmp' --exclude '~syncthing~*.tmp' --exclude '.stfolder')
+SYNC_EXCLUDES=(--exclude '.stversions' --exclude '.syncthing.*.tmp' --exclude '~syncthing~*.tmp' --exclude '.stfolder' --exclude '.klyrix-part')
 ARCHIVE_EXCLUDES=(--exclude '/home/*/eski-sistem-arsivi-*/etc' --exclude '/home/*/eski-sistem-arsivi-*/root'
                   --exclude '/home/*/eski-sistem-arsivi-*/opt')
 

@@ -105,11 +105,12 @@ share_block() { # AD YOL USB(0|1)
 }
 
 # Cihaz yedekleri: yalnız okunur. Dosyalar klyrix-sync'indir (Yedekler 2750): paylaşım kullanıcısı o grupla okur (force
-# group). Eski sürümler (.stversions) görünür; Syncthing'in işaret klasörü (.stfolder) hiç listelenmez (veto).
+# group). Eski sürümler (.stversions) görünür; Syncthing'in işaret klasörü (.stfolder) ve mobil uygulamanın yarım
+# yüklemeleri (.klyrix-part, backend/src/mobile.ts) hiç listelenmez (veto).
 backup_block() {
   local u; u=$(conf_get user)
   printf '\n[Yedekler]\n   path = %s\n   valid users = %s\n   force user = %s\n   force group = %s\n' "$BACKUP_DIR" "$u" "$u" "$SYNC_GROUP"
-  printf '   read only = yes\n   browseable = yes\n   hide dot files = no\n   veto files = /.stfolder/\n'
+  printf '   read only = yes\n   browseable = yes\n   hide dot files = no\n   veto files = /.stfolder/.klyrix-part/\n'
   printf '   vfs objects = catia fruit streams_xattr\n   fruit:metadata = stream\n'
 }
 

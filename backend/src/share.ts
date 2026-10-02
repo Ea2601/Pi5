@@ -260,8 +260,13 @@ export async function addUsbShare(part: unknown): Promise<string> {
   return kv.name || '';
 }
 
+// USB disk ayrılmadan önce: diske yazan panel içi işler (mobile.ts yüklemeleri) kesilir — umount "kullanımda" olmasın
+const usbRemoveHooks: ((name: string) => Promise<void>)[] = [];
+export function onUsbRemove(cb: (name: string) => Promise<void>): void { usbRemoveHooks.push(cb); }
+
 export async function removeUsbShare(name: unknown): Promise<void> {
   if (typeof name !== 'string' || !/^[A-Za-z0-9_-]{1,40}$/.test(name)) throw new Error('Geçersiz paylaşım adı');
+  for (const h of usbRemoveHooks) await h(name).catch(e => console.error('[paylaşım] ayırma öncesi kanca:', e?.message || e));
   await run(['usb-remove', '--name', name], undefined, 60000);
   cache = null;
   await recordEvent('storage', `USB disk paylaşımı kaldırıldı: ${name} (disk güvenle ayrıldı)`);
