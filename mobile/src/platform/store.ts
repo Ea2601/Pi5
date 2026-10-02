@@ -8,9 +8,10 @@ import type { FolderPick } from './folders.ts';
 
 // theme: panelle aynı koyu / açık tema; 'system' telefonun görünümünü izler
 export type ThemePref = 'system' | 'dark' | 'light';
-// Yedeklenecekler: fotoğraflar hep; videolar, ses (Android), kişiler, takvim ve klasörler isteğe bağlı
+// Yedeklenecekler: fotoğraflar hep; videolar, ses (Android), kişiler, takvim ve klasörler isteğe bağlı.
+// chargingOnly: kendiliğinden (arka plan) turlar yalnız şarjdayken; elle başlatılan tur her zaman.
 export interface Settings {
-  wifiOnly: boolean; videos: boolean; auto: boolean; theme: ThemePref;
+  wifiOnly: boolean; videos: boolean; auto: boolean; theme: ThemePref; chargingOnly: boolean;
   audio: boolean; contacts: boolean; calendar: boolean; folders: FolderPick[];
 }
 export interface LastRun {
@@ -20,7 +21,7 @@ export interface LastRun {
 // Bu telefonun son yazdığı yedek ve durum özeti: telefonda değişiklik yoksa yeni yedek yazılmaz
 export interface LastSnap { profileId: string; snapshotId: number; hash: string }
 export const DEFAULT_SETTINGS: Settings = {
-  wifiOnly: true, videos: true, auto: true, theme: 'system', audio: false, contacts: false, calendar: false, folders: [],
+  wifiOnly: true, videos: true, auto: true, theme: 'system', chargingOnly: false, audio: false, contacts: false, calendar: false, folders: [],
 };
 
 const SECRET = { keychainAccessible: SecureStore.AFTER_FIRST_UNLOCK_THIS_DEVICE_ONLY };

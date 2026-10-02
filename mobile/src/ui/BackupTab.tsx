@@ -24,7 +24,7 @@ export function BackupTab({ pairing, pi, onOpenSnapshots }: { pairing: Pairing2;
   const [last, setLast] = useState<LastRun | null>(null);
   const [access, setAccess] = useState<Access>('all');
   // Tur durumu ortak (backup.ts): ekran sonradan açılsa da süren turun ilerlemesini ve bittiğini görür
-  const [run, setRun] = useState<RunState>({ running: false, progress: null });
+  const [run, setRun] = useState<RunState>({ running: false, progress: null, kept: false });
   const { running, progress } = run;
   const wasRunning = useRef(false);
   const { refresh } = pi;
@@ -98,6 +98,7 @@ export function BackupTab({ pairing, pi, onOpenSnapshots }: { pairing: Pairing2;
             <Text style={s.h}>{phaseText(progress)}</Text>
             <View style={s.bar}><View style={[s.barFill, { width: `${pct}%` }]} /></View>
             {progress?.current ? <Text style={s.small} numberOfLines={1}>{progress.current}</Text> : null}
+            {run.kept ? <Text style={s.small}>Uygulamadan çıkabilirsiniz: yedekleme sürer, ilerleme bildirimde görünür.</Text> : null}
             <Btn kind="off" icon={Square} label="Durdur" onPress={requestStop} />
           </>
         ) : (

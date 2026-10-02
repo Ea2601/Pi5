@@ -2,6 +2,7 @@
 // paketine koyuyordu (paket 1,6 MB → 4 MB). Yeni ikon gerekirse buraya ekleyin.
 export { default as Archive } from 'lucide-react-native/icons/archive';
 export { default as ArchiveRestore } from 'lucide-react-native/icons/archive-restore';
+export { default as BatteryCharging } from 'lucide-react-native/icons/battery-charging';
 export { default as CalendarDays } from 'lucide-react-native/icons/calendar-days';
 export { default as Check } from 'lucide-react-native/icons/check';
 export { default as ChevronLeft } from 'lucide-react-native/icons/chevron-left';

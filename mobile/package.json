@@ -16,6 +16,7 @@
     "@expo-google-fonts/jetbrains-mono": "^0.4.1",
     "expo": "~57.0.26",
     "expo-background-task": "~57.0.21",
+    "expo-battery": "~57.0.3",
     "expo-build-properties": "~57.0.22",
     "expo-calendar": "~57.0.5",
     "expo-camera": "~57.0.6",

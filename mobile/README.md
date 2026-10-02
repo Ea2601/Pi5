@@ -23,8 +23,11 @@ listelenir, telefona geri yüklenir ve silinir. Pi tarafı: `backend/src/mobile.
   yazılmaz. Fotoğraf / video «Klyrix Gate Sync», ses «Klyrix Gate Sync Ses» albümüne; dosyalar seçilen hedef klasöre
   (yedekteki klasör yapısıyla); kişiler ve takvim etkinlikleri yalnız eksikse (ad + telefon / e-posta, başlık + başlangıç
   eşleşmesi; etkinlikler «Klyrix Gate Sync» takvimine). Yedek bu telefonunsa telefonda duran fotoğraf / ses yinelenmez.
-- **Arka plan:** `expo-background-task` (Android yaklaşık saatte bir — sistem pil için erteleyebilir; iOS sistemin seçtiği zamanlarda, çoğunlukla gece).
-  Ayarlar: kendiliğinden yedekle, yalnız Wi-Fi'da.
+- **Arka plan:** «Şimdi yedekle» ile başlayan tur Android'de ön plan hizmetiyle (`modules/klyrix-keepalive`, ilerleme
+  bildirimi + «Durdur») uygulamadan çıkınca ve ekran kapanınca da sonuna kadar sürer. Uygulama kapalıyken turları
+  `expo-background-task` başlatır: en sık ~15 dakikada bir (sistem pil için erteleyebilir; Ayarlar'da pil optimizasyonu
+  uyarısı), Android'de tur başına en çok 8 dk, iOS'ta 25 sn (sistemin seçtiği zamanlarda, çoğunlukla gece); yarıda kalan
+  sonraki turda sürer. Ayarlar: kendiliğinden yedekle, yalnız şarjdayken (kendiliğinden turlar için), yalnız Wi-Fi'da.
 - **Ağ:** Pi'ye ev ağında ya da Ev VPN'iyle HTTP (port 8095) ile bağlanılır — panelin kendisi gibi; içerik zaten şifreli.
 
 ## Klasörler
@@ -32,7 +35,8 @@ listelenir, telefona geri yüklenir ve silinir. Pi tarafı: `backend/src/mobile.
 | Yol | İçerik |
 | --- | --- |
 | `src/core/` | Saf TypeScript: şifreleme biçimi ve kurtarma anahtarı (`crypto.ts`), Pi v2 istemcisi (`api.ts`), yedek (`snapshot.ts`), geri yükleme (`restore.ts`), eşleştirme kodu (`protocol.ts`) — Node testleriyle aynı kod |
-| `src/platform/` | Expo bağdaştırıcıları: AES-GCM (`expo-crypto`), ağ (`expo/fetch`), medya kitaplığı ve galeri, klasörler (SAF), kişiler (`expo-contacts`), takvim (`expo-calendar`), güvenli depo, kimlik önbelleği, arka plan görevi |
+| `src/platform/` | Expo bağdaştırıcıları: AES-GCM (`expo-crypto`), ağ (`expo/fetch`), medya kitaplığı ve galeri, klasörler (SAF), kişiler (`expo-contacts`), takvim (`expo-calendar`), güvenli depo, kimlik önbelleği, arka plan görevi, ön plan hizmeti (`keepalive.ts`) |
+| `modules/klyrix-keepalive/` | Yerel Android modülü (Kotlin): tur sürerken `dataSync` ön plan hizmeti, ilerleme bildirimi, uyanık tutma; iOS'ta yok |
 | `src/ui/` | Kurulum (anahtar adımı dahil), Yedekleme, Yedekler (liste, ayrıntı, tür tür geri yükleme, çöp), Ayarlar (yedeklenecekler) |
 | `test/core.test.ts`, `test/v2.test.ts` | Birim testleri (`npm test`; şifreleme Node'un AES-GCM'iyle aynı biçimde) |
 | `test/pi-v2.ts` | Gerçek Pi'ye karşı uçtan uca test (`PANEL=http://<pi>:3001 STORE=<disk>/.klyrix-mobil node test/pi-v2.ts`, Pi'de) |

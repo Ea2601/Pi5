@@ -1,9 +1,10 @@
 // Ayarlar sekmesi: yedekleme tercihleri, yedeklenecekler (ContentCard), görünüm (Sistem / Koyu / Açık — panelin iki teması), kişi ve telefonları,
 // şifreleme (kurtarma anahtarını gösterme), Pi bağlantısı, hakkında, eşleştirmeyi kaldırma (kırmızı).
-import { useState } from 'react';
-import { Alert, Platform, ScrollView, Text } from 'react-native';
+import { useCallback, useEffect, useState } from 'react';
+import { Alert, AppState, Linking, Platform, ScrollView, Text } from 'react-native';
+import * as Battery from 'expo-battery';
 import Constants from 'expo-constants';
-import { Eye, HardDriveUpload, Info, Monitor, Moon, Palette, RefreshCw, Share2, ShieldCheck, Smartphone, Sun, Unlink, User } from './icons.ts';
+import { BatteryCharging, Eye, HardDriveUpload, Info, Monitor, Moon, Palette, RefreshCw, Share2, ShieldCheck, Smartphone, Sun, Unlink, User } from './icons.ts';
 import type { Pairing2 } from '../core/api.ts';
 import { encodeRecoveryKey } from '../core/crypto.ts';
 import { dropIdCache } from '../platform/idcache.ts';
@@ -24,6 +25,16 @@ export function SettingsTab({ pairing, settings, onSettings, pi, onForget }: {
 }) {
   const { s, p, pref, setPref } = useTheme();
   const [groups, setGroups] = useState<string[] | null>(null);
+  // Android: pil optimizasyonu açıksa sistem arka plan turlarını saatlerce erteleyebilir → «Kısıtlamasız» önerilir
+  const [batteryOpt, setBatteryOpt] = useState(false);
+  const checkBattery = useCallback(async () => {
+    if (Platform.OS === 'android') setBatteryOpt(await Battery.isBatteryOptimizationEnabledAsync().catch(() => false));
+  }, []);
+  useEffect(() => {
+    void checkBattery();
+    const sub = AppState.addEventListener('change', a => { if (a === 'active') void checkBattery(); });
+    return () => sub.remove();
+  }, [checkBattery]);
   const reveal = () => Alert.alert('Kurtarma anahtarı', 'Anahtarı gören herkes bu kişinin yedeklerini açabilir. Yanınızda kimse yokken gösterin.', [
     { text: 'Vazgeç', style: 'cancel' },
     {
@@ -50,13 +61,24 @@ export function SettingsTab({ pairing, settings, onSettings, pi, onForget }: {
   return (
     <ScrollView style={s.screen} contentContainerStyle={s.scroll}>
       <Card title="Yedekleme" icon={<HardDriveUpload size={18} color={ic} />}>
-        <ToggleRow label="Kendiliğinden yedekle" hint="Arka planda, sistemin uygun gördüğü zamanlarda" value={settings.auto} onChange={v => onSettings({ auto: v })} />
+        <ToggleRow label="Kendiliğinden yedekle" hint="Uygulama kapalıyken de: yaklaşık 15 dakikada bir, telefon uygun gördüğünde" value={settings.auto} onChange={v => onSettings({ auto: v })} />
+        {settings.auto ? (
+          <ToggleRow label="Yalnız şarjdayken" hint="Kendiliğinden yedekleme için; «Şimdi yedekle» her zaman çalışır" value={settings.chargingOnly} onChange={v => onSettings({ chargingOnly: v })} />
+        ) : null}
         <ToggleRow label="Yalnız Wi-Fi'da" value={settings.wifiOnly} onChange={v => onSettings({ wifiOnly: v })} />
         <Text style={s.small}>
           {Platform.OS === 'ios'
             ? 'iOS arka planda yedeklemeyi sistemin seçtiği zamanlarda (çoğunlukla gece, şarjdayken) kısa süreler için çalıştırır; büyük arşivler için uygulamayı açık tutun.'
-            : 'Android arka planda yaklaşık saatte bir yedekler (sistem pil için erteleyebilir); pil tasarrufu uygulamayı kısıtlarsa açık tutun.'}
+            : '«Şimdi yedekle» ile başlayan yedekleme uygulamadan çıkınca ve ekran kapanınca da sürer; ilerleme bildirimde görünür. Uygulama kapalıyken yaklaşık 15 dakikada bir kendiliğinden yedekler.'}
         </Text>
+        {Platform.OS === 'android' && settings.auto && batteryOpt ? (
+          <>
+            <Text style={[s.small, { color: p.warning }]}>
+              Pil optimizasyonu açık: Android kendiliğinden yedeklemeyi saatlerce erteleyebilir. Uygulama ayarlarında Pil → «Kısıtlamasız» seçin.
+            </Text>
+            <Btn kind="neutral" icon={BatteryCharging} label="Uygulama ayarlarını aç" onPress={() => void Linking.openSettings()} />
+          </>
+        ) : null}
       </Card>
 
       <ContentCard settings={settings} onSettings={onSettings} />
