@@ -68,10 +68,17 @@ export function Main({ pairing, settings, onSettings, onForget }: {
   return (
     <View style={[s.screen, { paddingTop: insets.top }]}>
       <Header subtitle={pairing.profileName} right={chip} />
+      {/* Sekmeler kapatılmaz, gizlenir: süren geri yükleme / açık yedek ayrıntısı / kaydırma yeri sekme değişince kaybolmaz */}
       <View style={{ flex: 1 }}>
-        {tab === 'backup' ? <BackupTab pairing={pairing} pi={pi} onOpenSnapshots={() => setTab('snapshots')} />
-          : tab === 'snapshots' ? <SnapshotsTab pairing={pairing} pi={pi} />
-          : <SettingsTab pairing={pairing} settings={settings} onSettings={onSettings} pi={pi} onForget={onForget} />}
+        <View style={{ flex: 1, display: tab === 'backup' ? 'flex' : 'none' }}>
+          <BackupTab pairing={pairing} pi={pi} onOpenSnapshots={() => setTab('snapshots')} />
+        </View>
+        <View style={{ flex: 1, display: tab === 'snapshots' ? 'flex' : 'none' }}>
+          <SnapshotsTab pairing={pairing} pi={pi} />
+        </View>
+        <View style={{ flex: 1, display: tab === 'settings' ? 'flex' : 'none' }}>
+          <SettingsTab pairing={pairing} settings={settings} onSettings={onSettings} pi={pi} onForget={onForget} />
+        </View>
       </View>
       <View style={{ flexDirection: 'row', borderTopWidth: 1, borderTopColor: p.border, backgroundColor: p.card, paddingBottom: insets.bottom }}>
         {tabs.map(t => {

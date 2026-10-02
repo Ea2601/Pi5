@@ -85,6 +85,8 @@ export async function runSnapshot(api: Api, c: Cipher, sources: Source[], o: Sna
           o.ids?.set(k, id);
         }
         items.push({ item, source, id });
+        // İlk taramada kimlik hesaplanırken de sayaç ilerlesin (sayfa 500 öğe)
+        if (items.length % 100 === 0) { p.scanned = items.length; emit(); }
       }
       p.scanned = items.length; emit();
     }

@@ -1,11 +1,11 @@
 // Yedekleme sekmesi: bu telefonun Pi'deki son yedeği, son tur, "Şimdi yedekle" (yeşil) / ilerleme + "Durdur" (kırmızı).
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Alert, AppState, ScrollView, Text, View } from 'react-native';
 import { Archive, HardDriveUpload, ImageIcon, Play, Square } from './icons.ts';
 import type { Pairing2 } from '../core/api.ts';
 import type { SnapshotProgress } from '../core/snapshot.ts';
 import { fmtBytes } from '../core/protocol.ts';
-import { backupOnce, isRunning, requestStop, Skip } from '../backup.ts';
+import { backupOnce, requestStop, Skip, subscribeRun, type RunState } from '../backup.ts';
 import { mediaAccess, widenAccess, type Access } from '../platform/media.ts';
 import { loadLast, type LastRun } from '../platform/store.ts';
 import { APP_NAME } from './Header.tsx';
@@ -23,8 +23,11 @@ export function BackupTab({ pairing, pi, onOpenSnapshots }: { pairing: Pairing2;
   const { s, p } = useTheme();
   const [last, setLast] = useState<LastRun | null>(null);
   const [access, setAccess] = useState<Access>('all');
-  const [progress, setProgress] = useState<SnapshotProgress | null>(null);
-  const [running, setRunning] = useState(isRunning());
+  // Tur durumu ortak (backup.ts): ekran sonradan açılsa da süren turun ilerlemesini ve bittiğini görür
+  const [run, setRun] = useState<RunState>({ running: false, progress: null });
+  const { running, progress } = run;
+  const wasRunning = useRef(false);
+  const { refresh } = pi;
 
   const reload = useCallback(async () => {
     setLast(await loadLast());
@@ -35,22 +38,26 @@ export function BackupTab({ pairing, pi, onOpenSnapshots }: { pairing: Pairing2;
     const sub = AppState.addEventListener('change', a => { if (a === 'active') void reload(); });
     return () => sub.remove();
   }, [reload]);
+  useEffect(() => subscribeRun(st => {
+    setRun(st);
+    // Tur bitti (bu ekrandan ya da arka plan görevinden başlamış olsun): son tur ve Pi'deki yedekler yenilenir
+    if (wasRunning.current && !st.running) {
+      void reload();
+      void refresh();
+    }
+    wasRunning.current = st.running;
+  }), [reload, refresh]);
 
   const start = async () => {
     if ((await mediaAccess(true)) === 'none') {
       Alert.alert('İzin gerekli', `Fotoğraflara erişim izni olmadan yedeklenemez. Telefonun Ayarlar → Uygulamalar → ${APP_NAME} → İzinler bölümünden açın.`);
       return;
     }
-    setRunning(true); setProgress(null);
     try {
-      const r = await backupOnce({ onProgress: setProgress });
+      const r = await backupOnce();
       if (r.failed) Alert.alert('Yedekleme bitti', `${r.failed} dosya yüklenemedi; yedek yüklenebilenlerle yazıldı.${r.error ? `\n${r.error}` : ''}`);
     } catch (e) {
       Alert.alert(e instanceof Skip ? 'Yedeklenmedi' : 'Yedekleme durdu', e instanceof Error ? e.message : String(e));
-    } finally {
-      setRunning(false); setProgress(null);
-      void reload();
-      void pi.refresh();
     }
   };
 
@@ -98,7 +105,7 @@ export function BackupTab({ pairing, pi, onOpenSnapshots }: { pairing: Pairing2;
             {last ? (
               <>
                 <KV label="Tarih" value={when(last.at)} />
-                {last.error && !last.uploaded && !last.snapshotId ? <Text style={s.err}>{last.error}</Text> : (
+                {last.error && !last.uploaded && !last.snapshotId && !last.failed ? <Text style={s.err}>{last.error}</Text> : (
                   <>
                     {last.unchanged ? <Text style={s.p}>Değişiklik yok — son yedek güncel.</Text> : null}
                     {last.snapshotId ? <KV label="Yeni yedek" value={`${last.items ?? 0} öğe`} tone="ok" /> : null}

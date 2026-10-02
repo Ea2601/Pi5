@@ -17,12 +17,27 @@ import { openSession, Skip } from './session.ts';
 export { Skip } from './session.ts';
 let running: Promise<SnapshotResult> | null = null;
 let stopFlag = false;
-export const isRunning = () => running !== null;
 export const requestStop = () => { stopFlag = true; };
+
+// Süren turun durumu tek yerde: ekran sekme değişip yeniden açılsa da, tur arka plan görevinden başlasa da aynı turu
+// (ve bittiğini) görür. Dinleyici abone olunca hemen son durumu alır.
+export interface RunState { running: boolean; progress: SnapshotProgress | null }
+let state: RunState = { running: false, progress: null };
+const listeners = new Set<(s: RunState) => void>();
+function publish(s: RunState): void {
+  state = s;
+  for (const l of listeners) l(s);
+}
+export function subscribeRun(l: (s: RunState) => void): () => void {
+  listeners.add(l);
+  l(state);
+  return () => { listeners.delete(l); };
+}
 
 export function backupOnce(o: { deadline?: number; background?: boolean; onProgress?: (p: SnapshotProgress) => void } = {}): Promise<SnapshotResult> {
   if (running) return running;
   stopFlag = false;
+  publish({ running: true, progress: null });
   running = (async () => {
     if (!(await loadPairing())) throw new Skip('Pi ile eşleşmemiş');
     const s = await loadSettings();
@@ -45,7 +60,7 @@ export function backupOnce(o: { deadline?: number; background?: boolean; onProgr
       ];
       const r = await runSnapshot(api, cipher, sources, {
         device: pr.deviceName, platform: Platform.OS, deadline: o.deadline, shouldStop: () => stopFlag, ids,
-        onProgress: p => { phase = p.phase; o.onProgress?.(p); },
+        onProgress: p => { phase = p.phase; publish({ running: true, progress: p }); o.onProgress?.(p); },
         // Telefondaki durum bu telefonun son yedeğiyle aynıysa ve o yedek Pi'de duruyorsa yenisi yazılmaz
         unchanged: async h => !!last && last.profileId === pr.profileId && last.hash === h && (await api.snapshots()).some(x => x.id === last.snapshotId),
       });
@@ -62,6 +77,9 @@ export function backupOnce(o: { deadline?: number; background?: boolean; onProgr
     } finally {
       ids.save(phase !== 'scan');
     }
-  })().finally(() => { running = null; });
+  })().finally(() => {
+    running = null;
+    publish({ running: false, progress: null });
+  });
   return running;
 }

@@ -77,6 +77,7 @@ export const http: Http = {
     if (u.pathname === '/v2/profile/keycheck') return json(200, {});
     if (u.pathname === '/v2/usage') return json(200, { bytes: 6.9e9, objects: 1745, free: 2.1e11, size: 5e11, target: 'Dahili disk', mounted: true });
     if (u.pathname === '/v2/snapshots') return json(200, { snapshots: u.searchParams.get('trash') === '1' ? trash : live });
+    if (u.pathname === '/v2/objects/check') return json(200, { have: {}, partial: {} });
     const st = /^\/v2\/objects\/([0-9a-f]{64})\/state$/.exec(u.pathname);
     if (st) {
       const o = (await sealed()).get(st[1]);
