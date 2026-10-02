@@ -20,7 +20,7 @@ const SOURCE_LABEL: Record<string, string> = {
   'dhcp-probe': 'DHCP', netmode: 'Ağ modu', 'netmode-ap': 'Ağ modu', 'netmode-missing': 'Ağ modu', service: 'Servis', update: 'Güncelleme',
   unbound: 'Unbound', zapret: 'Zapret', pihole: 'Pi-hole', vps: 'VPS', device: 'Cihaz', cron: 'Cron', vpn: 'Ev VPN',
   mesh: 'Mesh', storage: 'Depolama', bandwidth: 'Bant genişliği', backup: 'Yedekleme', vault: 'Yedekleme',
-  visits: 'Ziyaret Geçmişi',
+  sync: 'Cihaz yedekleme', visits: 'Ziyaret Geçmişi',
 };
 export const sourceLabel = (s: string) => SOURCE_LABEL[(s || '').split(':')[0]] || s || 'Sistem';
 
@@ -30,7 +30,7 @@ const SOURCE_TAB: Record<string, TabId> = {
   cpu: 'dashboard', memory: 'dashboard', disk: 'dashboard', network: 'dashboard', dns: 'unbound',
   dhcp: 'dhcp', 'dhcp-rogue': 'dhcp', 'dhcp-probe': 'dhcp', unbound: 'unbound', zapret: 'zapret', pihole: 'pihole',
   vps: 'vps', vpn: 'vps', device: 'devicecontrol', update: 'maintenance', cron: 'maintenance', mesh: 'roles',
-  storage: 'storage', bandwidth: 'bandwidth', backup: 'backup', vault: 'backup', visits: 'visits',
+  storage: 'storage', bandwidth: 'bandwidth', backup: 'backup', vault: 'backup', sync: 'backup', visits: 'visits',
 };
 const SERVICE_TAB: Record<string, TabId> = {
   pihole: 'pihole', unbound: 'unbound', zapret: 'zapret', fail2ban: 'fail2ban', nftables: 'firewall', wireguard: 'vps',

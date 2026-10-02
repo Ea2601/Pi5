@@ -10,23 +10,25 @@ import { toast } from '../toast';
 
 // Bulut Yedeği ayrı parça (React.lazy): ana paket büyümesin — yalnız Yedekleme sayfası açılınca yüklenir.
 const CloudBackupPanel = lazy(() => import('./CloudBackupPanel').then(m => ({ default: m.CloudBackupPanel })));
+// Cihaz Yedekleme (Syncthing) de ayrı parça
+const DeviceBackupPanel = lazy(() => import('./DeviceBackupPanel').then(m => ({ default: m.DeviceBackupPanel })));
 
 // Parça yüklenemezse (panel güncellemesinden sonra eski sekmede eski dosya adı artık yok) ya da bölüm hata verirse yalnız bu
 // bölüm yerine kısa bir not çıkar: sayfanın geri kalanı (indir / geri yükle) çalışmaya devam eder. React.lazy başarısız
 // içe aktarmayı önbellekte tuttuğu için çözüm sayfayı yenilemektir.
-class CloudBackupBoundary extends Component<{ children: ReactNode }, { failed: boolean }> {
+class CloudBackupBoundary extends Component<{ children: ReactNode; name?: string }, { failed: boolean }> {
   state = { failed: false };
   static getDerivedStateFromError() {
     return { failed: true };
   }
   componentDidCatch(error: Error) {
-    console.error('Bulut yedeği bölümü:', error);
+    console.error(`${this.props.name || 'Bulut yedeği'} bölümü:`, error);
   }
   render() {
     if (!this.state.failed) return this.props.children;
     return (
       <div className="glass-panel" style={{ marginTop: 14, padding: '14px 16px', display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 10 }}>
-        <span className="text-muted" style={{ fontSize: 13, flex: '1 1 220px' }}>Bulut yedeği bölümü yüklenemedi — sayfayı yenileyin.</span>
+        <span className="text-muted" style={{ fontSize: 13, flex: '1 1 220px' }}>{this.props.name || 'Bulut yedeği'} bölümü yüklenemedi — sayfayı yenileyin.</span>
         <button className="btn-outline btn-sm" onClick={() => window.location.reload()}>Sayfayı yenile</button>
       </div>
     );
@@ -185,6 +187,13 @@ export function BackupPanel() {
       <CloudBackupBoundary>
         <Suspense fallback={null}>
           <CloudBackupPanel />
+        </Suspense>
+      </CloudBackupBoundary>
+
+      {/* Cihaz yedekleme (bilgisayar / telefon / tablet → Pi'nin diski, Syncthing) */}
+      <CloudBackupBoundary name="Cihaz yedekleme">
+        <Suspense fallback={null}>
+          <DeviceBackupPanel />
         </Suspense>
       </CloudBackupBoundary>
 

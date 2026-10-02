@@ -35,8 +35,11 @@ const UNIT = `wg-quick@${WG_IFACE}`;
 // Misafirin erişemeyeceği yerel ağlar (ev ağı, diğer VPN istemcileri, CGNAT, link-local)
 const PRIVATE_NETS = '10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10, 169.254.0.0/16';
 // Misafirin Pi üzerinde erişemeyeceği yönetim portları (SSH, panel, backend, Pi-hole arayüzü)
-// Misafirin Pi'de erişemeyeceği TCP portları: SSH, panel, backend; 139/445 ağ paylaşımı (Samba — share.sh / share.ts)
-const ADMIN_PORTS = '22, 80, 139, 443, 445, 3001, 8080';
+// Misafirin Pi'de erişemeyeceği TCP portları: SSH, panel, backend; 139/445 ağ paylaşımı (Samba — share.sh / share.ts);
+// 22000 cihaz yedekleme (Syncthing — sync.sh / sync.ts)
+const ADMIN_PORTS = '22, 80, 139, 443, 445, 3001, 8080, 22000';
+// Misafirin Pi'de erişemeyeceği UDP portları: cihaz yedekleme (Syncthing QUIC 22000, yerel keşif 21027)
+const ADMIN_UDP_PORTS = '21027, 22000';
 const KEY = /^[A-Za-z0-9+/]{42}[AEIMQUYcgkosw048]=$/;
 
 export type PeerRole = 'admin' | 'guest';
@@ -184,6 +187,7 @@ export function renderNft(peers: PeerRow[]): string {
     '  chain input {',
     '    type filter hook input priority filter - 1; policy accept;',
     `    iifname "${WG_IFACE}" ip saddr @guests tcp dport { ${ADMIN_PORTS} } drop`,
+    `    iifname "${WG_IFACE}" ip saddr @guests udp dport { ${ADMIN_UDP_PORTS} } drop`,
     '  }',
     '  chain forward {',
     '    type filter hook forward priority filter - 1; policy accept;',

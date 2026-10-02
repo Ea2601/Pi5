@@ -151,14 +151,15 @@ async function nft(script: string): Promise<void> {
 // Giriş zincirinde bizim jump'ın ve ilk koşulsuz son kararın (ör. eski kurulumların `inet filter`'ındaki sondaki `drop`,
 // `counter drop`, `reject ...`) yeri. Koşulsuz karardan SONRA gelen kural hiç okunmaz: jump onun önüne konur. Karar
 // satırı yoksa (panelin pi5_filter'ı: yalnız politika drop) sona eklenir — kullanıcının özel "engelle" kuralları önce kalır.
+// chain: cihaz yedekleme (sync.ts) kendi zinciri pi5_sync_in için de kullanır.
 const TERMINAL = /^(counter( packets \d+ bytes \d+)?\s+)?(log\b.*?\s+)?(drop|reject\b.*)$/;
-export function shareJumpPlan(listing: string): { jump?: string; terminal?: string; misplaced: boolean } {
+export function shareJumpPlan(listing: string, chain = FW_CHAIN): { jump?: string; terminal?: string; misplaced: boolean } {
   const rules: { text: string; handle: string }[] = [];
   for (const line of listing.split('\n')) {
     const m = /^\s*(.+?)\s+# handle (\d+)\s*$/.exec(line);
     if (m && !/^(chain|table)\s/.test(m[1])) rules.push({ text: m[1].trim(), handle: m[2] });
   }
-  const ji = rules.findIndex(r => r.text === `jump ${FW_CHAIN}`);
+  const ji = rules.findIndex(r => r.text === `jump ${chain}`);
   const ti = rules.findIndex(r => TERMINAL.test(r.text));
   return { jump: rules[ji]?.handle, terminal: rules[ti]?.handle, misplaced: ji >= 0 && ti >= 0 && ji > ti };
 }

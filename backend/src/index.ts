@@ -59,6 +59,8 @@ import { startReachWatch, noteReachResult, reachWatchState, REACH_WATCH_INTERVAL
 import { storageStatus, storageJob, noteStorageJob, startArchive, startPrepare, startMigrate, startStorageWatch } from './storage';
 import { applyKiosk, kioskSupport } from './kiosk';
 import { shareStatus, enableShare, disableShare, setSharePassword, addUsbShare, removeUsbShare, startShareWatch } from './share';
+import { syncStatus, enableSync, disableSync, acceptDevice, rejectDevice, removeDevice, acceptFolder, rejectFolder, removeFolder,
+  updateFolder, syncBlocksSatellite, startSyncWatch } from './sync';
 import { vaultStatus, vaultJob, noteVaultJob, connectVault, saveSettings, startBackup, listSnapshots, disableVault,
   startVaultWatch, vaultLeftover, vaultBlocksSatellite } from './vault';
 import { rulesWithStatus as parentalRulesWithStatus, createRule as createParentalRule, updateRule as updateParentalRule,
@@ -163,7 +165,7 @@ app.use('/api', authGate);
 // terminali çalıştıramasın). Ağ uçlarındaki (netmode, wan …) denetimin aynısı; localhost (kiosk) ve IP güvenilir.
 // netAdminGuard aşağıda tanımlı: istek anında çağrılır.
 app.use(['/api/terminal', '/api/cron', '/api/backup', '/api/system', '/api/services', '/api/storage', '/api/firewall',
-  '/api/fail2ban', '/api/unbound', '/api/bandwidth', '/api/vault'], (req, res, next) => { void netAdminGuard(req, res, next); });
+  '/api/fail2ban', '/api/unbound', '/api/bandwidth', '/api/vault', '/api/sync'], (req, res, next) => { void netAdminGuard(req, res, next); });
 // Uzaktan yönetim anahtarı (VPS istemcisine panel erişimi, remoteAccess.ts): yalnız bu yol — /api/vps'in geri kalanı değil.
 app.use('/api/vps/:id/clients/:clientId/panel-access', writeLimiter, (req, res, next) => { void netAdminGuard(req, res, next); });
 registerAuthRoutes(app);
@@ -4135,6 +4137,9 @@ app.post('/api/system/role', netAdminGuard, async (req, res) => {
       // Bulut yedeği uyduda yönetilemez (uçlar 409): erişim / cihaz anahtarı cihazda kalmasın, süren yedek izlenmez kalmasın
       const vb = await vaultBlocksSatellite();
       if (vb) return res.status(409).json({ error: vb });
+      // Cihaz yedekleme de ana cihazdadır (uyduda uçlar 409, izleme çalışmaz)
+      const sb = syncBlocksSatellite();
+      if (sb) return res.status(409).json({ error: sb });
       const ns = readNetModeState();
       if (ns && ns.stage !== 'none') return res.status(409).json({ error: 'Önce menü → DHCP Ayarları\'ndan otomatik adrese dönün (sabit adres ana cihaz içindir)' });
       if (ns && ns.homeStage !== 'none') return res.status(409).json({ error: "Önce ev Wi-Fi'ını kapatın (Cihaz Rolleri → Ev Wi-Fi'ı)" });
@@ -4674,6 +4679,40 @@ app.post('/api/storage/share/password', shareRoute(req => setSharePassword(req.b
 app.post('/api/storage/share/usb', shareRoute(req => addUsbShare(req.body?.part).then(name => ({ name }))));
 app.post('/api/storage/share/usb/remove', shareRoute(req => removeUsbShare(req.body?.name).then(() => ({}))));
 startShareWatch();
+
+// Cihaz yedekleme (sync.ts → scripts/sync.sh, Syncthing): bilgisayar / telefon / tabletlerdeki klasörler Pi'nin diskine
+// yedeklenir. Açma paket kurduğu için depolama işi olarak koşar (/api/storage/job ile izlenir, iş türü 'sync'); cihaz ve
+// klasör işlemleri Syncthing REST API'sine kısa çağrılardır. Yazma uçları netAdminGuard (yukarıdaki önek listesi) +
+// writeLimiter; uyduda tüm uçlar 409 (yedek ana cihazdadır).
+app.use('/api/sync', (req, res, next) => {
+  if (isSatellite()) return res.status(409).json({ error: 'Bu cihaz uydu — cihaz yedekleme ana cihazdadır' });
+  if (req.method !== 'GET') return writeLimiter(req, res, next);
+  next();
+});
+app.get('/api/sync', async (_req, res) => {
+  try {
+    res.json(await syncStatus());
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+const syncRoute = (fn: (req: express.Request) => Promise<unknown>) => async (req: express.Request, res: express.Response) => {
+  try {
+    res.json({ success: true, ...((await fn(req)) as object || {}) });
+  } catch (e: any) {
+    res.status(400).json({ error: e.message });
+  }
+};
+app.post('/api/sync/enable', syncRoute(() => enableSync()));
+app.post('/api/sync/disable', syncRoute(() => disableSync().then(() => ({}))));
+app.post('/api/sync/devices/accept', syncRoute(req => acceptDevice(req.body || {}).then(() => ({}))));
+app.post('/api/sync/devices/reject', syncRoute(req => rejectDevice(req.body?.id).then(() => ({}))));
+app.post('/api/sync/devices/remove', syncRoute(req => removeDevice(req.body?.id)));
+app.post('/api/sync/folders/accept', syncRoute(req => acceptFolder(req.body || {})));
+app.post('/api/sync/folders/reject', syncRoute(req => rejectFolder(req.body || {}).then(() => ({}))));
+app.post('/api/sync/folders/remove', syncRoute(req => removeFolder(req.body?.id)));
+app.post('/api/sync/folders/update', syncRoute(req => updateFolder(req.body || {}).then(() => ({}))));
+startSyncWatch();
 
 // ─── Parental Controls ───
 // Ebeveyn kontrolleri (parental.ts): kural = kime (cihaz / grup) × neyi (tüm internet | kategori + site) × ne zaman. Kurallar

@@ -43,6 +43,7 @@ OUT=$STATE_DIR/output
 LOCK=/run/pi5-storage.lock
 BACKEND=pi5-backend
 FTL=pihole-FTL
+SYNC_UNIT=klyrix-sync   # cihaz yedekleme (sync.sh): paylaşım bölümüne ve USB disklere yazar
 
 mkdir -p "$STATE_DIR"
 
@@ -79,6 +80,9 @@ finish() {
     systemctl start "$FTL" >/dev/null 2>&1 || true
     [ "$BACKEND_WAS" = 1 ] && { systemctl start "$BACKEND" >/dev/null 2>&1 || true; }
   fi
+  # Disk ayrılırken durdurulan cihaz yedekleme (iş ya da kısa komut — share.sh usb-remove — yarıda kalsa da) geri gelsin
+  [ "$SYNC_WAS" = 1 ] && { systemctl start "$SYNC_UNIT" >/dev/null 2>&1 || true; }
+  return 0
 }
 svc_active() { systemctl is-active --quiet "$1" 2>/dev/null; }
 svc() { systemctl "$@" >/dev/null 2>&1 || true; }
@@ -351,6 +355,15 @@ do_migrate() {
 BACKEND_WAS=0
 backend_stop() { svc_active "$BACKEND" && BACKEND_WAS=1; svc stop "$BACKEND"; }
 backend_start() { [ "$BACKEND_WAS" = 1 ] && svc start "$BACKEND"; return 0; }
+# Cihaz yedekleme (Syncthing) diskteki klasörleri açık tutar: ayırmadan önce durdurulur ("kullanımda" olmasın), finish()
+# yeniden başlatır. Yalnız çalışıyorsa.
+SYNC_WAS=0
+sync_stop() {
+  svc_active "$SYNC_UNIT" || return 0
+  SYNC_WAS=1
+  log "cihaz yedekleme duraklatıldı (disk ayrılıyor)"
+  svc stop "$SYNC_UNIT"
+}
 
 cmd_migrate() {
   step 50 "Panel durduruluyor"
@@ -403,6 +416,7 @@ cmd_prepare() {
   evacuate "$disk"
 
   step 25 "Disk ayrılıyor"
+  sync_stop
   for p in $(parts_of "$disk"); do
     for m in $(findmnt -n -o TARGET --source "$p" 2>/dev/null | sort -r); do
       umount "$m" 2>/dev/null || { die "$m ayrılamadı (kullanımda): $(fuser -vm "$m" 2>&1 | tail -n +2 | awk '{print $NF}' | sort -u | tr '\n' ' ')"; }

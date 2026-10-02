@@ -1,0 +1,117 @@
+/* Cihaz Yedekleme (DeviceBackupPanel) — Yedekleme sayfasında, telefon öncelikli; 640 px üstünde QR ile kimlik yan yana. */
+.dv-panel { margin-top: 14px; }
+.dv-loading { display: flex; justify-content: center; padding: 20px; }
+.dv-help { font-size: 13px; color: var(--text-secondary); line-height: 1.55; margin: 4px 0 0; }
+.dv-hint { font-size: 12px; color: var(--text-secondary); line-height: 1.5; margin: 6px 0 0; overflow-wrap: anywhere; }
+.dv-h { display: flex; align-items: center; gap: 6px; font-size: 13px; margin: 18px 0 8px; }
+.dv-count {
+  font-size: 11px; font-weight: 600; padding: 1px 8px; border-radius: 999px; color: var(--text-secondary);
+  background: var(--input-bg-soft); border: 1px solid var(--panel-border);
+}
+.dv-empty { font-size: 13px; color: var(--text-secondary); padding: 8px 2px; }
+.dv-bad { color: var(--danger-color); }
+.dv-start { margin-top: 14px; }
+
+.dv-note {
+  display: flex; align-items: flex-start; gap: 8px; padding: 10px 12px; margin-top: 12px; border-radius: var(--radius-sm);
+  font-size: 13px; line-height: 1.5; border: 1px solid var(--panel-border); background: var(--input-bg-soft);
+}
+.dv-note > svg { flex-shrink: 0; margin-top: 2px; }
+.dv-note span { min-width: 0; overflow-wrap: anywhere; }
+.dv-note-info > svg { color: var(--accent-color); }
+.dv-note-warn { border-color: transparent; background: rgba(245, 158, 11, 0.12); }
+.dv-note-warn > svg { color: var(--warning-color); }
+.dv-note-bad { border-color: transparent; background: var(--danger-glow); }
+.dv-note-bad > svg { color: var(--danger-color); }
+
+/* Yedek alanı */
+.dv-targets { display: flex; flex-direction: column; gap: 6px; }
+.dv-target {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; padding: 8px 10px; border-radius: var(--radius-sm);
+  background: var(--input-bg-soft); font-size: 13px; min-width: 0;
+}
+.dv-target > svg { flex-shrink: 0; color: var(--text-secondary); }
+.dv-target-name { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.dv-target-free { font-size: 12px; color: var(--text-secondary); }
+
+/* Pi'nin kimliği */
+.dv-id {
+  display: flex; flex-direction: column; align-items: flex-start; gap: 14px; margin-top: 6px; padding: 12px;
+  border-radius: var(--radius-sm); border: 1px solid var(--panel-border); background: var(--input-bg-soft);
+}
+.dv-qr { width: 164px; height: 164px; border-radius: 8px; background: #fff; padding: 4px; flex-shrink: 0; image-rendering: pixelated; }
+.dv-id-body { flex: 1; min-width: 0; width: 100%; }
+.dv-code-row { display: flex; align-items: center; gap: 6px; margin-top: 6px; min-width: 0; }
+.dv-code {
+  flex: 1; min-width: 0; padding: 7px 10px; border-radius: var(--radius-sm); background: var(--panel-bg, transparent);
+  border: 1px dashed var(--panel-border); font: 12px/1.45 var(--font-mono); overflow-wrap: anywhere; word-break: break-all;
+}
+.dv-copy, .dv-icon-btn {
+  display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0; width: 32px; height: 32px; padding: 0;
+  border-radius: var(--radius-sm); border: 1px solid var(--panel-border); background: transparent; color: var(--text-secondary); cursor: pointer;
+}
+.dv-copy:hover, .dv-icon-btn:hover:not(:disabled) { color: var(--text-primary); border-color: var(--panel-border-hover); }
+.dv-copy:focus-visible, .dv-icon-btn:focus-visible { outline: none; box-shadow: 0 0 0 3px var(--accent-ring); }
+.dv-icon-btn:disabled { opacity: 0.45; cursor: default; }
+
+/* Nasıl eklenir */
+.dv-howto { margin-top: 12px; border-radius: var(--radius-sm); border: 1px solid var(--panel-border); padding: 10px 12px; }
+.dv-howto summary { display: flex; align-items: center; gap: 6px; cursor: pointer; font-size: 13px; font-weight: 600; }
+.dv-howto ol { list-style: none; margin: 10px 0 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.dv-howto li { display: flex; gap: 8px; font-size: 13px; line-height: 1.5; }
+.dv-howto li > svg { flex-shrink: 0; margin-top: 3px; color: var(--accent-color); }
+.dv-howto li > span { min-width: 0; overflow-wrap: anywhere; }
+
+/* Kartlar: cihaz, klasör, bekleyen */
+.dv-pending { margin-top: 4px; }
+.dv-card {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px; padding: 10px 12px; margin-bottom: 6px;
+  border-radius: var(--radius-sm); border: 1px solid var(--panel-border); background: var(--input-bg-soft); min-width: 0;
+}
+.dv-card-pending { border-color: var(--accent-color); background: var(--accent-glow); }
+.dv-card-main { display: flex; flex-direction: column; gap: 2px; flex: 1 1 220px; min-width: 0; font-size: 13px; }
+.dv-card-main strong { overflow-wrap: anywhere; }
+.dv-meta { font-size: 12px; color: var(--text-secondary); overflow-wrap: anywhere; }
+.dv-mono { font-family: var(--font-mono); font-size: 11px; }
+.dv-card-actions, .dv-row-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.dv-name { margin: 8px 0 0; max-width: 320px; }
+.dv-choose { display: grid; grid-template-columns: minmax(0, 1fr); gap: 0 12px; margin-top: 8px; }
+.dv-choose .form-group { margin-bottom: 6px; }
+
+.dv-chip {
+  font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 999px; white-space: nowrap;
+  color: var(--text-secondary); background: var(--panel-border);
+}
+.dv-chip-ok { color: var(--success-color); background: rgba(34, 197, 94, 0.12); }
+.dv-chip-run { color: var(--accent-color); background: var(--accent-glow); }
+.dv-chip-warn { color: var(--warning-color); background: rgba(245, 158, 11, 0.12); }
+.dv-chip-bad { color: var(--danger-color); background: var(--danger-glow); }
+
+/* İş şeridi (açma) */
+.dv-job {
+  display: flex; flex-direction: column; gap: 10px; padding: 12px 14px; margin: 8px 0 12px; border-radius: var(--radius-sm);
+  border: 1px solid var(--panel-border); border-left: 3px solid var(--accent-color); background: var(--input-bg-soft);
+}
+.dv-job-ok { border-left-color: var(--success-color); }
+.dv-job-bad { border-left-color: var(--danger-color); }
+.dv-job-head { display: flex; align-items: flex-start; gap: 10px; }
+.dv-job-head > svg { flex-shrink: 0; margin-top: 2px; color: var(--accent-color); }
+.dv-job-ok .dv-job-head > svg { color: var(--success-color); }
+.dv-job-bad .dv-job-head > svg { color: var(--danger-color); }
+.dv-job-title { display: flex; flex-direction: column; gap: 2px; flex: 1; min-width: 0; font-size: 13px; }
+.dv-job-title span { color: var(--text-secondary); overflow-wrap: anywhere; }
+.dv-job-bar { height: 6px; border-radius: 999px; background: var(--panel-border); overflow: hidden; }
+.dv-job-bar > div { height: 100%; border-radius: 999px; background: var(--accent-color); transition: width 0.6s ease; }
+.dv-job-log summary { cursor: pointer; font-size: 12px; color: var(--text-secondary); }
+.dv-job-log pre {
+  margin-top: 6px; max-height: 220px; overflow: auto; padding: 8px 10px; border-radius: var(--radius-sm); background: var(--input-bg-soft);
+  font: 11px/1.5 var(--font-mono); white-space: pre-wrap; overflow-wrap: anywhere;
+}
+
+@media (min-width: 640px) {
+  .dv-id { flex-direction: row; }
+  .dv-choose { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .dv-job-bar > div { transition: none; }
+}

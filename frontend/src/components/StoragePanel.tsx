@@ -30,7 +30,7 @@ interface Status {
   supported?: boolean; disks?: Disk[]; placement?: Placement[]; findings?: { level: 'info' | 'warn'; text: string }[];
   layout?: Layout; archives?: string[];
 }
-type Cmd = 'archive' | 'prepare' | 'migrate' | 'share';
+type Cmd = 'archive' | 'prepare' | 'migrate' | 'share' | 'sync';
 interface Job {
   state: 'idle' | 'running' | 'done' | 'failed'; id?: string; cmd?: Cmd; step?: string; pct?: number; msg?: string;
   error?: string; startedAt?: number; finishedAt?: number; log?: string[];
@@ -40,6 +40,7 @@ const KIND = { sd: 'SD kart', nvme: 'NVMe SSD', usb: 'USB disk', other: 'Disk' }
 const ROLE = { system: 'Sistem diski', data: 'Veri diski', external: 'Harici disk', unused: 'Kullanılmıyor' } as const;
 const CMD_LABEL: Record<Cmd, string> = {
   archive: 'Eski sistem arşivi', prepare: 'Disk hazırlama', migrate: 'Verileri diske taşıma', share: 'Ağ paylaşımını açma',
+  sync: 'Cihaz yedeklemeyi açma',
 };
 // share.sh usb-add'in bağlayabildiği dosya sistemleri
 const SHARE_FS = new Set(['ext2', 'ext3', 'ext4', 'btrfs', 'xfs', 'vfat', 'exfat', 'ntfs']);

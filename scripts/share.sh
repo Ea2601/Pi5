@@ -342,6 +342,7 @@ cmd_usb_remove() {
   # Önce Samba bağlantıları kapanır; ayırma başarılı olmadan hiçbir şey değişmez
   have smbcontrol && svc_active smbd && { smbcontrol smbd close-share "$name" >/dev/null 2>&1 || true; }
   if is_mountpoint "$mp"; then
+    sync_stop   # cihaz yedekleme bu diske yazıyor olabilir; finish() yeniden başlatır
     sync
     umount "$mp" 2>>"$OUT" || { sleep 2; umount "$mp" 2>>"$OUT"; } || die "$name ayrılamadı (kullanımda) — açık dosyaları kapatıp yeniden deneyin"
   fi

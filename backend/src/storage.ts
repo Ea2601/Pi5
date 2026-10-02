@@ -224,7 +224,7 @@ const JOB_MAX_RUNTIME_S = 4 * 3600;   // büyük bir eski sistemin SD karta arş
 const START_GRACE_S = 15;             // bu süre içinde birim henüz görünmüyorsa iş "yarıda kesildi" sayılmaz
 const NOTIFIED_KEY = 'storage_job_notified';
 
-export type StorageCmd = 'archive' | 'prepare' | 'migrate' | 'share';
+export type StorageCmd = 'archive' | 'prepare' | 'migrate' | 'share' | 'sync';
 export interface StorageJob {
   state: 'idle' | 'running' | 'done' | 'failed';
   id?: string; cmd?: StorageCmd; step?: string; pct?: number; msg?: string; error?: string;
@@ -232,6 +232,7 @@ export interface StorageJob {
 }
 const CMD_LABEL: Record<StorageCmd, string> = {
   archive: 'Eski sistem arşivi', prepare: 'Disk hazırlama', migrate: 'Verileri diske taşıma', share: 'Ağ paylaşımını açma',
+  sync: 'Cihaz yedeklemeyi açma',
 };
 // Biten iş için başka modüllerin işi (ör. share.ts: paylaşım açılınca erişim listesi ve güvenlik duvarı zinciri)
 const doneHooks: ((j: StorageJob) => void)[] = [];
