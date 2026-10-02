@@ -62,7 +62,8 @@ import { shareStatus, enableShare, disableShare, setSharePassword, addUsbShare, 
 import { syncStatus, enableSync, disableSync, acceptDevice, rejectDevice, removeDevice, acceptFolder, rejectFolder, removeFolder,
   updateFolder, syncBlocksSatellite, startSyncWatch } from './sync';
 import { vaultStatus, vaultJob, noteVaultJob, connectVault, saveSettings, startBackup, listSnapshots, disableVault,
-  startVaultWatch, vaultLeftover, vaultBlocksSatellite } from './vault';
+  startVaultWatch, vaultLeftover, vaultBlocksSatellite, resumeVault, restoreFetch, restorePreview, applyRestore, discardRestore,
+  restoreFiles, listKeys, removeOldKey } from './vault';
 import { rulesWithStatus as parentalRulesWithStatus, createRule as createParentalRule, updateRule as updateParentalRule,
   deleteRule as deleteParentalRule, startParental, CATEGORIES as PARENTAL_CATEGORIES, dnsGuardStatus, setDnsGuardAll } from './parental';
 import { noteContentView, contentForClients, contentStatus } from './contentActivity';
@@ -2024,40 +2025,47 @@ async function refreshRoutingLists() {
 // kullanılmaz. Eski kurulumlar (unit enable edilmemiş ama tünel ayakta) kalıcı hale getirilir.
 async function restoreTunnelsAndRouting() {
   if (!isLinux) return;
-  const fs = require('fs');
   try {
     // Önceki süreç FTL'i durdurup yeniden başlatamadan öldüyse (güncelleme restart'ı, çökme) DNS'i geri aç.
     await recoverInterruptedFtlRestart();
-    const servers: any[] = await dbAll('SELECT id FROM vps_servers');
-    for (const s of servers) {
-      const iface = `wg_vps${Number(s.id)}`;
-      if (!fs.existsSync(`/etc/wireguard/${iface}.conf`)) continue;
-      const up = fs.existsSync(`/sys/class/net/${iface}`);
-      const enabled = (await execFileP('systemctl', ['is-enabled', `wg-quick@${iface}`], { timeout: 5000 })
-        .then(r => r.stdout.trim()).catch(() => '')) === 'enabled';
-      if (up && !enabled) {
-        await execFileP('systemctl', ['enable', `wg-quick@${iface}`], { timeout: 10000 }).catch(() => {});
-      } else if (!up && enabled) {
-        // Boot'ta systemd zaten başlatıyor olabilir; start o işi bekler → aşağıdaki routing tünel varken uygulanır.
-        const unit = `wg-quick@${iface}`;
-        const started = await execFileP('systemctl', ['start', unit], { timeout: 20000 }).then(() => true, () => false);
-        if (!started) {
-          // wg-quick@ network-online'ı bekler; ağ geç gelirse arka planda beklemeye devam et, tünel gelince
-          // routing'i yeniden uygula (yoksa tablo rotası eksik kalır ve trafik sessizce ISP'ye düşer).
-          console.error(`${iface} 20 sn içinde kalkmadı — arka planda bekleniyor`);
-          void execFileP('systemctl', ['start', unit], { timeout: 180000 })
-            .then(() => applyAllRoutingRules())
-            .then(() => syncRelay()) // uzaktan yönetimin dönüş rotaları da tünel gelince
-            .catch((e: any) => console.error(`${iface} başlatılamadı:`, e.message));
-        }
-      }
-    }
-    await applyAllRoutingRules();
-    // Uzaktan yönetim: dönüş rotaları kalıcı değildir (açılışta yok) — süzgeçle birlikte yeniden kurulur.
-    await syncRelay().catch((e: any) => console.error('[uzaktan yönetim] uygulanamadı:', e.message));
+    await bringUpTunnelsAndRouting();
   } catch (e: any) {
     console.error('Tünel/routing geri yüklenemedi:', e.message);
   }
+}
+// Tüneller + routing: açılışta yukarıdan, buluttan geri yüklemede doğrudan (vault.ts — startVaultWatch ile verilir). Yarım
+// kalmış FTL kurtarması burada YOK: çalışma anında FTL'i durdurup başlatma DNS iş zincirindedir (system.ts withFtlStopped),
+// kurtarma onun işaret dosyasını görüp araya girmesin. Hatayı fırlatır (açılış yolu yakalayıp yazar).
+async function bringUpTunnelsAndRouting() {
+  if (!isLinux) return;
+  const fs = require('fs');
+  const servers: any[] = await dbAll('SELECT id FROM vps_servers');
+  for (const s of servers) {
+    const iface = `wg_vps${Number(s.id)}`;
+    if (!fs.existsSync(`/etc/wireguard/${iface}.conf`)) continue;
+    const up = fs.existsSync(`/sys/class/net/${iface}`);
+    const enabled = (await execFileP('systemctl', ['is-enabled', `wg-quick@${iface}`], { timeout: 5000 })
+      .then(r => r.stdout.trim()).catch(() => '')) === 'enabled';
+    if (up && !enabled) {
+      await execFileP('systemctl', ['enable', `wg-quick@${iface}`], { timeout: 10000 }).catch(() => {});
+    } else if (!up && enabled) {
+      // Boot'ta systemd zaten başlatıyor olabilir; start o işi bekler → aşağıdaki routing tünel varken uygulanır.
+      const unit = `wg-quick@${iface}`;
+      const started = await execFileP('systemctl', ['start', unit], { timeout: 20000 }).then(() => true, () => false);
+      if (!started) {
+        // wg-quick@ network-online'ı bekler; ağ geç gelirse arka planda beklemeye devam et, tünel gelince
+        // routing'i yeniden uygula (yoksa tablo rotası eksik kalır ve trafik sessizce ISP'ye düşer).
+        console.error(`${iface} 20 sn içinde kalkmadı — arka planda bekleniyor`);
+        void execFileP('systemctl', ['start', unit], { timeout: 180000 })
+          .then(() => applyAllRoutingRules())
+          .then(() => syncRelay()) // uzaktan yönetimin dönüş rotaları da tünel gelince
+          .catch((e: any) => console.error(`${iface} başlatılamadı:`, e.message));
+      }
+    }
+  }
+  await applyAllRoutingRules();
+  // Uzaktan yönetim: dönüş rotaları kalıcı değildir (açılışta yok) — süzgeçle birlikte yeniden kurulur.
+  await syncRelay().catch((e: any) => console.error('[uzaktan yönetim] uygulanamadı:', e.message));
 }
 
 app.get('/api/routing/rules', async (_req, res) => {
@@ -4503,61 +4511,71 @@ app.get('/api/backup/export', async (_req, res) => {
   }
 });
 
+// Yedeği geri yükler (tek yol): indirilen yedek dosyası (POST /api/backup/import) ve buluttan geri yükleme (vault.ts —
+// startVaultWatch ile verilir) aynı doğrulamayı, geri yükleyen İSTEĞE göre güvenlik duvarı kilitlenme denetimini, tek
+// işlemi ve Pi'ye uygulamayı kullanır. Doğrulama hatası BackupImportError (400); yanıt nesnesi rotanın gövdesidir.
+class BackupImportError extends Error {}
+type BackupImportResult = { success: true; message: string; restored_count: number; tables: Record<string, number>;
+  applied: { item: string; ok: boolean; detail?: string }[]; ignored: string[] };
+async function importBackupData(backup: any, req: express.Request): Promise<BackupImportResult> {
+  const { data, backup_version } = backup || {};
+  if (!data || typeof data !== 'object' || Array.isArray(data)) {
+    throw new BackupImportError('Geçerli bir yedek verisi gerekli');
+  }
+  if (backup_version !== undefined && !(Number.isInteger(backup_version) && backup_version >= 1)) {
+    throw new BackupImportError('Yedek dosyası tanınmadı (backup_version)');
+  }
+  let present = BACKUP_TABLES.filter(t => Array.isArray(data[t]));
+  if (!present.length) throw new BackupImportError('Yedekte geri yüklenecek tablo yok');
+
+  // Güvenlik duvarı kuralları önce denetlenir (prepareFwRestore); geri yükleyeni panelden keserse tablo geri yüklenmez.
+  const notes: { item: string; ok: boolean; detail?: string }[] = [];
+  if (present.includes('routing_rules')) {
+    const fw = await prepareFwRestore(data.routing_rules, req);
+    if (fw.error) {
+      present = present.filter(t => t !== 'routing_rules');
+      notes.push({ item: 'Güvenlik duvarı kuralları', ok: false, detail: `geri yüklenmedi, mevcut kurallar kaldı — ${fw.error}` });
+    } else {
+      data.routing_rules = fw.rows;
+      const parts = [
+        fw.skipped ? `${fw.skipped} kural atlandı (geçersiz ya da panele herkesin / tüm ev ağının erişimini keser)` : '',
+        fw.disabled ? `eski sürümün ${fw.disabled} engelle kuralı kapalı geldi — Güvenlik Duvarı sayfasında gözden geçirip açın` : '',
+      ].filter(Boolean);
+      if (parts.length) notes.push({ item: 'Güvenlik duvarı kuralları', ok: true, detail: parts.join('; ') });
+    }
+  }
+
+  // Tüm tablolar tek işlemde (kısmi hata = geri alma).
+  let restored = 0;
+  const perTable: Record<string, number> = {};
+  await dbRun('BEGIN');
+  try {
+    for (const table of present) {
+      if (!BACKUP_TABLE_SET.has(table)) continue; // whitelist güvencesi
+      perTable[table] = await restoreTable(table, data[table]);
+      restored += perTable[table];
+    }
+    await dbRun('COMMIT');
+  } catch (err) {
+    await dbRun('ROLLBACK').catch(() => {});
+    throw err;
+  }
+
+  const keys = new Set<string>(Array.isArray(data.app_settings) ? data.app_settings.map((r: any) => String(r?.key || '')) : []);
+  const applied = [...notes, ...await applyRestored(new Set(present), keys, req)];
+  const failed = applied.filter(a => !a.ok);
+  await recordEvent('backup', `Yedek geri yüklendi: ${restored} kayıt (${present.length} tablo)${applied.length
+    ? ` — uygulandı: ${applied.filter(a => a.ok).map(a => a.item).join(', ') || 'yok'}${failed.length ? `; uygulanamadı: ${failed.map(a => `${a.item} (${a.detail})`).join(', ')}` : ''}` : ''}`,
+    failed.length ? 'warning' : 'info');
+  return { success: true, message: `${restored} kayıt geri yüklendi.`, restored_count: restored, tables: perTable, applied,
+    ignored: Object.keys(data).filter(k => !BACKUP_TABLE_SET.has(k)) };
+}
+
 app.post('/api/backup/import', async (req, res) => {
   try {
-    const { data, backup_version } = req.body || {};
-    if (!data || typeof data !== 'object' || Array.isArray(data)) {
-      return res.status(400).json({ error: 'Geçerli bir yedek verisi gerekli' });
-    }
-    if (backup_version !== undefined && !(Number.isInteger(backup_version) && backup_version >= 1)) {
-      return res.status(400).json({ error: 'Yedek dosyası tanınmadı (backup_version)' });
-    }
-    let present = BACKUP_TABLES.filter(t => Array.isArray(data[t]));
-    if (!present.length) return res.status(400).json({ error: 'Yedekte geri yüklenecek tablo yok' });
-
-    // Güvenlik duvarı kuralları önce denetlenir (prepareFwRestore); geri yükleyeni panelden keserse tablo geri yüklenmez.
-    const notes: { item: string; ok: boolean; detail?: string }[] = [];
-    if (present.includes('routing_rules')) {
-      const fw = await prepareFwRestore(data.routing_rules, req);
-      if (fw.error) {
-        present = present.filter(t => t !== 'routing_rules');
-        notes.push({ item: 'Güvenlik duvarı kuralları', ok: false, detail: `geri yüklenmedi, mevcut kurallar kaldı — ${fw.error}` });
-      } else {
-        data.routing_rules = fw.rows;
-        const parts = [
-          fw.skipped ? `${fw.skipped} kural atlandı (geçersiz ya da panele herkesin / tüm ev ağının erişimini keser)` : '',
-          fw.disabled ? `eski sürümün ${fw.disabled} engelle kuralı kapalı geldi — Güvenlik Duvarı sayfasında gözden geçirip açın` : '',
-        ].filter(Boolean);
-        if (parts.length) notes.push({ item: 'Güvenlik duvarı kuralları', ok: true, detail: parts.join('; ') });
-      }
-    }
-
-    // Tüm tablolar tek işlemde (kısmi hata = geri alma).
-    let restored = 0;
-    const perTable: Record<string, number> = {};
-    await dbRun('BEGIN');
-    try {
-      for (const table of present) {
-        if (!BACKUP_TABLE_SET.has(table)) continue; // whitelist güvencesi
-        perTable[table] = await restoreTable(table, data[table]);
-        restored += perTable[table];
-      }
-      await dbRun('COMMIT');
-    } catch (err) {
-      await dbRun('ROLLBACK').catch(() => {});
-      throw err;
-    }
-
-    const keys = new Set<string>(Array.isArray(data.app_settings) ? data.app_settings.map((r: any) => String(r?.key || '')) : []);
-    const applied = [...notes, ...await applyRestored(new Set(present), keys, req)];
-    const failed = applied.filter(a => !a.ok);
-    await recordEvent('backup', `Yedek geri yüklendi: ${restored} kayıt (${present.length} tablo)${applied.length
-      ? ` — uygulandı: ${applied.filter(a => a.ok).map(a => a.item).join(', ') || 'yok'}${failed.length ? `; uygulanamadı: ${failed.map(a => `${a.item} (${a.detail})`).join(', ')}` : ''}` : ''}`,
-      failed.length ? 'warning' : 'info');
-    res.json({ success: true, message: `${restored} kayıt geri yüklendi.`, restored_count: restored, tables: perTable, applied,
-      ignored: Object.keys(data).filter(k => !BACKUP_TABLE_SET.has(k)) });
+    res.json(await importBackupData(req.body, req));
   } catch (e: any) {
-    res.status(500).json({ error: e.message });
+    res.status(e instanceof BackupImportError ? 400 : 500).json({ error: e.message });
   }
 });
 
@@ -4612,7 +4630,31 @@ app.post('/api/vault/backup', vaultRoute(req => {
   return startBackup(what);
 }));
 app.post('/api/vault/disable', vaultRoute(req => disableVault(req.body || {})));
-startVaultWatch({ exportConfig: buildBackupExport });
+// Buluttan geri yükleme (yeni cihaza kurtarma; vault.ts): geri yükleme kipinden çıkış, ayar yedeğini getirme (iş), önizleme,
+// uygulama (importBackupData — yedek dosyasıyla aynı yol, bu istekle), dosyaları yeni bir klasöre geri yükleme (iş), eski
+// cihazın anahtarını kaldırma (iş). Yukarıdaki /api/vault kapıları geçerli: netAdminGuard + writeLimiter, uyduda 409.
+app.post('/api/vault/resume', vaultRoute(() => resumeVault().then(() => vaultStatus())));
+app.post('/api/vault/restore/fetch', vaultRoute(req => restoreFetch(req.body || {})));
+app.get('/api/vault/restore/preview', async (_req, res) => {
+  try {
+    res.json(await restorePreview());
+  } catch (e: any) {
+    res.status(400).json({ error: e.message });
+  }
+});
+app.post('/api/vault/restore/apply', vaultRoute(req => applyRestore(req.body || {}, req)));
+app.post('/api/vault/restore/discard', vaultRoute(async () => { discardRestore(); }));
+app.post('/api/vault/restore/files', vaultRoute(req => restoreFiles(req.body || {})));
+app.get('/api/vault/keys', async (_req, res) => {
+  try {
+    res.json(await listKeys());
+  } catch (e: any) {
+    res.status(400).json({ error: e.message });
+  }
+});
+app.post('/api/vault/keys/remove', vaultRoute(req => removeOldKey(req.body || {})));
+// Tüneller: açılış kurtarması (recoverInterruptedFtlRestart) olmadan — geri yükleme çalışma anında, DNS iş zincirinin yanında koşar
+startVaultWatch({ exportConfig: buildBackupExport, importBackup: importBackupData, restoreTunnels: bringUpTunnelsAndRouting });
 
 // ─── Depolama (storage.ts): takılı diskler, bölümler, doluluk ve verilerin hangi diskte durduğu ───
 app.get('/api/storage', async (_req, res) => {

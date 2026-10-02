@@ -536,6 +536,30 @@ PersistentKeepalive = 25`;
   }
 }
 
+// Pi'nin VPS tünelindeki adresi (her VPS'te .2; istemciler .3'ten başlar)
+const PI5_VPS_ADDR = '10.66.66.2/32';
+
+// Pi'nin VPS tüneli yapılandırması (/etc/wireguard/wg_vps<N>.conf). Tek kaynak: tüneli kuran connectPi5ToVps ve buluttan
+// geri yükleme (vault.ts — doğrulanmış alanlardan; yedekten ham metin hiç yazılmaz, yabancı PostUp / PreUp gelemez).
+// Table = off: wg-quick otomatik varsayılan-rota/fwmark kurallarını EKLEMEZ; böylece policy routing
+// (applyDomainRouting'in fwmark tabloları) ezilmez. AllowedIPs=0.0.0.0/0 kalır ki tünel internet
+// trafiğini de taşıyabilsin — hangi trafiğin tünele gireceğine bizim ip rule'larımız karar verir.
+// PostUp: tünelden dönen yanıtlar işaretsiz gelir, katı rp_filter onları düşürür → arayüzde gevşek (2).
+// `|| true`: sysctl başarısız olsa da tünel ayağa kalksın.
+export function renderPi5VpsConf(o: { privateKey: string; serverPub: string; endpointHost: string; endpointPort?: number }): string {
+  return `[Interface]
+PrivateKey = ${o.privateKey}
+Address = ${PI5_VPS_ADDR}
+Table = off
+PostUp = sysctl -q -w net.ipv4.conf.%i.rp_filter=2 || true
+
+[Peer]
+PublicKey = ${o.serverPub}
+Endpoint = ${o.endpointHost}:${o.endpointPort ?? 51820}
+AllowedIPs = 0.0.0.0/0
+PersistentKeepalive = 25`;
+}
+
 /**
  * Connect Pi5 to VPS as a WireGuard client (gateway peer)
  * Creates wg_vpsX interface on Pi5 that routes traffic to VPS
@@ -549,7 +573,7 @@ export async function connectPi5ToVps(
   }
 
   const interfaceName = `wg_vps${vpsId}`;
-  const pi5Ip = '10.66.66.2/32'; // Pi5 gateway always gets .2
+  const pi5Ip = PI5_VPS_ADDR; // Pi5 gateway always gets .2
   const confPath = `/etc/wireguard/${interfaceName}.conf`;
 
   let ssh: NodeSSH | null = null;
@@ -607,24 +631,9 @@ PEEREOF`);
 
     ssh.dispose();
 
-    // Build Pi5 client config.
-    // Table = off: wg-quick otomatik varsayılan-rota/fwmark kurallarını EKLEMEZ; böylece policy routing
-    // (applyDomainRouting'in fwmark tabloları) ezilmez. AllowedIPs=0.0.0.0/0 kalır ki tünel internet
-    // trafiğini de taşıyabilsin — hangi trafiğin tünele gireceğine bizim ip rule'larımız karar verir.
-    // PostUp: tünelden dönen yanıtlar işaretsiz gelir, katı rp_filter onları düşürür → arayüzde gevşek (2).
-    // `|| true`: sysctl başarısız olsa da tünel ayağa kalksın.
+    // Build Pi5 client config (renderPi5VpsConf: Table = off, rp_filter gevşek, uç VPS'in 51820'si).
     const serverAddr = opts.ip;
-    const pi5Config = `[Interface]
-PrivateKey = ${pi5Priv}
-Address = ${pi5Ip}
-Table = off
-PostUp = sysctl -q -w net.ipv4.conf.%i.rp_filter=2 || true
-
-[Peer]
-PublicKey = ${serverPub}
-Endpoint = ${serverAddr}:51820
-AllowedIPs = 0.0.0.0/0
-PersistentKeepalive = 25`;
+    const pi5Config = renderPi5VpsConf({ privateKey: pi5Priv, serverPub, endpointHost: serverAddr });
 
     // Write config on Pi5
     fs.writeFileSync(confPath, pi5Config, { mode: 0o600 });

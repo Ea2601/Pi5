@@ -714,9 +714,46 @@ function VaultDoc() {
           only the last version of the file» yapın: yoksa temizlenen eski yedekler gizlenir ama ücretlendirilmeye devam eder.</p>
       </DocBlock>
 
-      <DocTip>Buluttan geri yükleme (yeni cihaza kurtarma) sonraki bir sürümde panele gelecek. O zamana kadar yedekler kovanızda
-        güvende kalır: indirilen kurtarma kiti dosyasında iki deponun restic adresi (…/config ve …/files) ve örnek komutlar
-        vardır; parolanızla herhangi bir bilgisayarda <code>restic … snapshots</code> / <code>restore latest</code> ile açılır.</DocTip>
+      <DocBlock title="Buluttan geri yükleme (yeni cihaza kurtarma)">
+        <ol className="doc-list">
+          <li>Yeni cihaza Klyrix Gate'i kurun (kurulum betiği, rol, panel parolası).</li>
+          <li>Yedekleme → Bulut Yedeği → <strong>Buluttan geri yükle</strong>: kurtarma kitini yapıştırın, parolanızı yazın. Cihaz
+            depoya bağlanır; otomatik yedek, siz «Bu cihazdan yedeklemeye devam» diyene kadar duraklatılır (yeni cihazın boş ayarları
+            iyi yedeklerin yanına eklenmez).</li>
+          <li>Ayar yedeklerini listeleyin, birini <strong>Getir</strong>in. Önizleme yedeğin tarihini, panel sürümünü, tablo ve kayıt
+            sayılarını, gizli anahtar olup olmadığını (yalnız sayılar) ve uyarıları gösterir: kayıtlı olmayan VPS'e yönlenen kurallar,
+            root olarak çalışacak Cron komutları.</li>
+          <li><strong>Uygula</strong>: indirilen yedek dosyasıyla aynı yol (kurallar ve listeler değişir, ayarlar birleşir, güvenlik
+            duvarı sizi panelden kesecekse geri yüklenmez). Gizli anahtarlar (VPS ve tünelleri, Ev VPN'i, DDNS) yalnız siz seçerseniz
+            ve «Eski cihaz kapalı / artık kullanılmıyor» onayıyla gelir — aynı WireGuard anahtarları iki cihazda çalışırsa ikisi de bozulur.
+            Bu cihazda zaten VPS kaydı varsa VPS bölümü atlanır ve yedekteki kurallar bu cihazın aynı numaralı VPS'ini kullanır (önizleme
+            hangi kuralın hangi sunucuya gideceğini gösterir). Ev VPN'i ve (yedekte varsa) DDNS bu cihazdakilerin yerine geçer. Yedekte
+            geçersiz bir bölüm (ör. DDNS) yalnız kendisi atlanır; diğerleri geri yüklenir.</li>
+        </ol>
+      </DocBlock>
+
+      <DocBlock title="Geri yüklemeden sonra">
+        <ul className="doc-list">
+          <li>Ağ kurulumunu sihirbazlarla yeniden yapın (sabit adres, Pi DHCP, internet kartı, Wi-Fi, yedek hat), port yönlendirmelerini
+            yeniden ekleyin ve uyduları yeniden eşleştirin.</li>
+          <li>Gizli anahtarlar gelmediyse: VPS'leri WireGuard sayfasından yeniden kurun ve Routing'de kuralların VPS seçimini denetleyin —
+            VPS kayıtlı olana kadar bu kurallar (yedek yolu «engelle» olanlar da) operatör hattından çıkar. Ev VPN'ini açıp telefon /
+            dizüstü profillerini yeniden dağıtın, DDNS'i yeniden ekleyin.</li>
+          <li>Ev VPN'i kullanıyorsanız modemdeki UDP 51820 yönlendirmesini yeni cihazın adresine çevirin.</li>
+          <li>Güvenlik duvarı eski cihazda kuruluysa Firewall sayfasında kuralları denetleyip «Deploy Et» ile kurun.</li>
+          <li>Ağ paylaşımını parolayla yeniden açın; klasör yedeğini isterseniz bir diske <strong>yeni bir klasöre</strong>
+            (geri-yuklenen-…) indirin — var olan dosyaların üzerine yazılmaz, klasörün sahibi paylaşımın kullanıcısı olur.</li>
+          <li>«Depo anahtarları»ndan eski cihazın anahtarını kaldırın (parola + yazılı onay): eski cihaz ya da SD kartı başkasının eline
+            geçse de depoyu açamaz.</li>
+          <li>Bulut yedeğinin kendi ayarlarını yeniden yapın: yedeklenecek klasörler, gizli anahtar yedeği, saat ve saklama geri yüklenmez
+            (bu cihazda varsayılandır: klasör yok, gizli anahtarlar kapalı).</li>
+          <li>Her şey yerindeyse «Bu cihazdan yedeklemeye devam».</li>
+        </ul>
+        <DocTip type="warning">Hiç geri yüklenmez: ağ kurulumu ve NetworkManager profilleri (eski donanımın arayüz adlarını ve adreslerini
+          taşırlar, açılışta erişimi kesebilirlerdi), uydu eşleşmeleri, panel ve ağ paylaşımı parolaları, cihaz listesi, port
+          yönlendirmeleri ve bulut yedeğinin kendi ayarları. Panel olmadan da açılabilir: kurtarma kiti dosyasındaki <code>restic … snapshots</code> /
+          <code> restore latest</code> komutları parolanızla herhangi bir bilgisayarda çalışır.</DocTip>
+      </DocBlock>
     </div>
   );
 }

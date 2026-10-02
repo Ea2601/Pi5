@@ -1,12 +1,15 @@
-import { useEffect, useMemo, useState } from 'react';
+import { lazy, Suspense, useEffect, useMemo, useState } from 'react';
 import {
-  Cloud, CloudUpload, KeyRound, Loader2, CheckCircle2, XCircle, Copy, Download, FolderPlus, Trash2, AlertTriangle,
+  Cloud, CloudUpload, CloudDownload, KeyRound, Loader2, CheckCircle2, XCircle, Copy, Download, FolderPlus, Trash2, AlertTriangle,
   Unplug, Clock, ShieldCheck, History, Info, Satellite,
 } from 'lucide-react';
 import { postApi, useApi } from '../hooks/useApi';
 import { Modal, Panel, Select } from './ui';
 import { toast } from '../toast';
 import './CloudBackupPanel.css';
+
+// Buluttan geri yükleme sihirbazı ayrı parça (yalnız açılınca yüklenir)
+const CloudRestore = lazy(() => import('./CloudRestore').then(m => ({ default: m.CloudRestore })));
 
 // Bulut Yedeği (backend vault.ts → scripts/vault.sh, restic): panel ayarları ve isteğe bağlı klasörler kullanıcının KENDİ
 // S3 uyumlu kovasına (Cloudflare R2, Backblaze B2, AWS S3, MinIO / özel) istemci tarafında şifrelenerek yüklenir.
@@ -16,7 +19,7 @@ type Provider = 'r2' | 'b2' | 'aws' | 'custom';
 interface VaultConfView {
   provider: Provider; endpoint: string; region: string; bucket: string; prefix: string; keyIdMasked: string; host: string;
   schedule: string; includeSecrets: boolean; folders: string[]; keep: { daily: number; weekly: number; monthly: number };
-  uploadKbps: number;
+  uploadKbps: number; paused?: boolean;
 }
 interface VaultLast {
   attempt: string | null; okConfig: number | null; okFiles: number | null; state: string | null; cmd: string | null;
@@ -28,7 +31,7 @@ interface VaultStatus {
   backupLine?: boolean; lastUploadMbps?: number | null; conf?: VaultConfView | null; last?: VaultLast;
 }
 interface Job {
-  state: 'idle' | 'running' | 'done' | 'failed'; id?: string; cmd?: 'connect' | 'backup' | 'disconnect'; step?: string;
+  state: 'idle' | 'running' | 'done' | 'failed'; id?: string; cmd?: keyof typeof CMD_LABEL; step?: string;
   pct?: number; msg?: string; error?: string; startedAt?: number; finishedAt?: number; log?: string[];
 }
 interface Snap { id: string; time: string; hostname: string; tags: string[]; paths: string[]; files?: number; bytes?: number; added?: number }
@@ -43,7 +46,10 @@ const PROVIDERS: { id: Provider; label: string; note: string }[] = [
   { id: 'custom', label: 'Özel / MinIO', note: 'Herhangi bir S3 uyumlu depo. Şifresiz http yalnız ev ağındaki bir adreste.' },
 ];
 const providerLabel = (p?: string) => PROVIDERS.find(x => x.id === p)?.label || p || '—';
-const CMD_LABEL = { connect: 'Bulut deposuna bağlanma', backup: 'Bulut yedeği', disconnect: 'Bağlantıyı kaldırma' } as const;
+const CMD_LABEL = {
+  connect: 'Bulut deposuna bağlanma', backup: 'Bulut yedeği', disconnect: 'Bağlantıyı kaldırma',
+  'restore-config': 'Ayar yedeğini getirme', 'restore-files': 'Dosyaları geri yükleme', 'key-remove': 'Eski cihaz anahtarını kaldırma',
+} as const;
 const DISMISS_KEY = 'pi5.vault.jobDismissed';
 // Kurtarma kitindeki cihaz kimliği: ana bilgisayar adı + sayfa açılışında bir kez üretilen ek (aynı adlı iki cihaz
 // birbirinin anlık görüntülerini budamasın). Bileşen gövdesinde değil: render saf kalsın.
@@ -249,7 +255,7 @@ export function CloudBackupPanel() {
       {status.configured && status.conf ? (
         <>
           {kitAfterConnect && <KitCard kit={kitAfterConnect} onDone={() => setKitAfterConnect('')} />}
-          <ConfiguredView st={status} conf={status.conf} running={running} onChanged={reload} onJob={jobStarted} />
+          <ConfiguredView st={status} conf={status.conf} job={job} running={running} onChanged={reload} onJob={jobStarted} />
         </>
       ) : header(
         <ConnectForm st={status} busy={running} onStarted={kit => { setKitAfterConnect(kit); jobStarted(); }} />,
@@ -339,7 +345,9 @@ function endpointFor(p: Provider, account: string, eu: boolean, region: string, 
 }
 
 function ConnectForm({ st, busy, onStarted }: { st: VaultStatus; busy: boolean; onStarted: (kit: string) => void }) {
-  const [mode, setMode] = useState<'new' | 'existing'>('new');
+  // restore: var olan depoya geri yükleme kipinde bağlanır (otomatik yedek, geri yükleme bitene kadar duraklatılır)
+  const [mode, setMode] = useState<'new' | 'existing' | 'restore'>('new');
+  const existing = mode !== 'new';
   const [provider, setProvider] = useState<Provider>('r2');
   const [account, setAccount] = useState('');
   const [eu, setEu] = useState(false);
@@ -359,7 +367,7 @@ function ConnectForm({ st, busy, onStarted }: { st: VaultStatus; busy: boolean; 
   const [sending, setSending] = useState(false);
   // Var olan depoya, kitteki cihazın yerine bağlanırken aynı cihaz kimliği: eski cihazın anlık görüntüleri aynı saklama
   // grubunda kalır ve budanmaya devam eder
-  const host = mode === 'existing' && replaceHost && kitHost ? kitHost : hostFor(st.hostname);
+  const host = existing && replaceHost && kitHost ? kitHost : hostFor(st.hostname);
   const endpoint = endpointFor(provider, account, eu, region, custom);
   const effRegion = provider === 'r2' ? 'auto' : provider === 'custom' ? region.trim() : regionOf(region);
   const kit = useMemo(() => encodeKit({ provider, endpoint, region: effRegion, bucket: bucket.trim(), prefix: prefix.trim(), keyId: keyId.trim(), secret: secret.trim(), host }),
@@ -399,7 +407,7 @@ function ConnectForm({ st, busy, onStarted }: { st: VaultStatus; busy: boolean; 
     try {
       await postApi('/vault/connect', {
         provider, endpoint, region: effRegion, bucket: bucket.trim(), prefix: prefix.trim(), keyId: keyId.trim(), secret: secret.trim(),
-        passphrase: pw, mode, host,
+        passphrase: pw, mode: existing ? 'existing' : 'new', host, ...(mode === 'restore' ? { restoreMode: true } : {}),
       });
       toast.info(mode === 'new' ? 'Depolar oluşturuluyor…' : 'Depoya bağlanılıyor…');
       onStarted(kit);
@@ -422,9 +430,17 @@ function ConnectForm({ st, busy, onStarted }: { st: VaultStatus; busy: boolean; 
           onClick={() => setMode('new')}>Yeni depo<span>Kovada iki boş depo oluşturur</span></button>
         <button type="button" role="radio" aria-checked={mode === 'existing'} className={`cb-mode-btn ${mode === 'existing' ? 'cb-mode-on' : ''}`}
           onClick={() => setMode('existing')}>Var olan depoya bağlan<span>Daha önce oluşturulmuş depo + parolası</span></button>
+        <button type="button" role="radio" aria-checked={mode === 'restore'} className={`cb-mode-btn ${mode === 'restore' ? 'cb-mode-on' : ''}`}
+          onClick={() => setMode('restore')}>Buluttan geri yükle<span>Yeni cihaza kurtarma: kit + parola</span></button>
       </div>
+      {mode === 'restore' && (
+        <p className="cb-hint">
+          Var olan depoya bağlanılır; ardından ayar yedeğini seçip önizleyerek geri yüklersiniz. Otomatik yedek, siz «Bu cihazdan
+          yedeklemeye devam» diyene kadar duraklatılır — yeni cihazın boş ayarları iyi yedeklerin yanına eklenmez.
+        </p>
+      )}
 
-      {mode === 'existing' && (
+      {existing && (
         <div className="form-group cb-kit-paste">
           <label htmlFor="cb-paste"><KeyRound size={13} /> Kurtarma kitinden doldur (isteğe bağlı)</label>
           <div className="cb-inline">
@@ -516,7 +532,7 @@ function ConnectForm({ st, busy, onStarted }: { st: VaultStatus; busy: boolean; 
       </div>
       <p className="cb-hint">
         En iyisi yalnız bu kovaya okuma + yazma izni olan ayrı bir erişim anahtarı (ör. R2 API belirteci) oluşturmaktır.
-        {mode === 'existing' ? ' Var olan depoda parola, depoyu oluştururken kullandığınız paroladır.' : ''}
+        {existing ? ' Var olan depoda parola, depoyu oluştururken kullandığınız paroladır.' : ''}
       </p>
 
       <div className="cb-kit">
@@ -545,7 +561,8 @@ function ConnectForm({ st, busy, onStarted }: { st: VaultStatus; busy: boolean; 
       {kitChanged && <p className="cb-hint cb-bad">Kit değişti (bağlantı bilgileri düzeltildi) — yeni kiti yeniden kaydedip kutuyu yeniden işaretleyin.</p>}
       <div className="cb-actions">
         <button className="btn-primary" type="button" disabled={!ready} onClick={submit}>
-          {sending ? <Loader2 size={14} className="spin" /> : <Cloud size={14} />} {mode === 'new' ? 'Depoyu oluştur ve bağlan' : 'Depoya bağlan'}
+          {sending ? <Loader2 size={14} className="spin" /> : mode === 'restore' ? <CloudDownload size={14} /> : <Cloud size={14} />}
+          {' '}{mode === 'new' ? 'Depoyu oluştur ve bağlan' : mode === 'restore' ? 'Bağlan ve geri yüklemeye başla' : 'Depoya bağlan'}
         </button>
       </div>
     </div>
@@ -575,11 +592,19 @@ function KitCard({ kit, onDone }: { kit: string; onDone: () => void }) {
 }
 
 // ── bağlıyken ───────────────────────────────────────────────────────────────
-function ConfiguredView({ st, conf, running, onChanged, onJob }: {
-  st: VaultStatus; conf: VaultConfView; running: boolean; onChanged: () => void; onJob: () => void;
+function ConfiguredView({ st, conf, job, running, onChanged, onJob }: {
+  st: VaultStatus; conf: VaultConfView; job: Job | null; running: boolean; onChanged: () => void; onJob: () => void;
 }) {
   const [busy, setBusy] = useState(false);
   const [disable, setDisable] = useState(false);
+  // Geri yükleme kipinde sihirbaz hep açık (üstte); değilse istenince (altta) — eski bir ayar yedeğine dönmek için de
+  const [restoreOpen, setRestoreOpen] = useState(false);
+  const paused = !!conf.paused;
+  const restore = (
+    <Suspense fallback={<div className="cb-loading"><Loader2 size={18} className="spin" /></div>}>
+      <CloudRestore paused={paused} host={conf.host} job={job} lowMem={!!st.lowMem} onJob={onJob} onChanged={onChanged} />
+    </Suspense>
+  );
   const last = st.last;
   const hasFolders = conf.folders.length > 0;
   // Sonraki otomatik yedek (backend hesaplar: bugün denenmediyse bugünün saati, bekleyen yeniden deneme ya da yarın);
@@ -606,15 +631,16 @@ function ConfiguredView({ st, conf, running, onChanged, onJob }: {
 
   return (
     <>
+      {paused && restore}
       <Panel title="Bulut Yedeği" icon={<Cloud size={20} style={{ marginRight: 8 }} />} className="cb-panel"
         subtitle={`${providerLabel(conf.provider)} · ${conf.bucket}/${conf.prefix}`}
         actions={
           <div className="cb-head-actions">
-            <button className="btn-primary btn-sm" disabled={running || busy} onClick={() => backup(hasFolders ? 'all' : 'config')}>
+            <button className="btn-primary btn-sm" disabled={running || busy || paused} onClick={() => backup(hasFolders ? 'all' : 'config')}>
               <CloudUpload size={13} /> Şimdi yedekle
             </button>
             {hasFolders && (
-              <button className="btn-outline btn-sm" disabled={running || busy} onClick={() => backup('config')}>Yalnız ayarlar</button>
+              <button className="btn-outline btn-sm" disabled={running || busy || paused} onClick={() => backup('config')}>Yalnız ayarlar</button>
             )}
           </div>
         }>
@@ -628,7 +654,7 @@ function ConfiguredView({ st, conf, running, onChanged, onJob }: {
           <div><span>Cihaz kimliği</span><code>{conf.host}</code></div>
           <div><span>Son ayar yedeği</span><strong>{when(last?.okConfig)}</strong></div>
           <div><span>Son klasör yedeği</span><strong>{hasFolders ? when(last?.okFiles) : 'klasör seçilmedi'}</strong></div>
-          <div><span>Otomatik yedek</span><strong>her gün {conf.schedule}</strong></div>
+          <div><span>Otomatik yedek</span><strong>{paused ? 'duraklatıldı (geri yükleme kipi)' : `her gün ${conf.schedule}`}</strong></div>
           <div><span>Eski anlık görüntü temizliği</span><strong>{last?.forget ? `Son: ${day(last.forget)} · Pazar günleri` : 'Pazar günleri'}</strong></div>
         </div>
         {last?.state === 'failed' && last.error && (
@@ -637,13 +663,22 @@ function ConfiguredView({ st, conf, running, onChanged, onJob }: {
             <span>Son iş başarısız: {last.error}{last.cmd === 'backup' && !running ? ` — otomatik yedek yeniden denenecek (${nextText}); «Şimdi yedekle» ile hemen deneyebilirsiniz.` : ''}</span>
           </div>
         )}
-        {!last?.okConfig && !running && last?.state !== 'failed' && (
+        {!last?.okConfig && !running && !paused && last?.state !== 'failed' && (
           <p className="cb-help"><Info size={13} /> Henüz yedek yok. İlk otomatik yedek: {nextText}; beklemek istemezseniz «Şimdi yedekle».</p>
         )}
       </Panel>
 
       <SettingsForm key={JSON.stringify(conf)} st={st} conf={conf} onSaved={onChanged} />
       <SnapshotList conf={conf} />
+      {!paused && (restoreOpen ? restore : (
+        <Panel title="Buluttan geri yükle" icon={<CloudDownload size={18} style={{ marginRight: 8 }} />} className="cb-panel" size="medium">
+          <p className="cb-help">
+            Bir ayar yedeğini seçip önizleyerek bu cihaza geri yükleyin, eski bir cihazın anahtarını depodan kaldırın ya da klasör yedeğini
+            yeni bir klasöre indirin. Yeni bir cihaza kurtarırken bağlantıyı «Buluttan geri yükle» kipiyle kurun.
+          </p>
+          <button className="btn-outline btn-sm" onClick={() => setRestoreOpen(true)}><CloudDownload size={13} /> Geri yükleme sihirbazını aç</button>
+        </Panel>
+      ))}
 
       <Panel title="Bağlantı" icon={<Unplug size={18} style={{ marginRight: 8 }} />} className="cb-panel" size="medium">
         <p className="cb-help">
@@ -921,8 +956,8 @@ function DisableModal({ onClose, onDone }: { onClose: () => void; onDone: (job: 
         <input type="checkbox" checked={removeKey} onChange={e => setRemoveKey(e.target.checked)} />
         <span>Bu cihazın anahtarını depodan da sil (cihazı satacak ya da başkasına verecekseniz önerilir)</span>
       </label>
-      <p className="cb-hint">Kaybolan bir cihazın anahtarı o cihazın panelinden silinemez: kurtarma sırasında (sonraki sürüm) yeni cihazdan
-        kaldırılır.</p>
+      <p className="cb-hint">Kaybolan bir cihazın anahtarı o cihazın panelinden silinemez: yeni cihazda «Buluttan geri yükle» → «Depo
+        anahtarları» ile kaldırılır.</p>
       {removeKey && (
         <div className="form-group">
           <label htmlFor="cb-dpw">Şifreleme parolası</label>

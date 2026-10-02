@@ -28,6 +28,14 @@
 #                                           saklama politikası (forget --prune, yalnız bu cihazın anlık görüntüleri)
 #   disconnect --remove-key                 (iş) bu cihazın anahtarını iki depodan da siler (kullanıcının parolasıyla —
 #                                           restic kullanımdaki anahtarı silmez), sonra yerel bağlantıyı kaldırır
+#   restore-config --snapshot ID            (iş) ayar yedeğini /run/pi5-vault/restore'a indirir (tmpfs, 0700): config.json,
+#                                           meta.json, varsa secrets.json. Başka hiçbir yere dokunmaz; panel önizler, uygular
+#   restore-files --snapshot ID --root KÖK  (iş) klasör yedeğini KÖK altında YENİ bir klasöre (geri-yuklenen-YYYYMMDD-HHMM)
+#                                           indirir — hiçbir dosyanın üzerine yazılmaz. KÖK: bağlı paylaşım alanı ya da
+#                                           ağda paylaşılan bağlı bir USB disk
+#   keys                                    iki deponun anahtar listesi (JSON, kısa; cihaz anahtarıyla)
+#   key-remove --key ID                     (iş) eski bir cihazın anahtarını iki depodan da siler (kullanıcının parolasıyla);
+#                                           bu cihazın ve parolanın anahtarı silinmez
 # Ortam (testler için): PI5_VAULT_DIR, PI5_VAULT_RUN, PI5_VAULT_LOCK, PI5_FAILOVER_STATUS, PI5_BASE, PI5_VAULT_T_STEP,
 # PI5_VAULT_LINE_POLL.
 set -uo pipefail
@@ -114,6 +122,7 @@ cleanup() {
   rm -f "$USERPASS" "$PENDING" "$NEWKEY" "$CONF.tmp.$$" "$DEVKEY.tmp.$$" "$RUN/restic.err.$$" "$RUN/restic.sum.$$" \
     "$RUN/restic.fifo.$$" "$RUN/restic.fskip.$$" 2>/dev/null
   if [ -n "$STAGE" ]; then rm -rf "$STAGE" 2>/dev/null; fi
+  rm -rf "$RUN/restore.tmp.$$" 2>/dev/null
   return 0
 }
 
@@ -196,7 +205,14 @@ explain() { # ERRDOSYASI ÇIKIŞKODU
     10) echo "Bu konumda depo yok — «Yeni depo» seçin ya da kova adını / ön eki denetleyin"; return 0;;
     11) echo "Depo başka bir işlem tarafından kilitli — birazdan yeniden deneyin"; return 0;;
     124) explain_text "$t"; return 0;;
-    137) echo "Bellek yetmedi (restic) — klasör sayısını azaltın ya da yalnız ayarları yedekleyin"; return 0;;
+    137)
+      # Geri yüklemede "klasör azaltın" anlamsız (vault.ts oomText ile aynı metinler)
+      if [[ "${cmd:-}" == restore-* ]]; then
+        echo "Bellek yetmedi (restic) — geri yükleme bu cihazın belleğine sığmadı; dosyaları daha çok belleği olan bir bilgisayarda kurtarma kitindeki restic komutlarıyla açın"
+      else
+        echo "Bellek yetmedi (restic) — klasör sayısını azaltın ya da yalnız ayarları yedekleyin"
+      fi
+      return 0;;
   esac
   case "$t" in
     *'wrong password or no key found'*) echo "Parola yanlış (bu depoyu açan bir anahtar yok)";;
@@ -219,6 +235,7 @@ explain_text() {
     *'no such host'*|*'server misbehaving'*|*'connection refused'*|*'network is unreachable'*|*'i/o timeout'*|*'dial tcp'*)
       echo "Bulut deposuna ulaşılamadı — uç nokta adresini ve internet bağlantısını denetleyin";;
     *x509*|*certificate*) echo "Güvenli bağlantı kurulamadı (sertifika) — uç nokta adresini ve cihazın saatini denetleyin";;
+    *'no matching ID found'*) echo "Anlık görüntü bulunamadı (budanmış olabilir) — listeyi yenileyip yeniden seçin";;
     *'context canceled'*|*'context deadline exceeded'*|'') echo "Bulut deposu zamanında yanıt vermedi — bağlantıyı denetleyip yeniden deneyin";;
     *) last=$(printf '%s\n' "$1" | grep -v '^[[:space:]]*$' | tail -n 1 | cut -c1-200)
        echo "restic hatası: ${last:-bilinmeyen hata}";;
@@ -254,16 +271,19 @@ ensure_restic() { # PCT
 
 # Sürüme göre seçenekler: Debian 12 (bookworm) restic 0.14 --retry-lock (0.16+) ve backup --read-concurrency (0.15+)
 # tanımaz; desteklenmeyen seçenek hiç verilmez (kilit beklemesi yerine yalnız bayat kilit temizliği, varsayılan okuma).
-RL=(); RCONC=()
+# restore --overwrite ve restore --json ilerlemesi 0.17+: yoksa geri yükleme adım metniyle izlenir (hedef zaten yeni,
+# boş bir klasör — üzerine yazılacak dosya yoktur).
+RL=(); RCONC=(); RNEVER=(); RJSON=0
 restic_caps() {
   local v maj min
-  RL=(); RCONC=()
+  RL=(); RCONC=(); RNEVER=(); RJSON=0
   # Tek çağrı (bellek sınırlı birimde fazladan restic süreci açılmasın): "restic 0.18.0 compiled with ..."
   v=$(restic version 2>/dev/null); v=${v#restic }; v=${v%% *}
   maj=${v%%.*}; min=${v#*.}; min=${min%%.*}
   if [[ "$maj" =~ ^[0-9]+$ ]] && [[ "$min" =~ ^[0-9]+$ ]]; then
     if [ "$maj" -gt 0 ] || [ "$min" -ge 16 ]; then RL=(--retry-lock 2m); fi
     if [ "$maj" -gt 0 ] || [ "$min" -ge 15 ]; then RCONC=(--read-concurrency 1); fi
+    if [ "$maj" -gt 0 ] || [ "$min" -ge 17 ]; then RNEVER=(--overwrite never); RJSON=1; fi
   fi
   log "restic ${v:-?} (kilit bekleme: ${RL[*]:-yok})"
 }
@@ -654,6 +674,288 @@ cmd_disconnect() {
   fi
 }
 
+# ── geri yükleme (yeni cihazda kurtarma) ─────────────────────────────────────
+SNAP_RE='^[0-9a-f]{8,64}$'
+RESTORE=$RUN/restore
+load_conf_job() { # iş komutları: yapılandırma + cihaz anahtarı + ön denetim (saat, restic)
+  read_conf "$CONF" || die "Bulut yedeği bağlı değil"
+  valid_conf
+  [ -s "$DEVKEY" ] || die "cihaz anahtarı yok — bağlantıyı kaldırıp yeniden kurun"
+  use_conf
+  PWFILE=$DEVKEY
+  step "$1" "Ön denetim (saat, restic)"
+  clock_check
+  ensure_restic "$1"
+}
+
+# Ayar yedeği /run/pi5-vault/restore'a (tmpfs, 0700; dosyalar 0600): önce geçici klasöre, denetlenince yerine. Anlık görüntü
+# hazırlık klasörünü tam yoluyla taşır (…/run/pi5-vault/stage/config.json) — restic 0.14 alt klasör seçimini (kimlik:yol)
+# tanımaz, bu yüzden tümü indirilip tek config.json aranır. Yalnız düz dosyalar alınır (sembolik bağ değil). Panel
+# (vault.ts) önizler ve uygular; bu betik başka hiçbir yere dokunmaz.
+cmd_restore_config() {
+  local snap='' e="$RUN/restic.err.$$" tmp="$RUN/restore.tmp.$$" found n dir f rc
+  while [ $# -gt 0 ]; do case "$1" in --snapshot) snap=${2:-}; shift 2;; *) shift;; esac; done
+  [[ "$snap" =~ $SNAP_RE ]] || die "anlık görüntü kimliği geçersiz"
+  # Önceki getirilen yedek hemen silinir: bu getirme başarısız olursa önizlemede eski anlık görüntü kalıp uygulanmasın
+  rm -rf "$RESTORE"
+  load_conf_job 5
+  rm -rf "$tmp"
+  mkdir -m 700 "$tmp" || die "geçici klasör oluşturulamadı ($tmp)"
+  # Eski cihazın yarıda kalmış bir işinin bayat kilidi indirmeyi engellemesin (unlock yalnız bayat kilitleri siler)
+  step 10 "Depo kilitleri denetleniyor"
+  rx "$T_STEP" -r "$(repo config)" unlock >>"$OUT" 2>"$e" || log "ayar deposu kilidi denetlenemedi: $(explain "$e" 1)"
+  step 20 "Ayar yedeği indiriliyor (${snap:0:8})"
+  rx "$T_CONFIG" -r "$(repo config)" "${RL[@]}" restore "$snap" --target "$tmp/raw" >>"$OUT" 2>"$e"; rc=$?
+  [ "$rc" = 0 ] || fail_restic "Ayar yedeği indirilemedi" "$e" "$rc"
+  step 80 "Ayar yedeği denetleniyor"
+  found=$(find "$tmp/raw" -type f -name config.json 2>/dev/null)
+  n=$(printf '%s' "$found" | grep -c .)
+  [ "$n" = 1 ] || die "Bu anlık görüntü bir ayar yedeği değil (config.json bulunamadı)"
+  dir=$(dirname "$found")
+  [ -f "$dir/meta.json" ] && [ ! -L "$dir/meta.json" ] || die "Ayar yedeği eksik (meta.json yok)"
+  mkdir -m 700 "$tmp/out" || die "geçici klasör oluşturulamadı"
+  for f in config.json meta.json secrets.json; do
+    if [ -f "$dir/$f" ] && [ ! -L "$dir/$f" ]; then install -m 600 "$dir/$f" "$tmp/out/$f" || die "$f kopyalanamadı"; fi
+  done
+  printf '%s\n' "$snap" > "$tmp/out/snapshot.id"
+  rm -rf "$RESTORE"
+  mv "$tmp/out" "$RESTORE" || die "geri yükleme klasörü hazırlanamadı"
+  chmod 700 "$RESTORE"
+  rm -rf "$tmp" "$e"
+  log "ayar yedeği getirildi: ${snap:0:8} → $RESTORE ($(find "$RESTORE" -maxdepth 1 -type f -printf '%f '))"
+  setstate state=done pct=100 "step=Tamamlandı" "msg=Ayar yedeği getirildi (${snap:0:8}) — önizlemeyi denetleyip uygulayın" \
+    "restore_snap=${snap:0:8}" "finished=$(date +%s)"
+}
+
+# Dosya geri yükleme kökü (gerçek yol): bağlı paylaşım alanı ya da ağda paylaşılan bağlı bir USB disk (backend aynısını
+# denetler). Diskin bağlı olması şart: bağlı değilken klasör SD kartın üstündedir.
+restore_root_ok() {
+  local mnt
+  case "$1" in
+    /mnt/klyrix-share/Paylasim) mnt=/mnt/klyrix-share;;
+    /mnt/klyrix-usb/*/*) return 1;;
+    /mnt/klyrix-usb/?*) mnt=$1;;
+    *) return 1;;
+  esac
+  [ "$(findmnt -n -o TARGET -T "$1" 2>/dev/null)" = "$mnt" ]
+}
+# restic restore --json (0.17+) durum satırları → pct/step (P0..P1), özet satırı → ÖZETDOSYASI
+progress_restore() { # P0 P1 ÖZETDOSYASI
+  local p0=$1 p1=$2 sumf=$3 line pd tb bd pct shown
+  while IFS= read -r line; do
+    case "$line" in
+      *'"message_type":"status"'*)
+        pd=$(jnum percent_done "$line"); tb=$(jnum total_bytes "$line"); bd=$(jnum bytes_restored "$line")
+        pct=$(awk -v a="$p0" -v b="$p1" -v p="${pd:-0}" 'BEGIN { if (p > 1) p = 1; printf "%d", a + (b - a) * p }')
+        shown=$(awk -v p="${pd:-0}" 'BEGIN { if (p > 1) p = 1; printf "%d", p * 100 }')
+        setstate "pct=$pct" "step=Dosyalar indiriliyor: $shown% · $(pair "${bd:-0}" "${tb:-0}")"
+        ;;
+      *'"message_type":"summary"'*) printf '%s\n' "$line" > "$sumf";;
+    esac
+  done
+}
+
+# restic restore'un "ignoring error" satırları (metin: 0.14–0.16; --json: 0.17+ "message_type":"error") iki türe ayrılır:
+# sahip / izin / zaman / öznitelik bilgisi (lchown, chmod, utimes, xattr — FAT, exFAT ve NTFS bunları saklamaz; dosyanın
+# kendisi yazıldı) ve gerçekten yazılamayan öğeler (adı bu dosya sisteminde geçersiz, sembolik bağ, yazma hatası). İşlem adı
+# yoldan değil iletinin başından okunur (": lchown …" / "\"message\":\"Lchown: …"). Sonuç RLOST / RMETA; yazılamayanların
+# ilk 50'si öğe yoluyla günlüğe.
+RLOST=0; RMETA=0
+RMETA_RE='(: |"message":")(lchown|chown|fchown|chmod|lchmod|fchmod|utimesnano|utimes|lutimes|setxattr|lsetxattr)[ :]'
+restore_errs() { # ERRDOSYASI
+  local all lost n
+  all=$(grep -E '^ignoring error for |"message_type":"error"' "$1")
+  lost=$(printf '%s\n' "$all" | grep -viE "$RMETA_RE" | grep -v '^$')
+  n=$(printf '%s\n' "$all" | grep -c .)
+  RLOST=$(printf '%s\n' "$lost" | grep -c .)
+  RMETA=$((n - RLOST))
+  if [ "$RLOST" -gt 0 ]; then
+    log "$RLOST öğe yazılamadı (ilk 50):"
+    printf '%s\n' "$lost" | head -n 50 | while IFS= read -r l; do
+      case "$l" in
+        *'"message_type":"error"'*) printf '    %s — %s\n' "$(jstr item "$l")" "$(jstr message "$l")";;
+        *) printf '    %s\n' "${l#ignoring error for }";;
+      esac
+    done >> "$OUT"
+  fi
+  if [ "$RMETA" -gt 0 ]; then log "$RMETA sahip / izin / zaman bilgisi uygulanamadı (bu dosya sistemi saklamıyor olabilir) — dosyaların içeriği tam"; fi
+  return 0
+}
+
+# Dosyaları geri yükle: KÖK altında YENİ bir klasöre (geri-yuklenen-YYYYMMDD-HHMM; aynı dakikada ikincisi -2, -3 …) —
+# mkdir var olan klasörü kabul etmez, böylece var olan hiçbir dosyanın üzerine yazılmaz. Anlık görüntünün yolları klasörün
+# içinde tam hâliyle durur (ör. …/geri-yuklenen-…/mnt/klyrix-share/Paylasim/…). Yedek hattında (kotalı olabilir) başlamaz.
+cmd_restore_files() {
+  local snap='' root='' real base dest i e="$RUN/restic.err.$$" sumf="$RUN/restic.sum.$$" rc errs='' s nf nb msg
+  RLOST=0; RMETA=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --snapshot) snap=${2:-}; shift 2;;
+      --root) root=${2:-}; shift 2;;
+      *) shift;;
+    esac
+  done
+  [[ "$snap" =~ $SNAP_RE ]] || die "anlık görüntü kimliği geçersiz"
+  [ -n "$root" ] || die "hedef klasör gerekli"
+  real=$(realpath -e "$root" 2>/dev/null) || die "Hedef klasör bulunamadı: $root"
+  if ! [ -d "$real" ] || ! restore_root_ok "$real"; then
+    die "Hedef yalnız bağlı paylaşım alanı (/mnt/klyrix-share/Paylasim) ya da ağda paylaşılan bağlı bir USB disk (/mnt/klyrix-usb/…) olabilir"
+  fi
+  load_conf_job 2
+  if on_backup_line; then die "Yedek hattındasınız (kotalı olabilir) — ana hat dönünce yeniden deneyin"; fi
+  base="$real/geri-yuklenen-$(date +%Y%m%d-%H%M)"
+  dest=$base; i=1
+  while ! mkdir "$dest" 2>/dev/null; do
+    i=$((i + 1))
+    [ "$i" -le 50 ] || die "geri yükleme klasörü oluşturulamadı ($base)"
+    dest="$base-$i"
+  done
+  # Paylaşımdan erişilsin: yeni klasörün sahibi ve izinleri kökünkiyle aynı (içindekiler anlık görüntüdeki gibi gelir)
+  chown --reference="$real" "$dest" 2>/dev/null; chmod --reference="$real" "$dest" 2>/dev/null
+  setstate "restore_dest=$dest"
+  step 4 "Depo kilitleri denetleniyor"
+  rx "$T_STEP" -r "$(repo files)" unlock >>"$OUT" 2>"$e" || log "dosya deposu kilidi denetlenemedi: $(explain "$e" 1)"
+  step 5 "Dosyalar indiriliyor (${snap:0:8} → $dest)"
+  rm -f "$sumf"
+  if [ "$RJSON" = 1 ]; then
+    rx 0 -r "$(repo files)" "${RL[@]}" restore "$snap" --target "$dest" "${RNEVER[@]}" --json 2>"$e" \
+      | progress_restore 5 98 "$sumf"
+    rc=${PIPESTATUS[0]}
+  else
+    rx 0 -r "$(repo files)" "${RL[@]}" restore "$snap" --target "$dest" >>"$OUT" 2>"$e"; rc=$?
+  fi
+  if [ "$rc" != 0 ]; then
+    # Bazı öğeler geri yüklenemediyse restic sonda "There were N errors" der: dosyalar indi, uyarıyla biter (yalnız sahip /
+    # izin bilgisi uygulanamadıysa — FAT / exFAT / NTFS — uyarı yok). Disk dolduysa ya da başka bir hatada iş başarısız olur.
+    errs=$(grep -oE 'There were [0-9]+ errors' "$e" | grep -oE '[0-9]+' | tail -n 1)
+    if [ -n "$errs" ] && ! grep -qi 'no space left' "$e"; then
+      restore_errs "$e"
+      if [ "$RLOST" = 0 ] && [ "$RMETA" = 0 ]; then
+        # Tanınmayan biçim: hepsi yazılamamış sayılır, ham satırlar günlüğe
+        RLOST=$errs
+        tail -n 20 "$e" | sed 's/^/    /' >> "$OUT"
+      fi
+    else
+      rmdir "$dest" 2>/dev/null || log "yarım kalan dosyalar: $dest"
+      fail_restic "Dosyalar geri yüklenemedi" "$e" "$rc"
+    fi
+  fi
+  # Kök bir ağ paylaşımıdır: Samba her erişimi tek kullanıcıyla yapar (share.sh "force user"). Geri yüklenen ağacın sahibi
+  # kökünki olsun — eski cihazın kullanıcı numaraları bu cihazda anlamsız, restic ara klasörleri (mnt/…) root:root 0755
+  # oluşturur; yoksa paylaşımdan silinemez, taşınamaz, düzenlenemezdi. -h: sembolik bağın hedefine dokunulmaz (chmod -R bağları
+  # zaten izlemez). FAT / exFAT / NTFS'te sahip bağlama seçeneğindendir: hata yok sayılır.
+  step 99 "Sahiplik paylaşım kullanıcısına ayarlanıyor"
+  chown -hR --reference="$real" "$dest" 2>/dev/null
+  chmod -R u+rwX,g+rwX "$dest" 2>/dev/null
+  # Dosya sayısı klasörden (restic özetinin sayısı klasörleri de içerir); boyut özetten, yoksa (0.14) klasörden
+  s=$(cat "$sumf" 2>/dev/null)
+  nf=$(find "$dest" -type f 2>/dev/null | wc -l)
+  nb=$(jnum bytes_restored "$s")
+  if [ -z "$nb" ]; then nb=$(du -sb "$dest" 2>/dev/null | cut -f1); fi
+  msg="Dosyalar geri yüklendi: $dest ($nf dosya, $(human "${nb:-0}"))"
+  if [ "$RLOST" -gt 0 ]; then msg="$msg · $RLOST öğe geri yüklenemedi (adı bu dosya sisteminde geçersiz, sembolik bağ ya da yazılamadı) — liste günlükte"; fi
+  rm -f "$e" "$sumf"
+  log "$msg"
+  setstate state=done pct=100 "step=Tamamlandı" "msg=$msg" "finished=$(date +%s)"
+}
+
+# Anahtar listesi (kısa): iki depo, cihaz anahtarıyla — {"config":[…],"files":[…]} (restic key list --json satırları:
+# current, id, userName, hostName, created). Cihaz anahtarı dosya deposunda yoksa (yarım kalmış bir kaldırma) files: null.
+cmd_keys() {
+  local r o rc e="$RUN/restic.err.$$" out=''
+  load_conf_short
+  for r in config files; do
+    o=$(rx "$T_SHORT" -r "$(repo "$r")" --no-lock key list --json 2>"$e"); rc=$?
+    if [ "$rc" != 0 ]; then
+      if [ "$r" = files ] && [ "$(norm_rc "$e" "$rc")" = 12 ]; then o=null; else short_fail "$e" "$rc"; fi
+    fi
+    [[ "$o" == null || "$o" == '['*']' ]] || { rm -f "$e"; kv error "Anahtar listesi okunamadı"; exit 1; }
+    out="$out${out:+,}\"$r\":$o"
+  done
+  rm -f "$e"
+  printf '{%s}\n' "$out"
+}
+
+# Eski cihazın anahtarını kaldır (kurtarmadan sonra, yeni cihazdan). KİMLİK ayar ya da dosya deposundaki bir anahtardır;
+# aynı cihazın öbür depodaki anahtarı aynı cihaz kimliği (host) ve en yakın oluşturma zamanıyla (10 dk içinde) bulunur
+# (bağlanırken iki depoya art arda eklenir). Silme kullanıcının parolasıyla yapılır. Bu cihazın kendi anahtarı ve parolanın
+# anahtarı (silinse kurtarma kiti + parola depoyu açamazdı) silinmez. Önce dosya deposu, en son ayar deposu (disconnect
+# gibi); yeniden denemede zaten silinmiş anahtar atlanır, hiç bulunamazsa iş "zaten yok" diye biter.
+key_rows() { # JSON → "akım<TAB>kimlik<TAB>host<TAB>oluşturma" satırları
+  local s=$1 re='\{"current":(true|false),"id":"([0-9a-f]+)","userName":"[^"]*","hostName":"([^"]*)","created":"([^"]*)"'
+  while [[ "$s" =~ $re ]]; do
+    printf '%s\t%s\t%s\t%s\n' "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}" "${BASH_REMATCH[3]}" "${BASH_REMATCH[4]}"
+    s=${s#*"${BASH_REMATCH[0]}"}
+  done
+}
+id_match() { [[ "$1" == "$2"* || "$2" == "$1"* ]]; }  # restic 0.14 kısa (8 hane), 0.16+ tam kimlik verir
+repo_label() { case "$1" in config) printf 'ayar';; files) printf 'dosya';; *) printf '%s' "$1";; esac; }  # paneldeki adları
+cmd_key_remove() {
+  local key='' r o e="$RUN/restic.err.$$" rc cur id host created thost='' tcreated='' trepo='' t0 d best bestd pct=10 done_r='' lb
+  local -A all=() devk=() passk=() target=()
+  while [ $# -gt 0 ]; do case "$1" in --key) key=${2:-}; shift 2;; *) shift;; esac; done
+  [[ "$key" =~ ^[0-9a-f]{8,64}$ ]] || die "anahtar kimliği geçersiz"
+  [ -s "$USERPASS" ] || die "parola dosyası bulunamadı"
+  load_conf_job 5
+  for r in config files; do
+    lb=$(repo_label "$r")
+    step "$pct" "Anahtarlar okunuyor ($lb deposu)"
+    PWFILE=$USERPASS
+    all[$r]=$(rx "$T_STEP" -r "$(repo "$r")" --no-lock key list --json 2>"$e"); rc=$?
+    [ "$rc" = 0 ] || fail_restic "Anahtar listesi okunamadı ($lb deposu)" "$e" "$rc"
+    passk[$r]=$(key_rows "${all[$r]}" | awk -F'\t' '$1 == "true" { print $2; exit }')
+    PWFILE=$DEVKEY
+    o=$(rx "$T_STEP" -r "$(repo "$r")" --no-lock key list --json 2>"$e"); rc=$?; rc=$(norm_rc "$e" "$rc")
+    if [ "$rc" = 0 ]; then devk[$r]=$(key_rows "$o" | awk -F'\t' '$1 == "true" { print $2; exit }')
+    elif [ "$rc" = 12 ]; then devk[$r]=''; log "bu cihazın anahtarı $lb deposunda yok"
+    else fail_restic "Anahtar listesi okunamadı ($lb deposu)" "$e" "$rc"; fi
+    pct=$((pct + 10))
+  done
+  for r in config files; do
+    while IFS=$'\t' read -r cur id host created; do
+      if id_match "$id" "$key"; then trepo=$r; target[$r]=$id; thost=$host; tcreated=$created; break; fi
+    done < <(key_rows "${all[$r]}")
+    [ -n "$trepo" ] && break
+  done
+  if [ -z "$trepo" ]; then
+    log "anahtar ${key:0:8} depolarda yok — zaten silinmiş"
+    setstate state=done pct=100 "step=Tamamlandı" "msg=Bu anahtar depolarda zaten yok (daha önce silinmiş)" "finished=$(date +%s)"
+    return 0
+  fi
+  [ "${target[$trepo]}" != "${devk[$trepo]}" ] || die "Bu, bu cihazın kendi anahtarı — silinemez (bu cihazı ayırmak için «Bağlantıyı kaldır»)"
+  [ "${target[$trepo]}" != "${passk[$trepo]}" ] \
+    || die "Bu, şifreleme parolanızın anahtarı — silinemez (silinseydi kurtarma kiti + parola depoyu açamazdı)"
+  # Öbür depoda aynı cihazın anahtarı: aynı host, en yakın oluşturma zamanı (≤ 10 dk); bu cihazınki ve parolanınki hariç
+  t0=$(date -d "$tcreated" +%s 2>/dev/null || echo 0)
+  for r in config files; do
+    [ "$r" = "$trepo" ] && continue
+    best=''; bestd=601
+    while IFS=$'\t' read -r cur id host created; do
+      [ "$host" = "$thost" ] && [ "$id" != "${devk[$r]}" ] && [ "$id" != "${passk[$r]}" ] || continue
+      d=$(( $(date -d "$created" +%s 2>/dev/null || echo 0) - t0 )); d=${d#-}
+      if [ "$d" -lt "$bestd" ]; then best=$id; bestd=$d; fi
+    done < <(key_rows "${all[$r]}")
+    target[$r]=$best
+  done
+  PWFILE=$USERPASS
+  for r in files config; do
+    lb=$(repo_label "$r")
+    if [ -z "${target[$r]:-}" ]; then log "eski cihazın anahtarı $lb deposunda yok (zaten silinmiş) — atlandı"; continue; fi
+    # Bayat kilit (yarıda kalmış iş) silmeyi engellemesin; canlı kilit için --retry-lock bekler
+    rx "$T_STEP" -r "$(repo "$r")" unlock >>"$OUT" 2>"$e" || log "kilit denetlenemedi ($lb deposu): $(explain "$e" 1)"
+    step "$pct" "Eski cihazın anahtarı siliniyor ($lb deposu)"
+    rx "$T_LOCK" -r "$(repo "$r")" "${RL[@]}" key remove "${target[$r]}" >>"$OUT" 2>"$e"; rc=$?
+    [ "$rc" = 0 ] || fail_restic "Anahtar $lb deposundan silinemedi${done_r:+ (${done_r} deposundan silindi; yeniden deneyin)}" "$e" "$rc"
+    log "eski cihazın anahtarı silindi ($lb deposu): ${target[$r]:0:8} (cihaz: $thost)"
+    done_r="$done_r${done_r:+ ve }$lb"
+    pct=$((pct + 30))
+  done
+  rm -f "$e"
+  if [ -n "$done_r" ]; then done_r="$done_r deposundan silindi"; else done_r="depolarda zaten yoktu"; fi
+  setstate state=done pct=100 "step=Tamamlandı" \
+    "msg=Eski cihazın anahtarı ($thost) $done_r — o anahtar artık depoları açamaz" "finished=$(date +%s)"
+}
+
 # ── giriş ────────────────────────────────────────────────────────────────────
 # Betiğin kendisi bellek sınırında en son öldürülsün (restic rx içinde choom ile en önce): böylece restic belleği
 # aşınca iş "Bellek yetmedi" diye biter. -500 öldürülemez değildir; başka süreç kalmazsa çekirdek yine seçebilir.
@@ -661,13 +963,14 @@ cmd_disconnect() {
 cmd=${1:-status}; shift || true
 case "$cmd" in
   status) cmd_status; exit 0;;
-  check|snapshots|connect|backup|disconnect) ;;
-  *) echo "kullanım: vault.sh status|connect|check|snapshots|backup|disconnect" >&2; exit 2;;
+  check|snapshots|keys|connect|backup|disconnect|restore-config|restore-files|key-remove) ;;
+  *) echo "kullanım: vault.sh status|connect|check|snapshots|keys|backup|disconnect|restore-config|restore-files|key-remove" >&2; exit 2;;
 esac
 [ "$(id -u)" = 0 ] || { kv error "root gerekli"; exit 1; }
 case "$cmd" in
   check) cmd_check; exit 0;;
   snapshots) cmd_snapshots "$@"; exit 0;;
+  keys) cmd_keys; exit 0;;
 esac
 exec 9>"$LOCK"
 if ! flock -n 9; then
@@ -685,10 +988,14 @@ if [ -n "${PI5_VAULT_ID:-}" ]; then
 else
   : > "$OUT"
   setstate state=running "cmd=$cmd" "started=$(date +%s)" "id=$(date +%s)" error= msg= step= pct=0 finished= \
-    cfg_ok= cfg_snap= cfg_added= files_ok= files_snap= files_added= files_total= files_skipped= forget_ok=
+    cfg_ok= cfg_snap= cfg_added= files_ok= files_snap= files_added= files_total= files_skipped= forget_ok= \
+    restore_snap= restore_dest=
 fi
 case "$cmd" in
   connect) cmd_connect "$@";;
   backup) cmd_backup "$@";;
   disconnect) cmd_disconnect "$@";;
+  restore-config) cmd_restore_config "$@";;
+  restore-files) cmd_restore_files "$@";;
+  key-remove) cmd_key_remove "$@";;
 esac

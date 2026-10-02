@@ -1,0 +1,92 @@
+/* Buluttan geri yükleme (CloudRestore — ayrı parça). Ortak kutular CloudBackupPanel.css'in cb- sınıflarıdır; burada
+   yalnız sihirbaza özgü olanlar (cr-). Telefon öncelikli, tema değişkenleriyle (koyu / açık). */
+.cr-wrap { display: flex; flex-direction: column; }
+.cr-step {
+  display: inline-flex; align-items: center; justify-content: center; width: 20px; height: 20px; border-radius: 999px; flex-shrink: 0;
+  font-size: 11px; font-weight: 700; color: var(--accent-contrast); background: var(--accent-color);
+}
+
+/* Geri yükleme kipi şeridi */
+.cr-paused {
+  display: flex; flex-wrap: wrap; align-items: flex-start; gap: 10px; padding: 14px 16px; margin: 14px 0 0;
+  border-left: 3px solid var(--warning-color);
+}
+.cr-paused > svg { flex-shrink: 0; margin-top: 2px; color: var(--warning-color); }
+.cr-paused-text { display: flex; flex-direction: column; gap: 4px; flex: 1 1 260px; min-width: 0; font-size: 13px; line-height: 1.5; }
+.cr-paused-text span { color: var(--text-secondary); font-size: 12px; }
+.cr-paused .btn-sm { white-space: nowrap; }
+
+/* Anlık görüntü listesi */
+.cr-snaps { display: flex; flex-direction: column; margin-top: 10px; border: 1px solid var(--panel-border); border-radius: var(--radius-sm); }
+.cr-snap { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-bottom: 1px solid var(--panel-border); min-width: 0; }
+.cr-snap:last-child { border-bottom: none; }
+.cr-snap-main { display: flex; flex-direction: column; gap: 2px; flex: 1; min-width: 0; font-size: 13px; }
+.cr-snap-main span { font-size: 12px; color: var(--text-secondary); overflow-wrap: anywhere; }
+.cr-snap .btn-sm { flex-shrink: 0; }
+
+/* Önizleme */
+.cr-details { margin-top: 10px; font-size: 12px; }
+.cr-details summary { cursor: pointer; color: var(--text-secondary); }
+.cr-tables, .cr-cron, .cr-counts, .cr-parts, .cr-check { list-style: none; padding: 0; margin: 8px 0 0; }
+.cr-tables { display: grid; grid-template-columns: minmax(0, 1fr); gap: 4px; }
+.cr-tables li {
+  display: flex; justify-content: space-between; gap: 10px; padding: 5px 10px; border-radius: var(--radius-sm); background: var(--input-bg-soft);
+}
+.cr-tables li span { min-width: 0; overflow-wrap: anywhere; color: var(--text-secondary); }
+.cr-counts { display: flex; flex-wrap: wrap; gap: 6px; }
+.cr-counts li { padding: 4px 10px; border-radius: 999px; font-size: 12px; background: var(--input-bg-soft); border: 1px solid var(--panel-border); }
+.cr-cron li { display: flex; flex-direction: column; gap: 3px; padding: 6px 0; border-bottom: 1px solid var(--panel-border); }
+.cr-cron li:last-child { border-bottom: none; }
+.cr-cron em { font-style: normal; color: var(--text-secondary); }
+.cr-cron code {
+  display: block; padding: 6px 8px; border-radius: var(--radius-sm); background: var(--input-bg-soft); font: 11px/1.5 var(--font-mono);
+  white-space: pre-wrap; overflow-wrap: anywhere;
+}
+.cr-retired .cb-check { margin-top: 8px; font-weight: 600; }
+/* Uyarı kutusunda madde satırları (geçersiz bölümler, bu cihazın VPS numaraları) */
+.cr-secerr { display: block; margin-top: 4px; overflow-wrap: anywhere; }
+
+/* Sonuç */
+.cr-result { margin-top: 16px; padding-top: 4px; border-top: 1px solid var(--panel-border); }
+.cr-result .cb-h { align-items: flex-start; line-height: 1.4; }
+.cr-result .cb-h > svg { flex-shrink: 0; margin-top: 2px; }
+.cr-h-ok > svg { color: var(--success-color); }
+.cr-h-warn > svg { color: var(--warning-color); }
+.cr-parts li { display: flex; align-items: flex-start; gap: 8px; padding: 5px 0; font-size: 12px; line-height: 1.5; }
+.cr-parts li > svg { flex-shrink: 0; margin-top: 2px; }
+.cr-parts li span { min-width: 0; overflow-wrap: anywhere; }
+.cr-ok > svg { color: var(--success-color); }
+.cr-bad > svg { color: var(--danger-color); }
+.cr-skip > svg { color: var(--text-secondary); }
+
+/* Yapılacaklar */
+.cr-check { counter-reset: cr; display: flex; flex-direction: column; gap: 6px; }
+.cr-check li {
+  counter-increment: cr; display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; padding: 8px 10px 8px 34px; position: relative;
+  border-radius: var(--radius-sm); background: var(--input-bg-soft); font-size: 13px; line-height: 1.5;
+}
+.cr-check li::before {
+  content: counter(cr); position: absolute; left: 10px; top: 9px; width: 16px; text-align: center; font-size: 11px; font-weight: 700;
+  color: var(--text-secondary);
+}
+.cr-check li span { flex: 1 1 220px; min-width: 0; }
+.cr-check li.cr-hl { border: 1px solid var(--warning-color); }
+.cr-link { font-size: 12px; font-weight: 600; color: var(--accent-color); text-decoration: none; white-space: nowrap; }
+.cr-link:hover { text-decoration: underline; }
+
+/* Anahtarlar */
+.cr-keys { display: flex; flex-direction: column; margin-top: 10px; border: 1px solid var(--panel-border); border-radius: var(--radius-sm); }
+.cr-key { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-bottom: 1px solid var(--panel-border); min-width: 0; }
+.cr-key:last-child { border-bottom: none; }
+.cr-key-main { display: flex; flex-direction: column; gap: 2px; flex: 1; min-width: 0; font-size: 13px; }
+.cr-key-main strong { overflow-wrap: anywhere; }
+.cr-key-main span { font-size: 12px; color: var(--text-secondary); overflow-wrap: anywhere; }
+.cr-key .btn-sm { flex-shrink: 0; }
+.cr-tag {
+  flex-shrink: 0; font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 999px; color: var(--text-secondary);
+  background: var(--input-bg-soft); border: 1px solid var(--panel-border);
+}
+
+@media (min-width: 768px) {
+  .cr-tables { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}

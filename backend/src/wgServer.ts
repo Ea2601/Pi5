@@ -312,6 +312,32 @@ export async function reapplyWgServer(): Promise<void> {
   if (!r.ok) console.error("[ev-vpn] uygulanamadı:", r.error);
 }
 
+// Buluttan geri yükleme (vault.ts — satırlar orada sıkı doğrulanır): Ev VPN'i sunucu anahtarı ve istemcileri yedektekiyle
+// DEĞİŞTİRİLİR (aynı anahtarlar → telefon / dizüstü profilleri geçerli kalır), sonra Pi'ye uygulanır. İki tablo tek işlemde.
+export interface WgServerRestore { private_key: string; public_key: string; enabled: number; created_at?: string | null }
+export interface WgPeerRestore {
+  id: number; name: string; ip: string; public_key: string; private_key: string; role: PeerRole; created_at?: string | null;
+}
+export async function restoreWgServerRows(server: WgServerRestore, peers: WgPeerRestore[]): Promise<WgApplyResult> {
+  await ensureTables();
+  await dbRun('BEGIN');
+  try {
+    await dbRun('DELETE FROM wg_server');
+    await dbRun('INSERT INTO wg_server (id, private_key, public_key, enabled, created_at) VALUES (1, ?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP))',
+      [server.private_key, server.public_key, server.enabled ? 1 : 0, server.created_at ?? null]);
+    await dbRun('DELETE FROM wg_server_peers');
+    for (const p of peers) {
+      await dbRun(`INSERT INTO wg_server_peers (id, name, ip, public_key, private_key, role, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP))`, [p.id, p.name, p.ip, p.public_key, p.private_key, p.role, p.created_at ?? null]);
+    }
+    await dbRun('COMMIT');
+  } catch (e) {
+    await dbRun('ROLLBACK').catch(() => {});
+    throw e;
+  }
+  return applyWgServer();
+}
+
 export async function setServerEnabled(enabled: boolean): Promise<WgApplyResult> {
   await serverRow(true);
   await dbRun('UPDATE wg_server SET enabled = ? WHERE id = 1', [enabled ? 1 : 0]);
