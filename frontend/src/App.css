@@ -2034,11 +2034,16 @@ button.user-profile { cursor: pointer; font-family: var(--font-family); transiti
 .dhcp-note { margin: 0 2px; }
 .dhcp-muted { color: var(--text-muted); font-size: 11px; }
 .dhcp-step {
-  padding: 10px 14px; border-radius: var(--radius-sm); border: 1px solid rgba(255, 255, 255, 0.06);
+  padding: 10px 14px; border-radius: var(--radius-sm); border: 1px solid var(--panel-border);
   background: rgba(255, 255, 255, 0.015);
 }
-.dhcp-step-active { border-color: var(--accent-color); }
+/* Yalnız sıradaki adım parlak; biten adımın kenarı sönük (iç seçenekler dahil), kilitli adım soluk */
+.dhcp-step-active { border-color: var(--accent-color); box-shadow: 0 0 0 3px var(--accent-glow); }
+.dhcp-step-active .dhcp-step-num { background: var(--accent-color); color: var(--accent-contrast); }
+.dhcp-step-done .dhcp-option-main { border-color: var(--panel-border); }
 .dhcp-step-todo { opacity: 0.6; }
+.dhcp-step-lock { display: inline-flex; align-items: center; gap: 6px; color: var(--text-secondary); }
+.dhcp-step-lock svg { flex-shrink: 0; }
 .dhcp-step-head { display: flex; align-items: center; gap: 8px; font-size: 13px; }
 .dhcp-step-num {
   width: 20px; height: 20px; border-radius: 50%; flex-shrink: 0; display: inline-flex; align-items: center;
@@ -2063,6 +2068,30 @@ button.user-profile { cursor: pointer; font-family: var(--font-family); transiti
 }
 .dhcp-option-main { border-color: var(--accent-color); }
 .dhcp-option > strong { color: var(--text-primary); font-size: 12px; }
+/* Düğme rengi = ne yaptığı: açan / onaylayan yeşil, kapatan / geri alan kırmızı ("Kontrol et" gibi durum değiştirmeyen nötr).
+   Dolu yeşilde beyaz yazı için yeşil koyulaştırılır (~5:1); kırmızı/yeşil yazı metin rengiyle karışır (iki temada da okunur). */
+.dhcp-wizard .btn-primary.btn-on { background: color-mix(in srgb, var(--success-color) 65%, #000); color: #fff; }
+.dhcp-wizard .btn-primary.btn-on:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--success-color) 70%, #000); box-shadow: 0 4px 12px var(--success-glow);
+}
+.dhcp-wizard .btn-outline.btn-on {
+  border-color: var(--success-color); background: color-mix(in srgb, var(--success-color) 8%, transparent);
+  color: color-mix(in srgb, var(--success-color) 70%, var(--text-primary));
+}
+.dhcp-wizard .btn-outline.btn-off {
+  border-color: var(--danger-color); background: color-mix(in srgb, var(--danger-color) 8%, transparent);
+  color: color-mix(in srgb, var(--danger-color) 75%, var(--text-primary));
+}
+.dhcp-wizard .btn-outline.btn-on:hover:not(:disabled) {
+  border-color: var(--success-color); background: color-mix(in srgb, var(--success-color) 16%, transparent);
+  color: color-mix(in srgb, var(--success-color) 70%, var(--text-primary));
+}
+.dhcp-wizard .btn-outline.btn-off:hover:not(:disabled) {
+  border-color: var(--danger-color); background: color-mix(in srgb, var(--danger-color) 16%, transparent);
+  color: color-mix(in srgb, var(--danger-color) 75%, var(--text-primary));
+}
+/* Kullanılamayan düğme (ör. Pi DHCP açıkken "Otomatik adrese dön") tıklanabilir görünmesin */
+.dhcp-wizard .btn-outline:disabled { opacity: 0.45; cursor: not-allowed; }
 @media (max-width: 768px) {
   .dhcp-step-body { margin-left: 0; }
 }

@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import type { ReactNode } from 'react';
-import { AlertTriangle, Check, CheckCircle } from 'lucide-react';
-import { postApi } from '../hooks/useApi';
+import { AlertTriangle, Check, CheckCircle, Lock } from 'lucide-react';
+import { useApi, postApi, putApi } from '../hooks/useApi';
 import { toast } from '../toast';
 import { Badge } from './ui';
 
@@ -102,10 +102,14 @@ function useCountdown(ends: number, now: number): number | null {
   return ends ? left : null;
 }
 
+// Adımlar tamamlanma sırasıyla: backend de Pi DHCP'sini ancak 1, 3 ve 4 doğrulanmışken açar (pi-dhcp.sh enable).
+const STEP_TITLES = ["Pi'ye sabit adres ver", 'İstemci testi (önerilen)', "Pi'nin Wi-Fi'si", "Modemin DHCP'sini kapat", "Pi DHCP'sini aç"];
+
+// active = sıradaki adım (tek parlak kart), done = doğrulandı, todo = kilitli (önceki adım bekleniyor)
 type StepState = 'done' | 'active' | 'todo';
 function Step({ n, title, state, children }: { n: number; title: string; state: StepState; children?: ReactNode }) {
   return (
-    <div className={`dhcp-step dhcp-step-${state}`}>
+    <div className={`dhcp-step dhcp-step-${state}`} aria-current={state === 'active' ? 'step' : undefined}>
       <div className="dhcp-step-head">
         <span className="dhcp-step-num">{state === 'done' ? <Check size={12} /> : n}</span>
         <strong>{title}</strong>
@@ -113,6 +117,11 @@ function Step({ n, title, state, children }: { n: number; title: string; state: 
       {children && <div className="dhcp-step-body">{children}</div>}
     </div>
   );
+}
+
+// Kilitli adımın içeriği yerine: hangi adımın beklendiği
+function Locked({ text }: { text: string }) {
+  return <span className="dhcp-step-lock"><Lock size={12} /> {text}</span>;
 }
 
 function Alert({ kind, children }: { kind: 'ok' | 'err'; children: ReactNode }) {
@@ -143,6 +152,9 @@ export function DhcpWizard({ dhcp, net, netErr, reload }: Props) {
   const [apSsid, setApSsid] = useState(AP_DEFAULT_SSID);
   const [apPw, setApPw] = useState('');
   const [apPw2, setApPw2] = useState('');
+  // 2. adımın kaydı (app_settings → dhcp_client_test = "ok|<cihaz tarafı adresi>|<epoch>" ya da "skip|…"): test cihazı onaylar,
+  // panelin açık olduğu diğer cihazlar 30 sn içinde görür.
+  const { data: settingsData, refetch: refetchSettings } = useApi<{ settings?: Record<string, string> }>('/settings', { settings: {} }, 30000);
 
   if (!net) {
     return <p className="subtitle dhcp-note">{netErr ? `Sabit adres durumu okunamadı: ${netErr}` : 'Sihirbaz yükleniyor…'}</p>;
@@ -320,6 +332,20 @@ export function DhcpWizard({ dhcp, net, netErr, reload }: Props) {
     const r = await runProbe();
     if (r) toast.info(r.servers.length ? 'Başka bir DHCP sunucusu yanıt veriyor' : 'Başka DHCP sunucusu yok');
   });
+  const saveClientTest = (kind: 'ok' | 'skip') => act(`test-${kind}`, async () => {
+    await putApi('/settings', { settings: { dhcp_client_test: `${kind}|${clientCidr}|${Math.floor(Date.now() / 1000)}` } });
+    await refetchSettings();
+    toast.success(kind === 'ok' ? 'İstemci testi doğrulandı — 3. adıma geçin' : 'İstemci testi atlandı — 3. adıma geçin');
+  });
+  const skipClientTest = () => {
+    if (!window.confirm(
+      'İstemci testi atlanacak.\n\n' +
+      'Test, cihazların Pi üzerinden internete çıkabildiğini tüm cihazlar Pi\'ye geçmeden önce gösterir. Atlanırsa bir sorun ancak ' +
+      '5. adımda ortaya çıkar — o zaman "Geri al" ile modeme dönersiniz.\n\n' +
+      'Atlansın mı?',
+    )) return;
+    void saveClientTest('skip');
+  };
   const enablePi = () => {
     if (!window.confirm(
       'Pi DHCP sunucusu 5 dakikalık deneme olarak açılacak:\n\n' +
@@ -383,10 +409,25 @@ export function DhcpWizard({ dhcp, net, netErr, reload }: Props) {
   // İnternet kartı açıkken Pi evin router'ıdır: ev ağında başka DHCP sunucusu yok, eth0'da modem tarafı adres yok.
   const wanOn = !!net.wan_stage && net.wan_stage !== 'none';
   const wanLock = "İnternet kartı (WAN router) açık — önce Cihaz Rolleri → İnternet bağlantısı'ndan kapatın";
-  const step1: StepState = isStatic ? 'done' : 'active';
-  const step3: StepState = wifiReady ? 'done' : isStatic || apTrial ? 'active' : 'todo';
-  const step4: StepState = piOn || (probe && !probe.servers.length) ? 'done' : isStatic && wifiReady ? 'active' : 'todo';
-  const step5: StepState = piStage === 'on' ? 'done' : isStatic && wifiReady ? 'active' : 'todo';
+
+  // Adımlar sırayla ve doğrulanarak ilerler: tamamlanma Pi'deki gerçek duruma bakar, parlak kart yalnız sıradaki (ilk
+  // tamamlanmamış) adımdır, sonrakiler kilitli. Deneme süren adım kilitlenmez; geri alma düğmeleri adım durumundan bağımsızdır.
+  // Pi DHCP'si deneme ya da açık: cihaz yolu fiilen kullanılıyor, başka DHCP sunucusu olmadığı açılışta doğrulandı.
+  const piActive = piStage !== 'off' || !!dhcp.pi_dhcp_active;
+  const probeOk = !!probe && !probe.servers.length;
+  // 2. adım kaydı yalnız bugünkü cihaz tarafı adresi için geçerli (adres değiştiyse test yinelenir)
+  const [testKind, testCidr, testAt] = (settingsData.settings?.dhcp_client_test || '').split('|');
+  const clientTest = isStatic && (testKind === 'ok' || testKind === 'skip') && testCidr === net.client
+    ? { kind: testKind, at: Number(testAt) || 0 } : null;
+  const done = [isStatic, isStatic && (!!clientTest || piActive), wifiReady, piActive || probeOk, piStage === 'on'];
+  const current = done.indexOf(false); // -1: kurulum tamam
+  const trialAt = [stage === 'trial', false, apTrial, false, piStage === 'trial'];
+  const [step1, step2, step3, step4, step5] = done.map((d, i): StepState => (d ? 'done' : i === current || trialAt[i] ? 'active' : 'todo'));
+  const lockText = current >= 0 ? `Önce ${current + 1}. adım: ${STEP_TITLES[current]}` : '';
+  // Test cihazı panele Pi'nin cihaz tarafı adresinden bağlandı: elle ayarlı ağ Pi üzerinden çalışıyor
+  const viaClient = !!clientIp && window.location.hostname === clientIp;
+  const testAtText = clientTest?.at
+    ? ` (${new Date(clientTest.at * 1000).toLocaleString('tr-TR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })})` : '';
 
   return (
     <div className="dhcp-wizard">
@@ -435,7 +476,7 @@ export function DhcpWizard({ dhcp, net, netErr, reload }: Props) {
         </Alert>
       )}
 
-      <Step n={1} title="Pi'ye sabit adres ver" state={step1}>
+      <Step n={1} title={STEP_TITLES[0]} state={step1}>
         {guardEmergency && (
           <Alert kind="err">
             Sabit IP profili yüklenemedi — Pi adresini acil modda (yalnız bu açılış için) tutuyor
@@ -465,7 +506,7 @@ export function DhcpWizard({ dhcp, net, netErr, reload }: Props) {
             {wired && net.carrier === false && <Alert kind="err">Kablo bağlantısı yok (carrier yok).</Alert>}
             {wired && reserveHint && <span className="dhcp-muted">Önce: {reserveHint}</span>}
             <div className="panel-auth-actions">
-              <button className="btn-primary btn-sm" onClick={giveStatic} disabled={!!busy || !wired || !net.planned_transit || net.carrier === false}>
+              <button className="btn-primary btn-sm btn-on" onClick={giveStatic} disabled={!!busy || !wired || !net.planned_transit || net.carrier === false}>
                 {busy === 'static' ? 'Uygulanıyor…' : 'Pi\'ye sabit adres ver (3 dk deneme)'}
               </button>
             </div>
@@ -478,8 +519,8 @@ export function DhcpWizard({ dhcp, net, netErr, reload }: Props) {
               Panel açılıyor ve internet çalışıyorsa kalıcı yapın; yapmazsanız süre dolunca Pi otomatik adrese döner.
             </span>
             <div className="panel-auth-actions">
-              <button className="btn-primary btn-sm" onClick={confirmStatic} disabled={!!busy}>Çalışıyor, kalıcı yap</button>
-              <button className="btn-outline btn-sm" onClick={rollbackStatic} disabled={!!busy}>Geri al</button>
+              <button className="btn-primary btn-sm btn-on" onClick={confirmStatic} disabled={!!busy}>Çalışıyor, kalıcı yap</button>
+              <button className="btn-outline btn-sm btn-off" onClick={rollbackStatic} disabled={!!busy}>Geri al</button>
             </div>
           </>
         )}
@@ -501,7 +542,7 @@ export function DhcpWizard({ dhcp, net, netErr, reload }: Props) {
               </span>
             )}
             <div className="panel-auth-actions">
-              <button className="btn-outline btn-sm" onClick={backToAuto} disabled={!!busy || piOn || leaseUntil > 0 || wanOn}
+              <button className="btn-outline btn-sm btn-off" onClick={backToAuto} disabled={!!busy || piOn || leaseUntil > 0 || wanOn}
                 title={wanOn ? wanLock : piOn ? 'Pi DHCP sunucusu açıkken otomatik adrese dönülemez — önce modeme geri dönün'
                   : leaseUntil > 0 ? `Pi'nin dağıttığı kiralar ${leaseUntilText} saatine kadar sürüyor` : undefined}>
                 {busy === 'static-dhcp' ? 'Uygulanıyor…' : 'Otomatik adrese dön'}
@@ -511,21 +552,52 @@ export function DhcpWizard({ dhcp, net, netErr, reload }: Props) {
         )}
       </Step>
 
-      <Step n={2} title="İstemci testi (önerilen)" state={stage === 'none' ? 'todo' : 'active'}>
-        <span>
-          Bir bilgisayar ya da telefonda ağ ayarını elle yapın: IP <code>{hostOf(clientCidr, 50)}</code>, maske{' '}
-          <code>{maskOf(clientCidr)}</code>, ağ geçidi ve DNS <code>{clientIp}</code>. Sonra kontrol edin:
-        </span>
-        <ul>
-          <li>internet açılıyor mu,</li>
-          <li>engelli bir reklam alan adı (ör. <code>doubleclick.net</code>) açılmıyor mu,</li>
-          <li>modemin arayüzü <code>http://{gw || '192.168.1.1'}</code> açılıyor mu,</li>
-          <li>panel <code>http://{clientIp}</code> adresinden açılıyor mu.</li>
-        </ul>
-        <span>Bitince cihazı yeniden otomatik (DHCP) ayara alın.</span>
+      <Step n={2} title={STEP_TITLES[1]} state={step2}>
+        {step2 === 'todo' && <Locked text={lockText} />}
+        {step2 === 'active' && (
+          <>
+            <span>
+              Bir bilgisayar ya da telefonda ağ ayarını elle yapın: IP <code>{hostOf(clientCidr, 50)}</code>, maske{' '}
+              <code>{maskOf(clientCidr)}</code>, ağ geçidi ve DNS <code>{clientIp}</code>. Sonra kontrol edin:
+            </span>
+            <ul>
+              <li>internet açılıyor mu,</li>
+              <li>engelli bir reklam alan adı (ör. <code>doubleclick.net</code>) açılmıyor mu,</li>
+              <li>modemin arayüzü <code>http://{gw || '192.168.1.1'}</code> açılıyor mu,</li>
+              <li>panel <code>http://{clientIp}</code> adresinden açılıyor mu.</li>
+            </ul>
+            {viaClient ? (
+              <Alert kind="ok">
+                Bu cihaz panele Pi'nin cihaz tarafı adresinden (<code>{clientIp}</code>) bağlandı — elle ayarlı ağ Pi üzerinden çalışıyor.
+                Diğer denetimler de geçtiyse onaylayın; sonra cihazı yeniden otomatik (DHCP) ayara alın.
+              </Alert>
+            ) : (
+              <span className="dhcp-muted">
+                Doğrulamak için paneli test cihazında <code>http://{clientIp}</code> adresiyle açın — "Test başarılı" orada açılır.
+                Bitince cihazı yeniden otomatik (DHCP) ayara alın.
+              </span>
+            )}
+            <div className="panel-auth-actions">
+              <button className="btn-primary btn-sm btn-on" onClick={() => { void saveClientTest('ok'); }} disabled={!!busy || !viaClient}
+                title={viaClient ? undefined : `Paneli test cihazında http://${clientIp} adresiyle açın`}>
+                {busy === 'test-ok' ? 'Kaydediliyor…' : 'Test başarılı'}
+              </button>
+              <button className="btn-outline btn-sm" onClick={skipClientTest} disabled={!!busy}>
+                {busy === 'test-skip' ? 'Kaydediliyor…' : 'Bu testi atla'}
+              </button>
+            </div>
+          </>
+        )}
+        {step2 === 'done' && (
+          <span>
+            {clientTest?.kind === 'ok' ? <><Badge variant="success">Doğrulandı</Badge>{` Test cihazı Pi üzerinden çalıştı${testAtText}.`}</>
+              : clientTest?.kind === 'skip' ? <><Badge variant="neutral">Atlandı</Badge>{` Test yapılmadı${testAtText}.`}</>
+                : <><Badge variant="success">Çalışıyor</Badge>{' Pi DHCP\'si açık — cihazlar Pi üzerinden geçiyor.'}</>}
+          </span>
+        )}
       </Step>
 
-      <Step n={3} title="Pi'nin Wi-Fi'si" state={step3}>
+      <Step n={3} title={STEP_TITLES[2]} state={step3}>
         {homeStage !== 'none' && (
           <span>
             {/* Rozet büyük harfle yazılır: lang="tr"de "Wi-Fi" → "Wİ-Fİ" olmasın. Tek span: rozet inline-flex, parçalar
@@ -539,7 +611,7 @@ export function DhcpWizard({ dhcp, net, netErr, reload }: Props) {
         {noWifi && apStage === 'none' && homeStage === 'none' && (
           <span>Bu cihazda Wi-Fi kartı yok — Pi yalnız kabloyla bağlı, ayrılacak Wi-Fi bağlantısı yok.</span>
         )}
-        {!noWifi && apStage === 'none' && homeStage === 'none' && (
+        {!noWifi && apStage === 'none' && homeStage === 'none' && (step3 === 'todo' ? <Locked text={lockText} /> : (
           <>
             <span>
               {wifiOff
@@ -583,7 +655,7 @@ export function DhcpWizard({ dhcp, net, netErr, reload }: Props) {
                 başta/sonda boşluk olmaz. Telefona da aynı şifreyi yazacaksınız. Ağ adı en çok 32 karakter: harf, rakam, boşluk, _ . -
               </span>
               <div className="panel-auth-actions">
-                <button className="btn-primary btn-sm" onClick={startAp}
+                <button className="btn-primary btn-sm btn-on" onClick={startAp}
                   disabled={!!busy || !isStatic || viaWifi || net.ap_capable === false || !apPw || !apPw2}
                   title={!isStatic ? 'Önce 1. adımı tamamlayın' : undefined}>
                   {busy === 'ap' ? 'Açılıyor…' : 'Kurulum Wi-Fi\'ını aç (5 dk deneme)'}
@@ -599,7 +671,7 @@ export function DhcpWizard({ dhcp, net, netErr, reload }: Props) {
                     cihazdan ulaşılır.
                   </span>
                   <div className="panel-auth-actions">
-                    <button className="btn-outline btn-sm" onClick={() => setWifi(true)} disabled={!!busy || piOn}
+                    <button className="btn-outline btn-sm btn-on" onClick={() => setWifi(true)} disabled={!!busy || piOn}
                       title={piOn ? 'Pi DHCP sunucusu açıkken Pi\'nin Wi-Fi\'si modeme bağlanamaz' : undefined}>
                       {busy === 'wifi' ? 'Uygulanıyor…' : 'Wi-Fi\'yi geri bağla'}
                     </button>
@@ -612,7 +684,7 @@ export function DhcpWizard({ dhcp, net, netErr, reload }: Props) {
                     verilmiş bir cihazdan ulaşılır.
                   </span>
                   <div className="panel-auth-actions">
-                    <button className="btn-outline btn-sm" onClick={() => setWifi(false)} disabled={!!busy || !isStatic || viaWifi}
+                    <button className="btn-outline btn-sm btn-off" onClick={() => setWifi(false)} disabled={!!busy || !isStatic || viaWifi}
                       title={!isStatic ? 'Önce 1. adımı tamamlayın' : undefined}>
                       {busy === 'wifi' ? 'Uygulanıyor…' : 'Wi-Fi bağlantısını ayır'}
                     </button>
@@ -621,7 +693,7 @@ export function DhcpWizard({ dhcp, net, netErr, reload }: Props) {
               )}
             </div>
           </>
-        )}
+        ))}
         {apTrial && (
           <>
             <span>
@@ -641,8 +713,8 @@ export function DhcpWizard({ dhcp, net, netErr, reload }: Props) {
               ayarına döner.
             </span>
             <div className="panel-auth-actions">
-              <button className="btn-primary btn-sm" onClick={confirmAp} disabled={!!busy}>Kalıcı yap</button>
-              <button className="btn-outline btn-sm" onClick={rollbackAp} disabled={!!busy}>Geri al</button>
+              <button className="btn-primary btn-sm btn-on" onClick={confirmAp} disabled={!!busy}>Kalıcı yap</button>
+              <button className="btn-outline btn-sm btn-off" onClick={rollbackAp} disabled={!!busy}>Geri al</button>
             </div>
           </>
         )}
@@ -668,7 +740,7 @@ export function DhcpWizard({ dhcp, net, netErr, reload }: Props) {
               buradan ulaşın.
             </span>
             <div className="panel-auth-actions">
-              <button className="btn-outline btn-sm" onClick={turnOffAp} disabled={!!busy}>
+              <button className="btn-outline btn-sm btn-off" onClick={turnOffAp} disabled={!!busy}>
                 {busy === 'ap-off' ? 'Kapatılıyor…' : 'Kurulum Wi-Fi\'ını kapat'}
               </button>
             </div>
@@ -676,29 +748,42 @@ export function DhcpWizard({ dhcp, net, netErr, reload }: Props) {
         )}
       </Step>
 
-      <Step n={4} title="Modemin DHCP'sini kapat" state={step4}>
-        <span>
-          Modemin arayüzünde (<code>http://{gw || '192.168.1.1'}</code>) LAN / DHCP ayarından <strong>DHCP sunucusunu kapatın</strong>;
-          modemin Wi-Fi yayını açık kalsın. Sonra "Kontrol et"e basın ve hemen 5. adıma geçin — arada yeni bağlanan cihazlar adres
-          alamaz (bağlı olanlar kira süresince çalışır). Modemin misafir Wi-Fi'si açıksa, modemin DHCP'si kapanınca adres veremeyebilir.
-        </span>
-        {probe && !probe.servers.length && (
-          <Alert kind="ok">
-            Başka DHCP sunucusu yok{probe.own.length ? ` (yanıt veren yalnız Pi: ${probe.own.join(', ')})` : ''}.
-          </Alert>
+      <Step n={4} title={STEP_TITLES[3]} state={step4}>
+        {step4 === 'todo' ? <Locked text={lockText} /> : (
+          <>
+            {step4 === 'active' && (
+              <span>
+                Modemin arayüzünde (<code>http://{gw || '192.168.1.1'}</code>) LAN / DHCP ayarından <strong>DHCP sunucusunu kapatın</strong>;
+                modemin Wi-Fi yayını açık kalsın. Sonra "Kontrol et"e basın: başka DHCP sunucusu yoksa 5. adım açılır, hemen geçin —
+                arada yeni bağlanan cihazlar adres alamaz (bağlı olanlar kira süresince çalışır). Modemin misafir Wi-Fi'si açıksa,
+                modemin DHCP'si kapanınca adres veremeyebilir.
+              </span>
+            )}
+            {step4 === 'done' && (
+              <span>
+                {piActive ? 'Adresleri Pi dağıtıyor — modemin DHCP\'si kapalı kalmalı.'
+                  : 'Doğrulandı: modemin DHCP\'si kapalı. Hemen 5. adıma geçin — arada yeni bağlanan cihazlar adres alamaz.'}
+              </span>
+            )}
+            {probe && !probe.servers.length && (
+              <Alert kind="ok">
+                Başka DHCP sunucusu yok{probe.own.length ? ` (yanıt veren yalnız Pi: ${probe.own.join(', ')})` : ''}.
+              </Alert>
+            )}
+            {probe && probe.servers.length > 0 && (
+              <Alert kind="err">Yanıt veren DHCP sunucusu: {probe.servers.join(', ')} — modemin DHCP'si hâlâ açık.</Alert>
+            )}
+            {probeErr && <Alert kind="err">Tarama yapılamadı: {probeErr}</Alert>}
+            <div className="panel-auth-actions">
+              <button className="btn-outline btn-sm" onClick={check} disabled={!!busy || !dhcp.pi}>
+                {busy === 'probe' ? 'Taranıyor…' : 'Kontrol et'}
+              </button>
+            </div>
+          </>
         )}
-        {probe && probe.servers.length > 0 && (
-          <Alert kind="err">Yanıt veren DHCP sunucusu: {probe.servers.join(', ')} — modemin DHCP'si hâlâ açık.</Alert>
-        )}
-        {probeErr && <Alert kind="err">Tarama yapılamadı: {probeErr}</Alert>}
-        <div className="panel-auth-actions">
-          <button className="btn-outline btn-sm" onClick={check} disabled={!!busy || !dhcp.pi}>
-            {busy === 'probe' ? 'Taranıyor…' : 'Kontrol et'}
-          </button>
-        </div>
       </Step>
 
-      <Step n={5} title="Pi DHCP'sini aç" state={step5}>
+      <Step n={5} title={STEP_TITLES[4]} state={step5}>
         {!dhcp.pi && <span>Pi DHCP betiği (pi-dhcp.sh) bulunamadı — paneli güncelleyin.</span>}
         {dhcp.pi?.error && <Alert kind="err">Pi DHCP durumu okunamadı: {dhcp.pi.error}</Alert>}
         {pi && piMismatch && (
@@ -708,30 +793,26 @@ export function DhcpWizard({ dhcp, net, netErr, reload }: Props) {
               kalmış olabilir). Modeme dönmek için önce modemin DHCP'sini açın, sonra "Modeme geri dön"e basın.
             </Alert>
             <div className="panel-auth-actions">
-              <button className="btn-outline btn-sm" onClick={disablePi} disabled={!!busy || wanOn} title={wanOn ? wanLock : undefined}>
+              <button className="btn-outline btn-sm btn-off" onClick={disablePi} disabled={!!busy || wanOn} title={wanOn ? wanLock : undefined}>
                 {busy === 'pi-disable' ? 'Kapatılıyor…' : 'Modeme geri dön'}
               </button>
             </div>
           </>
         )}
-        {pi && piStage === 'off' && !piMismatch && (
+        {pi && piStage === 'off' && !piMismatch && (step5 === 'todo' ? <Locked text={lockText} /> : (
           <>
             <span>
               Pi-hole cihazlara <code>{poolStart}–{poolEnd}</code> arası adres dağıtır; ağ geçidi ve DNS <code>{clientIp}</code>.
               İlk 5 dakika denemedir (kira 5 dk). Paneldeki statik IP rezervasyonları henüz Pi-hole'a aktarılmıyor (yalnız panel
               veritabanında duruyor).
             </span>
-            {!isStatic && <span className="dhcp-muted">Önce 1. adım (sabit adres, kalıcı) tamamlanmalı.</span>}
-            {isStatic && !wifiReady && (
-              <span className="dhcp-muted">Önce 3. adım: Pi'nin Wi-Fi'sini kurulum Wi-Fi'ına çevirip kalıcı yapın ya da yalnız ayırın.</span>
-            )}
             <div className="panel-auth-actions">
-              <button className="btn-primary btn-sm" onClick={enablePi} disabled={!!busy || !isStatic || !wifiReady}>
+              <button className="btn-primary btn-sm btn-on" onClick={enablePi} disabled={!!busy || !isStatic || !wifiReady || !probeOk}>
                 {busy === 'pi-enable' ? 'Açılıyor…' : 'Pi DHCP\'sini aç (5 dk deneme)'}
               </button>
             </div>
           </>
-        )}
+        ))}
         {pi && piStage === 'trial' && (
           <>
             <span>
@@ -747,8 +828,8 @@ export function DhcpWizard({ dhcp, net, netErr, reload }: Props) {
             )}
             {pi.port67 === false && <Alert kind="err">Pi-hole DHCP portunu (67) dinlemiyor.</Alert>}
             <div className="panel-auth-actions">
-              <button className="btn-primary btn-sm" onClick={confirmPi} disabled={!!busy}>Kalıcı yap</button>
-              <button className="btn-outline btn-sm" onClick={rollbackPi} disabled={!!busy}>Geri al</button>
+              <button className="btn-primary btn-sm btn-on" onClick={confirmPi} disabled={!!busy}>Kalıcı yap</button>
+              <button className="btn-outline btn-sm btn-off" onClick={rollbackPi} disabled={!!busy}>Geri al</button>
             </div>
           </>
         )}
@@ -763,7 +844,7 @@ export function DhcpWizard({ dhcp, net, netErr, reload }: Props) {
               Modeme geri dönmek için önce modemin DHCP'sini açın, sonra "Modeme geri dön"e basın.{reserveHint ? ` ${reserveHint}` : ''}
             </span>
             <div className="panel-auth-actions">
-              <button className="btn-outline btn-sm" onClick={disablePi} disabled={!!busy || wanOn} title={wanOn ? wanLock : undefined}>
+              <button className="btn-outline btn-sm btn-off" onClick={disablePi} disabled={!!busy || wanOn} title={wanOn ? wanLock : undefined}>
                 {busy === 'pi-disable' ? 'Kapatılıyor…' : 'Modeme geri dön'}
               </button>
             </div>
