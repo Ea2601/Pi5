@@ -2,7 +2,7 @@ import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
-import { initDb, dbAll, dbRun, dbGet, dbInsert, dbRunChanges } from './db';
+import { initDb, dbAll, dbRun, dbGet, dbInsert, dbRunChanges, dbTimeMs } from './db';
 import { loadOverrides, applyOverrides, overrideSig, noteScheduleApplied, startScheduleWatch, checkSchedule, scheduleActive, supported as scheduleSupported, type Schedule } from './trafficSchedule';
 import { setupWireGuardVPS, testSSHConnection, executeSetupStep, addWireGuardClient, connectPi5ToVps, disconnectPi5FromVps, removeWireGuardClient, removeWireGuardClients } from './ssh';
 import { readVpsTunnels, readTunnelTransfer, validVpsId, staleTunnels, setTunnelStale } from './vpsTunnel';
@@ -5448,7 +5448,30 @@ function publicDdns(row: any) {
   }
   return out;
 }
-const ddnsList = async () => (await dbAll('SELECT * FROM ddns_configs ORDER BY id')).map(publicDdns);
+// Son deneme mesajı ve yeniden deneme zamanı bellekte (sütun eklenmez: Bulut Yedeği'nin gizli anahtar paketi ddns_configs
+// sütunlarını izin listesiyle denetler — yeni sütun yeni yedeklerin geri yüklenmesini bozardı). "Durduruldu" (halted)
+// durumu status sütununda kalıcıdır: yeniden başlatmada da sağlayıcıya tekrar gidilmez.
+const ddnsNote = new Map<number, string>();
+const ddnsRetryAt = new Map<number, number>();
+const ddnsList = async () => (await dbAll('SELECT * FROM ddns_configs ORDER BY id'))
+  .map(r => ({ ...publicDdns(r), message: ddnsNote.get(Number(r.id)) || '' }));
+const DDNS_PROVIDER_IDS = ['duckdns', 'noip', 'no-ip', 'cloudflare', 'dynu', 'custom'];
+const DDNS_HOST_RE = /^(?=.{1,253}$)[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*$/;
+// Kimlik / ad / sağlayıcı değişince ya da kayıt açılınca: hemen (yeniden) gönderilsin, "durduruldu" kalksın
+const DDNS_IDENTITY_FIELDS = ['provider', 'hostname', 'username', 'password', 'token', 'domain'];
+function ddnsBodyError(body: any, partial: boolean): string | null {
+  if (!partial || body.provider !== undefined) {
+    if (typeof body.provider !== 'string' || !DDNS_PROVIDER_IDS.includes(body.provider.toLowerCase())) return 'Bilinmeyen DDNS sağlayıcısı';
+  }
+  if (!partial || body.hostname !== undefined) {
+    if (typeof body.hostname !== 'string' || !DDNS_HOST_RE.test(body.hostname.trim())) return 'Ad (hostname) geçersiz — ör. evim.duckdns.org ya da evim';
+  }
+  if (body.update_interval_min !== undefined && body.update_interval_min !== null && body.update_interval_min !== '') {
+    const n = Number(body.update_interval_min);
+    if (!Number.isInteger(n) || n < 1 || n > 10080) return 'Güncelleme aralığı 1-10080 dakika olmalı';
+  }
+  return null;
+}
 app.use('/api/ddns', (_req, res, next) => { res.set('Cache-Control', 'no-store'); next(); });
 
 app.get('/api/ddns/configs', async (_req, res) => {
@@ -5461,13 +5484,15 @@ app.get('/api/ddns/configs', async (_req, res) => {
 
 app.post('/api/ddns/configs', async (req, res) => {
   try {
-    const { provider, hostname, username, password, token, domain, update_interval_min } = req.body;
-    if (!provider || !hostname) return res.status(400).json({ error: 'provider ve hostname gerekli' });
+    const { provider, hostname, username, password, token, domain, update_interval_min } = req.body || {};
+    const bad = ddnsBodyError(req.body || {}, false);
+    if (bad) return res.status(400).json({ error: bad });
     const unmask = (v: unknown) => (v === DDNS_MASK ? '' : v || '');
     await dbRun(
       'INSERT INTO ddns_configs (provider, hostname, username, password, token, domain, update_interval_min) VALUES (?, ?, ?, ?, ?, ?, ?)',
-      [provider, hostname, username || '', unmask(password), unmask(token), unmask(domain), update_interval_min || 5]
+      [provider.toLowerCase(), hostname.trim(), username || '', unmask(password), unmask(token), unmask(domain), update_interval_min || 5]
     );
+    void ddnsAutoUpdate(); // ilk güncelleme beş dakikalık turu beklemesin
     res.json({ success: true, configs: await ddnsList() });
   } catch (e: any) {
     res.status(500).json({ error: e.message });
@@ -5479,17 +5504,32 @@ app.put('/api/ddns/configs/:id', async (req, res) => {
     // Partial-merge: yalnızca gönderilen alanları güncelle (toggle'ın kimlik bilgilerini silmesini önler).
     // Maskeli değer = "değişmedi" (saklı sır korunur); boş dize alanı siler.
     const body = req.body || {};
+    const bad = ddnsBodyError(body, true);
+    if (bad) return res.status(400).json({ error: bad });
+    const id = Number(req.params.id);
+    const old = await dbGet('SELECT * FROM ddns_configs WHERE id = ?', [id]);
+    if (!old) return res.status(404).json({ error: 'DDNS kaydı bulunamadı' });
     const updates: string[] = [];
     const params: any[] = [];
+    let identity = false;
     for (const field of ['provider', 'hostname', 'username', 'password', 'token', 'domain', 'update_interval_min']) {
       if (body[field] === undefined || body[field] === DDNS_MASK) continue;
-      updates.push(`${field} = ?`); params.push(body[field]);
+      const v = field === 'provider' ? String(body[field]).toLowerCase() : field === 'hostname' ? String(body[field]).trim() : body[field];
+      if (DDNS_IDENTITY_FIELDS.includes(field) && String(v ?? '') !== String(old[field] ?? '')) identity = true;
+      updates.push(`${field} = ?`); params.push(v);
     }
+    const enabling = body.enabled !== undefined && !!body.enabled && !old.enabled;
     if (body.enabled !== undefined) { updates.push('enabled = ?'); params.push(body.enabled ? 1 : 0); }
+    // Bilgi değişti ya da kayıt açıldı: "durduruldu" kalkar, bir sonraki turda (hemen) yeniden gönderilir
+    if (identity || enabling) {
+      updates.push("status = 'idle'", "last_ip = ''");
+      ddnsNote.delete(id); ddnsRetryAt.delete(id);
+    }
     if (updates.length > 0) {
-      params.push(req.params.id);
+      params.push(id);
       await dbRun(`UPDATE ddns_configs SET ${updates.join(', ')} WHERE id = ?`, params);
     }
+    if (identity || enabling) void ddnsAutoUpdate();
     res.json({ success: true, configs: await ddnsList() });
   } catch (e: any) {
     res.status(500).json({ error: e.message });
@@ -5499,6 +5539,7 @@ app.put('/api/ddns/configs/:id', async (req, res) => {
 app.delete('/api/ddns/configs/:id', async (req, res) => {
   try {
     await dbRun('DELETE FROM ddns_configs WHERE id = ?', [req.params.id]);
+    ddnsNote.delete(Number(req.params.id)); ddnsRetryAt.delete(Number(req.params.id));
     res.json({ success: true });
   } catch (e: any) {
     res.status(500).json({ error: e.message });
@@ -5510,10 +5551,21 @@ app.delete('/api/ddns/configs/:id', async (req, res) => {
 // kimlik /proc/<pid>/cmdline'da ve Node'un "Command failed: …" hata mesajında (→ journald, test yanıtı) görünmez.
 // Hata mesajı yalnız curl çıkış kodunu taşır. URL sorgu değerleri percent-encoded.
 interface CurlRequest { url: string; headers?: string[]; method?: string; data?: string }
+// No-IP ve Dynu (dyndns2) tanınabilir bir istemci adı ister; genel "curl/x" adı engellenebilir (badagent)
+let ddnsAgent = '';
+function ddnsUserAgent(): string {
+  if (!ddnsAgent) {
+    let v = '';
+    try { v = JSON.parse(require('fs').readFileSync(require('path').resolve(__dirname, '../../version.json'), 'utf8')).version || ''; } catch { /* sürüm yok */ }
+    ddnsAgent = `Klyrix-Gate/${v || '2'}`;
+  }
+  return ddnsAgent;
+}
 const curlQuote = (v: string) => `"${v.replace(/[\r\n]/g, '').replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
 function curlGet(req: CurlRequest): Promise<string> {
   const config = [
     `url = ${curlQuote(req.url)}`,
+    `user-agent = ${curlQuote(ddnsUserAgent())}`,
     ...(req.headers || []).map(h => `header = ${curlQuote(h)}`),
     ...(req.method ? [`request = ${curlQuote(req.method)}`] : []),
     ...(req.data !== undefined ? [`data = ${curlQuote(req.data)}`] : []),
@@ -5536,69 +5588,107 @@ function curlGet(req: CurlRequest): Promise<string> {
   });
 }
 
-async function updateDdnsProvider(config: any, ip: string): Promise<{ success: boolean; message: string }> {
+// Sağlayıcı sonucu: fatal = bilgiler yanlış / hesap engelli — kullanıcı düzeltene (kaydet ya da Test) kadar yeniden
+// denenmez (No-IP / Dynu tekrar eden hatalı isteği kötüye kullanım sayıp hesabı engeller); retryMin = bu kadar dakika bekle.
+interface DdnsResult { success: boolean; message: string; fatal?: boolean; retryMin?: number }
+
+// dyndns2 yanıtları (No-IP, Dynu): https://www.noip.com/integrate/response — birden çok ad varsa satır satır, ilki belirler
+const DYNDNS2_FATAL: Record<string, string> = {
+  nohost: 'bu ad hesabınızda yok', badauth: 'kullanıcı adı ya da şifre yanlış', badagent: 'istemci engellendi',
+  '!donator': 'bu özellik ücretli hesap ister', abuse: 'ad kötüye kullanım nedeniyle engellendi — sağlayıcının sitesinden açın',
+  notfqdn: 'ad tam alan adı değil (ör. evim.ddns.net)', numhost: 'çok fazla ad', '!yours': 'bu ad hesabınıza ait değil',
+};
+function dyndns2Result(label: string, body: string): DdnsResult {
+  const code = body.split(/\s+/)[0] || '';
+  if (code === 'good' || code === 'nochg') return { success: true, message: `${label}: ${body.slice(0, 80)}` };
+  if (DYNDNS2_FATAL[code]) return { success: false, fatal: true, message: `${label}: ${DYNDNS2_FATAL[code]} (${code})` };
+  if (code === '911' || code === 'dnserr') return { success: false, retryMin: 30, message: `${label}: sağlayıcıda geçici sorun (${code}) — 30 dakika sonra yeniden denenecek` };
+  return { success: false, message: `${label} yanıtı: ${body.slice(0, 120) || 'boş'}` };
+}
+
+// Cloudflare: kimlik / yetki hataları (yeniden denemek düzeltmez)
+const CF_FATAL_CODES = new Set([6003, 6111, 7003, 9103, 9106, 9109, 10000, 10001]);
+async function cloudflareApi(token: string, url: string, method?: string, body?: unknown): Promise<any> {
+  const out = await curlGet({
+    url: `https://api.cloudflare.com/client/v4${url}`, method,
+    headers: [`Authorization: Bearer ${token}`, 'Content-Type: application/json'],
+    ...(body !== undefined ? { data: JSON.stringify(body) } : {}),
+  });
+  let j: any;
+  try { j = JSON.parse(out); } catch { throw new Error('Cloudflare yanıtı okunamadı'); }
+  if (!j?.success) {
+    const errs: any[] = Array.isArray(j?.errors) ? j.errors : [];
+    const msg = errs.map(e => `${e.code}: ${e.message}`).join('; ') || 'bilinmeyen hata';
+    throw Object.assign(new Error(`Cloudflare: ${msg}`), { fatal: errs.some(e => CF_FATAL_CODES.has(Number(e.code))) });
+  }
+  return j;
+}
+// Bölge (zone): 32 haneli Zone ID ya da alan adı; boşsa adın üst alan adlarından (evim.ornek.com → ornek.com) bulunur
+async function cloudflareZone(token: string, zone: string, hostname: string): Promise<string> {
+  if (/^[a-f0-9]{32}$/i.test(zone)) return zone;
+  const labels = hostname.toLowerCase().split('.');
+  const names = zone ? [zone.toLowerCase().replace(/\.$/, '')] : labels.slice(0, -1).map((_, i) => labels.slice(i).join('.')).filter(n => n.includes('.'));
+  for (const n of names) {
+    const j = await cloudflareApi(token, `/zones?name=${encodeURIComponent(n)}`);
+    if (j.result?.[0]?.id) return String(j.result[0].id);
+  }
+  throw Object.assign(new Error(`Cloudflare: ${zone || hostname} için bölge (zone) bulunamadı — alan adı Cloudflare'da mı, token'ın bu bölgede DNS yetkisi var mı?`), { fatal: true });
+}
+
+async function updateDdnsProvider(config: any, ip: string): Promise<DdnsResult> {
   const provider = (config.provider || '').toLowerCase();
   const enc = encodeURIComponent;
+  const hostname = String(config.hostname || '').trim();
 
   try {
     if (provider === 'duckdns') {
-      // DuckDNS: https://www.duckdns.org/spec.jsp
-      const subdomain = String(config.hostname || '').replace('.duckdns.org', '');
+      // DuckDNS: https://www.duckdns.org/spec.jsp — OK / KO
+      const subdomain = hostname.replace(/\.duckdns\.org$/i, '');
       const url = `https://www.duckdns.org/update?domains=${enc(subdomain)}&token=${enc(config.token || '')}&ip=${enc(ip)}`;
       const result = await curlGet({ url });
       if (result === 'OK') return { success: true, message: 'DuckDNS güncellendi' };
-      return { success: false, message: `DuckDNS yanıtı: ${result}` };
+      if (result === 'KO') return { success: false, fatal: true, message: 'DuckDNS: token ya da alt alan adı yanlış (KO)' };
+      return { success: false, message: `DuckDNS yanıtı: ${result.slice(0, 120) || 'boş'}` };
 
-    } else if (provider === 'noip' || provider === 'no-ip') {
-      const url = `https://dynupdate.no-ip.com/nic/update?hostname=${enc(config.hostname || '')}&myip=${enc(ip)}`;
+    } else if (provider === 'noip' || provider === 'no-ip' || provider === 'dynu') {
+      const base = provider === 'dynu' ? 'https://api.dynu.com/nic/update' : 'https://dynupdate.no-ip.com/nic/update';
       const auth = Buffer.from(`${config.username}:${config.password}`).toString('base64');
-      const result = await curlGet({ url, headers: [`Authorization: Basic ${auth}`] });
-      if (result.startsWith('good') || result.startsWith('nochg')) return { success: true, message: `No-IP: ${result}` };
-      return { success: false, message: `No-IP yanıtı: ${result}` };
+      const result = await curlGet({ url: `${base}?hostname=${enc(hostname)}&myip=${enc(ip)}`, headers: [`Authorization: Basic ${auth}`] });
+      return dyndns2Result(provider === 'dynu' ? 'Dynu' : 'No-IP', result);
 
     } else if (provider === 'cloudflare') {
-      const zoneId = enc(config.domain || ''); // Zone ID stored in domain field
-      const listOut = await curlGet({
-        url: `https://api.cloudflare.com/client/v4/zones/${zoneId}/dns_records?type=A&name=${enc(config.hostname || '')}`,
-        headers: [`Authorization: Bearer ${config.token}`, 'Content-Type: application/json'],
-      });
-      const listData = JSON.parse(listOut);
-      if (!listData.success || !listData.result?.[0]) return { success: false, message: 'Cloudflare DNS kaydı bulunamadı' };
-      const recordId = enc(listData.result[0].id);
-      const body = JSON.stringify({ type: 'A', name: config.hostname, content: ip, ttl: 300 });
-      const updateOut = await curlGet({
-        url: `https://api.cloudflare.com/client/v4/zones/${zoneId}/dns_records/${recordId}`,
-        method: 'PUT', headers: [`Authorization: Bearer ${config.token}`, 'Content-Type: application/json'], data: body,
-      });
-      const updateData = JSON.parse(updateOut);
-      if (updateData.success) return { success: true, message: 'Cloudflare güncellendi' };
-      return { success: false, message: `Cloudflare hatası: ${JSON.stringify(updateData.errors)}` };
-
-    } else if (provider === 'dynu') {
-      const url = `https://api.dynu.com/nic/update?hostname=${enc(config.hostname || '')}&myip=${enc(ip)}`;
-      const auth = Buffer.from(`${config.username}:${config.password}`).toString('base64');
-      const result = await curlGet({ url, headers: [`Authorization: Basic ${auth}`] });
-      if (result.startsWith('good') || result.startsWith('nochg')) return { success: true, message: `Dynu: ${result}` };
-      return { success: false, message: `Dynu yanıtı: ${result}` };
+      // Kayıt yalnız adres değiştiyse ve yalnız adres alanı değişir (PATCH): proxy, TTL, yorum ve etiketler korunur.
+      // Kayıt yoksa oluşturulur (proxy kapalı: Ev VPN'i UDP'dir, Cloudflare proxy'si yalnız web trafiğini taşır).
+      const token = String(config.token || '');
+      const zoneId = enc(await cloudflareZone(token, String(config.domain || '').trim(), hostname));
+      const list = await cloudflareApi(token, `/zones/${zoneId}/dns_records?type=A&name=${enc(hostname)}`);
+      const recs: any[] = Array.isArray(list.result) ? list.result : [];
+      if (!recs.length) {
+        await cloudflareApi(token, `/zones/${zoneId}/dns_records`, 'POST', { type: 'A', name: hostname, content: ip, ttl: 1, proxied: false, comment: 'Klyrix Gate DDNS' });
+        return { success: true, message: 'Cloudflare: A kaydı oluşturuldu' };
+      }
+      const stale = recs.filter(r => r.content !== ip);
+      for (const r of stale) await cloudflareApi(token, `/zones/${zoneId}/dns_records/${enc(r.id)}`, 'PATCH', { content: ip });
+      return { success: true, message: stale.length ? 'Cloudflare güncellendi' : 'Cloudflare: kayıt zaten güncel' };
 
     } else if (provider === 'custom') {
       // Custom URL with placeholders
       let url = String(config.domain || '');
-      url = url.replace('{ip}', ip).replace('{hostname}', String(config.hostname || ''));
-      if (!/^https?:\/\//i.test(url)) return { success: false, message: 'Custom URL http(s):// ile başlamalı' };
+      url = url.replace('{ip}', ip).replace('{hostname}', hostname);
+      if (!/^https?:\/\//i.test(url)) return { success: false, fatal: true, message: 'Özel adres http(s):// ile başlamalı' };
       const headers = (config.username && config.password)
         ? [`Authorization: Basic ${Buffer.from(`${config.username}:${config.password}`).toString('base64')}`]
         : [];
       // URL config'te tırnaklı `url =` satırı: "-" ile başlasa da seçenek sayılmaz
       const out = await curlGet({ url, headers });
-      return { success: true, message: `Custom: ${out.slice(0, 100)}` };
+      return { success: true, message: `Özel: ${redactSecrets(out.slice(0, 100))}` };
 
     } else {
-      return { success: false, message: `Bilinmeyen provider: ${provider}` };
+      return { success: false, fatal: true, message: `Bilinmeyen sağlayıcı: ${provider}` };
     }
   } catch (e: any) {
     // curlGet hataları sır taşımaz; JSON.parse gibi diğerleri sağlayıcı cevabından gelir. Yine de ek güvence olarak maskelenir.
-    return { success: false, message: redactSecrets(e.message || 'Bağlantı hatası') };
+    return { success: false, fatal: !!e?.fatal, message: redactSecrets(e.message || 'Bağlantı hatası') };
   }
 }
 
@@ -5610,8 +5700,28 @@ function redactSecrets(s: string): string {
     .replace(/(\/\/[^/\s:@]+:)[^@\s/]+@/g, '$1***@');
 }
 
-// DDNS auto-update: check IP and update all enabled configs
-async function ddnsAutoUpdate(): Promise<void> {
+// Sonucu kaydet: last_ip / last_update yalnız başarıda (başarısız deneme "Son IP"yi değiştirmez ve bir sonraki turda
+// yeniden denenir); bilgiler yanlışsa "durduruldu" + bildirim.
+async function saveDdnsResult(config: any, ip: string, result: DdnsResult, now: Date): Promise<void> {
+  const id = Number(config.id);
+  ddnsNote.set(id, result.message);
+  if (result.success) {
+    ddnsRetryAt.delete(id);
+    await dbRun("UPDATE ddns_configs SET status = 'active', last_ip = ?, last_update = datetime(?) WHERE id = ?", [ip, now.toISOString(), id]);
+  } else if (result.fatal) {
+    ddnsRetryAt.delete(id);
+    await dbRun("UPDATE ddns_configs SET status = 'halted' WHERE id = ?", [id]);
+    await recordEventOnce('ddns', `DDNS güncellemesi durduruldu (${config.provider} / ${config.hostname}): ${result.message} — DDNS sayfasında bilgileri düzeltip kaydedin ya da Test edin`, 'warning', 1440);
+  } else {
+    ddnsRetryAt.set(id, now.getTime() + (result.retryMin || 0) * 60000);
+    await dbRun("UPDATE ddns_configs SET status = 'error' WHERE id = ?", [id]);
+  }
+}
+
+// IP aynıyken yeniden gönderme aralığı: en az bir gün (dyndns2 sağlayıcıları değişmeyen adresin sık gönderilmesini kötüye
+// kullanım sayar). Eskiden 5 dakikada bir gönderiliyordu: varsayılan aralık 5 dk + last_update UTC'yi yerel saat sanma.
+const DDNS_REFRESH_MIN = 1440;
+async function ddnsUpdateOnce(): Promise<void> {
   try {
     const configs: any[] = await dbAll('SELECT * FROM ddns_configs WHERE enabled = 1');
     if (configs.length === 0) return;
@@ -5627,22 +5737,31 @@ async function ddnsAutoUpdate(): Promise<void> {
 
     const now = new Date();
     for (const config of configs) {
-      // Check if update interval has elapsed
-      const lastUpdate = config.last_update ? new Date(config.last_update) : new Date(0);
-      const intervalMs = (config.update_interval_min || 5) * 60 * 1000;
-      if (now.getTime() - lastUpdate.getTime() < intervalMs && config.last_ip === currentIp) continue;
+      if (config.status === 'halted') continue;                                   // bilgiler düzeltilene kadar
+      if ((ddnsRetryAt.get(Number(config.id)) || 0) > now.getTime()) continue;    // geçici sorun: bekle
+      const last = dbTimeMs(config.last_update);
+      const refreshMs = Math.max(DDNS_REFRESH_MIN, Number(config.update_interval_min) || 0) * 60000;
+      const due = config.status !== 'active' || config.last_ip !== currentIp || !Number.isFinite(last) || now.getTime() - last >= refreshMs;
+      if (!due) continue;
 
-      // IP changed or interval elapsed — update provider
       const result = await updateDdnsProvider(config, currentIp);
-      await dbRun(
-        'UPDATE ddns_configs SET status = ?, last_ip = ?, last_update = datetime(?) WHERE id = ?',
-        [result.success ? 'active' : 'error', currentIp, now.toISOString(), config.id]
-      );
+      await saveDdnsResult(config, currentIp, result, now);
       console.log(`[DDNS] ${config.provider}/${config.hostname}: ${result.message}`);
     }
   } catch (e: any) {
     console.error('[DDNS] Auto-update hatası:', e.message);
   }
+}
+// Aynı anda tek tur (5 dk zamanlayıcısı, internet kartı olayı, kaydet / IP kontrol aynı anda gelebilir): çalışırken gelen
+// istek turun sonunda bir kez daha çalıştırılır — sağlayıcıya aynı güncelleme iki kez gitmez.
+let ddnsRun: Promise<void> | null = null;
+let ddnsAgain = false;
+function ddnsAutoUpdate(): Promise<void> {
+  if (ddnsRun) { ddnsAgain = true; return ddnsRun; }
+  ddnsRun = (async () => {
+    do { ddnsAgain = false; await ddnsUpdateOnce(); } while (ddnsAgain);
+  })().finally(() => { ddnsRun = null; });
+  return ddnsRun;
 }
 
 // Start DDNS cron: every 5 minutes. Uyduda (R2) çalışmaz: evin genel adresi ana cihazda güncellenir.
@@ -5652,18 +5771,18 @@ if (!isSatellite()) {
   setTimeout(ddnsAutoUpdate, 30000);
 }
 
+// Elle test: sağlayıcıya hemen gönderir ("durduruldu" da olsa — bilgiler düzeltildiyse buradan da açılır)
 app.post('/api/ddns/configs/:id/test', async (req, res) => {
   try {
-    const { ip: currentIp } = await getCurrentExternalIp();
     const config = await dbGet('SELECT * FROM ddns_configs WHERE id = ?', [req.params.id]);
-    if (!config) return res.status(404).json({ error: 'Config bulunamadı' });
+    if (!config) return res.status(404).json({ error: 'DDNS kaydı bulunamadı' });
+    const { ip: currentIp } = await getCurrentExternalIp();
+    if (!currentIp) return res.status(503).json({ error: 'Genel IP adresi bulunamadı — internet bağlantısını kontrol edin' });
 
-    // Actually call the provider
     const result = await updateDdnsProvider(config, currentIp);
-    await dbRun('UPDATE ddns_configs SET status = ?, last_ip = ?, last_update = datetime(?) WHERE id = ?',
-      [result.success ? 'active' : 'error', currentIp, new Date().toISOString(), req.params.id]);
+    await saveDdnsResult(config, currentIp, result, new Date());
     const updated = await dbGet('SELECT * FROM ddns_configs WHERE id = ?', [req.params.id]);
-    res.json({ success: result.success, message: result.message, config: publicDdns(updated), detected_ip: currentIp });
+    res.json({ success: result.success, message: result.message, config: { ...publicDdns(updated), message: result.message }, detected_ip: currentIp });
   } catch (e: any) {
     res.status(500).json({ error: e.message });
   }

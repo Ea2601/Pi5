@@ -3,6 +3,7 @@ import { Globe, RefreshCw, Shield, Clock, Plus, Trash2, Check, Edit3, X } from '
 import { useApi, postApi, putApi, deleteApi } from '../hooks/useApi';
 import { Panel, Badge, StatCard, Select } from './ui';
 import { toast } from '../toast';
+import { fmtDbTime } from '../time';
 
 interface DdnsConfig {
   id: number;
@@ -14,9 +15,10 @@ interface DdnsConfig {
   domain: string;
   update_interval_min: number;
   enabled: number;
-  last_update: string;
-  last_ip: string;
-  status: string;
+  last_update: string;   // son BAŞARILI güncelleme (UTC)
+  last_ip: string;       // son başarıyla gönderilen adres
+  status: string;        // active | error (yeniden denenir) | halted (bilgiler düzeltilene kadar durdu) | idle
+  message?: string;      // son denemenin sağlayıcı yanıtı (panel yeniden başlayınca boş)
   // Sunucu sırları maskeli döner: password/token '••••••••'; özel sağlayıcıda URL maskeli, domain_display = ana makine adı
   has_password?: boolean;
   has_token?: boolean;
@@ -24,6 +26,15 @@ interface DdnsConfig {
 }
 
 const DDNS_MASK = '••••••••';
+const STATUS_META: Record<string, { variant: 'success' | 'error' | 'warning' | 'neutral'; label: string }> = {
+  active: { variant: 'success', label: 'Aktif' },
+  error: { variant: 'error', label: 'Hata' },
+  halted: { variant: 'warning', label: 'Durduruldu' },
+};
+const statusMeta = (s: string) => STATUS_META[s] || { variant: 'neutral' as const, label: 'Beklemede' };
+// Durdurulmuş kaydın nedeni (panel yeniden başladıysa mesaj bellekte yoktur)
+const statusNote = (c: DdnsConfig) => c.message || (c.status === 'halted'
+  ? 'Sağlayıcı bilgileri reddetti — bilgileri düzeltip kaydedin ya da Test edin' : '');
 const displayDomain = (c: DdnsConfig) => (c.provider === 'custom' ? c.domain_display || '' : c.domain);
 
 interface IpHistoryEntry {
@@ -69,7 +80,7 @@ export function DdnsPanel() {
     try {
       const result = await postApi('/ddns/check-ip', {});
       if (result.changed) toast.info(`IP degisti: ${result.old_ip} → ${result.new_ip}`);
-      else toast.success(`IP degismedi: ${result.ip}`);
+      else toast.success(`IP degismedi: ${result.new_ip || '—'}`);
       refetchIp(); refetchHistory(); refetchConfigs();
     } catch { toast.error('IP kontrolu basarisiz.'); }
     setChecking(false);
@@ -77,7 +88,14 @@ export function DdnsPanel() {
 
   const handleTest = async (id: number) => {
     setTesting(id);
-    try { await postApi(`/ddns/configs/${id}/test`, {}); refetchConfigs(); } catch { /* */ }
+    try {
+      const r = await postApi(`/ddns/configs/${id}/test`, {}) as { success?: boolean; message?: string };
+      if (r.success) toast.success(r.message || 'DDNS güncellendi');
+      else toast.error(r.message || 'DDNS güncellenemedi');
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Test edilemedi');
+    }
+    refetchConfigs();
     setTesting(null);
   };
 
@@ -112,8 +130,14 @@ export function DdnsPanel() {
   };
   const keptHint = (has: boolean | undefined) => (editingId && has ? 'Kayıtlı — değiştirmek için yazın' : undefined);
 
-  const handleDelete = async (id: number) => {
-    await deleteApi(`/ddns/configs/${id}`); refetchConfigs();
+  const handleDelete = async (c: DdnsConfig) => {
+    if (!window.confirm(`${PROVIDER_LABELS[c.provider] || c.provider} — ${c.hostname} DDNS kaydı silinsin mi?`)) return;
+    try { await deleteApi(`/ddns/configs/${c.id}`); } catch (e) { toast.error(e instanceof Error ? e.message : 'Silinemedi'); }
+    refetchConfigs();
+  };
+  const handleToggle = async (c: DdnsConfig) => {
+    try { await putApi(`/ddns/configs/${c.id}`, { enabled: c.enabled ? 0 : 1 }); } catch (e) { toast.error(e instanceof Error ? e.message : 'Değiştirilemedi'); }
+    refetchConfigs();
   };
 
   const showTokenField = form.provider === 'duckdns' || form.provider === 'cloudflare';
@@ -181,12 +205,11 @@ export function DdnsPanel() {
                         <strong>{PROVIDER_LABELS[c.provider]}</strong> — {displayDomain(c) || c.hostname}
                       </span>
                       <span className="list-item-comment">
-                        Son IP: {c.last_ip || '---'} — {c.last_update ? new Date(c.last_update).toLocaleString('tr-TR') : 'Guncellenmedi'}
+                        Son IP: {c.last_ip || '---'} — {fmtDbTime(c.last_update, undefined, 'Guncellenmedi')}
                       </span>
+                      {statusNote(c) && <span className="list-item-comment">{statusNote(c)}</span>}
                     </div>
-                    <Badge variant={c.status === 'active' ? 'success' : c.status === 'error' ? 'error' : 'neutral'}>
-                      {c.status === 'active' ? 'Aktif' : c.status === 'error' ? 'Hata' : 'Beklemede'}
-                    </Badge>
+                    <Badge variant={statusMeta(c.status).variant}>{statusMeta(c.status).label}</Badge>
                   </div>
                 ))}
               </div>
@@ -221,10 +244,10 @@ export function DdnsPanel() {
                   </div>
                   {showTokenField && (
                     <div className="form-group">
-                      <label>{form.provider === 'cloudflare' ? 'API Key' : 'Token'}</label>
+                      <label>{form.provider === 'cloudflare' ? 'API Token (Zone · DNS · Edit yetkili)' : 'Token'}</label>
                       <input className="config-input" type="password" autoComplete="off" value={form.token}
                         onChange={e => setForm({ ...form, token: e.target.value })}
-                        placeholder={keptHint(editingOrig?.has_token) || 'Token / API Key'} />
+                        placeholder={keptHint(editingOrig?.has_token) || (form.provider === 'cloudflare' ? 'Global API Key değil, API Token' : 'Token')} />
                     </div>
                   )}
                   {showUserPassFields && (
@@ -244,18 +267,20 @@ export function DdnsPanel() {
                   )}
                   {showDomainField && (
                     <div className="form-group">
-                      <label>{form.provider === 'cloudflare' ? 'Zone (Domain)' : 'Update URL'}</label>
+                      <label>{form.provider === 'cloudflare' ? 'Alan adı ya da Zone ID (isteğe bağlı)' : 'Update URL'}</label>
                       <input className="config-input" value={form.domain}
                         onChange={e => setForm({ ...form, domain: e.target.value })}
-                        placeholder={keptHint(editingOrig?.domain === DDNS_MASK && form.provider === editingOrig?.provider)} />
+                        placeholder={keptHint(editingOrig?.domain === DDNS_MASK && form.provider === editingOrig?.provider)
+                          || (form.provider === 'cloudflare' ? 'Boş: addan bulunur (ör. ornek.com)' : 'https://…?ip={ip}&host={hostname}')} />
                     </div>
                   )}
-                  <div className="form-group">
-                    <label>Guncelleme Araligi (dk)</label>
-                    <input className="config-input" type="number" min={1} value={form.update_interval_min}
-                      onChange={e => setForm({ ...form, update_interval_min: parseInt(e.target.value) || 5 })} />
-                  </div>
                 </div>
+                <p className="text-muted" style={{ fontSize: 12, margin: '8px 0 0' }}>
+                  Genel IP değişince en geç 5 dakika içinde güncellenir; IP aynıyken günde bir kez yenilenir (sağlayıcılar
+                  değişmeyen adresin sık gönderilmesini kötüye kullanım sayıp hesabı engelleyebilir). Kullanıcı adı / şifre
+                  ya da token reddedilirse güncelleme durur ve bildirim gelir; bilgileri düzeltip kaydedince yeniden başlar.
+                  {form.provider === 'cloudflare' && ' Cloudflare kaydı yoksa oluşturulur (proxy kapalı — Ev VPN\'i için gerekli); varsa yalnız adresi değişir.'}
+                </p>
                 <div className="cron-add-actions">
                   <button className="btn-primary btn-sm" onClick={handleSave}>
                     <Check size={13} /> {editingId ? 'Guncelle' : 'Kaydet'}
@@ -271,7 +296,7 @@ export function DdnsPanel() {
               {configsData.configs.map(c => (
                 <div key={c.id} className="list-item">
                   <button className={`toggle-btn toggle-sm ${c.enabled ? 'toggle-on' : 'toggle-off'}`}
-                    onClick={async () => { await putApi(`/ddns/configs/${c.id}`, { enabled: c.enabled ? 0 : 1 }); refetchConfigs(); }}>
+                    onClick={() => handleToggle(c)}>
                     <div className="toggle-knob" />
                   </button>
                   <div className="list-item-content">
@@ -279,11 +304,10 @@ export function DdnsPanel() {
                       <strong>{PROVIDER_LABELS[c.provider]}</strong> — {c.hostname}
                       {displayDomain(c) && <span className="text-muted"> ({displayDomain(c)})</span>}
                     </span>
-                    <span className="list-item-comment">Her {c.update_interval_min} dk — Son IP: {c.last_ip || '---'}</span>
+                    <span className="list-item-comment">Son IP: {c.last_ip || '---'} — {fmtDbTime(c.last_update, undefined, 'Guncellenmedi')}</span>
+                    {statusNote(c) && <span className="list-item-comment">{statusNote(c)}</span>}
                   </div>
-                  <Badge variant={c.status === 'active' ? 'success' : c.status === 'error' ? 'error' : 'neutral'}>
-                    {c.status === 'active' ? 'Aktif' : c.status === 'error' ? 'Hata' : 'Beklemede'}
-                  </Badge>
+                  <Badge variant={statusMeta(c.status).variant}>{statusMeta(c.status).label}</Badge>
                   <div style={{ display: 'flex', gap: 4 }}>
                     <button className="icon-btn icon-btn-sm" onClick={() => handleTest(c.id)} disabled={testing === c.id} title="Test Et">
                       <RefreshCw size={13} className={testing === c.id ? 'spin' : ''} />
@@ -291,7 +315,7 @@ export function DdnsPanel() {
                     <button className="icon-btn icon-btn-sm" onClick={() => handleEdit(c)} title="Duzenle">
                       <Edit3 size={13} />
                     </button>
-                    <button className="icon-btn icon-btn-sm cron-delete" onClick={() => handleDelete(c.id)} title="Sil">
+                    <button className="icon-btn icon-btn-sm cron-delete" onClick={() => handleDelete(c)} title="Sil">
                       <Trash2 size={13} />
                     </button>
                   </div>
@@ -327,7 +351,7 @@ export function DdnsPanel() {
                     }}>
                       {entry.ip}
                     </span>
-                    <span className="list-item-comment">{new Date(entry.detected_at).toLocaleString('tr-TR')}</span>
+                    <span className="list-item-comment">{fmtDbTime(entry.detected_at)}</span>
                   </div>
                   {idx === 0 && <Badge variant="success">Mevcut</Badge>}
                   <Badge variant="neutral"><span lang="en">{entry.source}</span></Badge>

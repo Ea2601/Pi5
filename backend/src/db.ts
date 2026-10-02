@@ -63,6 +63,14 @@ export function dbGet(sql: string, params: any[] = []): Promise<any> {
   });
 }
 
+// SQLite CURRENT_TIMESTAMP / datetime() "YYYY-MM-DD HH:MM:SS" UTC'dir ama saat dilimi yazmaz: new Date() / Date.parse bunu
+// yerel saat sanar (Pi Türkiye saatindeyse 3 saat kayar). Z / +03:00 taşıyan ISO metni olduğu gibi okunur. Okunamazsa NaN.
+export function dbTimeMs(s: unknown): number {
+  const t = String(s ?? '').trim();
+  if (!t) return NaN;
+  return Date.parse(/^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}(:\d{2}(\.\d+)?)?$/.test(t) ? `${t.replace(' ', 'T')}Z` : t);
+}
+
 export const initDb = () => {
   db.serialize(() => {
 

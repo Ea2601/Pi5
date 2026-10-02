@@ -5,6 +5,7 @@ import { toast } from '../toast';
 import { Panel, StatCard, Badge } from './ui';
 import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from 'recharts';
 import type { SpeedTestResult } from '../types';
+import { parseDbTime, fmtDbTime } from '../time';
 
 type Period = '24h' | '7d' | '30d';
 
@@ -54,7 +55,7 @@ export function SpeedTestPanel() {
   const latest = data.tests.length > 0 ? data.tests[0] : null;
 
   const chartData = data.tests.slice().reverse().map(r => ({
-    date: new Date(r.timestamp).toLocaleDateString('tr-TR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }),
+    date: parseDbTime(r.timestamp)?.toLocaleDateString('tr-TR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }) ?? '',
     indirme: r.download_mbps,
     yukleme: r.upload_mbps,
     ping: r.ping_ms,
@@ -180,7 +181,7 @@ export function SpeedTestPanel() {
               {data.tests.slice(0, 100).map(t => (
                 <div key={t.id} className="routing-row" style={{ fontSize: 12 }}>
                   <span style={{ flex: 1, fontFamily: 'var(--font-mono)', fontSize: 11 }}>
-                    {new Date(/[zZ]|[+]/.test(t.timestamp) ? t.timestamp : t.timestamp.replace(' ', 'T') + 'Z').toLocaleString('tr-TR')}
+                    {fmtDbTime(t.timestamp)}
                   </span>
                   <span style={{ width: 80, color: '#3b82f6', fontWeight: 600 }}>{t.download_mbps.toFixed(1)}</span>
                   <span style={{ width: 80, color: '#10b981', fontWeight: 600 }}>{t.upload_mbps.toFixed(1)}</span>
