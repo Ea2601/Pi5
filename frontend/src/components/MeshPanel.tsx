@@ -3,6 +3,7 @@ import type { ReactNode } from 'react';
 import { Share2, AlertTriangle, CheckCircle, Info, Trash2, Search, Download } from 'lucide-react';
 import { getApi, postApi, deleteApi } from '../hooks/useApi';
 import { toast } from '../toast';
+import { reloadWhenRestarted } from '../reloadWhenRestarted';
 import { Panel, Badge } from './ui';
 import './MeshPanel.css';
 
@@ -91,11 +92,11 @@ function Alert({ kind, children }: { kind: 'ok' | 'err' | 'info'; children: Reac
   );
 }
 
-// Rol değişimi: backend rol dosyasını yazar ve yeniden başlar; sayfa birkaç saniye sonra yenilenir.
+// Rol değişimi: backend rol dosyasını yazar ve yeniden başlar; sayfa yeni süreç yanıt verince yenilenir (reloadWhenRestarted:
+// yanıttaki açılış anı /api/status'ta değişince — eskiden körlemesine 8 sn, yavaş açılışta backend kapalıyken yükleniyordu).
 async function changeRole(role: 'main' | 'satellite') {
-  await postApi('/system/role', { role });
-  toast.info('Panel yeniden başlıyor — sayfa birkaç saniye içinde yenilenir');
-  setTimeout(() => window.location.reload(), 8000);
+  const r = await postApi('/system/role', { role });
+  void reloadWhenRestarted(typeof r.started === 'number' ? r.started : undefined, 'Panel yeniden başlıyor — yanıt verince sayfa yenilenecek…');
 }
 
 export function MeshPanel({ onChange }: { onChange?: () => void }) {

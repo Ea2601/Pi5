@@ -45,6 +45,7 @@ const TABLE_LABEL: Record<string, string> = {
   traffic_schedules: 'Trafik zamanlamaları', device_groups: 'Cihaz grupları', device_group_members: 'Grup üyeleri',
   throttle_rules: 'Yavaşlatma kuralları', app_settings: 'Panel ayarları', cron_jobs: 'Cron görevleri',
   dhcp_leases: 'Statik DHCP kayıtları', domain_suggestion_dismissed: 'Yoksayılan öneriler', calendar_sources: 'Takvim bağlantıları',
+  port_forwards: 'Port yönlendirmeleri', device_names: 'Elle verilen cihaz adları',
 };
 // Hiç geri yüklenmeyenler: eski donanımın arayüz adlarını / adreslerini taşırlar ya da parola içerirler
 const NEVER_RESTORED = [

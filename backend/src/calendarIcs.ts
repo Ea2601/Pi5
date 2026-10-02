@@ -354,6 +354,9 @@ export interface IcsEvent {
   rrule: string | null; rdate: boolean; exdates: IcsTime[]; recurrenceId: IcsTime | null;
   rdateLast: number | null;   // RDATE'lerin en geç günü (gün numarası; okunamazsa Infinity) — yalnız "bitti mi" uyarısı için
   range: string;              // RECURRENCE-ID;RANGE= (THISANDFUTURE desteklenmez → sonraki oluşumlar "çözülemedi")
+  // RECURRENCE-ID var ama değeri okunamadı: hangi oluşumu değiştirdiği bilinmez — ana olay sayılmaz, kendi zamanıyla tek kayıt,
+  // çözülemedi (time; dilimi de tanınmıyorsa tz); ana olayın oluşumları olduğu gibi kalır
+  ridBad: boolean;
 }
 export interface ParsedIcs {
   isCalendar: boolean;        // BEGIN:VCALENDAR görüldü (HTML giriş sayfası vb. değil)
@@ -392,7 +395,7 @@ function* parseSteps(text: string, sl: Slicer): Generator<void, ParsedIcs> {
         else {
           ev = {
             uid: '', summary: '', categories: [], status: '', dtstart: null, dtend: null, duration: null, durationBad: false, dtendBad: false,
-            exdateBad: false, rrule: null, rdate: false, exdates: [], recurrenceId: null, rdateLast: null, range: '',
+            exdateBad: false, rrule: null, rdate: false, exdates: [], recurrenceId: null, rdateLast: null, range: '', ridBad: false,
           };
           evAt = stack.length;
         }
@@ -455,6 +458,7 @@ function* parseSteps(text: string, sl: Slicer): Generator<void, ParsedIcs> {
         break;
       case 'RECURRENCE-ID':
         ev.recurrenceId = parseIcsTime(cl.value, cl.params);
+        ev.ridBad = !ev.recurrenceId;
         ev.range = (cl.params.get('RANGE') || '').trim().toUpperCase();
         break;
       default: break;
@@ -689,7 +693,7 @@ function* ruleDays(r: RRule, start: { y: number; mo: number; d: number }, minDn:
 // ── Açılım ───────────────────────────────────────────────────────────────────
 // Çözülemedi nedenleri (hepsi ASLA tetiklemez): tz = saat dilimi tanınmadı (saat tahmini); rrule = tekrarlama kuralı
 // desteklenmiyor (yalnız ilk tarih), RDATE ya da "bu ve sonraki oluşumlar" (RANGE=THISANDFUTURE) değişikliği; limit = tarama
-// sınırı; time = bitiş (DTEND), süre (DURATION) ya da istisna tarihi (EXDATE) okunamadı.
+// sınırı; time = bitiş (DTEND), süre (DURATION), istisna tarihi (EXDATE) ya da geçersiz kılmanın RECURRENCE-ID'si okunamadı.
 export type Unresolved = 'tz' | 'rrule' | 'limit' | 'time';
 export interface Occurrence {
   uid: string;
@@ -804,7 +808,8 @@ function* expandEvent(ev: IcsEvent, c: Ctx, info: UidInfo | null): Generator<voi
     if (unresolved) return;
     unresolved = r; note = n; detail = d; badTz = tz;
   };
-  if (zr.bad) flag('tz', `saat dilimi tanınmadı: ${zr.bad}`, undefined, zr.bad);
+  // Kart nedeni ve ayrıntıyı birlikte gösterir («saat dilimi tanınmadı (X)»): ayrıntı yalnız dilim adı
+  if (zr.bad) flag('tz', `saat dilimi tanınmadı: ${zr.bad}`, zr.bad, zr.bad);
   // Süre: DTEND (kesin; tüm günde gün farkı), yoksa DURATION (nominal gün + kesin süre), yoksa tüm gün 1 gün / anlık 0
   let dur: Dur = st.date ? { days: 1, ms: 0 } : { days: 0, ms: 0 };
   if (ev.dtend) {
@@ -813,13 +818,16 @@ function* expandEvent(ev: IcsEvent, c: Ctx, info: UidInfo | null): Generator<voi
       dur = { days: Math.max(1, dd), ms: 0 };
     } else {
       const endZ = ev.dtend.date ? null : zoneOf(ev.dtend, c);
-      if (endZ?.bad) flag('tz', `saat dilimi tanınmadı: ${endZ.bad}`, undefined, endZ.bad);
+      if (endZ?.bad) flag('tz', `saat dilimi tanınmadı: ${endZ.bad}`, endZ.bad, endZ.bad);
       const e = ev.dtend.date ? wallToUtc(z, ev.dtend.y, ev.dtend.mo, ev.dtend.d) : wallToUtc(endZ!.z, ev.dtend.y, ev.dtend.mo, ev.dtend.d, ev.dtend.h, ev.dtend.mi, ev.dtend.s);
       dur = { days: 0, ms: Math.max(0, e - wallToUtc(z, st.y, st.mo, st.d, st.h, st.mi, st.s)) };
     }
   } else if (ev.duration) {
     dur = st.date ? { days: Math.max(1, ev.duration.days + (ev.duration.ms >= DAY_MS ? Math.floor(ev.duration.ms / DAY_MS) : 0)), ms: 0 } : ev.duration;
   }
+  // Okunamayan RECURRENCE-ID: hangi oluşumun yerini aldığı bilinmez — kendi zamanıyla tek kayıt (expandSteps), çözülemedi.
+  // Dilim tanınmadıysa o önce gelir (diğer 'time' nedenleri gibi): saat tahmini → ajandada "yaklaşık" ve dilim adı kalır
+  if (ev.ridBad) flag('time', 'değiştirilen oluşumun tarihi (RECURRENCE-ID) okunamadı — ana olayın o oluşumu da görünebilir', 'RECURRENCE-ID okunamadı');
   // Okunamayan bitiş / süre: başlangıç doğru, süre tahmin (anlık ya da tüm gün)
   if (ev.dtendBad) flag('time', 'bitiş zamanı (DTEND) okunamadı — süre bilinmiyor', 'DTEND okunamadı');
   if (ev.durationBad) flag('time', 'süre (DURATION) okunamadı ya da eksi — süre bilinmiyor', 'DURATION okunamadı ya da eksi');
@@ -970,7 +978,7 @@ function* expandSteps(p: ParsedIcs, opts: ExpandOpts): Generator<void, ExpandRes
   });
   // UID'siz olay tekil sayılır (geçersiz kılma eşleşmesi yok)
   valid.forEach((e, i) => { if (!e.uid) e.uid = `klx-nouid-${i}`; });
-  const masters = new Set(valid.filter(e => !e.recurrenceId).map(e => e.uid));
+  const masters = new Set(valid.filter(e => !e.recurrenceId && !e.ridBad).map(e => e.uid));
   const infos = new Map<string, UidInfo>();
   for (const e of valid) {
     if (!e.recurrenceId || !masters.has(e.uid)) continue;
@@ -986,8 +994,9 @@ function* expandSteps(p: ParsedIcs, opts: ExpandOpts): Generator<void, ExpandRes
   for (const e of valid) {
     if (c.sl.due()) { yield; c.sl.resume(); }
     if (e.status === 'CANCELLED') continue;
-    // Geçersiz kılma: kendi zamanıyla tek oluşum (iptal edilmişse yok). Ana olay yoksa da gösterilir.
-    if (e.recurrenceId) yield* expandEvent({ ...e, rrule: null }, c, null);
+    // Geçersiz kılma: kendi zamanıyla tek oluşum (iptal edilmişse yok). Ana olay yoksa da gösterilir. RECURRENCE-ID'si
+    // okunamayan da tek oluşum (çözülemedi, asla tetiklemez); ana olayın oluşumları değişmez.
+    if (e.recurrenceId || e.ridBad) yield* expandEvent({ ...e, rrule: null }, c, null);
     else yield* expandEvent(e, c, infos.get(e.uid) ?? null);
   }
   compact(c);

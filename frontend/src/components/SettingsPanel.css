@@ -8,3 +8,19 @@
 @media (max-width: 768px) {
   .su-mode-select { width: 100%; }
 }
+
+/* Ayarlar okunamadı (GET /api/settings hata): açık hata bandı + Yeniden dene; otomatik kayıtlı ayarlar kilitli (fieldset
+   disabled) — varsayılanlar kayıtlı ayarların üzerine yazılmasın. Renkler token: açık temada da kendiliğinden. */
+.su-load-err {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 8px 10px; margin-bottom: 12px; padding: 10px 12px;
+  border: 1px solid var(--danger-color); border-radius: 10px; background: var(--danger-glow);
+  color: var(--text-primary); font-size: 13px; line-height: 1.45;
+}
+.su-load-err > svg { flex-shrink: 0; color: var(--danger-color); }
+.su-load-err > span { flex: 1 1 220px; min-width: 0; }
+/* Kırmızı zeminde .btn-outline'ın soluk yazısı koyu temada 3,3:1 kalıyordu (iki sınıf: index.css'teki kuralı ezsin) */
+.su-load-err .btn-outline { color: var(--text-primary); border-color: var(--text-secondary); }
+.su-locked { border: 0; margin: 0; padding: 0; min-width: 0; opacity: 0.55; }
+/* Kilitli denetimler tıklanabilir görünmesin (projede devre dışı düğme: not-allowed). Vurgu rengi kutularının satır içi
+   cursor: pointer'ı ancak !important ile ezilir */
+.su-locked button:disabled { cursor: not-allowed !important; }

@@ -3,12 +3,13 @@ import {
   Settings, Palette, Globe, Bell, Zap, Info, Save, ChevronDown, ChevronRight,
   Volume2, VolumeX, Clock, RefreshCw, Download, Loader2, Gauge, AlertTriangle
 } from 'lucide-react';
-import { useApi, putApi, getApi } from '../hooks/useApi';
+import { useApi, putApi } from '../hooks/useApi';
 import { Panel, Badge, Select, SelectOption } from './ui';
 import { BRAND } from '../brand';
 import { setPrefs, desktopSupported } from '../prefs';
 import { toast } from '../toast';
 import { startSystemUpdate, trackSystemUpdate, runningSystemUpdate } from '../systemUpdate';
+import { reloadWhenRestarted } from '../reloadWhenRestarted';
 import './SettingsPanel.css';
 
 interface AppSettings {
@@ -64,20 +65,28 @@ function toApiSettings(s: AppSettings): Record<string, unknown> {
 }
 
 export function SettingsPanel() {
-  const { data, loading } = useApi<{ settings: Record<string, string> }>('/settings', { settings: {} });
+  const { data, loading, error, refetch } = useApi<{ settings: Record<string, string> }>('/settings', { settings: {} });
   const [settings, setSettings] = useState<AppSettings>(defaultSettings);
   const [saving, setSaving] = useState(false);
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
   const [loaded, setLoaded] = useState(false);
+  const [retrying, setRetrying] = useState(false);
   const skipFirstSave = useRef(true); // yükleme sonrası ilk otomatik-kayıt tetiğini atla
 
-  // İlk fetch tamamlanınca kayıtlı ayarları uygula. `loading` bayrağını kullanıyoruz;
-  // DB boş dönse bile loaded=true olur (aksi halde otomatik kayıt hiç etkinleşmezdi).
+  // İlk fetch başarıyla tamamlanınca kayıtlı ayarları uygula. `loading` bayrağını kullanıyoruz;
+  // DB boş dönse bile loaded=true olur (aksi halde otomatik kayıt hiç etkinleşmezdi). Okuma başarısızsa (backend kapalı / ağ
+  // hatası) uygulanmaz: varsayılanlarla otomatik kayıt bütün kayıtlı ayarların üzerine yazardı — form kilitli, Yeniden dene.
   useEffect(() => {
-    if (loading || loaded) return;
+    if (loading || loaded || error) return;
     setSettings({ ...defaultSettings, ...parseApiSettings(data.settings || {}) });
     setLoaded(true);
-  }, [loading, loaded, data.settings]);
+  }, [loading, loaded, error, data.settings]);
+  const loadFailed = !loaded && !loading && !!error;
+  const retryLoad = async () => {
+    setRetrying(true);
+    await refetch();
+    setRetrying(false);
+  };
 
   // Otomatik kayıt: kullanıcı bir ayarı değiştirince (ilk yükleme hariç) kısa debounce ile kaydet
   useEffect(() => {
@@ -132,11 +141,13 @@ export function SettingsPanel() {
     { value: 'orange', label: 'Turuncu', color: '#f59e0b' },
   ];
 
-  const categories: { key: string; label: string; icon: React.ReactNode; content: React.ReactNode }[] = [
+  // prefs: içeriği /api/settings'ten gelen otomatik kayıtlı ayarlar (okunamazsa kilitli)
+  const categories: { key: string; label: string; icon: React.ReactNode; content: React.ReactNode; prefs?: boolean }[] = [
     {
       key: 'appearance',
       label: 'Görünüm',
       icon: <Palette size={15} />,
+      prefs: true,
       content: (
         <div className="config-items">
           <div className="config-item">
@@ -189,6 +200,7 @@ export function SettingsPanel() {
       key: 'notifications',
       label: 'Bildirimler',
       icon: <Bell size={15} />,
+      prefs: true,
       content: (
         <div className="config-items">
           <div className="config-item">
@@ -237,6 +249,7 @@ export function SettingsPanel() {
       key: 'performance',
       label: 'Performans',
       icon: <Zap size={15} />,
+      prefs: true,
       content: (
         <div className="config-items">
           <div className="config-item">
@@ -323,10 +336,22 @@ export function SettingsPanel() {
         subtitle="Uygulama geneli yapılandırma ve tercihler"
         actions={
           <span style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: 'var(--text-muted)' }}>
-            <Save size={13} /> {saving ? 'Kaydediliyor…' : 'Değişiklikler otomatik kaydedilir'}
+            <Save size={13} /> {saving ? 'Kaydediliyor…' : loadFailed ? 'Otomatik kayıt kapalı — ayarlar okunamadı' : 'Değişiklikler otomatik kaydedilir'}
           </span>
         }
       >
+        {loadFailed && (
+          <div className="su-load-err" role="alert">
+            <AlertTriangle size={16} aria-hidden="true" />
+            <span>
+              Kayıtlı ayarlar okunamadı ({error}). Varsayılanlar kayıtlı ayarların üzerine yazılmasın diye okunana kadar
+              değiştirilemez.
+            </span>
+            <button className="btn-outline btn-sm" onClick={() => { void retryLoad(); }} disabled={retrying}>
+              {retrying ? <Loader2 size={13} className="spin" /> : <RefreshCw size={13} />} Yeniden dene
+            </button>
+          </div>
+        )}
         <div className="service-settings">
           {categories.map(cat => (
             <div key={cat.key} className="config-category">
@@ -335,7 +360,9 @@ export function SettingsPanel() {
                 <span className="config-category-title">{cat.label}</span>
                 {collapsed[cat.key] ? <ChevronRight size={15} /> : <ChevronDown size={15} />}
               </button>
-              {!collapsed[cat.key] && cat.content}
+              {!collapsed[cat.key] && (cat.prefs && loadFailed
+                ? <fieldset className="su-locked" disabled>{cat.content}</fieldset>
+                : cat.content)}
             </div>
           ))}
         </div>
@@ -562,23 +589,16 @@ function TimezoneSection() {
   }, [data.timezone]);
 
   // Panel yeni dilimi ancak yeniden başlayınca kullanır (backend yanıttan sonra kendini yeniden başlatır). Sayfa yeni süreç
-  // yanıt verince yenilenir (/api/status'taki açılış anı değişir; ağ hataları yok sayılır) — körlemesine beklemede yavaş
-  // açılışta sayfa backend kapalıyken yüklenip boş kalıyordu. İş sürüyorsa (depolama / güncelleme) yeniden başlatma iş bitince.
+  // yanıt verince yenilenir (reloadWhenRestarted: /api/status'taki açılış anı değişir; ağ hataları yok sayılır) — körlemesine
+  // beklemede yavaş açılışta sayfa backend kapalıyken yüklenip boş kalıyordu. İş sürüyorsa (depolama / güncelleme) yeniden
+  // başlatma iş bitince.
   const handleSave = async () => {
     if (!selected) return;
     setSaving(true);
     try {
       const r = await putApi('/system/timezone', { timezone: selected });
       if (r.restarting) {
-        const tid = toast.info('Panel yeni saat dilimiyle yeniden başlatılıyor…', { duration: 0 });
-        for (let i = 0; i < 60; i++) {
-          await new Promise(ok => setTimeout(ok, 1500));
-          try {
-            if ((await getApi<{ started?: number }>('/status')).started !== r.started) return location.reload();
-          } catch { /* yeniden başlıyor */ }
-        }
-        toast.dismiss(tid);
-        toast.error('Panel henüz yeniden başlamadı — sayfayı birazdan yenileyin');
+        if (await reloadWhenRestarted(r.started, 'Panel yeni saat dilimiyle yeniden başlatılıyor…')) return;
       } else if (r.restartDeferred) toast.info(`Saat dilimi güncellendi. ${r.restartReason || ''}`, { duration: 12000 });
       else toast.success('Saat dilimi güncellendi');
     } catch {

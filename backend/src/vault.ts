@@ -263,21 +263,44 @@ export function retryAfter(last: Record<string, string>, error: string, startedD
   if (last.attempt !== startedDay || !TRANSIENT.test(error) || (numOf(last.retries) ?? 0) >= RETRY_MAX) return '';
   return String(nowS + RETRY_GAP_S);
 }
+// Zamanlayıcının from'un gününde, from'dan itibaren yedeği başlatacağı ilk an (saat geçtiyse from) — yalnız gösterim
+// (nextAutoRun, ajanda). scheduleDue duvar saatini karşılaştırır (saat:dakika ≥ ayar). Yaz saatli dilimde: ileri alınan günde
+// ayar atlanan aralıktaysa (Berlin 29 Mart 02:00–02:59) Date onu aralık kadar kaydırır (02:30 → 03:30), zamanlayıcı ise saat
+// ileri alındığı anda (03:00) başlatır; geri alınan günde iki kez yaşanan saatin ilkinde başlatır (Date de ilkini verir) — ilki
+// geçtiyse ve o gün henüz denenmediyse ikincisinde. Olağan günlerde sonuç eskisi gibi new Date(gün, h, m). null: ayar o gün
+// hiç gelmiyor — gün atlanan saatle bitiyor (America/Nuuk: Cumartesi 23:00 → Pazar 00:00; 23:00–23:59 ayarında zamanlayıcı o
+// gün yedek almaz, sıradaki ertesi günün saatidir).
+export function autoRunAt(from: Date, h: number, m: number): Date | null {
+  const want = h * 60 + m;
+  const wall = (d: Date) => d.getHours() * 60 + d.getMinutes();
+  if (wall(from) >= want) return new Date(from);
+  const at = new Date(from.getFullYear(), from.getMonth(), from.getDate(), h, m, 0, 0);
+  if (at.getTime() > from.getTime() && wall(at) === want) return at;
+  // Geçiş günü: duvar saatinin ayara ulaştığı ilk dakika (geçişler dakika başında; tarama en çok bir gün)
+  const day = ymd(from);
+  for (let t = Math.floor(from.getTime() / 60000) * 60000 + 60000; ; t += 60000) {
+    const d = new Date(t);
+    if (ymd(d) !== day) return null;
+    if (wall(d) >= want) return d;
+  }
+}
 // Sonraki otomatik yedek (sn): bugün denenmediyse bugünün saati (geçtiyse şimdi), bekleyen yeniden deneme, yoksa yarın.
 // Yeniden deneme yalnız denendiği gün yapılır (retryDue: attempt === bugün): gece yarısını aşan yeniden deneme saati
 // geldiğinde gün değişmiştir, o an yedek alınmaz — sıradaki yedek yarının saatidir (yalnız gösterim; zamanlayıcı tick'tedir).
 export function nextAutoRun(schedule: string, last: Record<string, string>, now: Date): number {
   const [h, m] = schedule.split(':').map(Number);
-  const at = new Date(now);
-  at.setHours(h, m, 0, 0);
   const nowS = Math.floor(now.getTime() / 1000);
-  if (last.attempt !== ymd(now)) return Math.max(Math.floor(at.getTime() / 1000), nowS);
+  // from'un gününde ayar hiç gelmiyorsa (autoRunAt null) zamanlayıcı ertesi gün ayarlı saatte başlatır (son seçenek erişilmez:
+  // art arda iki gün geçiş olmaz)
+  const runFrom = (from: Date): Date => autoRunAt(from, h, m)
+    ?? autoRunAt(new Date(from.getFullYear(), from.getMonth(), from.getDate() + 1), h, m)
+    ?? new Date(from.getFullYear(), from.getMonth(), from.getDate() + 1, h, m);
+  if (last.attempt !== ymd(now)) return Math.max(Math.floor(runFrom(now).getTime() / 1000), nowS);
   const retry = numOf(last.retry_at);
   if (retry && (numOf(last.retries) ?? 0) < RETRY_MAX && (retry <= nowS || ymd(new Date(retry * 1000)) === last.attempt)) {
     return Math.max(retry, nowS);
   }
-  at.setDate(at.getDate() + 1);
-  return Math.floor(at.getTime() / 1000);
+  return Math.floor(runFrom(new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1)).getTime() / 1000);
 }
 const dayDiff = (a: string, b: string) => Math.round((Date.parse(`${b}T00:00:00Z`) - Date.parse(`${a}T00:00:00Z`)) / 86400000);
 // Pazar günleri; Pazar kaçırıldıysa son budamadan 8 gün sonra

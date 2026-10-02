@@ -33,7 +33,7 @@ const INTERVALS = [15, 30, 60, 180, 360];
 const everyText = (m: number) => (m % 60 === 0 ? (m === 60 ? 'Saatte bir' : `${m / 60} saatte bir`) : `${m} dakikada bir`);
 const URL_OK = /^(https|webcals?):\/\/\S+$/i;
 const REASON: Record<string, string> = {
-  tz: 'saat dilimi tanınmadı', rrule: 'tekrarlama kuralı desteklenmiyor', limit: 'tekrarlama çok uzun', time: 'bitiş, süre ya da istisna tarihi okunamadı',
+  tz: 'saat dilimi tanınmadı', rrule: 'tekrarlama kuralı desteklenmiyor', limit: 'tekrarlama çok uzun', time: 'bitiş, süre, istisna ya da değiştirilen oluşumun tarihi okunamadı',
 };
 // Saatler ajandadaki gibi Pi'nin diliminde (tz: /api/agenda yanıtı); dilim tarayıcıda tanınmazsa ya da henüz yoksa tarayıcının
 function tzFormat(tz: string | undefined, o: Intl.DateTimeFormatOptions): Intl.DateTimeFormat {

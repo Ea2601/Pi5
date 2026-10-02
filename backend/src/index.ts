@@ -4429,7 +4429,8 @@ app.post('/api/system/role', netAdminGuard, async (req, res) => {
     // sonra silinir — önceki bir adım düşerse cihaz ana cihaz kalır ve bekleyen imzalı "kaldırıldı" yanıtları verilebilir.
     if (role === 'satellite') { try { removePeerKeys(); } catch { /* yalnız mezar taşı anahtarları */ } }
     await recordEvent('mesh', role === 'satellite' ? 'Cihaz rolü: uydu — panel yeniden başlıyor' : 'Cihaz rolü: ana cihaz — panel yeniden başlıyor');
-    res.json({ success: true, restart: true });
+    // started: bu sürecin açılış anı — arayüz sayfayı yeni süreç /api/status'ta yanıt verince yeniler (saat dilimi gibi)
+    res.json({ success: true, restart: true, started: PANEL_STARTED });
     // spawn hatası (systemctl yok) dinlenmezse süreç düşerdi; yeniden başlatma olmazsa rol bir sonraki açılışta geçerli olur.
     if (isLinux) setTimeout(() => {
       const c = _spawn('systemctl', ['restart', 'pi5-backend'], { detached: true, stdio: 'ignore' });

@@ -1,5 +1,6 @@
 import { getApi, postApi } from './hooks/useApi';
 import { toast } from './toast';
+import { panelStarted, reloadWhenRestarted } from './reloadWhenRestarted';
 
 // Panel güncellemesi (Ayarlar, üst çubuktaki güncelleme penceresi, Sistem Günlükleri). Pi işi backend'in dışında yürütür
 // (scripts/update-job.sh); panel durumu /api/system/update/status'tan izler. İzleme sırasındaki ağ hataları yok sayılır:
@@ -20,10 +21,12 @@ const MAX_WAIT_MS = 40 * 60 * 1000; // iş Pi'de en çok 30 dk sürebilir (Runti
 
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
 
-function report(success: boolean, steps: UpdateStep[]) {
+// before: izleme başlarken yanıt veren sürecin açılış anı. "done" ancak backend yeniden başlatıldıktan sonra yazılır
+// (update-job.sh); sayfa yeni süreç /api/status'ta yanıt verince yenilenir (reloadWhenRestarted — eskiden körlemesine 8 sn).
+function report(success: boolean, steps: UpdateStep[], before?: number) {
   if (success) {
-    toast.success('Güncelleme tamamlandı! Servis yeniden başlatıldı, 8 sn sonra sayfa yenilenecek...');
-    setTimeout(() => window.location.reload(), 8000);
+    toast.success('Güncelleme tamamlandı! Servis yeniden başlatıldı.');
+    void reloadWhenRestarted(before, 'Sayfa, yeni sürüm yanıt verince yenilenecek…');
   } else {
     const failed = steps.filter(s => !s.success).map(s => s.step).join(', ');
     toast.error(`Başarısız adımlar: ${failed || 'bilinmiyor'} — ayrıntı: core/update.log`);
@@ -32,6 +35,7 @@ function report(success: boolean, steps: UpdateStep[]) {
 
 async function follow(id: string, onPhase: PhaseFn): Promise<void> {
   const t0 = Date.now();
+  const before = panelStarted();   // izlemeyi bekletmeden (yeniden başlatma iş sonundadır)
   while (Date.now() - t0 < MAX_WAIT_MS) {
     await sleep(POLL_MS);
     let s: UpdateStatus;
@@ -53,7 +57,7 @@ async function follow(id: string, onPhase: PhaseFn): Promise<void> {
       if (s.phase) onPhase(s.phase);
       continue;
     }
-    report(s.state === 'done', s.steps || []);
+    report(s.state === 'done', s.steps || [], await before);
     return;
   }
   toast.error('Güncelleme 40 dk içinde bitmedi — sonucu birazdan Ayarlar → Sistemi Güncelle\'den kontrol edin');

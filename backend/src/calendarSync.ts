@@ -594,7 +594,7 @@ const UNRESOLVED_TEXT: Record<string, string> = {
   tz: 'saat dilimi tanınmadı — saat tahmini, hiçbir şeyi tetiklemez',
   rrule: 'tekrarlama kuralı desteklenmiyor — yalnız ilk tarih, hiçbir şeyi tetiklemez',
   limit: 'tekrarlama çok uzun — hiçbir şeyi tetiklemez',
-  time: 'bitiş, süre ya da istisna tarihi okunamadı — hiçbir şeyi tetiklemez',
+  time: 'bitiş, süre, istisna ya da değiştirilen oluşumun tarihi okunamadı — hiçbir şeyi tetiklemez',
 };
 export interface CalendarAgendaItem {
   id: string; source: 'calendar'; title: string; start: string; end: string | null; kind: 'window' | 'job'; approx: boolean;

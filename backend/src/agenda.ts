@@ -32,7 +32,7 @@ import { isValidTimezone } from './util';
 import { listRules, ruleActive, type ParentalRule } from './parental';
 import { loadSchedules, scheduleActive, supported, type Schedule } from './trafficSchedule';
 import { readSystemCron, validateCommand, validateSchedule } from './cronSync';
-import { vaultStatus, forgetDue, ymd } from './vault';
+import { vaultStatus, forgetDue, ymd, autoRunAt } from './vault';
 import { isMac } from './qos';
 import { zapretBrief, ZAPRET_CHECK_HOUR } from './zapret';
 import { LIST_MAX_AGE_MS } from './categoryLists';
@@ -552,7 +552,8 @@ async function srcVault(c: Ctx): Promise<AgendaItem[]> {
   const slot = hhmm(String(st.conf.schedule || ''));
   const attempt = st.last?.attempt || '';
   const first = nextRun * 1000;
-  const slotOn = (d: Date, plus: number) => new Date(d.getFullYear(), d.getMonth(), d.getDate() + plus, Math.floor((slot ?? 0) / 60), (slot ?? 0) % 60);
+  // O günkü gerçek çalışma anı (vault.ts autoRunAt: yaz saati geçiş günlerinde zamanlayıcının başlattığı an, nextRun ile aynı hesap)
+  const slotOn = (d: Date, plus: number) => autoRunAt(new Date(d.getFullYear(), d.getMonth(), d.getDate() + plus), Math.floor((slot ?? 0) / 60), (slot ?? 0) % 60);
   // nextRun yalnız gerçekten çalışacak anı verir (vault.ts nextAutoRun: gece yarısını aşan yeniden deneme yapılmaz, o zaman
   // yarının saati döner)
   const fd = new Date(first);
@@ -562,6 +563,8 @@ async function srcVault(c: Ctx): Promise<AgendaItem[]> {
     // (aynı gün yeniden deneme, kaçırılan yedek, gece yarısını aşan yeniden deneme durumlarının hepsi)
     for (let i = 0; ; i++) {
       const day = slotOn(fd, i);
+      // null: ayar o gün hiç gelmiyor (gün atlanan saatle bitiyor, ör. America/Nuuk) — zamanlayıcı o gün yedek almaz
+      if (!day) { if (new Date(fd.getFullYear(), fd.getMonth(), fd.getDate() + i).getTime() >= c.to) break; continue; }
       const t = day.getTime();
       if (t >= c.to) break;
       if (t <= first || ymd(day) === attempt) continue;

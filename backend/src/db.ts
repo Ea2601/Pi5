@@ -15,6 +15,12 @@ export const db = new sqlite3.Database(dbPath, (err) => {
     console.log('Connected to the pi5router SQLite database.');
   }
 });
+// Başka bir süreç (OLED betiği, sqlite3 CLI, yedek) dosyayı kilitlediğinde yazım hemen SQLITE_BUSY ile düşmesin: kilit
+// kalkana kadar en çok 5 sn beklenir (sqlite3 modülünün varsayılanı 1 sn; olay kaydı hatayı yuttuğu için olay kayboluyordu).
+// Bekleme iş parçacığında olur, olay döngüsünü tutmaz; ancak süre ifade başına: uzun bir dış kilitte sıradaki yazımlar art arda
+// bekler ve libuv iş parçacıklarını tutar (o sürece panelin dosya / DNS işleri de bekleyebilir). Açılış tamamlanınca uygulanır
+// (modül sıraya alır).
+db.configure('busyTimeout', 5000);
 
 export function dbAll(sql: string, params: any[] = []): Promise<any[]> {
   return new Promise((resolve, reject) => {
