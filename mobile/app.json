@@ -1,28 +1,78 @@
 {
   "expo": {
-    "name": "Klyrix Yedek",
+    "name": "Klyrix/Gate Sync",
     "slug": "klyrix-backup",
     "version": "1.0.0",
     "orientation": "portrait",
-    "userInterfaceStyle": "dark",
-    "backgroundColor": "#0b1120",
+    "userInterfaceStyle": "automatic",
+    "backgroundColor": "#0a0e14",
     "ios": {
       "supportsTablet": true,
       "infoPlist": {
         "NSLocalNetworkUsageDescription": "Fotoğraflarınızı evinizdeki Klyrix Gate cihazına yedeklemek için yerel ağa erişilir.",
         "NSAppTransportSecurity": {
           "NSAllowsLocalNetworking": true,
-          "NSExceptionDomains": { "yedek.lan": { "NSExceptionAllowsInsecureHTTPLoads": true } }
+          "NSExceptionDomains": {
+            "yedek.lan": {
+              "NSExceptionAllowsInsecureHTTPLoads": true
+            }
+          }
         }
       }
     },
-    "android": {},
+    "android": {
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-foreground.png",
+        "backgroundImage": "./assets/adaptive-background.png",
+        "monochromeImage": "./assets/adaptive-monochrome.png"
+      }
+    },
     "plugins": [
-      ["expo-camera", { "cameraPermission": "Pi panelindeki eşleştirme QR kodunu okumak için kamera kullanılır.", "microphonePermission": false, "recordAudioAndroid": false, "barcodeScannerEnabled": true }],
-      ["expo-media-library", { "photosPermission": "Fotoğraf ve videolarınızı Klyrix Gate'e yedeklemek için okunur; hiçbiri silinmez ya da değiştirilmez.", "savePhotosPermission": false, "isAccessMediaLocationEnabled": true, "granularPermissions": ["photo", "video"] }],
-      ["expo-build-properties", { "android": { "usesCleartextTraffic": true } }],
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "Pi panelindeki eşleştirme QR kodunu okumak için kamera kullanılır.",
+          "microphonePermission": false,
+          "recordAudioAndroid": false,
+          "barcodeScannerEnabled": true
+        }
+      ],
+      [
+        "expo-media-library",
+        {
+          "photosPermission": "Fotoğraf ve videolarınızı Klyrix Gate'e yedeklemek için okunur; hiçbiri silinmez ya da değiştirilmez.",
+          "savePhotosPermission": false,
+          "isAccessMediaLocationEnabled": true,
+          "granularPermissions": [
+            "photo",
+            "video"
+          ]
+        }
+      ],
+      [
+        "expo-build-properties",
+        {
+          "android": {
+            "usesCleartextTraffic": true
+          }
+        }
+      ],
       "expo-background-task",
-      "expo-secure-store"
-    ]
+      "expo-secure-store",
+      [
+        "expo-splash-screen",
+        {
+          "image": "./assets/splash-icon.png",
+          "imageWidth": 140,
+          "resizeMode": "contain",
+          "backgroundColor": "#eef2f6",
+          "dark": {
+            "image": "./assets/splash-icon.png",
+            "backgroundColor": "#0a0e14"
+          }
+        }
+      ]
+    ],
+    "icon": "./assets/icon.png"
   }
 }

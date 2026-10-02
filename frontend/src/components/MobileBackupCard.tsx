@@ -5,7 +5,7 @@ import { Modal, Select, SelectOption } from './ui';
 import { toast } from '../toast';
 import { copyText } from '../clipboard';
 
-// Mobil yedekleme (backend mobile.ts): Klyrix uygulaması telefonun fotoğraf ve videolarını Pi'nin yedek diskine yükler.
+// Mobil yedekleme (backend mobile.ts): Klyrix/Gate Sync uygulaması telefonun fotoğraf ve videolarını Pi'nin yedek diskine yükler.
 // Cihaz Yedekleme açıkken görünür (aynı hedef diskler ve Yedekler paylaşımı). Telefon panelde üretilen tek kullanımlık kodla
 // (QR) eşleşir; kaldırılan telefonun dosyaları diskte kalır.
 interface Target { key: string; kind: 'internal' | 'usb'; name: string; mounted: boolean; free: number | null; size: number | null }
@@ -60,13 +60,13 @@ export function MobileBackupCard() {
 
   return (
     <section>
-      <h4 className="dv-h"><Smartphone size={14} /> Telefon ve tablet — Klyrix uygulaması</h4>
+      <h4 className="dv-h"><Smartphone size={14} /> Telefon ve tablet — Klyrix/Gate Sync</h4>
       <div className="dv-card">
         <div className="dv-card-main">
           <span className="dv-meta">
             {data.enabled
               ? `Eşleştirilen telefonlar fotoğraf ve videolarını kendiliğinden buraya yükler (ev ağında ya da Ev VPN'iyle, port ${data.port}). Dosyalar «<telefon>/Kamera/yıl/ay» klasörlerine yazılır ve Yedekler paylaşımından geri alınır.`
-              : 'Açınca Klyrix uygulaması (iOS / Android) telefonun fotoğraf ve videolarını Pi\'ye yedekler — Syncthing kurmadan, QR kodla eşleşerek. Pi telefondaki hiçbir şeyi silmez.'}
+              : 'Açınca Klyrix/Gate Sync uygulaması (iOS / Android) telefonun fotoğraf ve videolarını Pi\'ye yedekler — Syncthing kurmadan, QR kodla eşleşerek. Pi telefondaki hiçbir şeyi silmez.'}
           </span>
         </div>
         {data.enabled
@@ -158,7 +158,7 @@ function PairModal({ pair, known, onClose, onPaired }: { pair: PairInfo; known: 
         <div className="dv-note dv-note-warn"><AlertTriangle size={16} /><span>Kodun süresi doldu — kapatıp yeniden «Telefon ekle»ye basın.</span></div>
       )}
       <ol className="dv-hint" style={{ textAlign: 'left', marginTop: 14, paddingLeft: 18 }}>
-        <li>Telefonda <strong>Klyrix</strong> uygulamasını açın → <strong>Pi'ye bağlan</strong>.</li>
+        <li>Telefonda <strong>Klyrix/Gate Sync</strong> uygulamasını açın → <strong>Pi'ye bağlan</strong>.</li>
         <li>Bu QR kodu okutun (ya da kodu yazın). Telefon Pi ile aynı ev ağında olmalı; evden uzaktaysanız Ev VPN'ini açın.</li>
         <li>Fotoğraflara erişim izni verin: yedekleme hemen başlar, sonra uygulama açıldıkça ve arka planda sürer.</li>
       </ol>

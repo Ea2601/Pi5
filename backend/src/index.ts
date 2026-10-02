@@ -5023,7 +5023,7 @@ app.post('/api/sync/folders/update', syncRoute(req => updateFolder(req.body || {
 app.post('/api/sync/cloud', syncRoute(req => setCloud(req.body?.enabled)));
 startSyncWatch();
 
-// Mobil yedekleme (mobile.ts): Klyrix uygulaması telefonun fotoğraf / videolarını ayrı bir porttan (8095) yükler; panel
+// Mobil yedekleme (mobile.ts): Klyrix/Gate Sync uygulaması telefonun fotoğraf / videolarını ayrı bir porttan (8095) yükler; panel
 // açar / kapatır, hedef diski seçer, eşleştirme kodu (QR) üretir, cihaz kaldırır. Kapılar /api/sync ile aynı.
 app.use('/api/mobile', (req, res, next) => {
   if (isSatellite()) return res.status(409).json({ error: 'Bu cihaz uydu — mobil yedekleme ana cihazdadır' });

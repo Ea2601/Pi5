@@ -1,7 +1,7 @@
-# Klyrix Yedek — mobil uygulama (iOS / Android)
+# Klyrix/Gate Sync — mobil uygulama (iOS / Android)
 
 Telefonun fotoğraf ve videolarını evdeki Klyrix Gate'e (Raspberry Pi) yedekler. Pi tarafı: `backend/src/mobile.ts`
-(panelde Yedekleme → Cihaz Yedekleme → «Telefon ve tablet — Klyrix uygulaması»).
+(panelde Yedekleme → Cihaz Yedekleme → «Telefon ve tablet — Klyrix/Gate Sync»).
 
 - **Eşleştirme:** panelde «Telefon ekle» → uygulamada «QR kodu okut» (ya da Pi'nin adresi + kodu elle). Kod tek kullanımlık,
   10 dakika geçerli. Uygulama Pi'den bir cihaz anahtarı alır (telefonun anahtar zincirinde / Keystore'da saklanır).

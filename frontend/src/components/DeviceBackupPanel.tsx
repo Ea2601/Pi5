@@ -354,7 +354,7 @@ function HowTo({ st }: { st: SyncStatus }) {
           (tarayıcıda açılan arayüz). <strong>Uzak cihaz ekle</strong> → Pi'nin kimliğini yapıştırın.</span></li>
         <li><Smartphone size={14} /><span><strong>Android:</strong> <strong>Syncthing-Fork</strong> uygulamasını (F-Droid ya da Google Play) kurun →
           <strong> Cihazlar → +</strong> → QR kodunu taratın.</span></li>
-        <li><Apple size={14} /><span><strong>iPhone / iPad:</strong> Klyrix mobil uygulaması hazırlanıyor; şimdilik bilgisayar ve Android desteklenir.</span></li>
+        <li><Apple size={14} /><span><strong>iPhone / iPad:</strong> Fotoğraf ve videolar için aşağıdaki <strong>Telefon ve tablet — Klyrix/Gate Sync</strong> bölümünü kullanın.</span></li>
         <li><Check size={14} /><span>Birkaç saniye içinde cihaz aşağıda <strong>Onay bekleyen cihazlar</strong>'da görünür: adını verip onaylayın.</span></li>
         <li><FolderSync size={14} /><span>Cihazda yedeklenecek klasörü Pi ile paylaşın (klasör → <strong>Paylaşım</strong> sekmesi → Klyrix). Klasör
           türünü <strong>Yalnız Gönder</strong> yapmanız önerilir. Klasör burada <strong>Onay bekleyen klasörler</strong>'de görünür: hedef diski seçip kabul edin.</span></li>

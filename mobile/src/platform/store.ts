@@ -2,9 +2,11 @@
 import * as SecureStore from 'expo-secure-store';
 import type { Pairing } from '../core/protocol.ts';
 
-export interface Settings { wifiOnly: boolean; videos: boolean; auto: boolean }
+// theme: panelle aynı koyu / açık tema; 'system' telefonun görünümünü izler
+export type ThemePref = 'system' | 'dark' | 'light';
+export interface Settings { wifiOnly: boolean; videos: boolean; auto: boolean; theme: ThemePref }
 export interface LastRun { at: number; uploaded: number; failed: number; skipped: number; bytes: number; error?: string; stopped?: boolean }
-export const DEFAULT_SETTINGS: Settings = { wifiOnly: true, videos: true, auto: true };
+export const DEFAULT_SETTINGS: Settings = { wifiOnly: true, videos: true, auto: true, theme: 'system' };
 
 const K = { pairing: 'klyrix.pairing', settings: 'klyrix.settings', last: 'klyrix.last' };
 async function read<T>(key: string): Promise<T | null> {

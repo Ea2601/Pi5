@@ -1,4 +1,4 @@
-// Mobil yedekleme (C3): Klyrix uygulaması (iOS / Android, mobile/ klasörü) telefonun fotoğraf ve videolarını Pi'nin yedek
+// Mobil yedekleme (C3): Klyrix/Gate Sync uygulaması (iOS / Android, mobile/ klasörü) telefonun fotoğraf ve videolarını Pi'nin yedek
 // diskine yükler. Cihaz Yedekleme'nin (sync.ts) üstüne kurulur ve onun açık olmasını ister: aynı hedef diskler (sync.sh
 // target — bağlama noktası denetimi, SD karta asla), aynı sahiplik (klyrix-sync, 2750), aynı salt okunur Yedekler
 // paylaşımı (geri yükleme) ve Bulut Yedeği. Klasör düzeni: <kök>/<cihaz>/Kamera/<yıl>/<ay>/<dosya>.
@@ -147,7 +147,7 @@ async function pairDevice(body: any): Promise<{ token: string; device: { id: num
   for (let i = 2; used.has(dir.toLowerCase()); i++) dir = `${base}-${i}`;
   const token = crypto.randomBytes(32).toString('base64url');
   const id = await dbInsert('INSERT INTO mobile_devices (name, platform, token_hash, dir) VALUES (?, ?, ?, ?)', [name, platform, sha256(token), dir]);
-  await recordEvent('sync', `Telefon / tablet eşleştirildi: ${name}${platform ? ` (${platform === 'ios' ? 'iOS' : 'Android'})` : ''} — Klyrix uygulaması`);
+  await recordEvent('sync', `Telefon / tablet eşleştirildi: ${name}${platform ? ` (${platform === 'ios' ? 'iOS' : 'Android'})` : ''} — Klyrix/Gate Sync`);
   return { token, device: { id, name } };
 }
 
