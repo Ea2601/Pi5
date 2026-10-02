@@ -1,23 +1,27 @@
-import { useMemo, useState } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 import type { MouseEvent } from 'react';
-import { CalendarDays, AlertTriangle, Info, ChevronRight, Repeat, RefreshCw, Loader2, X } from 'lucide-react';
+import { CalendarDays, AlertTriangle, Info, ChevronRight, Repeat, RefreshCw, Loader2, X, CalendarSync } from 'lucide-react';
 import { useApi } from '../hooks/useApi';
 import { Panel } from './ui';
 import { parseDbTime } from '../time';
 import { BANDWIDTH_TAB_KEY, MAINTENANCE_TAB_KEY } from '../nav';
 import type { TabId } from '../types';
+import { CalendarSources } from './CalendarSources';
 import './AgendaPanel.css';
 
 // Ağ Ajandası (backend agenda.ts, GET /api/agenda): Pi'de zamanlanmış işler ve saat pencereleri — salt okunur. Ebeveyn ve
 // Trafik Zamanlayıcı pencereleri, panel ve sistem cron görevleri, bulut yedeği, otomatik hız testi, kota dönemi ve Zapret
 // gece denetimi gün gün listelenir; eşleşen günde 24'ten çok ya da 5 dakikadan sık tekrar eden işler "Periyodik işler"
-// özetindedir. Saatler Pi'nin saat dilimiyle gösterilir (tarayıcınınki farklı olsa da).
-type Source = 'parental' | 'traffic' | 'cron' | 'system' | 'vault' | 'speedtest' | 'quota' | 'zapret';
+// özetindedir. Saatler Pi'nin saat dilimiyle gösterilir (tarayıcınınki farklı olsa da). Bağlı dış takvimlerin (Google /
+// Outlook / iCloud, CalendarSources) etkinlikleri de "Takvim" kaynağı olarak, etiketleriyle listelenir.
+type Source = 'parental' | 'traffic' | 'cron' | 'system' | 'vault' | 'speedtest' | 'quota' | 'zapret' | 'calendar';
 // sub: sayfanın açılacak alt sekmesi (tek seferlik oturum anahtarıyla)
 interface AgendaLink { tab: TabId; sub?: string }
 interface AgendaItem {
   id: string; source: Source; title: string; start: string; end: string | null; kind: 'window' | 'job' | 'reset';
   approx: boolean; link: AgendaLink | null; note?: string; since?: boolean;
+  // Yalnız dış takvim öğelerinde: etiketler, takvimin adı / rengi, tüm gün, çözülemedi nedeni (tz | rrule | limit | time)
+  tags?: string[]; calendar?: string; color?: string; allDay?: boolean; unresolved?: string;
 }
 interface PeriodicJob {
   id: string; source: Source | 'panel'; kind: 'periodic'; title: string; everySec: number | null; next: string | null;
@@ -36,7 +40,7 @@ const RANGES = [{ days: 7, label: '7 gün' }, { days: 14, label: '14 gün' }, { 
 // Kaynağın kısa etiketi (renk: AgendaPanel.css --agenda-<kaynak>)
 const TAG: Record<Source | 'panel', string> = {
   parental: 'Ebeveyn', traffic: 'Trafik', cron: 'Cron', system: 'Sistem', vault: 'Bulut yedeği', speedtest: 'Hız testi',
-  quota: 'Kota', zapret: 'Zapret', panel: 'Panel',
+  quota: 'Kota', zapret: 'Zapret', calendar: 'Takvim', panel: 'Panel',
 };
 // Alt sekmeyi açan tek seferlik anahtarlar (BandwidthPanel / SystemLogs açılışta okuyup siler)
 const SUB_KEYS: Partial<Record<TabId, string>> = { bandwidth: BANDWIDTH_TAB_KEY, maintenance: MAINTENANCE_TAB_KEY };
@@ -80,6 +84,8 @@ export function AgendaPanel() {
   const [only, setOnly] = useState<Source | ''>('');
   const [busy, setBusy] = useState(false);
   const { data, loading, error, refetch } = useApi<AgendaResp>(`/agenda?days=${days}`, EMPTY, 60000);
+  // Takvim bağlantısı eklenince / eşitlenince ajanda yenilenir
+  const calendarChanged = useCallback(() => { void refetch(); }, [refetch]);
   // Aralık değişirken (useApi veriyi boşaltır) yeni yanıt gelene dek önceki yanıt soluk gösterilir (önceki render'ın
   // verisi durumda tutulur — React'in "önceki değeri saklama" kalıbı)
   const [last, setLast] = useState<AgendaResp>(EMPTY);
@@ -137,6 +143,8 @@ export function AgendaPanel() {
     const anchorKey = f.key(new Date(Math.max(s.getTime(), from)));
     const sameDay = f.key(endDay) === anchorKey;
     if (sameDay && startTxt === '00:00' && endMid) return ['Tüm gün'];
+    // Takvimin çok günlük tüm gün etkinliği: bittiği gün
+    if (it.allDay && endMid) return ['Tüm gün', `–${f.dayShort(endDay)}`];
     return [startTxt, `–${sameDay ? endTime : `${f.dayShort(endDay)} ${endTime}`}`];
   };
   const refresh = async () => {
@@ -145,6 +153,7 @@ export function AgendaPanel() {
   };
 
   return (
+    <>
     <Panel title="Ağ Ajandası" icon={<CalendarDays size={20} style={{ marginRight: 8 }} />} className="ag-panel"
       subtitle="Pi'de zamanlanmış işler ve saat pencereleri — salt okunur; değiştirmek için ilgili sayfayı açın"
       actions={
@@ -160,6 +169,9 @@ export function AgendaPanel() {
           ))}
         </div>
         {view.tz && <span className="ag-tz"><Info size={13} /> Saatler Pi'nin saat dilimine göre: <b>{view.tz}</b></span>}
+        <button className="ag-cal-link" onClick={() => document.getElementById('cal-sources')?.closest('.cal-panel')?.scrollIntoView({ behavior: 'smooth', block: 'start' })}>
+          <CalendarSync size={13} /> Takvim bağlantıları
+        </button>
       </div>
 
       {error && <div className="ag-alert is-error"><AlertTriangle size={14} /><span>{statusText(error)}</span></div>}
@@ -221,8 +233,15 @@ export function AgendaPanel() {
                 <div key={it.id} className={`ag-row${past ? ' is-past' : ''}${live ? ' is-live' : ''}`} data-src={it.source}>
                   <span className="ag-time"><span>{t1}</span>{t2 && <span>{t2}</span>}</span>
                   <span className="ag-title">
+                    {it.color && <span className="ag-cdot" style={{ background: it.color }} aria-hidden="true" />}
                     {it.title}
+                    {it.tags?.map(t => <span key={t} className="ag-ctag">#{t}</span>)}
                     {live && <span className="ag-badge is-now">şu an</span>}
+                    {it.unresolved && (
+                      <span className="ag-badge is-warn" title="Saat dilimi, tekrarlama kuralı ya da saat bilgisi çözülemedi — bu etkinlik hiçbir şeyi tetiklemez">
+                        <AlertTriangle size={11} /> çözülemedi
+                      </span>
+                    )}
                     {it.approx && <span className="ag-badge" title="Saat kesin değil (aralıkla çalışan iş, yaz saati geçişi ya da yeniden başlatma kaydırabilir)">yaklaşık</span>}
                   </span>
                   <span className="ag-tag" data-src={it.source}>{TAG[it.source]}</span>
@@ -265,5 +284,7 @@ export function AgendaPanel() {
         </details>
       )}
     </Panel>
+    <CalendarSources onChanged={calendarChanged} tz={view.tz} />
+    </>
   );
 }

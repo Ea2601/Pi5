@@ -8,6 +8,7 @@
   --agenda-speedtest: 251, 191, 36;
   --agenda-quota: 251, 146, 60;
   --agenda-zapret: 248, 113, 113;
+  --agenda-calendar: 163, 230, 53;
   --agenda-panel: 156, 163, 175;
 }
 .ag-panel [data-src] { --src: var(--agenda-system); }
@@ -19,6 +20,7 @@
 .ag-panel [data-src="speedtest"] { --src: var(--agenda-speedtest); }
 .ag-panel [data-src="quota"] { --src: var(--agenda-quota); }
 .ag-panel [data-src="zapret"] { --src: var(--agenda-zapret); }
+.ag-panel [data-src="calendar"] { --src: var(--agenda-calendar); }
 .ag-panel [data-src="panel"] { --src: var(--agenda-panel); }
 
 /* Üst satır: aralık + saat dilimi */
@@ -33,6 +35,12 @@
 .ag-tz { display: inline-flex; align-items: center; gap: 6px; min-width: 0; font-size: 12px; color: var(--text-secondary); overflow-wrap: anywhere; }
 .ag-tz svg { flex-shrink: 0; color: var(--accent-color); }
 .ag-tz b { color: var(--text-primary); font-weight: 600; }
+/* Takvim bağlantıları bölümüne (aşağıda) git */
+.ag-cal-link {
+  display: inline-flex; align-items: center; gap: 5px; min-height: 28px; margin-left: auto; padding: 0 8px; border: 0; border-radius: 6px;
+  background: transparent; color: var(--accent-color); font-size: 12px; cursor: pointer; white-space: nowrap;
+}
+.ag-cal-link:hover { background: var(--accent-glow); }
 
 /* Uyarılar */
 .ag-alert {
@@ -99,6 +107,18 @@
   font-size: 11px; font-weight: 500; color: var(--text-primary); background: var(--surface-soft); border: 1px dashed var(--panel-border);
 }
 .ag-badge.is-now { color: var(--success-ink); background: var(--success-glow); border: 1px solid transparent; }
+.ag-badge.is-warn {
+  gap: 3px; color: var(--warning-ink); background: var(--bg-surface); border: 1px solid color-mix(in srgb, var(--warning-color) 45%, transparent);
+}
+/* Dış takvim: takvimin rengi (nokta) ve etiketler (#sınav) */
+.ag-cdot {
+  display: inline-block; width: 8px; height: 8px; margin-right: 6px; border-radius: 50%; vertical-align: 1px;
+  box-shadow: 0 0 0 1px var(--panel-border);
+}
+.ag-ctag {
+  display: inline-flex; align-items: center; margin-left: 6px; padding: 1px 6px; border-radius: 999px; vertical-align: 1px;
+  font-size: 11px; font-weight: 500; color: rgb(var(--agenda-calendar)); background: rgba(var(--agenda-calendar), 0.14);
+}
 /* Geçmiş satır: bütün satırı soldurmak notları okunmaz yapıyordu — yalnız sol çizgi ve başlık sönük (hiçbir metin
    şimdiki satırların notundan daha soluk değil) */
 .ag-row.is-past { border-left-color: rgba(var(--src), 0.35); }

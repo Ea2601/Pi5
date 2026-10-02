@@ -44,7 +44,7 @@ const TABLE_LABEL: Record<string, string> = {
   zapret_domains: 'Zapret alan adları', bandwidth_limits: 'Hız ve kota sınırları', parental_rules: 'Ebeveyn kuralları',
   traffic_schedules: 'Trafik zamanlamaları', device_groups: 'Cihaz grupları', device_group_members: 'Grup üyeleri',
   throttle_rules: 'Yavaşlatma kuralları', app_settings: 'Panel ayarları', cron_jobs: 'Cron görevleri',
-  dhcp_leases: 'Statik DHCP kayıtları', domain_suggestion_dismissed: 'Yoksayılan öneriler',
+  dhcp_leases: 'Statik DHCP kayıtları', domain_suggestion_dismissed: 'Yoksayılan öneriler', calendar_sources: 'Takvim bağlantıları',
 };
 // Hiç geri yüklenmeyenler: eski donanımın arayüz adlarını / adreslerini taşırlar ya da parola içerirler
 const NEVER_RESTORED = [

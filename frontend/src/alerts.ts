@@ -24,7 +24,7 @@ const SOURCE_LABEL: Record<string, string> = {
   'dhcp-probe': 'DHCP', netmode: 'Ağ modu', 'netmode-ap': 'Ağ modu', 'netmode-missing': 'Ağ modu', service: 'Servis', update: 'Güncelleme',
   unbound: 'Unbound', zapret: 'Zapret', pihole: 'Pi-hole', vps: 'VPS', device: 'Cihaz', cron: 'Cron', vpn: 'Ev VPN',
   mesh: 'Mesh', storage: 'Depolama', bandwidth: 'Bant genişliği', backup: 'Yedekleme', vault: 'Yedekleme',
-  sync: 'Cihaz yedekleme', visits: 'Ziyaret Geçmişi', hotplug: 'Ağ kartı', 'wan-monitor': 'Hat kalitesi',
+  sync: 'Cihaz yedekleme', visits: 'Ziyaret Geçmişi', hotplug: 'Ağ kartı', 'wan-monitor': 'Hat kalitesi', calendar: 'Takvim',
 };
 export const sourceLabel = (s: string) => SOURCE_LABEL[(s || '').split(':')[0]] || s || 'Sistem';
 
@@ -41,6 +41,7 @@ const SOURCE_TAB: Record<string, TabId> = {
   storage: 'storage', bandwidth: 'bandwidth', backup: 'backup', vault: 'backup', sync: 'backup', visits: 'visits',
   hotplug: 'roles',
   'wan-monitor': 'speedtest',
+  calendar: 'agenda',
 };
 const SERVICE_TAB: Record<string, TabId> = {
   pihole: 'pihole', unbound: 'unbound', zapret: 'zapret', fail2ban: 'fail2ban', nftables: 'firewall', wireguard: 'vps',

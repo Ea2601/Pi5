@@ -57,6 +57,7 @@ import { validateListValue, normalizeListValue, syncPiholeLists, lastListSync, e
 import { applyZapret, zapretStatus, startBlockcheck, blockcheckRunning, zapretInstalled, zapretInstallIssue, zapretBrief, cleanDpiDomain, removeAutoHost, runDpiCheck, removeSiteStrategy, startAutoMethod, ZAPRET_CHECK_HOUR } from './zapret';
 import type { ZapretApplyResult } from './zapret';
 import { registerAgendaRoutes, processTimeZone, readSystemTimeZone, namedZone, zonesDiffer } from './agenda';
+import { registerCalendarRoutes, startCalendarSync, calendarBackupRows, prepareCalendarRestore, afterCalendarRestore } from './calendarSync';
 import { unboundStatus, applyUnboundSettings, validateUnboundSettings, savedUnboundSettings } from './unbound';
 import { recordEvent, recordEventOnce, recordVersionChange, serviceLabel } from './events';
 import { wgServerStatus, setServerEnabled, addPeer, updatePeerRole, deletePeer, peerConfig, reapplyWgServer,
@@ -2911,6 +2912,15 @@ if (isLinux) {
 // Ağ Ajandası (agenda.ts): zamanlanmış işlerin salt okunur listesi — GET /api/agenda, uyduda 409.
 registerAgendaRoutes(app, { speedtestNextAt: () => speedtestNextAt, speedtestIntervalMin: getSpeedtestIntervalMin });
 
+// Dış takvim (calendarSync.ts, G5.2): Google / Outlook / iCloud ICS adreslerinden salt okunur eşitleme; etkinlikler Ağ
+// Ajandası'nda. Gizli adres yalnız /etc/pi5-gateway/calendar/sources.conf'ta, yanıtlarda maskeli. Yazma: netAdminGuard
+// (istek anında çağrılır) + yazma sınırı; ana cihaza özgü: uyduda tüm uçlar 409.
+app.use('/api/calendar', (req, res, next) => (req.method === 'GET' ? next() : writeLimiter(req, res, next)), (req, res, next) => {
+  if (isSatellite()) return res.status(409).json({ error: 'Bu cihaz uydu — takvim bağlantıları ana cihazdadır' });
+  void netAdminGuard(req, res, next);
+});
+registerCalendarRoutes(app);
+
 // ─── Metric history recorder — sample every 5s, keep ~11 min (10-min window + margin) ───
 // Runs independent of any client so history accumulates continuously; the dashboard reads it
 // from /api/system/metrics/history and no longer resets on page refresh.
@@ -4619,7 +4629,7 @@ const BACKUP_TABLES = [
   'service_config', 'service_status', 'traffic_routing', 'domain_routing', 'routing_rules',
   'pihole_lists', 'zapret_domains', 'bandwidth_limits', 'parental_rules', 'traffic_schedules',
   'device_groups', 'device_group_members', 'throttle_rules', 'app_settings', 'cron_jobs', 'dhcp_leases',
-  'domain_suggestion_dismissed', 'port_forwards', 'device_names',
+  'domain_suggestion_dismissed', 'port_forwards', 'device_names', 'calendar_sources',
 ];
 // device_names gerçek tablo değil: devices'tan yalnız elle verilen adlar (name_manual = 1) — cihaz listesinin kendisi
 // (IP, son görülme) çalışma kaydıdır, yedekten gelmez; geri yüklemede yalnız adlar birleştirilir.
@@ -4635,6 +4645,9 @@ const BACKUP_MANIFEST: { key: string; label: string; desc: string; tables: strin
   { key: 'dns', label: 'DNS listeleri', desc: 'Beyaz / kara liste, bloklisteleri ve yerel DNS kayıtları', tables: ['pihole_lists'] },
   { key: 'system', label: 'Panel ayarları ve Cron', desc: 'Görünüm, bildirimler, hız testi, kiosk ve diğer panel ayarları; zamanlanmış görevler',
     tables: ['app_settings', 'cron_jobs'] },
+  // Yalnız bağlı takvim varken listelenir (manifest ucu); gizli takvim adresi yedeğe girmez
+  { key: 'calendar', label: 'Takvim bağlantıları', desc: 'Dış takvimlerin adı, rengi ve eşitleme aralığı — gizli takvim adresi yedeğe girmez, geri yüklemeden sonra yeniden girilir',
+    tables: ['calendar_sources'] },
 ];
 const BACKUP_TABLE_SET = new Set(BACKUP_TABLES);
 // Ayar tabloları birleştirilir (yedekte olmayan anahtar kalır: rol, eşleştirme, sürüm gibi çalışma anahtarları eski bir
@@ -4778,6 +4791,8 @@ async function applyRestored(tables: Set<string>, keys: Set<string>, req: expres
       await runQos({ force: true });
     });
   }
+  // Takvimler kapalı gelir; yedekte olmayanların gizli adresi / önbelleği silinir, zamanlayıcılar yeniden kurulur
+  if (tables.has('calendar_sources')) await step('Takvim bağlantıları', () => afterCalendarRestore());
   return out;
 }
 
@@ -4788,8 +4803,11 @@ async function buildBackupExport(): Promise<{ backup_version: number; created_at
     // Tablo yoksa (ör. port_forwards ilk kullanımda kurulur) boş: yedek bütünüyle düşmesin
     configTables[t] = await (t === 'dhcp_leases' ? dbAll('SELECT * FROM dhcp_leases WHERE is_static = 1')
       : t === 'device_names' ? dbAll('SELECT mac_address, hostname FROM devices WHERE name_manual = 1')
-        : dbAll(`SELECT * FROM ${t}`)).catch(() => []);
+        : t === 'calendar_sources' ? calendarBackupRows()
+          : dbAll(`SELECT * FROM ${t}`)).catch(() => []);
   }
+  // Takvim bağlantıları yalnız varsa (adres yok — yalnız ad, renk, açık, aralık); takvimsiz kurulumun yedeği eskisiyle aynı
+  if (!configTables.calendar_sources?.length) delete configTables.calendar_sources;
 
   return {
     backup_version: 2,
@@ -4803,7 +4821,8 @@ app.get('/api/backup/manifest', async (_req, res) => {
   try {
     const exp = await buildBackupExport();
     res.json({
-      sections: BACKUP_MANIFEST.map(m => ({ key: m.key, label: m.label, desc: m.desc, count: m.tables.reduce((a, t) => a + (exp.data[t]?.length || 0), 0) })),
+      sections: BACKUP_MANIFEST.map(m => ({ key: m.key, label: m.label, desc: m.desc, count: m.tables.reduce((a, t) => a + (exp.data[t]?.length || 0), 0) }))
+        .filter(m => m.key !== 'calendar' || m.count > 0),
       excluded: 'VPS sunucuları ve WireGuard anahtarları, Ev VPN anahtarları ve DDNS hesapları bu dosyaya girmez (gizli anahtar). Bulut Yedeği\'nde «gizli anahtarlar» seçeneğiyle şifreli yedeklenebilir.',
     });
   } catch (e: any) {
@@ -4863,6 +4882,13 @@ async function importBackupData(backup: any, req: express.Request): Promise<Back
       data.port_forwards = pf.rows;
       if (pf.skipped) notes.push({ item: 'Port yönlendirmeleri', ok: true, detail: `${pf.skipped} kayıt atlandı (geçersiz ya da çakışan)` });
     }
+  }
+
+  // Takvim bağlantıları: tablo işlemden önce kurulur, satırlar doğrulanır ve hepsi kapalı gelir (adres yedekte yok)
+  if (present.includes('calendar_sources')) {
+    const cal = await prepareCalendarRestore(data.calendar_sources);
+    data.calendar_sources = cal.rows;
+    if (cal.skipped) notes.push({ item: 'Takvim bağlantıları', ok: true, detail: `${cal.skipped} kayıt atlandı (geçersiz ya da en çok 5)` });
   }
 
   // Tüm tablolar tek işlemde (kısmi hata = geri alma).
@@ -6738,6 +6764,8 @@ const server = app.listen(Number(port), bindHost, () => {
     startTrafficRecorder();
     // Cihaz hız sınırı ve kota (Bant Genişliği → Kota ve Hız): açılıştan 15 sn sonra, sonra dakikada bir.
     startQos({ protectedMacs: blockProtectedMacs });
+    // Dış takvim eşitlemesi (calendarSync.ts): yalnız bağlı takvim varsa kaynak başına zamanlayıcı; yoksa hiçbir şey.
+    void startCalendarSync().catch((e: any) => console.error('[takvim]', e?.message || e));
     // Tak-çalıştır ağ kartı algılama (portWatch.ts): yalnız ayar açıksa (varsayılan kapalı) 10 sn'de bir /sys okunur.
     void initPortWatch().catch((e: any) => console.error('[tak-çalıştır]', e?.message || e));
     // Yeni cihaz bildirimi (deviceWatch.ts): yalnız ayar açıksa (varsayılan kapalı) 60 sn'de bir komşu tablosu okunur.

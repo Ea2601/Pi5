@@ -1562,7 +1562,7 @@ async function tick(): Promise<void> {
   }
 }
 
-async function clockSynced(): Promise<boolean> {
+export async function clockSynced(): Promise<boolean> {
   if (new Date().getFullYear() < 2025) return false;
   try {
     const { stdout } = await execFileP('timedatectl', ['show', '-p', 'NTPSynchronized', '--value'], { timeout: 5000 });

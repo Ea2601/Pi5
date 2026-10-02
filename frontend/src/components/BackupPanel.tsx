@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, lazy, Suspense, Component } from 'react';
 import type { ReactNode } from 'react';
 import {
   Download, Upload, Archive, Check, Clock,
-  Settings, Shield, Users, Globe, Calendar, Database, Trash2
+  Settings, Shield, Users, Globe, Calendar, CalendarSync, Database, Trash2
 } from 'lucide-react';
 import { postApi, useApi } from '../hooks/useApi';
 import { Panel, Badge } from './ui';
@@ -47,7 +47,7 @@ interface BackupHistoryItem {
 interface BackupManifest { sections: { key: string; label: string; desc: string; count: number }[]; excluded?: string }
 const SECTION_ICONS: Record<string, ReactNode> = {
   services: <Settings size={16} />, routing: <Globe size={16} />, devices: <Users size={16} />,
-  firewall: <Shield size={16} />, dns: <Database size={16} />, system: <Calendar size={16} />,
+  firewall: <Shield size={16} />, dns: <Database size={16} />, system: <Calendar size={16} />, calendar: <CalendarSync size={16} />,
 };
 
 const BACKUP_HISTORY_KEY = 'pi5_backup_history';

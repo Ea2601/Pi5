@@ -1,0 +1,113 @@
+/* Takvim bağlantıları (CalendarSources.tsx, Ağ Ajandası sayfası). Yalnız tema değişkenleri — açık tema index.css'teki
+   karşılıklarıyla kendiliğinden uyar. Düğme rengi = ne yaptığı: açan / ekleyen yeşil, kapatan / silen kırmızı. */
+/* scroll-margin: ajandadaki "Takvim bağlantıları" bağlantısı kaydırınca başlık yapışkan üst çubuğun (en az 56 px) altında kalmasın */
+.cal-panel { margin-top: 14px; scroll-margin-top: 76px; }
+.btn-primary.cal-on { background: color-mix(in srgb, var(--success-color) 65%, #000); color: #fff; }
+.btn-primary.cal-on:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--success-color) 70%, #000); box-shadow: 0 4px 12px var(--success-glow);
+}
+.btn-outline.cal-off {
+  border-color: var(--danger-color); background: color-mix(in srgb, var(--danger-color) 8%, transparent);
+  color: color-mix(in srgb, var(--danger-color) 75%, var(--text-primary));
+}
+.btn-outline.cal-off:hover:not(:disabled) {
+  border-color: var(--danger-color); background: color-mix(in srgb, var(--danger-color) 16%, transparent);
+  color: color-mix(in srgb, var(--danger-color) 75%, var(--text-primary));
+}
+.btn-outline.cal-off:disabled, .btn-primary.cal-on:disabled { opacity: 0.45; cursor: not-allowed; }
+
+.cal-empty { margin: 4px 0 6px; font-size: 13px; line-height: 1.55; color: var(--text-secondary); }
+.cal-loading { display: flex; align-items: center; gap: 6px; }
+.cal-hint { margin: 6px 0 0; font-size: 12px; line-height: 1.5; color: var(--text-secondary); overflow-wrap: anywhere; }
+.cal-hint.is-bad { color: var(--danger-color); }
+
+/* Uyarı / bilgi kutuları */
+.cal-note {
+  display: flex; gap: 8px; align-items: flex-start; margin-top: 8px; padding: 8px 10px; border-radius: var(--radius-sm);
+  font-size: 12px; line-height: 1.5; color: var(--text-primary); background: var(--input-bg-soft); border: 1px solid var(--panel-border);
+}
+.cal-note > svg, .cal-note summary > svg:first-child { flex-shrink: 0; margin-top: 2px; }
+.cal-note span { min-width: 0; overflow-wrap: anywhere; }
+.cal-note.is-bad { background: var(--danger-glow); border-color: transparent; }
+.cal-note.is-bad > svg { color: var(--danger-color); }
+.cal-note.is-warn { background: var(--warning-glow); border-color: transparent; }
+.cal-note.is-warn svg { color: var(--warning-color); }
+.cal-note.is-info > svg { color: var(--accent-color); }
+.cal-unres { display: block; }
+.cal-unres summary { display: flex; gap: 8px; align-items: flex-start; cursor: pointer; list-style: none; }
+.cal-unres summary::-webkit-details-marker { display: none; }
+.cal-unres ul { margin: 6px 0 0 22px; padding: 0; }
+.cal-unres li { margin: 2px 0; overflow-wrap: anywhere; }
+.cal-caret { flex-shrink: 0; margin-left: auto; margin-top: 2px; color: var(--text-secondary); transition: transform 0.15s ease; }
+details[open] > summary .cal-caret { transform: rotate(90deg); }
+
+/* Kaynak listesi */
+.cal-list { display: flex; flex-direction: column; gap: 10px; }
+.cal-item { padding: 12px 14px; border-radius: var(--radius-sm); background: var(--input-bg-soft); border: 1px solid var(--panel-border); }
+.cal-head { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.cal-dot { flex-shrink: 0; width: 12px; height: 12px; border-radius: 50%; box-shadow: 0 0 0 2px var(--bg-surface), 0 0 0 3px var(--panel-border); }
+.cal-name { min-width: 0; font-size: 14px; color: var(--text-primary); overflow-wrap: anywhere; }
+.cal-state {
+  display: inline-flex; align-items: center; gap: 4px; margin-left: auto; flex-shrink: 0; padding: 2px 8px; border-radius: 999px;
+  font-size: 11px; font-weight: 600; white-space: nowrap; color: var(--text-secondary); background: var(--surface-soft);
+  border: 1px solid var(--panel-border);
+}
+.cal-state.is-ok { color: var(--success-ink); background: var(--bg-surface); border-color: color-mix(in srgb, var(--success-color) 40%, transparent); }
+.cal-state.is-bad { color: var(--danger-color); background: var(--bg-surface); border-color: color-mix(in srgb, var(--danger-color) 40%, transparent); }
+.cal-state.is-warn { color: var(--warning-ink); background: var(--bg-surface); border-color: color-mix(in srgb, var(--warning-color) 45%, transparent); }
+.cal-state.is-run { color: var(--accent-color); background: var(--bg-surface); }
+.cal-state.is-off { color: var(--text-primary); background: var(--bg-surface); }
+.cal-meta { display: flex; flex-wrap: wrap; gap: 4px 14px; margin-top: 6px; font-size: 12px; color: var(--text-secondary); font-variant-numeric: tabular-nums; }
+.cal-meta > span { min-width: 0; overflow-wrap: anywhere; }
+.cal-url { display: inline-flex; align-items: center; gap: 4px; font-family: var(--font-mono); }
+.cal-url svg { flex-shrink: 0; color: var(--text-muted); }
+.cal-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+.cal-actions .btn-sm { display: inline-flex; align-items: center; gap: 5px; }
+
+/* Ekle / düzenle */
+.cal-form { margin-top: 12px; padding: 14px; border-radius: var(--radius-sm); border: 1px solid var(--accent-ring); background: var(--input-bg-soft); }
+.cal-form h4 { margin: 0 0 12px; font-size: 14px; color: var(--text-primary); overflow-wrap: anywhere; }
+.cal-grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: 0 14px; }
+.cal-grid .form-group input { min-width: 0; }
+.cal-inline { display: flex; gap: 8px; align-items: center; min-width: 0; }
+.cal-inline input {
+  flex: 1; min-width: 0; padding: 9px 12px; border-radius: var(--radius-sm); background: var(--bg-surface);
+  border: 1px solid var(--panel-border); color: var(--text-primary); font-family: var(--font-mono); font-size: 13px;
+}
+.cal-inline input:focus { outline: none; border-color: var(--accent-color); box-shadow: 0 0 0 3px var(--accent-ring); }
+.cal-inline input[aria-invalid] { border-color: var(--danger-color); }
+.cal-inline .btn-sm { flex-shrink: 0; min-height: 36px; }
+.cal-label { display: block; margin-bottom: 6px; font-size: 12px; font-weight: 500; color: var(--text-primary); }
+.cal-colors { display: flex; flex-wrap: wrap; gap: 8px; }
+.cal-swatch {
+  width: 28px; height: 28px; border-radius: 50%; border: 2px solid transparent; cursor: pointer; padding: 0;
+  box-shadow: 0 0 0 1px var(--panel-border);
+}
+.cal-swatch.is-on { border-color: var(--bg-surface); box-shadow: 0 0 0 2px var(--text-primary); }
+.cal-swatch:focus-visible { outline: 2px solid var(--accent-color); outline-offset: 2px; }
+.cal-secret { margin-top: 2px; }
+.cal-help { margin-top: 10px; font-size: 12px; color: var(--text-primary); }
+.cal-help summary {
+  display: flex; align-items: center; gap: 6px; min-height: 32px; cursor: pointer; list-style: none; font-weight: 600; color: var(--accent-color);
+}
+.cal-help summary::-webkit-details-marker { display: none; }
+.cal-help summary .cal-caret { margin-left: 0; margin-top: 0; }
+.cal-help dl { margin: 4px 0 0; }
+.cal-help dt { margin-top: 8px; font-weight: 600; }
+.cal-help dd { margin: 2px 0 0; line-height: 1.55; color: var(--text-secondary); overflow-wrap: anywhere; }
+.cal-help dd b { color: var(--text-primary); font-weight: 600; }
+
+/* Görülen etiketler */
+.cal-tags { margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--panel-border); }
+.cal-tags h4 { display: flex; align-items: center; gap: 6px; margin: 0; font-size: 13px; color: var(--text-primary); }
+.cal-tags h4 svg { color: var(--accent-color); }
+.cal-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+.cal-chip {
+  display: inline-flex; align-items: center; gap: 6px; min-height: 26px; padding: 0 10px; border-radius: 999px; font-size: 12px;
+  color: var(--text-primary); background: var(--bg-surface); border: 1px solid var(--panel-border); overflow-wrap: anywhere;
+}
+.cal-chip b { font-weight: 600; color: var(--text-secondary); }
+
+@media (min-width: 760px) {
+  .cal-grid { grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr); }
+}

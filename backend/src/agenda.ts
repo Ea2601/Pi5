@@ -19,6 +19,8 @@
 //    alır). Yanıttaki zamanlar UTC ISO. İkisi farklıysa (saat dilimi değiştirildi, panel yeniden başlamadı) tzMismatch.
 //  - Eşleşen bir günde 24'ten çok ya da 5 dakikadan sık çalışan işler listeye girmez: "periyodik işler" özetinde aralık ve
 //    sıradaki çalışmayla gösterilir; panelin kendi iç denetimleri (30 sn – 24 sa, açılıştan itibaren sayılır) de orada.
+//  - Dış takvim (G5.2, calendarSync.ts): bağlı takvim varsa etkinlikleri (eşitlemenin sakladığı oluşumlar) "Takvim" kaynağı
+//    olarak; hiç takvim bağlanmamışsa yanıtta hiç görünmez (kaynak listesi eskisiyle aynı).
 // Uyduda 409: ağ geçidi işleri ana cihazdadır.
 import { execFile } from 'child_process';
 import { promisify } from 'util';
@@ -35,6 +37,7 @@ import { isMac } from './qos';
 import { zapretBrief, ZAPRET_CHECK_HOUR } from './zapret';
 import { LIST_MAX_AGE_MS } from './categoryLists';
 import { REACH_WATCH_INTERVAL_H } from './wgWatch';
+import { calendarForAgenda } from './calendarSync';
 
 const execFileP = promisify(execFile);
 const MIN_MS = 60_000;
@@ -46,7 +49,7 @@ const PER_DAY_LIMIT = 24;        // eşleşen günde 24'ten fazla çalışma = "
 const FREQ_MIN = 5;              // ardışık iki çalışma 5 dakikadan yakınsa da özete
 const SCAN_PAD_MS = 8 * DAY_MS;  // aralıktan önce başlayan pencerenin gerçek başlangıcı için (haftalık döngü + 1 gün)
 
-export type AgendaSource = 'parental' | 'traffic' | 'cron' | 'system' | 'vault' | 'speedtest' | 'quota' | 'zapret';
+export type AgendaSource = 'parental' | 'traffic' | 'cron' | 'system' | 'vault' | 'speedtest' | 'quota' | 'zapret' | 'calendar';
 export type AgendaKind = 'window' | 'job' | 'reset';
 // sub: sayfanın açılacak alt sekmesi (Bant Genişliği → limits, Sistem & Log → cron)
 export interface AgendaLink { tab: string; sub?: string }
@@ -54,6 +57,8 @@ export interface AgendaItem {
   id: string; source: AgendaSource; title: string; start: string; end: string | null; kind: AgendaKind;
   approx: boolean; link: AgendaLink | null; note?: string;
   since?: boolean;   // pencere: aralıktan çok önce başlamış (gerçek başlangıç bilinmiyor; start = from). end null: bitmiyor
+  // Yalnız dış takvim öğelerinde: etiketler, takvimin adı ve rengi, tüm gün, çözülemedi nedeni (tz | rrule | limit | time)
+  tags?: string[]; calendar?: string; color?: string; allDay?: boolean; unresolved?: string;
 }
 export interface PeriodicJob {
   id: string; source: AgendaSource | 'panel'; kind: 'periodic'; title: string;
@@ -367,7 +372,7 @@ interface Ctx {
 }
 const LABELS: Record<AgendaSource, string> = {
   parental: 'Ebeveyn Kontrol', traffic: 'Trafik Zamanlayıcı', cron: 'Cron görevleri', system: 'Sistem görevleri',
-  vault: 'Bulut yedeği', speedtest: 'Hız testi', quota: 'Kota dönemi', zapret: 'Zapret denetimi',
+  vault: 'Bulut yedeği', speedtest: 'Hız testi', quota: 'Kota dönemi', zapret: 'Zapret denetimi', calendar: 'Takvim',
 };
 const overlaps = (s: number, e: number, c: Ctx) => s < c.to && e > c.from;
 
@@ -697,6 +702,17 @@ export async function buildAgenda(from: number, to: number, deps: AgendaDeps, no
       c.periodic.splice(before);
       sources.push({ id, label: LABELS[id], count: 0, error: errMsg(e), warning: null });
     }
+  }
+  // (i) Dış takvim: yalnız en az bir takvim bağlıysa (yoksa null — kaynak listesine hiç eklenmez)
+  try {
+    const cal = await calendarForAgenda(from, to);
+    if (cal) {
+      items.push(...cal.items);
+      c.periodic.push(...cal.periodic);
+      sources.push({ id: 'calendar', label: LABELS.calendar, count: cal.items.length + cal.periodic.length, error: null, warning: cal.warning });
+    }
+  } catch (e) {
+    sources.push({ id: 'calendar', label: LABELS.calendar, count: 0, error: errMsg(e), warning: null });
   }
   const panel: PeriodicJob[] = PANEL_PERIODIC.map(p => ({ ...p, source: 'panel', kind: 'periodic', next: null }));
   sources.push({ id: 'panel', label: 'Panelin periyodik işleri', count: panel.length, error: null, warning: null });
