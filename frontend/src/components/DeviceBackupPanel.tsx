@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import {
   HardDriveUpload, Loader2, CheckCircle2, XCircle, AlertTriangle, Copy, Power, Satellite, Monitor, Smartphone, Apple, Usb,
-  HardDrive, Trash2, Pause, Play, Check, X, FolderSync, ShieldCheck, Settings2, Link2, Info,
+  HardDrive, Trash2, Pause, Play, Check, X, FolderSync, ShieldCheck, Settings2, Link2, Info, ArchiveRestore, CloudUpload,
 } from 'lucide-react';
 import { postApi } from '../hooks/useApi';
 import { Modal, Panel, Select } from './ui';
@@ -26,6 +26,7 @@ interface SyncStatus {
   supported?: boolean; installed?: boolean; enabled?: boolean; active?: boolean; version?: string; apiOk?: boolean; apiError?: string;
   deviceId?: string; qr?: string; name?: string; nameOk?: boolean; ip?: string; port?: number;
   devices?: Device[]; folders?: Folder[]; pendingDevices?: PendingDevice[]; pendingFolders?: PendingFolder[]; targets?: Target[];
+  share?: { enabled: boolean; at: string; backups: boolean }; cloud?: { configured: boolean; on: boolean; roots: string[] };
 }
 interface Job {
   state: 'idle' | 'running' | 'done' | 'failed'; id?: string; cmd?: string; step?: string; pct?: number; msg?: string;
@@ -35,6 +36,17 @@ interface Job {
 const DAYS = [7, 30, 90, 180, 365];
 const FS_LABEL: Record<string, string> = { exfat: 'exFAT', vfat: 'FAT32', ntfs3: 'NTFS', fuseblk: 'NTFS', ext4: 'ext4' };
 const DISMISS_KEY = 'pi5.sync.jobDismissed';
+const LOW_FREE = 0.1; // backend sync.ts ile aynı: bu orandan az boş yer → uyarı
+const INTERNAL_ROOT = '/mnt/klyrix-share/Yedekler/';
+const USB_ROOT = /^\/mnt\/klyrix-usb\/([A-Za-z0-9_-]+)\/(.+)$/;
+// Klasörün ağ paylaşımındaki yeri: dahili → Yedekler paylaşımı (salt okunur), USB → diskin kendi paylaşımı
+function shareLoc(p: string): { share: string; rel: string } | null {
+  if (p.startsWith(INTERNAL_ROOT)) return { share: 'Yedekler', rel: p.slice(INTERNAL_ROOT.length) };
+  const m = USB_ROOT.exec(p);
+  return m ? { share: m[1], rel: m[2] } : null;
+}
+const uncOf = (at: string, l: { share: string; rel: string }) => `\\\\${at}\\${l.share}\\${l.rel.split('/').join('\\')}`;
+const smbOf = (at: string, l: { share: string; rel: string }) => `smb://${at}/${[l.share, ...l.rel.split('/')].map(encodeURIComponent).join('/')}`;
 
 function size(b?: number | null): string {
   if (b == null) return '—';
@@ -209,6 +221,8 @@ function JobBanner({ job, onDismiss }: { job: Job; onDismiss: () => void }) {
   );
 }
 
+const low = (t: Target) => t.mounted && !!t.size && t.free != null && t.free / t.size < LOW_FREE;
+
 function Targets({ targets }: { targets: Target[] }) {
   return (
     <div className="dv-targets">
@@ -216,7 +230,9 @@ function Targets({ targets }: { targets: Target[] }) {
         <div key={t.key} className="dv-target">
           {t.kind === 'internal' ? <HardDrive size={15} /> : <Usb size={15} />}
           <span className="dv-target-name">{targetLabel(t)}{t.mounted && t.fstype && t.kind === 'usb' ? ` (${FS_LABEL[t.fstype] || t.fstype})` : ''}</span>
-          <span className="dv-target-free">{t.mounted ? `${size(t.free)} boş / ${size(t.size)}` : t.kind === 'internal' ? 'bağlı değil' : 'takılı değil'}</span>
+          <span className={`dv-target-free${low(t) ? ' dv-bad' : ''}`}>
+            {t.mounted ? `${size(t.free)} boş / ${size(t.size)}${low(t) ? ' — dolmak üzere' : ''}` : t.kind === 'internal' ? 'bağlı değil' : 'takılı değil'}
+          </span>
         </div>
       ))}
     </div>
@@ -285,7 +301,8 @@ function OnView({ st, onChanged }: { st: SyncStatus; onChanged: () => void }) {
       {pd.length > 0 && <PendingDevices list={pd} onChanged={onChanged} />}
       {pf.length > 0 && <PendingFolders list={pf} targets={targets} onChanged={onChanged} />}
       <Devices list={devices} folders={folders} onChanged={onChanged} />
-      <Folders list={folders} targets={targets} onChanged={onChanged} />
+      <Folders list={folders} targets={targets} share={st.share} onChanged={onChanged} />
+      {folders.length > 0 && <CloudCard cloud={st.cloud} onChanged={onChanged} />}
       <h4 className="dv-h"><HardDrive size={14} /> Yedek alanı</h4>
       <Targets targets={targets} />
       {targets.some(t => t.mounted && t.fstype === 'vfat') && (
@@ -479,9 +496,10 @@ function folderState(f: Folder): { text: string; cls: string } {
   return { text: f.state || '—', cls: 'dv-chip-off' };
 }
 
-function Folders({ list, targets, onChanged }: { list: Folder[]; targets: Target[]; onChanged: () => void }) {
+function Folders({ list, targets, share, onChanged }: { list: Folder[]; targets: Target[]; share?: SyncStatus['share']; onChanged: () => void }) {
   const { sending, send } = usePost(onChanged);
   const [edit, setEdit] = useState<Folder | null>(null);
+  const [restore, setRestore] = useState<Folder | null>(null);
   const [remove, setRemove] = useState<Folder | null>(null);
   return (
     <section>
@@ -506,6 +524,7 @@ function Folders({ list, targets, onChanged }: { list: Folder[]; targets: Target
                     onClick={() => void send(`p-${f.id}`, '/sync/folders/update', { id: f.id, paused: false })}><Play size={14} /></button>
                 : <button className="dv-icon-btn" title="Duraklat" aria-label={`${f.label} duraklat`} disabled={!!sending}
                     onClick={() => void send(`p-${f.id}`, '/sync/folders/update', { id: f.id, paused: true })}><Pause size={14} /></button>}
+              <button className="dv-icon-btn" title="Geri yükle" aria-label={`${f.label} geri yükle`} onClick={() => setRestore(f)}><ArchiveRestore size={14} /></button>
               <button className="dv-icon-btn" title="Ayarlar" aria-label={`${f.label} ayarları`} onClick={() => setEdit(f)}><Settings2 size={14} /></button>
               <button className="dv-icon-btn" title="Yedeklemeyi bırak" aria-label={`${f.label} yedeklemeyi bırak`} onClick={() => setRemove(f)}><Trash2 size={14} /></button>
             </div>
@@ -513,7 +532,78 @@ function Folders({ list, targets, onChanged }: { list: Folder[]; targets: Target
         );
       })}
       {edit && <FolderModal folder={edit} onClose={() => setEdit(null)} onDone={() => { setEdit(null); onChanged(); }} />}
+      {restore && <RestoreModal folder={restore} share={share} onClose={() => setRestore(null)} />}
       {remove && <RemoveFolderModal folder={remove} onClose={() => setRemove(null)} onDone={() => { setRemove(null); onChanged(); }} />}
+    </section>
+  );
+}
+
+// Geri yükleme: yedekler ağ paylaşımından (Samba) okunur — dahili disk Yedekler paylaşımında salt okunur, USB disk kendi
+// paylaşımında. Eski sürümler klasördeki .stversions içinde (dosya adına tarih eklenmiş).
+function RestoreModal({ folder, share, onClose }: { folder: Folder; share?: SyncStatus['share']; onClose: () => void }) {
+  const loc = shareLoc(folder.path);
+  const at = share?.at || '';
+  const ready = !!share?.enabled && !!at && !!loc && (loc.share !== 'Yedekler' || share.backups);
+  return (
+    <Modal open onClose={onClose} title={`Geri yükle: ${folder.label}`} width={520}
+      actions={<button className="btn-outline btn-sm" onClick={onClose}>Kapat</button>}>
+      {!share?.enabled ? (
+        <div className="dv-note dv-note-warn" style={{ marginTop: 0 }}><AlertTriangle size={16} /><span>
+          Yedekler ağ paylaşımından açılır: önce <strong>Depolama → Ağ paylaşımı</strong>'nı açın. Paylaşım açılınca bu pencerede adresler görünür.
+        </span></div>
+      ) : !ready || !loc ? (
+        <div className="dv-note dv-note-info" style={{ marginTop: 0 }}><Info size={16} /><span>
+          Yedekler paylaşımı hazırlanıyor (yeni açıldıysa bir dakika içinde görünür). Bu klasör: <code>{folder.path}</code>
+        </span></div>
+      ) : (
+        <>
+          <p className="dv-help" style={{ marginTop: 0 }}>Yedeği bilgisayarınızın dosya yöneticisinde açıp istediğiniz dosyayı geri kopyalayın.</p>
+          <div className="dv-restore-row"><span>Windows</span><code className="dv-code">{uncOf(at, loc)}</code>
+            <button className="dv-copy" title="Kopyala" aria-label="Windows adresini kopyala" onClick={() => void copy(uncOf(at, loc))}><Copy size={13} /></button></div>
+          <div className="dv-restore-row"><span>Mac</span><code className="dv-code">{smbOf(at, loc)}</code>
+            <button className="dv-copy" title="Kopyala" aria-label="Mac adresini kopyala" onClick={() => void copy(smbOf(at, loc))}><Copy size={13} /></button></div>
+          <p className="dv-hint">
+            Windows: Dosya Gezgini'nin adres çubuğuna yapıştırın. Mac: Finder → <strong>Git → Sunucuya Bağlan</strong>. Kullanıcı adı ve
+            şifre ağ paylaşımınınkidir.{loc.share === 'Yedekler' ? ' Bu paylaşım salt okunurdur: yedekler yanlışlıkla değiştirilemez.' : ''}
+          </p>
+          <p className="dv-hint">
+            <strong>Eski sürümler</strong>: klasördeki <code>.stversions</code> içinde, dosya adına tarih eklenmiş olarak
+            (ör. <code>rapor~20261002-101500.docx</code>). Tarihi silip kopyalayın.
+          </p>
+        </>
+      )}
+    </Modal>
+  );
+}
+
+// Buluta da gönder: yedek kökleri (dahili Yedekler, USB Klyrix-Yedekler) Bulut Yedeği'nin klasör listesine eklenir —
+// her gece kendi kovanıza şifreli yüklenir (eski sürümler hariç; bulutta restic'in kendi anlık görüntüleri vardır).
+function CloudCard({ cloud, onChanged }: { cloud?: SyncStatus['cloud']; onChanged: () => void }) {
+  const { sending, send } = usePost(onChanged);
+  if (!cloud) return null;
+  return (
+    <section>
+      <h4 className="dv-h"><CloudUpload size={14} /> Buluta da gönder</h4>
+      <div className="dv-card">
+        <div className="dv-card-main">
+          {!cloud.configured
+            ? <span className="dv-meta">Bulut Yedeği bağlı değil: bu sayfanın üstündeki <strong>Bulut Yedeği</strong> bölümünden kendi kovanızı bağlayın, sonra buradan açın.</span>
+            : cloud.on
+              ? <span className="dv-meta">Cihaz yedekleri her gece Bulut Yedeği ile kendi kovanıza şifreli yüklenir (eski sürümler hariç).</span>
+              : <span className="dv-meta">Açınca cihaz yedekleri her gece Bulut Yedeği ile kendi kovanıza şifreli yüklenir: disk bozulsa da yedekleriniz kalır.</span>}
+        </div>
+        {cloud.configured && (cloud.on
+          ? <>
+              <span className="dv-chip dv-chip-ok">açık</span>
+              <button className="btn-outline btn-sm" disabled={!!sending} onClick={() => void send('c', '/sync/cloud', { enabled: false }, 'Cihaz yedekleri buluta gönderilmeyecek')}>
+                {sending ? <Loader2 size={13} className="spin" /> : <X size={13} />} Durdur
+              </button>
+            </>
+          : <button className="btn-primary btn-sm" disabled={!!sending || !cloud.roots.length}
+              onClick={() => void send('c', '/sync/cloud', { enabled: true }, 'Cihaz yedekleri bu gece buluta gönderilecek')}>
+              {sending ? <Loader2 size={13} className="spin" /> : <CloudUpload size={13} />} Buluta da gönder
+            </button>)}
+      </div>
     </section>
   );
 }

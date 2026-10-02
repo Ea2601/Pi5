@@ -211,7 +211,8 @@ export function makeHost(hostname = os.hostname()): string {
 const ARCHIVE_SEG = /\/eski-sistem-arsivi-[^/]*(\/|$)/;
 export function folderAllowed(real: string): boolean {
   if (ARCHIVE_SEG.test(real)) return false;
-  return /^\/mnt\/klyrix-share\/Paylasim(\/.*)?$/.test(real) || /^\/mnt\/klyrix-usb\/[^/]+(\/.*)?$/.test(real)
+  // Yedekler: cihaz yedekleri (sync.ts — Syncthing'in eski sürümleri .stversions vault.sh'de dışarıda kalır)
+  return /^\/mnt\/klyrix-share\/(Paylasim|Yedekler)(\/.*)?$/.test(real) || /^\/mnt\/klyrix-usb\/[^/]+(\/.*)?$/.test(real)
     || /^\/home\/[^/]+(\/.*)?$/.test(real) || /^\/srv\/[^/]+(\/.*)?$/.test(real);
 }
 export function checkFolders(raw: unknown, realpath: (p: string) => string = p => fs.realpathSync(p)): string[] {
@@ -225,7 +226,7 @@ export function checkFolders(raw: unknown, realpath: (p: string) => string = p =
     let real: string;
     try { real = realpath(p); } catch { throw new Error(`Klasör bulunamadı: ${p}`); }
     if (!folderAllowed(real) || (core && (real === core || real.startsWith(`${core}/`)))) {
-      throw new Error(`Bu klasör yedeklenemez: ${p} — yalnız paylaşım alanı (/mnt/klyrix-share/Paylasim), ağda paylaşılan USB diskler (/mnt/klyrix-usb/…), ev dizinleri (/home/…) ve /srv/…; eski sistem arşivleri hariç`);
+      throw new Error(`Bu klasör yedeklenemez: ${p} — yalnız paylaşım alanı (/mnt/klyrix-share/Paylasim), cihaz yedekleri (/mnt/klyrix-share/Yedekler), ağda paylaşılan USB diskler (/mnt/klyrix-usb/…), ev dizinleri (/home/…) ve /srv/…; eski sistem arşivleri hariç`);
     }
     if (!out.includes(real)) out.push(real);
   }

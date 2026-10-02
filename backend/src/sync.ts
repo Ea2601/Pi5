@@ -8,7 +8,7 @@
 //    panelde hedef disk seçilerek kabul edilir. Genel keşif, aktarıcılar, NAT/UPnP ve raporlar kapalı: sync.sh ilk açılıştan
 //    önce yazar, enforceOptions açılışta ve arada bir denetler.
 //  - Erişim: ev ağı + Ev VPN yöneticileri. Güvenlik duvarı: politikası drop olan giriş zincirlerine pi5_sync_in (share.ts
-//    deseni, aynı jump yerleşimi); Ev VPN misafirleri wgServer.ts'teki pi5_wgsrv ile 22000/21027'den düşürülür; WAN'dan
+//    deseni, aynı jump yerleşimi); Ev VPN misafirleri wgServer.ts'teki pi5_wgsrv izin listesiyle (yalnız DNS) düşürülür; WAN'dan
 //    pi5_wan düşürür. Güvenlik duvarı yeniden kurulunca Ev VPN'inin kural kancası (onWgRulesChanged) zinciri geri ekler.
 //  - Disk çıkarılınca o diskteki klasörler duraklatılır (kendiliğinden duraklatılanlar listesi), takılınca sürdürülür;
 //    kullanıcının elle duraklattığı klasöre dokunulmaz.
@@ -23,7 +23,8 @@ import { recordEvent, recordEventOnce } from './events';
 import { launchStorageJob, onStorageJobDone } from './storage';
 import { onWgRulesChanged } from './wgServer';
 import { registerHostsProvider } from './piholeLists';
-import { shareJumpPlan } from './share';
+import { shareJumpPlan, shareStatus, applyShareAccess } from './share';
+import { readConf as readVaultConf, saveSettings as saveVaultSettings } from './vault';
 import { isSatellite } from './role';
 
 const execFileP = promisify(execFile);
@@ -54,6 +55,8 @@ const DEVICE_ID = /^[A-Z2-7]{7}(-[A-Z2-7]{7}){7}$/;
 const DAYS_MIN = 1;
 const DAYS_MAX = 365;
 export const DEFAULT_DAYS = 30;
+// Hedefte bu orandan az boş yer kalınca uyarı (Syncthing %5'te durur: minDiskFree)
+export const LOW_FREE = 0.1;
 // Gizlilik ve ağ: Pi yalnız ev ağında / Ev VPN'inde doğrudan bağlantı kabul eder
 const WANT_OPTIONS = {
   globalAnnounceEnabled: false, relaysEnabled: false, natEnabled: false, urAccepted: -1, crashReportingEnabled: false,
@@ -79,6 +82,10 @@ export interface SyncStatus {
   deviceId: string; qr: string; name: string; nameOk: boolean; ip: string; port: number;
   devices: SyncDevice[]; folders: SyncFolder[]; pendingDevices: SyncPendingDevice[]; pendingFolders: SyncPendingFolder[];
   targets: SyncTarget[];
+  // Geri yükleme: ağ paylaşımı (Samba) açık mı, adres (sabit ad ya da IP), salt okunur Yedekler paylaşımı var mı
+  share: { enabled: boolean; at: string; backups: boolean };
+  // Bulut Yedeği (vault.ts): bağlı mı, yedek kökleri (dahili Yedekler + USB Klyrix-Yedekler) klasör listesinde mi
+  cloud: { configured: boolean; on: boolean; roots: string[] };
 }
 
 // ── sync.sh ──────────────────────────────────────────────────────────────────
@@ -225,6 +232,26 @@ export function targetOf(p: string): { key: string; mountpoint: string } | null 
   return m ? { key: `usb:${m[1]}`, mountpoint: `${USB_MNT}/${m[1]}` } : null;
 }
 
+// Yedek kökleri: bağlı ve var olan dahili Yedekler ile USB disklerdeki Klyrix-Yedekler (Bulut Yedeği'ne eklenen yollar)
+export function backupRoots(mounts = mountTable()): string[] {
+  const out: string[] = [];
+  if (mounts.has(SHARE_MNT) && fs.existsSync(INTERNAL_ROOT)) out.push(INTERNAL_ROOT);
+  for (const n of usbNames()) {
+    const r = `${USB_MNT}/${n}/${USB_DIR}`;
+    if (mounts.has(`${USB_MNT}/${n}`) && fs.existsSync(r)) out.push(r);
+  }
+  return out;
+}
+// Kök, Bulut Yedeği klasörlerinden biriyle (kendisi ya da üst klasörü, ör. USB diskin tamamı) kapsanıyor mu
+const covered = (folders: string[], r: string) => folders.some(f => r === f || r.startsWith(`${f}/`));
+function cloudState(mounts: Map<string, string>): SyncStatus['cloud'] {
+  const roots = backupRoots(mounts);
+  let c: { folders: string[] } | null = null;
+  try { c = readVaultConf(); } catch { c = null; }
+  if (!c) return { configured: false, on: false, roots };
+  return { configured: true, on: roots.length > 0 && roots.every(r => covered(c!.folders, r)), roots };
+}
+
 // Klasör adı: cihaz adı ve klasör etiketi diskte dizin olur. Türkçe harfler kalır; Windows / FAT'ın yasakladıkları,
 // denetim karakterleri, baştaki / sondaki nokta ve boşluklar atılır.
 export function safeName(s: string, fallback: string): string {
@@ -299,6 +326,8 @@ async function deviceQr(id: string): Promise<string> {
     p.stdout.on('data', (d: Buffer) => out.push(d));
     p.on('error', e => { clearTimeout(t); reject(e); });
     p.on('close', c => { clearTimeout(t); if (c === 0) resolve(Buffer.concat(out)); else reject(new Error(`qrencode ${c}`)); });
+    // Süreç girdiyi okumadan kapanırsa yazma EPIPE atar: dinleyicisiz 'error' panel servisini çökertir (sonuç close'tan gelir)
+    p.stdin.on('error', () => {});
     p.stdin.end(id);
   });
   qrCache = { id, data: `data:image/png;base64,${png.toString('base64')}` };
@@ -311,6 +340,7 @@ export async function syncStatus(fresh = false): Promise<SyncStatus> {
   const empty: SyncStatus = {
     supported: false, installed: false, enabled: false, active: false, version: '', apiOk: false, apiError: '', deviceId: '', qr: '',
     name: SYNC_DNS_NAME, nameOk: false, ip: '', port: SYNC_PORT, devices: [], folders: [], pendingDevices: [], pendingFolders: [], targets: [],
+    share: { enabled: false, at: '', backups: false }, cloud: { configured: false, on: false, roots: [] },
   };
   if (!isLinux || !fs.existsSync(SCRIPT)) return empty;
   if (!fresh && cache && Date.now() - cache.at < 3000) return cache.data;
@@ -320,6 +350,9 @@ export async function syncStatus(fresh = false): Promise<SyncStatus> {
     ...empty, supported: true, installed: kv.installed === '1', enabled: kv.enabled === '1', active: kv.active === '1',
     version: kv.version || '', targets: listTargets(mounts), ip: (await getLanIdentity().catch(() => null))?.ip || '',
   };
+  const sh = await shareStatus().catch(() => null);
+  data.share = { enabled: !!sh?.enabled, at: (sh?.nameOk ? sh.name : sh?.ip) || '', backups: !!sh?.backupDir };
+  data.cloud = cloudState(mounts);
   if (data.enabled && data.active) {
     try {
       const [cfg, pd, pf, conns, stats] = await Promise.all([
@@ -379,6 +412,7 @@ async function nft(script: string): Promise<void> {
     p.stderr.on('data', d => { se += d; });
     p.on('error', reject);
     p.on('close', c => (c === 0 ? resolve() : reject(new Error(se.trim() || `nft çıkış ${c}`))));
+    p.stdin.on('error', () => {}); // EPIPE (nft girdiyi okumadan çıktı): sonuç close'tan gelir
     p.stdin.end(script);
   });
 }
@@ -571,6 +605,21 @@ export async function updateFolder(body: { id?: unknown; days?: unknown; paused?
   done(null);
 }
 
+// Yedek köklerini Bulut Yedeği'nin klasör listesine ekler / çıkarır (gecelik, şifreli; Syncthing'in eski sürümleri
+// .stversions vault.sh'de dışarıda kalır). Üst klasörü seçili bir kök (ör. USB diskin tamamı) çıkarılamaz.
+export async function setCloud(raw: unknown): Promise<{ folders: number }> {
+  needActive();
+  if (typeof raw !== 'boolean') throw new Error('Geçersiz değer');
+  const c = readVaultConf();
+  if (!c) throw new Error("Önce Bulut Yedeği'ni bağlayın (bu sayfada, yukarıda)");
+  const roots = backupRoots();
+  if (raw && !roots.length) throw new Error('Henüz yedek klasörü yok — önce bir cihazın klasörünü kabul edin');
+  const folders = raw ? [...c.folders, ...roots.filter(r => !covered(c.folders, r))] : c.folders.filter(f => !roots.includes(f));
+  await saveVaultSettings({ folders });
+  await recordEvent('sync', raw ? "Cihaz yedekleri Bulut Yedeği'ne eklendi (gecelik, şifreli)" : "Cihaz yedekleri Bulut Yedeği'nden çıkarıldı");
+  return done({ folders: folders.length });
+}
+
 // Uyduya geçişi engeller: cihaz yedekleme ana cihazdadır
 export function syncBlocksSatellite(): string | null {
   return confEnabled() ? 'Cihaz yedekleme açık — önce kapatın (Yedekleme → Cihaz Yedekleme)' : null;
@@ -608,6 +657,12 @@ export async function watchTick(): Promise<void> {
         if (db?.state === 'error' && db.error) await recordEventOnce('sync', `Cihaz yedekleme «${f.label || f.id}»: ${db.error}`, 'warning', 1440);
       }
     }
+    // Doluluk: yedek klasörü olan bir hedefte boş yer %10'un altına indiyse (Syncthing %5'te durur) — 12 saatte bir
+    for (const t of listTargets(mounts)) {
+      if (!t.mounted || !t.size || t.free == null || t.free / t.size >= LOW_FREE) continue;
+      if (!folders.some(f => targetOf(f.path)?.key === t.key)) continue;
+      await recordEventOnce('sync', `Yedek diski dolmak üzere: ${t.kind === 'internal' ? 'dahili disk' : `USB ${t.name}`} (boş yer %10'un altında) — yer açın ya da eski sürüm süresini kısaltın`, 'warning', 720);
+    }
     // Ayardan silinmiş klasörler listeden düşer
     for (const id of [...auto]) if (!folders.some(f => f.id === id)) { auto.delete(id); changed = true; }
     if (changed) { writeAutoPaused(auto); cache = null; }
@@ -622,6 +677,8 @@ async function afterEnable(): Promise<void> {
   myIdCache = '';
   await applySyncAccess().catch(e => console.error('[cihaz-yedekleme] güvenlik duvarı:', e?.message || e));
   await enforceOptions().catch(() => {});
+  // Ağ paylaşımı açıksa salt okunur Yedekler paylaşımı (geri yükleme) görünsün
+  await applyShareAccess().catch(e => console.error('[cihaz-yedekleme] paylaşım:', e?.message || e));
   cache = null;
 }
 

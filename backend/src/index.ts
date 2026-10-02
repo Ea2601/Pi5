@@ -58,9 +58,9 @@ import { wgServerStatus, setServerEnabled, addPeer, updatePeerRole, deletePeer, 
 import { startReachWatch, noteReachResult, reachWatchState, REACH_WATCH_INTERVAL_H } from './wgWatch';
 import { storageStatus, storageJob, noteStorageJob, startArchive, startPrepare, startMigrate, startStorageWatch } from './storage';
 import { applyKiosk, kioskSupport } from './kiosk';
-import { shareStatus, enableShare, disableShare, setSharePassword, addUsbShare, removeUsbShare, startShareWatch } from './share';
+import { shareStatus, enableShare, disableShare, setSharePassword, addUsbShare, removeUsbShare, setTimeMachine, startShareWatch } from './share';
 import { syncStatus, enableSync, disableSync, acceptDevice, rejectDevice, removeDevice, acceptFolder, rejectFolder, removeFolder,
-  updateFolder, syncBlocksSatellite, startSyncWatch } from './sync';
+  updateFolder, setCloud, syncBlocksSatellite, startSyncWatch } from './sync';
 import { vaultStatus, vaultJob, noteVaultJob, connectVault, saveSettings, startBackup, listSnapshots, disableVault,
   startVaultWatch, vaultLeftover, vaultBlocksSatellite, resumeVault, restoreFetch, restorePreview, applyRestore, discardRestore,
   restoreFiles, listKeys, removeOldKey } from './vault';
@@ -4720,6 +4720,7 @@ app.post('/api/storage/share/disable', shareRoute(() => disableShare().then(() =
 app.post('/api/storage/share/password', shareRoute(req => setSharePassword(req.body?.password).then(() => ({}))));
 app.post('/api/storage/share/usb', shareRoute(req => addUsbShare(req.body?.part).then(name => ({ name }))));
 app.post('/api/storage/share/usb/remove', shareRoute(req => removeUsbShare(req.body?.name).then(() => ({}))));
+app.post('/api/storage/share/timemachine', shareRoute(req => setTimeMachine(req.body || {}).then(() => ({}))));
 startShareWatch();
 
 // Cihaz yedekleme (sync.ts → scripts/sync.sh, Syncthing): bilgisayar / telefon / tabletlerdeki klasörler Pi'nin diskine
@@ -4754,6 +4755,7 @@ app.post('/api/sync/folders/accept', syncRoute(req => acceptFolder(req.body || {
 app.post('/api/sync/folders/reject', syncRoute(req => rejectFolder(req.body || {}).then(() => ({}))));
 app.post('/api/sync/folders/remove', syncRoute(req => removeFolder(req.body?.id)));
 app.post('/api/sync/folders/update', syncRoute(req => updateFolder(req.body || {}).then(() => ({}))));
+app.post('/api/sync/cloud', syncRoute(req => setCloud(req.body?.enabled)));
 startSyncWatch();
 
 // ─── Parental Controls ───

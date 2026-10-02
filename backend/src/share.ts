@@ -39,7 +39,8 @@ export const SHARE_DNS_NAME = 'paylasim.lan';
 export interface ShareUsb { name: string; uuid: string; fstype: string; mounted: boolean; device: string }
 export interface ShareStatus {
   supported: boolean; installed: boolean; enabled: boolean; user: string;
-  smbd: boolean; wsdd: boolean; avahi: boolean; shareDir: string; usb: ShareUsb[]; host: string; ip: string;
+  smbd: boolean; wsdd: boolean; avahi: boolean; shareDir: string; backupDir: string; usb: ShareUsb[]; host: string; ip: string;
+  timeMachine: boolean; tmSizeGb: number; tmReady: boolean; // Mac Time Machine (share.sh timemachine): açık, üst sınır (0 = yok), paylaşım var
   name: string; nameOk: boolean; // nameOk: ad Pi-hole'da gerçekten çözülüyor
 }
 
@@ -76,7 +77,8 @@ async function run(args: string[], input?: string, timeout = 60000): Promise<{ k
 let cache: { at: number; data: ShareStatus } | null = null;
 export async function shareStatus(fresh = false): Promise<ShareStatus> {
   const empty: ShareStatus = {
-    supported: false, installed: false, enabled: false, user: '', smbd: false, wsdd: false, avahi: false, shareDir: '', usb: [], host: '', ip: '',
+    supported: false, installed: false, enabled: false, user: '', smbd: false, wsdd: false, avahi: false, shareDir: '', backupDir: '', usb: [], host: '', ip: '',
+    timeMachine: false, tmSizeGb: 0, tmReady: false,
     name: SHARE_DNS_NAME, nameOk: false,
   };
   if (!isLinux || !fs.existsSync(SCRIPT)) return empty;
@@ -85,6 +87,8 @@ export async function shareStatus(fresh = false): Promise<ShareStatus> {
   const data: ShareStatus = {
     supported: true, installed: kv.installed === '1', enabled: kv.enabled === '1', user: kv.user || '',
     smbd: kv.smbd === '1', wsdd: kv.wsdd === '1', avahi: kv.avahi === '1', shareDir: kv.share_dir || '',
+    backupDir: kv.backup_dir || '', // cihaz yedekleri (sync.sh): salt okunur Yedekler paylaşımı
+    timeMachine: kv.timemachine === '1', tmSizeGb: /^\d+$/.test(kv.tm_size || '') ? Number(kv.tm_size) : 0, tmReady: !!kv.tm_dir,
     usb: usb.map(l => {
       const [name, uuid, fstype, mounted, device] = l.split('|');
       return { name, uuid, fstype, mounted: mounted === '1', device: device || '' };
@@ -261,6 +265,21 @@ export async function removeUsbShare(name: unknown): Promise<void> {
   await run(['usb-remove', '--name', name], undefined, 60000);
   cache = null;
   await recordEvent('storage', `USB disk paylaşımı kaldırıldı: ${name} (disk güvenle ayrıldı)`);
+}
+
+// Mac Time Machine hedefi: paylaşım bölümünde TimeMachine paylaşımı (+ avahi _adisk). sizeGb: üst sınır, 0 = sınırsız.
+// Kapatmak yedekleri silmez.
+export async function setTimeMachine(body: { enabled?: unknown; sizeGb?: unknown }): Promise<void> {
+  if (typeof body.enabled !== 'boolean') throw new Error('Geçersiz değer');
+  const args = ['timemachine', body.enabled ? '--on' : '--off'];
+  if (body.enabled && body.sizeGb !== undefined) {
+    const n = Number(body.sizeGb);
+    if (!Number.isInteger(n) || n < 0 || n > 100000) throw new Error('Üst sınır 0 (sınırsız) ile 100000 GB arasında bir tam sayı olmalı');
+    args.push('--size', String(n));
+  }
+  await run(args, undefined, 60000);
+  cache = null;
+  await recordEvent('storage', body.enabled ? 'Mac Time Machine hedefi açıldı (TimeMachine paylaşımı)' : 'Mac Time Machine hedefi kapatıldı (yedekler diskte kaldı)');
 }
 
 // ── izleme ───────────────────────────────────────────────────────────────────

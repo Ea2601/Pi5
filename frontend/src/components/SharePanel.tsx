@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Share2, Monitor, Apple, Smartphone, Tv, KeyRound, Power, Loader2, XCircle, Usb, HardDrive, User, Copy, Link2 } from 'lucide-react';
+import { Share2, Monitor, Apple, Smartphone, Tv, KeyRound, Power, Loader2, XCircle, Usb, HardDrive, User, Copy, Link2, Archive } from 'lucide-react';
 import { postApi } from '../hooks/useApi';
 import { Modal, Panel } from './ui';
 import { toast } from '../toast';
@@ -11,7 +11,8 @@ import { copyText } from '../clipboard';
 export interface ShareUsb { name: string; uuid: string; fstype: string; mounted: boolean; device: string }
 export interface ShareStatus {
   supported?: boolean; installed?: boolean; enabled?: boolean; user?: string; smbd?: boolean; wsdd?: boolean; avahi?: boolean;
-  shareDir?: string; usb?: ShareUsb[]; host?: string; ip?: string;
+  shareDir?: string; backupDir?: string; usb?: ShareUsb[]; host?: string; ip?: string;
+  timeMachine?: boolean; tmSizeGb?: number; tmReady?: boolean; // Mac Time Machine hedefi
   name?: string; nameOk?: boolean; // sabit ad (Pi-hole yerel DNS, ör. paylasim.lan) ve gerçekten çözülüyor mu
 }
 export interface SharePartInfo { size: number | null; used: number | null; avail: number | null }
@@ -112,12 +113,21 @@ export function SharePanel({ st, busy, sharePart, usbPart, hasShareSpace, onChan
             <div className="sh-row"><User size={15} /><span>Kullanıcı adı <code>{st.user}</code> ve paylaşım şifresi. Evin dışından: Ev VPN'ine yönetici profiliyle bağlıyken aynı adresler.</span></div>
           </div>
 
+          <BackupTargets st={st} at={at} unc={unc} hasShareSpace={hasShareSpace} busy={busy} onChanged={onChanged} />
+
           <div className="sh-shares">
             <h4><HardDrive size={14} /> Paylaşılanlar</h4>
             {st.shareDir && (
               <div className="st-place-row">
                 <span className="st-place-label"><code>Paylasim</code> — veri diskinin paylaşım alanı <CopyButton text={unc('Paylasim')} /></span>
                 <span className="st-place-where">{sharePart ? `${size(sharePart.avail)} boş / ${size(sharePart.size)}` : st.shareDir}</span>
+                <span className="st-chip st-chip-ok">açık</span>
+              </div>
+            )}
+            {st.backupDir && (
+              <div className="st-place-row">
+                <span className="st-place-label"><code>Yedekler</code> — cihaz yedekleri, salt okunur (geri yükleme) <CopyButton text={unc('Yedekler')} /></span>
+                <span className="st-place-where">Yedekleme → Cihaz Yedekleme</span>
                 <span className="st-chip st-chip-ok">açık</span>
               </div>
             )}
@@ -142,6 +152,52 @@ export function SharePanel({ st, busy, sharePart, usbPart, hasShareSpace, onChan
       {modal === 'password' && <PasswordModal onClose={() => setModal('')} />}
       {modal === 'disable' && <DisableModal onClose={() => setModal('')} onDone={() => { setModal(''); onChanged(); }} />}
     </Panel>
+  );
+}
+
+// Bilgisayarın kendi yedeklemesi bu paylaşıma: Mac Time Machine (ayrı TimeMachine paylaşımı, Mac'te «Yedekleme Diski Seç»
+// listesinde görünür) ve Windows Dosya Geçmişi (ağ konumu olarak Paylasim içinde bir klasör).
+function BackupTargets({ st, at, unc, hasShareSpace, busy, onChanged }: {
+  st: ShareStatus; at: string; unc: (share: string) => string; hasShareSpace: boolean; busy: boolean; onChanged: () => void;
+}) {
+  const [size, setSize] = useState(st.tmSizeGb ? String(st.tmSizeGb) : '0');
+  const { sending, err, send } = usePost();
+  const sizeOk = /^\d{1,6}$/.test(size.trim());
+  const toggle = async (enabled: boolean) => {
+    const body: Record<string, unknown> = { enabled };
+    if (enabled) body.sizeGb = Number(size.trim());
+    if (await send('/storage/share/timemachine', body)) {
+      toast.success(enabled ? 'Time Machine açıldı — Mac\'te Sistem Ayarları → Time Machine → Yedekleme Diski Ekle' : 'Time Machine kapatıldı (yedekler diskte kaldı)');
+      onChanged();
+    }
+  };
+  return (
+    <div className="sh-connect">
+      <h4><Archive size={14} /> Bilgisayar yedeği</h4>
+      <div className="sh-row"><Apple size={15} /><span>
+        <strong>Mac Time Machine:</strong>{' '}
+        {!st.shareDir
+          ? <>veri diskinin paylaşım bölümü gerekir{hasShareSpace ? ' (bağlı değil)' : ' (Depolama → Diski hazırla)'}.</>
+          : st.timeMachine
+            ? <>açık{st.tmSizeGb ? ` (en çok ${st.tmSizeGb} GB)` : ' (sınır yok)'} — Mac'te <strong>Sistem Ayarları → Genel → Time Machine → Yedekleme Diski Ekle</strong> → <code>TimeMachine</code> ("{at}" üzerinde); paylaşım kullanıcı adı ve şifresiyle.
+              {!st.tmReady && <> Paylaşım hazırlanıyor.</>}
+              {' '}<button className="btn-outline btn-sm" disabled={busy || sending} onClick={() => void toggle(false)}>{sending ? <Loader2 size={13} className="spin" /> : <Power size={13} />} Kapat</button></>
+            : <>kapalı. Mac'iniz bu diske kendi kendine, saatlik ve sürüm sürüm yedeklenir.
+              <span className="sh-tm-form">
+                <label htmlFor="sh-tm-size">Üst sınır (GB, 0 = sınırsız)</label>
+                <input id="sh-tm-size" inputMode="numeric" value={size} onChange={e => setSize(e.target.value)} />
+                <button className="btn-primary btn-sm" disabled={busy || sending || !sizeOk} onClick={() => void toggle(true)}>
+                  {sending ? <Loader2 size={13} className="spin" /> : <Archive size={13} />} Time Machine'i aç
+                </button>
+              </span></>}
+      </span></div>
+      <div className="sh-row"><Monitor size={15} /><span>
+        <strong>Windows Dosya Geçmişi:</strong> önce paylaşımda bir klasör açın (ör. <code>{unc('Paylasim')}\DosyaGecmisi</code>). Sonra
+        <strong> Denetim Masası → Dosya Geçmişi → Sürücü seç → Ağ konumu ekle</strong> → bu klasör; paylaşım kullanıcı adı ve şifresiyle.
+        Windows belgelerinizi saatlik ve sürüm sürüm buraya yedekler.
+      </span></div>
+      {err && <div className="routing-apply routing-apply-err"><XCircle size={14} /><span>{err}</span></div>}
+    </div>
   );
 }
 

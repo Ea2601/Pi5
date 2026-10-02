@@ -64,6 +64,9 @@ T_SHORT=45
 LINE_POLL=${PI5_VAULT_LINE_POLL:-30}
 # Eski sistem arşivlerinin (storage.sh archive: /home/<kullanıcı>/eski-sistem-arsivi-*) sistem klasörleri: eski /etc,
 # /root, /opt kopyaları (parola özetleri, SSH / WireGuard anahtarları, eski panelin veritabanı) klasör yedeğine girmez
+# Cihaz yedekleme (Syncthing) yardımcıları: eski sürümler (.stversions — bulutta restic'in kendi anlık görüntüleri var,
+# iki kez yüklenmesin), yarım aktarımlar ve klasör işareti
+SYNC_EXCLUDES=(--exclude '.stversions' --exclude '.syncthing.*.tmp' --exclude '~syncthing~*.tmp' --exclude '.stfolder')
 ARCHIVE_EXCLUDES=(--exclude '/home/*/eski-sistem-arsivi-*/etc' --exclude '/home/*/eski-sistem-arsivi-*/root'
                   --exclude '/home/*/eski-sistem-arsivi-*/opt')
 
@@ -297,6 +300,7 @@ allowed_root() {
   esac
   case "$1" in
     /mnt/klyrix-share/Paylasim|/mnt/klyrix-share/Paylasim/*) return 0;;
+    /mnt/klyrix-share/Yedekler|/mnt/klyrix-share/Yedekler/*) return 0;;   # cihaz yedekleri (sync.sh)
     /mnt/klyrix-usb/?*|/home/?*|/srv/?*) return 0;;
   esac
   return 1
@@ -556,7 +560,7 @@ cmd_backup() {
     progress "Dosyalar" "$p_cfg_end" 90 "$sumf" < "$fifo" 9>&- &
     pp=$!
     rx 0 -r "$(repo files)" "${RL[@]}" backup --json --host "$host" --tag files --exclude-caches \
-      "${RCONC[@]}" --exclude "$CACHE" --exclude "$RUN" "${ARCHIVE_EXCLUDES[@]}" "${limit[@]}" "${folders[@]}" \
+      "${RCONC[@]}" --exclude "$CACHE" --exclude "$RUN" "${ARCHIVE_EXCLUDES[@]}" "${SYNC_EXCLUDES[@]}" "${limit[@]}" "${folders[@]}" \
       2>"$e" > "$fifo" &
     RP=$!
     line_watch "$RP" "$fskipf" 9>&- &

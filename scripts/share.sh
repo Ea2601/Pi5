@@ -20,6 +20,9 @@
 #   apply [--except "IP|AĞ ..."]        dışlama listesini kaydeder, ayarları yeniden üretir (değiştiyse Samba yenilenir)
 #   usb-add --part BÖLÜM                USB bölümünü silmeden bağlar ve paylaşır
 #   usb-remove --name AD                paylaşımı kaldırır ve bölümü güvenle ayırır (disk olduğu gibi kalır)
+#   timemachine --on [--size GB] | --off
+#                                       Mac Time Machine hedefi (TimeMachine paylaşımı, paylaşım bölümünde; GB = üst sınır,
+#                                       0 = sınırsız). Kapatmak yedekleri silmez.
 #   ensure                              açıksa: ayarları yeniden üretir, takılı ama bağlı olmayan USB paylaşımlarını bağlar
 set -uo pipefail
 export LC_ALL=C
@@ -36,6 +39,9 @@ AVAHI_SVC=/etc/avahi/services/klyrix-smb.service
 USB_MNT=/mnt/klyrix-usb
 USB_MARK='# klyrix-usb'
 SHARE_DIR=$SHARE_MNT/Paylasim
+TM_DIR=$SHARE_MNT/TimeMachine    # Mac Time Machine hedefi (timemachine --on)
+BACKUP_DIR=$SHARE_MNT/Yedekler   # cihaz yedekleri (sync.sh, Syncthing yazar): salt okunur paylaşılır (geri yükleme)
+SYNC_GROUP=klyrix-sync
 SMB_MARK='# Klyrix Gate tarafından yönetilir'
 OUR_GECOS='Klyrix Gate ag paylasimi'
 PKGS=(samba wsdd2 avahi-daemon)
@@ -98,9 +104,33 @@ share_block() { # AD YOL USB(0|1)
   fi
 }
 
+# Cihaz yedekleri: yalnız okunur. Dosyalar klyrix-sync'indir (Yedekler 2750): paylaşım kullanıcısı o grupla okur (force
+# group). Eski sürümler (.stversions) görünür; Syncthing'in işaret klasörü (.stfolder) hiç listelenmez (veto).
+backup_block() {
+  local u; u=$(conf_get user)
+  printf '\n[Yedekler]\n   path = %s\n   valid users = %s\n   force user = %s\n   force group = %s\n' "$BACKUP_DIR" "$u" "$u" "$SYNC_GROUP"
+  printf '   read only = yes\n   browseable = yes\n   hide dot files = no\n   veto files = /.stfolder/\n'
+  printf '   vfs objects = catia fruit streams_xattr\n   fruit:metadata = stream\n'
+}
+
+# Mac Time Machine: fruit:time machine (FULLSYNC) + isteğe bağlı üst sınır. Mac, ağdaki Time Machine diskini avahi'nin
+# _adisk kaydından bulur (render_avahi).
+tm_on() { [ "$(conf_get timemachine)" = 1 ] && is_mountpoint "$SHARE_MNT" && [ -d "$TM_DIR" ]; }
+tm_block() {
+  local u gb; u=$(conf_get user); gb=$(conf_get tm_size)
+  printf '\n[TimeMachine]\n   path = %s\n   valid users = %s\n   force user = %s\n   force group = %s\n' "$TM_DIR" "$u" "$u" "$u"
+  printf '   read only = no\n   browseable = yes\n   create mask = 0660\n   directory mask = 2770\n'
+  printf '   vfs objects = catia fruit streams_xattr\n   fruit:metadata = stream\n   fruit:time machine = yes\n'
+  [[ "$gb" =~ ^[1-9][0-9]*$ ]] && printf '   fruit:time machine max size = %sG\n' "$gb"
+  return 0
+}
+
 render_shares() {
   echo "$SMB_MARK (scripts/share.sh)"
   if is_mountpoint "$SHARE_MNT" && [ -d "$SHARE_DIR" ]; then share_block Paylasim "$SHARE_DIR" 0; fi
+  if is_mountpoint "$SHARE_MNT" && [ -d "$BACKUP_DIR" ] && getent group "$SYNC_GROUP" >/dev/null \
+     && ! usb_lines | awk '{print tolower($2)}' | grep -qx yedekler; then backup_block; fi
+  if tm_on && ! usb_lines | awk '{print tolower($2)}' | grep -qx timemachine; then tm_block; fi
   local uuid name fst
   while read -r uuid name fst; do [ -n "$name" ] && share_block "$name" "$USB_MNT/$name" 1; done < <(usb_lines)
   :
@@ -115,8 +145,12 @@ render_avahi() {
   <name replace-wildcards="yes">%h</name>
   <service><type>_smb._tcp</type><port>445</port></service>
   <service><type>_device-info._tcp</type><port>0</port><txt-record>model=RackMac</txt-record></service>
-</service-group>
 EOF
+  # Time Machine: Mac'in "Yedekleme Diski Seç" listesinde görünür (dk0 = paylaşım adı; adVF=0x82 Time Machine diski)
+  if tm_on; then
+    printf '  <service><type>_adisk._tcp</type><port>9</port><txt-record>sys=waMa=0,adVF=0x100</txt-record><txt-record>dk0=adVN=TimeMachine,adVF=0x82</txt-record></service>\n'
+  fi
+  echo '</service-group>'
 }
 
 # Ayarları yeniden üretir; bir şey değiştiyse yazar, doğrular ve (çalışıyorsa) Samba'ya yeniden okutur. 0 = değişti.
@@ -206,6 +240,10 @@ cmd_status() {
   kv wsdd "$(svc_active wsdd2 && echo 1 || echo 0)"
   kv avahi "$( [ -f "$AVAHI_SVC" ] && svc_active avahi-daemon && echo 1 || echo 0)"
   kv share_dir "$( is_mountpoint "$SHARE_MNT" && [ -d "$SHARE_DIR" ] && echo "$SHARE_DIR")"
+  kv timemachine "$(conf_get timemachine | grep -qx 1 && echo 1 || echo 0)"
+  kv tm_size "$(conf_get tm_size)"
+  kv tm_dir "$(tm_on && echo "$TM_DIR")"
+  kv backup_dir "$( is_mountpoint "$SHARE_MNT" && [ -d "$BACKUP_DIR" ] && getent group "$SYNC_GROUP" >/dev/null && echo "$BACKUP_DIR")"
   local uuid name fst dev
   while read -r uuid name fst; do
     [ -n "$name" ] || continue
@@ -279,7 +317,7 @@ usb_name() { # ETİKET YEDEK
   local base n i
   base=$(printf '%s' "${1:-$2}" | tr -c 'A-Za-z0-9_-' '-' | sed 's/--*/-/g; s/^-//; s/-$//' | cut -c1-24)
   [ -n "$base" ] || base=USB
-  case "$(printf '%s' "$base" | tr 'A-Z' 'a-z')" in paylasim|global|homes|printers|ipc) base="USB-$base";; esac
+  case "$(printf '%s' "$base" | tr 'A-Z' 'a-z')" in paylasim|yedekler|timemachine|global|homes|printers|ipc) base="USB-$base";; esac
   n=$base; i=2
   while [ -e "$USB_MNT/$n" ] || usb_lines | awk '{print $2}' | grep -qix -- "$n"; do n="$base-$i"; i=$((i + 1)); done
   printf '%s' "$n"
@@ -353,6 +391,28 @@ cmd_usb_remove() {
   kv result ok
 }
 
+cmd_timemachine() {
+  local on='' size=''
+  while [ $# -gt 0 ]; do case "$1" in --on) on=1; shift;; --off) on=0; shift;; --size) size=$2; shift 2;; *) die "bilinmeyen seçenek: $1";; esac; done
+  [ -n "$on" ] || die "--on ya da --off gerekli"
+  local u; u=$(conf_get user)
+  if [ "$on" = 1 ]; then
+    enabled && [ -n "$u" ] || die "önce ağ paylaşımını açın"
+    is_mountpoint "$SHARE_MNT" || die "Time Machine paylaşım bölümüne yazılır: veri diskinin paylaşım bölümü bağlı değil"
+    [ -z "$size" ] || [[ "$size" =~ ^[0-9]{1,6}$ ]] || die "üst sınır GB cinsinden tam sayı olmalı (0 = sınırsız)"
+    mkdir -p "$TM_DIR"; chown "$u:$u" "$TM_DIR"; chmod 2770 "$TM_DIR"
+    [ -n "$size" ] && conf_set tm_size "$((10#$size))"
+    conf_set timemachine 1
+    log "Time Machine açıldı ($TM_DIR, üst sınır: $( [ "$(conf_get tm_size)" -gt 0 ] 2>/dev/null && echo "$(conf_get tm_size) GB" || echo yok))"
+  else
+    conf_set timemachine 0
+    log "Time Machine kapatıldı (yedekler $TM_DIR içinde kaldı)"
+  fi
+  refresh_confs || true
+  # Kapatınca avahi kaydından _adisk kalksın (refresh_confs yalnız paylaşım açıkken avahi dosyasını yazar)
+  kv result ok
+}
+
 cmd_ensure() {
   if ! enabled; then kv enabled 0; return 0; fi
   local uuid name fst
@@ -371,8 +431,8 @@ cmd_ensure() {
 cmd=${1:-status}; shift || true
 case "$cmd" in
   status) cmd_status; exit 0;;
-  enable|disable|passwd|apply|usb-add|usb-remove|ensure) ;;
-  *) echo "kullanım: share.sh status|enable|disable|passwd|apply|usb-add|usb-remove|ensure" >&2; exit 2;;
+  enable|disable|passwd|apply|usb-add|usb-remove|timemachine|ensure) ;;
+  *) echo "kullanım: share.sh status|enable|disable|passwd|apply|usb-add|usb-remove|timemachine|ensure" >&2; exit 2;;
 esac
 [ "$(id -u)" = 0 ] || { echo "root gerekli" >&2; exit 1; }
 exec 9>"$LOCK"
@@ -399,5 +459,6 @@ case "$cmd" in
   apply) cmd_apply "$@";;
   usb-add) cmd_usb_add "$@";;
   usb-remove) cmd_usb_remove "$@";;
+  timemachine) cmd_timemachine "$@";;
   ensure) cmd_ensure;;
 esac

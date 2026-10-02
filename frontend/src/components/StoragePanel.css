@@ -116,6 +116,13 @@
 }
 .sh-row > svg { flex-shrink: 0; margin-top: 3px; color: var(--accent-color); }
 .sh-row span { min-width: 0; overflow-wrap: anywhere; }
+/* Time Machine üst sınırı + aç düğmesi (Bilgisayar yedeği) */
+.sh-tm-form { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; margin-top: 8px; }
+.sh-tm-form label { font-size: 12px; color: var(--text-secondary); }
+.sh-tm-form input {
+  width: 90px; padding: 6px 10px; border-radius: var(--radius-sm); background: var(--input-bg-soft);
+  border: 1px solid var(--panel-border); color: var(--text-primary); font-size: 13px;
+}
 .sh-row code, .sh-shares code { user-select: all; }
 /* Paylaşım adresi (sabit ad paylasim.lan) + kopyala düğmesi */
 .sh-addr {
