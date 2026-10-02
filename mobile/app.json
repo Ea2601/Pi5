@@ -1,0 +1,28 @@
+{
+  "expo": {
+    "name": "Klyrix Yedek",
+    "slug": "klyrix-backup",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "dark",
+    "backgroundColor": "#0b1120",
+    "ios": {
+      "supportsTablet": true,
+      "infoPlist": {
+        "NSLocalNetworkUsageDescription": "Fotoğraflarınızı evinizdeki Klyrix Gate cihazına yedeklemek için yerel ağa erişilir.",
+        "NSAppTransportSecurity": {
+          "NSAllowsLocalNetworking": true,
+          "NSExceptionDomains": { "yedek.lan": { "NSExceptionAllowsInsecureHTTPLoads": true } }
+        }
+      }
+    },
+    "android": {},
+    "plugins": [
+      ["expo-camera", { "cameraPermission": "Pi panelindeki eşleştirme QR kodunu okumak için kamera kullanılır.", "microphonePermission": false, "recordAudioAndroid": false, "barcodeScannerEnabled": true }],
+      ["expo-media-library", { "photosPermission": "Fotoğraf ve videolarınızı Klyrix Gate'e yedeklemek için okunur; hiçbiri silinmez ya da değiştirilmez.", "savePhotosPermission": false, "isAccessMediaLocationEnabled": true, "granularPermissions": ["photo", "video"] }],
+      ["expo-build-properties", { "android": { "usesCleartextTraffic": true } }],
+      "expo-background-task",
+      "expo-secure-store"
+    ]
+  }
+}

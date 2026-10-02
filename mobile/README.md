@@ -40,12 +40,12 @@ Mağaza yayını Apple Developer / Google Play Console hesabınızla yapılır (
 
 1. Paket kimliklerini kendi hesabınıza göre verin: `KLYRIX_IOS_BUNDLE_ID=com.sizin.yedek`, `KLYRIX_ANDROID_PACKAGE=com.sizin.yedek`
    (varsayılan `com.klyrix.gatebackup`, `app.config.ts`).
-2. `npm install -g eas-cli && eas login && eas init` (Expo hesabı; proje kimliği `app.config.ts`'e eklenir).
+2. `npm install -g eas-cli && eas login && eas init` (Expo hesabı; proje kimliği `app.json`'a eklenir — ilk `eas build` de kendisi ekler).
 3. Android'i mağazasız denemek için: `eas build -p android --profile preview` → APK'yi telefona kurun.
 4. Mağaza: `eas build -p ios --profile production` ve `eas build -p android --profile production`, sonra `eas submit`.
 
 iOS notları: yerel ağ izni (`NSLocalNetworkUsageDescription`) ve yalnız yerel adreslere şifresiz HTTP (`NSAllowsLocalNetworking`,
-`yedek.lan` istisnası) `app.config.ts`'te. İlk cihaz denemesinde Pi'ye IP adresiyle bağlanılamazsa ATS ayarını gözden geçirin.
+`yedek.lan` istisnası) `app.json`'da. İlk cihaz denemesinde Pi'ye IP adresiyle bağlanılamazsa ATS ayarını gözden geçirin.
 Android: şifresiz HTTP `expo-build-properties` ile açık (`usesCleartextTraffic`).
 
 ## Durum
