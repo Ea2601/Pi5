@@ -210,3 +210,19 @@
    Tembel sayfa CSS'i bu katmandan sonra yüklenir: eşit özgüllükte bileşen kuralı kazanacağından tam :root.light-theme. */
 /* PortWizard.css .pw-item */
 :root.light-theme .pw-item { background: rgba(15, 23, 42, 0.025); }
+
+/* ── 8. Ağ Ajandası (AgendaPanel.css): kaynak renkleri açık zeminde okunur koyu tonlar (-700/-800; etiket yazısı 11 px, ≥ 4.5:1) ──
+   Tembel sekme CSS'i bu katmandan sonra yüklenir: .ag-panel'deki token bloğunu eşit özgüllük ezer, tam :root.light-theme gerekir. */
+:root.light-theme .ag-panel {
+  --agenda-parental: 157, 23, 77;
+  --agenda-traffic: 7, 89, 133;
+  --agenda-cron: 109, 40, 217;
+  --agenda-system: 51, 65, 85;
+  --agenda-vault: 6, 95, 70;
+  --agenda-speedtest: 146, 64, 14;
+  --agenda-quota: 154, 52, 18;
+  --agenda-zapret: 185, 28, 28;
+  --agenda-panel: 71, 85, 105;
+}
+/* "şu an" rozeti: yeşil mürekkep %10 yeşil zeminde 4.1:1 kalıyordu — yüzey zemini + yeşil çizgi */
+:root.light-theme .ag-badge.is-now { background: var(--bg-surface); border-color: rgba(22, 163, 74, 0.35); }

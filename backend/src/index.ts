@@ -51,8 +51,9 @@ import { authGate, registerAuthRoutes } from './auth';
 import { validateSchedule, validateCommand, syncCronJobs, readJobStatuses, readSystemCron, syncCronOnStartup, runningJobs, jobOutput, startJobNow } from './cronSync';
 import { validateListValue, normalizeListValue, syncPiholeLists, lastListSync, externalPiholeEntries, startSystemHostsWatch,
   ADLIST_PRESETS, setAdlistPreset, ensureDefaultAdlistPreset } from './piholeLists';
-import { applyZapret, zapretStatus, startBlockcheck, blockcheckRunning, zapretInstalled, zapretInstallIssue, zapretBrief, cleanDpiDomain, removeAutoHost, runDpiCheck, removeSiteStrategy, startAutoMethod } from './zapret';
+import { applyZapret, zapretStatus, startBlockcheck, blockcheckRunning, zapretInstalled, zapretInstallIssue, zapretBrief, cleanDpiDomain, removeAutoHost, runDpiCheck, removeSiteStrategy, startAutoMethod, ZAPRET_CHECK_HOUR } from './zapret';
 import type { ZapretApplyResult } from './zapret';
+import { registerAgendaRoutes } from './agenda';
 import { unboundStatus, applyUnboundSettings, validateUnboundSettings, savedUnboundSettings } from './unbound';
 import { recordEvent, recordEventOnce, recordVersionChange, serviceLabel } from './events';
 import { wgServerStatus, setServerEnabled, addPeer, updatePeerRole, deletePeer, peerConfig, reapplyWgServer,
@@ -2788,6 +2789,8 @@ app.get('/api/speedtest/history', async (req, res) => {
 // dakika; 0 = kapalı); yoksa SPEEDTEST_INTERVAL_MIN env; yoksa 360. Ayar değişince
 // PUT /api/settings rescheduleSpeedtest()'i çağırır → restart gerekmeden uygulanır.
 let speedtestTimer: ReturnType<typeof setTimeout> | null = null;
+// Sıradaki otomatik ölçümün anı (ms) — yalnız okunur (Ağ Ajandası, agenda.ts); zamanlamaya etkisi yok. Kapalıyken null.
+let speedtestNextAt: number | null = null;
 
 async function getSpeedtestIntervalMin(): Promise<number> {
   try {
@@ -2822,12 +2825,14 @@ async function runAutoSpeedtest(): Promise<void> {
 // Ayar değişince tekrar çağrılır → aralık restart'sız güncellenir. 0/negatif = kapalı.
 async function rescheduleSpeedtest(): Promise<void> {
   if (speedtestTimer) { clearTimeout(speedtestTimer); speedtestTimer = null; }
+  speedtestNextAt = null;
   if (!isLinux) return;
   const min = await getSpeedtestIntervalMin();
   if (min <= 0) {
     console.log('[SpeedTest] Otomatik ölçüm kapalı (aralık = 0).');
     return;
   }
+  speedtestNextAt = Date.now() + min * 60 * 1000;
   speedtestTimer = setTimeout(async () => {
     await runAutoSpeedtest();
     rescheduleSpeedtest();
@@ -2851,6 +2856,9 @@ if (isLinux) {
   }, 120000);
   rescheduleSpeedtest();
 }
+
+// Ağ Ajandası (agenda.ts): zamanlanmış işlerin salt okunur listesi — GET /api/agenda, uyduda 409.
+registerAgendaRoutes(app, { speedtestNextAt: () => speedtestNextAt, speedtestIntervalMin: getSpeedtestIntervalMin });
 
 // ─── Metric history recorder — sample every 5s, keep ~11 min (10-min window + margin) ───
 // Runs independent of any client so history accumulates continuously; the dashboard reads it
@@ -6574,7 +6582,7 @@ const server = app.listen(Number(port), bindHost, () => {
   let dpiCheckDay = '';
   setInterval(() => {
     const now = new Date();
-    if (now.getHours() !== 4 || now.toDateString() === dpiCheckDay) return;
+    if (now.getHours() !== ZAPRET_CHECK_HOUR || now.toDateString() === dpiCheckDay) return;
     dpiCheckDay = now.toDateString();
     void runDpiCheck();
   }, 10 * 60 * 1000);

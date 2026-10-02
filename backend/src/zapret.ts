@@ -321,6 +321,9 @@ export function removeAutoHost(domain: string): boolean {
 // çalışılır: Pi'nin kendi trafiği de öğrenme işaretini alır, bu sitelere atlatma uygulanır. Yanıt gelmezse (zaman aşımı,
 // bağlantı sıfırlandı) operatör yöntemini değiştirmiş olabilir → Bildirimler'e yazılır, Blockcheck önerilir. Başarı sessiz.
 export type DpiCheck = { at: number; skipped?: string; results: { domain: string; ok: boolean; detail: string }[] };
+// Denetimin saati (yerel): index.ts'teki 10 dakikalık zamanlayıcı bu saatte günde bir kez çalıştırır; Ağ Ajandası (agenda.ts)
+// da buradan okur — gösterim kodla ayrışmasın.
+export const ZAPRET_CHECK_HOUR = 4;
 let lastCheck: DpiCheck | null = null;
 let checking: Promise<DpiCheck> | null = null;
 export function runDpiCheck(): Promise<DpiCheck> {

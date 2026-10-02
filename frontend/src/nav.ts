@@ -2,7 +2,7 @@ import {
   LayoutDashboard, Network, Route, Terminal, Server,
   ShieldBan, Zap, Flame, Globe, ShieldAlert, BookOpen,
   Activity, Search, Gauge, Bell, Wrench, Users, Sliders,
-  Database, Settings, MonitorSmartphone, TerminalSquare, Lightbulb, Monitor, Radio, Layers, HardDrive, History,
+  Database, Settings, MonitorSmartphone, TerminalSquare, Lightbulb, Monitor, Radio, Layers, HardDrive, History, CalendarDays,
   type LucideIcon,
 } from 'lucide-react';
 import type { TabId } from './types';
@@ -37,6 +37,7 @@ export const NAV_TABS: NavTab[] = [
   { id: 'parental', label: 'Ebeveyn Kontrol', icon: Users, mainOnly: true },
   { id: 'devicecontrol', label: 'Cihaz Yönetimi', icon: MonitorSmartphone, group: 'Cihaz & Trafik', mainOnly: true },
   { id: 'trafficcontrol', label: 'Trafik Kontrol', icon: Sliders, mainOnly: true },
+  { id: 'agenda', label: 'Ağ Ajandası', icon: CalendarDays, mainOnly: true },
   { id: 'nettools', label: 'Ağ Araçları', icon: Wrench },
   { id: 'alerts', label: 'Bildirimler', icon: Bell },
   { id: 'vps', label: 'WireGuard', icon: Server, group: 'Altyapı', mainOnly: true },
@@ -93,3 +94,6 @@ export function openBandwidthLimits(): void {
   try { sessionStorage.setItem(BANDWIDTH_TAB_KEY, 'limits'); } catch { /* depolama yok: Canlı İzleme açılır */ }
   window.location.hash = '#bandwidth';
 }
+// Sistem & Log sayfasının açılışta göstereceği sekme (tek seferlik; Ağ Ajandası'nın cron satırları "cron" yazar). Yoksa
+// eskisi gibi Terminal Logları.
+export const MAINTENANCE_TAB_KEY = 'pi5-maintenance-tab';

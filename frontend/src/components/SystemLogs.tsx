@@ -5,6 +5,7 @@ import { Panel, Badge } from './ui';
 import type { CronJob } from '../types';
 import { toast } from '../toast';
 import { startSystemUpdate } from '../systemUpdate';
+import { MAINTENANCE_TAB_KEY } from '../nav';
 
 interface LogResponse {
   logs: string[];
@@ -22,7 +23,13 @@ const fmtRun = (s: string) => {
 type MaintTab = 'logs' | 'cron';
 
 export function SystemLogs() {
-  const [activeTab, setActiveTab] = useState<MaintTab>('logs');
+  const [activeTab, setActiveTab] = useState<MaintTab>(() => {
+    try {
+      const t = sessionStorage.getItem(MAINTENANCE_TAB_KEY);
+      if (t) { sessionStorage.removeItem(MAINTENANCE_TAB_KEY); return t === 'cron' ? 'cron' : 'logs'; }
+    } catch { /* depolama yok */ }
+    return 'logs';
+  });
 
   const tabs: { id: MaintTab; label: string; icon: React.ReactNode }[] = [
     { id: 'logs', label: 'Terminal Logları', icon: <Terminal size={14} /> },
