@@ -64,6 +64,11 @@ export const initDb = () => {
       location TEXT DEFAULT '', status TEXT DEFAULT 'disconnected',
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP
     )`);
+    // Hazır WireGuard yapılandırmasıyla kurulan tüneller (wgImport.ts): kind = 'import' (SSH bilgisi yok; panelin kurduğu VPS
+    // 'ssh'), wg_conf = temizlenmiş yapılandırma (wgConf.ts; özel anahtar dahil — tablo normal yedeğe girmez, yalnız isteğe bağlı
+    // gizli yedeğe).
+    db.run(`ALTER TABLE vps_servers ADD COLUMN kind TEXT DEFAULT 'ssh'`, () => {});
+    db.run(`ALTER TABLE vps_servers ADD COLUMN wg_conf TEXT DEFAULT ''`, () => {});
 
     db.run(`CREATE TABLE IF NOT EXISTS routing_rules (
       id INTEGER PRIMARY KEY AUTOINCREMENT,

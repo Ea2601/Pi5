@@ -5,6 +5,9 @@ import rateLimit from 'express-rate-limit';
 import { initDb, dbAll, dbRun, dbGet, dbInsert } from './db';
 import { setupWireGuardVPS, testSSHConnection, executeSetupStep, addWireGuardClient, connectPi5ToVps, disconnectPi5FromVps, removeWireGuardClient, removeWireGuardClients } from './ssh';
 import { readVpsTunnels, readTunnelTransfer, validVpsId, staleTunnels, setTunnelStale } from './vpsTunnel';
+import { importTunnel, connectImported, replaceImportedConf, removeImportedTunnel, importedExitIp, importedAddressOwner,
+  syncImportGuard, startImportGuardWatch, IMPORT_KIND } from './wgImport';
+import { importSummary } from './wgConf';
 import { syncRemoteAccess, panelAccessConflict, clientTunnelIp, cidrOverlaps, localNetworks, RELAY_NET, PANEL_TUNNEL_URL, type RelayRow } from './remoteAccess';
 import { validateFwRule, fwRuleToNft, accessCheck, isPanelLockoutForAll, blocksWholeLan, describeRule } from './firewall';
 import { fail2banSettingsView, validateFail2banSettings, applyFail2banSettings, ensureFail2ban, recentBans, unbanIp, lanNetworks } from './fail2ban';
@@ -148,6 +151,7 @@ const writeLimiter = rateLimit({
   message: { error: 'Yazma limiti aşıldı.' },
 });
 app.use('/api/vps/setup', writeLimiter);
+app.use(['/api/vps/import', '/api/vps/:id/config'], writeLimiter);
 app.use('/api/backup/import', writeLimiter);
 app.use('/api/terminal/execute', writeLimiter);
 
@@ -979,17 +983,22 @@ app.put('/api/devices/:mac/profile', async (req, res) => {
 
 // ─── VPS Servers ───
 // status: VPS'in kendisi (kurulum / erişilebilirlik — DB). tunnel: Pi ↔ VPS tünelinin canlı durumu (el sıkışma yaşı;
-// Linux değilse null).
+// Linux değilse null). kind: 'ssh' (panelin kurduğu VPS) ya da 'import' (hazır yapılandırma, wgImport.ts — import_info: adres,
+// sunucu, aralıklar; yapılandırmanın kendisi / özel anahtar yanıta girmez).
 app.get('/api/vps/list', async (_req, res) => {
   try {
-    const servers = await dbAll('SELECT id, ip, username, location, status, created_at FROM vps_servers ORDER BY id') as any[];
+    const servers = await dbAll('SELECT id, ip, username, location, status, created_at, kind, wg_conf FROM vps_servers ORDER BY id') as any[];
     const tunnels = await readVpsTunnels(servers.map(s => Number(s.id))).catch(() => new Map());
     // Uzaktan yönetim: VPS başına panel erişimi açık istemci sayısı (arayüz öbür VPS'lerin anahtarlarını önceden kilitler).
     const pa = new Map((await dbAll('SELECT vps_id, COUNT(*) AS n FROM wg_clients WHERE panel_access = 1 GROUP BY vps_id')
       .catch(() => []) as any[]).map(r => [Number(r.vps_id), Number(r.n)]));
-    res.json({ servers: servers.map(s => {
+    res.json({ servers: servers.map(({ wg_conf, ...s }) => {
       const t = tunnels.get(Number(s.id));
-      return { ...s, tunnel: t ? { state: t.state, handshakeAge: t.handshakeAge } : null, panel_access: pa.get(Number(s.id)) || 0 };
+      const kind = s.kind === IMPORT_KIND ? IMPORT_KIND : 'ssh';
+      return {
+        ...s, kind, ...(kind === IMPORT_KIND ? { import_info: importSummary(wg_conf) } : {}),
+        tunnel: t ? { state: t.state, handshakeAge: t.handshakeAge } : null, panel_access: pa.get(Number(s.id)) || 0,
+      };
     }) });
   } catch (e: any) {
     res.status(500).json({ error: e.message });
@@ -1079,6 +1088,46 @@ app.post('/api/vps/add', async (req, res) => {
   }
 });
 
+// Hazır WireGuard yapılandırmasıyla bağlan (wgImport.ts): kullanıcının .conf'u temizlenir (wgConf.ts) ve wg_vps<id> tüneli olarak
+// kurulur; yönlendirme kuralları onu da çıkış olarak görür. Gövde: { name?, config }. Yanıtta uygulanmayan / değiştirilen
+// satırlar (notes), ilk el sıkışmanın gelip gelmediği (handshake) ve tünelin internet trafiğini taşıyıp taşımadığı (fullTunnel).
+// Yeni kimliğe yönlenen kural olamaz: yönlendirme yeniden uygulanmaz.
+app.post('/api/vps/import', async (req, res) => {
+  if (isSatellite()) return res.status(409).json({ error: 'Bu cihaz uydu — VPS tünelleri ana cihazdadır' });
+  try {
+    const r = await importTunnel(req.body?.name, req.body?.config);
+    if (!r.ok) {
+      if (r.status === 500) await recordEvent('vps', `Hazır yapılandırmayla tünel kurulamadı: ${r.error}`, 'warning');
+      return res.status(r.status).json({ error: r.error });
+    }
+    await recordEvent('vps', `Hazır yapılandırmayla tünel kuruldu: ${r.label}${r.handshake ? '' : ' — sunucu henüz yanıt vermedi'}`);
+    res.json({ success: true, id: r.id, handshake: r.handshake, notes: r.notes, fullTunnel: r.fullTunnel });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message || 'Kurulamadı' });
+  }
+});
+
+// Hazır yapılandırmayı değiştir (ör. sağlayıcıda sunucu değişti): kimlik ve bu tünele yönlenen kurallar korunur. Gövde:
+// { config, name? } (name verilmezse ad değişmez). applied: tünel yeni yapılandırmayla yeniden kuruldu; tünel kesikse yalnız
+// kaydedilir, bağlanınca kullanılır. Yeniden kurulamazsa eski yapılandırma geri yüklenir (hata iletisinde yazar).
+app.put('/api/vps/:id/config', async (req, res) => {
+  const id = validVpsId(req.params.id);
+  if (id === null) return res.status(400).json({ error: 'Geçersiz kayıt' });
+  try {
+    const r = await replaceImportedConf(id, req.body?.name, req.body?.config);
+    // Tünel yeniden kurulduysa (yeni ya da geri yüklenen eski yapılandırmayla) wg-quick down/up tablo rotalarını silmiştir.
+    if (r.ok ? r.applied : r.status === 500) await applyAllRoutingRules().catch((e: any) => console.error('Routing yeniden uygulanamadı:', e.message));
+    if (!r.ok) {
+      if (r.status === 500) await recordEvent('vps', `Hazır yapılandırma değiştirilemedi (#${id}): ${r.error}`, 'warning');
+      return res.status(r.status).json({ error: r.error });
+    }
+    await recordEvent('vps', `Hazır yapılandırma değiştirildi: ${r.label}${r.applied ? '' : ' (tünel kesik — bağlanınca kullanılır)'}`);
+    res.json({ success: true, applied: r.applied, handshake: r.handshake, notes: r.notes });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message || 'Kaydedilemedi' });
+  }
+});
+
 app.post('/api/vps/setup', async (req, res) => {
   const { ip, username, password, location } = req.body;
   if (!ip || !username) {
@@ -1090,8 +1139,9 @@ app.post('/api/vps/setup', async (req, res) => {
       return res.status(400).json({ success: false, error: `SSH bağlantısı başarısız: ${connTest.message}` });
     }
     // Aynı IP'ye yeniden kurulum aynı kaydı kullanır (eskiden her deneme yeni kayıt açıyordu: başarısız denemeler panelde
-    // "hata" durumunda ayrı VPS kartları olarak kalıyordu). Kurulum sürüyorsa ikinci deneme başlatılmaz.
-    const existing: any = await dbGet('SELECT id FROM vps_servers WHERE ip = ? ORDER BY id LIMIT 1', [ip]);
+    // "hata" durumunda ayrı VPS kartları olarak kalıyordu). Kurulum sürüyorsa ikinci deneme başlatılmaz. Hazır yapılandırmayla
+    // kurulan kayıt (aynı sunucuya ait olsa da) kullanılmaz: onun tüneli ve yapılandırması ayrıdır.
+    const existing: any = await dbGet(`SELECT id FROM vps_servers WHERE ip = ? AND COALESCE(kind, 'ssh') != ? ORDER BY id LIMIT 1`, [ip, IMPORT_KIND]);
     if (existing && setupJobs.get(Number(existing.id))?.overall === 'running') {
       return res.status(409).json({ success: false, error: 'Bu VPS için kurulum zaten sürüyor' });
     }
@@ -1142,6 +1192,10 @@ app.get('/api/vps/:id/setup-status', async (req, res) => {
   });
 });
 
+// Hazır yapılandırmayla kurulan tünelin (wgImport.ts) sunucusu panelin değil: SSH ile yapılan işler (kurulum adımı, istemci,
+// onarım) bu kayıtlarda reddedilir.
+const NOT_MANAGED = 'Bu tünel hazır yapılandırmayla kuruldu — sunucu panelin yönetiminde değil (SSH bilgisi yok)';
+
 // Legacy per-step endpoint (kept for compatibility)
 app.post('/api/vps/:id/steps', async (req, res) => {
   const { step } = req.body;
@@ -1149,6 +1203,7 @@ app.post('/api/vps/:id/steps', async (req, res) => {
   try {
     const server: any = await dbGet('SELECT * FROM vps_servers WHERE id = ?', [req.params.id]);
     if (!server) return res.status(404).json({ status: 'error', message: 'Sunucu bulunamadı' });
+    if (server.kind === IMPORT_KIND) return res.status(409).json({ status: 'error', message: NOT_MANAGED, duration: '0s' });
     const result = await executeSetupStep(
       { ip: server.ip, username: server.username, password: server.password || undefined }, step
     );
@@ -1173,6 +1228,7 @@ app.post('/api/vps/:id/clients', async (req, res) => {
   try {
     const server: any = await dbGet('SELECT * FROM vps_servers WHERE id = ?', [req.params.id]);
     if (!server) return res.status(404).json({ error: 'Sunucu bulunamadı' });
+    if (server.kind === IMPORT_KIND) return res.status(409).json({ error: `${NOT_MANAGED} — istemci (QR) eklenemez` });
 
     // Find next available IP index (avoid collisions after deletions)
     const existing: any[] = await dbAll('SELECT ip FROM wg_clients WHERE vps_id = ?', [req.params.id]);
@@ -1245,6 +1301,10 @@ app.put('/api/vps/:id/clients/:clientId/panel-access', async (req, res) => {
       const nets = [...await lanNetworks().catch(() => [] as string[]), ...await localNetworks().catch(() => [] as string[])];
       const clash = nets.find(n => cidrOverlaps(n, RELAY_NET));
       if (clash) return res.status(409).json({ error: `Ev ağı (${clash}) VPS tünel ağıyla (${RELAY_NET}) çakışıyor — uzaktan yönetim açılamaz` });
+      // Hazır yapılandırmayla kurulan bir tünelin Pi'deki adresi bu istemcininkiyle aynıysa (wgImport.ts) Pi o adresi kendisinin
+      // sayar: istemcinin paketleri düşer.
+      const owner = await importedAddressOwner(tunIp).catch(() => null);
+      if (owner) return res.status(409).json({ error: `Bu istemcinin adresi (${tunIp}) hazır yapılandırmayla kurulan ${owner} tünelinin Pi'deki adresiyle aynı — uzaktan yönetim açılamaz` });
     }
     const server: any = await dbGet('SELECT ip, location FROM vps_servers WHERE id = ?', [vpsId]).catch(() => null);
     const vpsLabel = server ? `${server.location || 'VPS'} (${server.ip})` : `#${vpsId}`;
@@ -1307,6 +1367,14 @@ app.get('/api/vps/:id/internet-check', async (req, res) => {
   try {
     const server: any = await dbGet('SELECT * FROM vps_servers WHERE id = ?', [req.params.id]);
     if (!server) return res.status(404).json({ error: 'Sunucu bulunamadı' });
+    if (server.kind === IMPORT_KIND) {
+      // Hazır yapılandırma: sunucuya SSH yok — çıkış IP'si Pi'den tünel üzerinden ölçülür; bölünmüş tünelde (internet trafiği
+      // bu tünelden çıkmaz) ölçülmez. Kayıt durumu (status) bu denetimle değişmez.
+      const s = importSummary(server.wg_conf);
+      const x = s?.full_tunnel ? await importedExitIp(Number(server.id))
+        : { publicIp: '', note: s ? 'Bölünmüş tünel — ölçülmez' : 'Kayıtlı yapılandırma okunamadı' };
+      return res.json({ kind: IMPORT_KIND, publicIp: x.publicIp, fullTunnel: !!s?.full_tunnel, note: x.note || '' });
+    }
 
     const { NodeSSH } = require('node-ssh');
     const ssh = new NodeSSH();
@@ -1369,6 +1437,7 @@ app.post('/api/vps/:id/auto-repair', async (req, res) => {
   try {
     const server: any = await dbGet('SELECT * FROM vps_servers WHERE id = ?', [req.params.id]);
     if (!server) return res.status(404).json({ error: 'Sunucu bulunamadı' });
+    if (server.kind === IMPORT_KIND) return res.status(409).json({ success: false, error: NOT_MANAGED, repairs: [] });
 
     const { NodeSSH } = require('node-ssh');
     const ssh = new NodeSSH();
@@ -1632,6 +1701,15 @@ app.post('/api/vps/:id/connect', async (req, res) => {
   try {
     const server: any = await dbGet('SELECT * FROM vps_servers WHERE id = ?', [req.params.id]);
     if (!server) return res.status(404).json({ error: 'Sunucu bulunamadı' });
+    if (server.kind === IMPORT_KIND) {
+      // Hazır yapılandırma (wgImport.ts): SSH yok — kayıtlı yapılandırmayla tünel yeniden kurulur. Yanıt SSH yoluyla aynı biçimde.
+      const label = `${server.location || 'VPS'} (${server.ip})`;
+      const r = await connectImported(Number(server.id));
+      if (r.ok) await applyAllRoutingRules().catch((e: any) => console.error('Routing yeniden uygulanamadı:', e.message));
+      await recordEvent('vps', r.ok ? `VPS tüneli bağlandı: ${label}` : `Tünel kurulamadı: ${label} — ${r.error}`, r.ok ? 'info' : 'warning');
+      return res.json(r.ok ? { success: true, tunnel: true, message: 'Tünel aktif' }
+        : { success: true, tunnel: false, tunnelError: r.error.replace(/^Tünel açılamadı: /, ''), message: 'Tünel kurulamadı' });
+    }
 
     // First verify VPS is reachable via SSH
     const connTest = await testSSHConnection({ ip: server.ip, username: server.username, password: server.password || undefined });
@@ -1718,7 +1796,7 @@ app.get('/api/vps/:id/routing-usage', async (req, res) => {
 
 app.delete('/api/vps/:id', async (req, res) => {
   try {
-    const server: any = await dbGet('SELECT ip, username, password, location FROM vps_servers WHERE id = ?', [req.params.id]);
+    const server: any = await dbGet('SELECT ip, username, password, location, kind FROM vps_servers WHERE id = ?', [req.params.id]);
     // Disconnect Pi5 tunnel before deleting
     await disconnectPi5FromVps(Number(req.params.id));
     // Panelden eklenen istemciler VPS'ten de kaldırılır (kayıtları aşağıda silinir; kalsalar panelde görünmeden bağlanmayı
@@ -1743,6 +1821,10 @@ app.delete('/api/vps/:id', async (req, res) => {
     await dbRun(`UPDATE domain_routing SET exit_node = 'isp' WHERE exit_node = ?`, [String(req.params.id)]);
     await dbRun('DELETE FROM wg_clients WHERE vps_id = ?', [req.params.id]);
     await dbRun('DELETE FROM vps_servers WHERE id = ?', [req.params.id]);
+    // Hazır yapılandırma: özel anahtarı taşıyan dosya Pi'den silinir, koruma tablosu kalan tünellere göre yazılır (wgImport.ts).
+    if (server?.kind === IMPORT_KIND) {
+      await removeImportedTunnel(Number(req.params.id)).catch((e: any) => console.error('[wg-import] silinemedi:', e?.message || e));
+    }
     await applyAllRoutingRules().catch((e: any) => console.error('Routing yeniden uygulanamadı:', e.message));
     await syncRelay().catch((e: any) => console.error('[uzaktan yönetim] uygulanamadı:', e.message));
     const moved = [...usage.block, ...usage.isp];
@@ -5894,6 +5976,9 @@ const server = app.listen(Number(port), bindHost, () => {
       if (f2b && !f2b.ok) await recordEventOnce('fail2ban', `Fail2Ban ayarları uygulanamadı: ${f2b.error || 'bilinmeyen hata'}`, 'warning', 360);
     }
     if (!isSatellite()) {
+      // Hazır yapılandırmayla kurulan tünellerin koruma tablosu (wgImport.ts) tüneller geri kurulmadan güncel olsun: tünelin
+      // PreUp'ı bu dosyayı yükler.
+      await syncImportGuard().catch((e: any) => console.error('[wg-import] koruma tablosu yazılamadı:', e?.message || e));
       await restoreTunnelsAndRouting();
       await applyPortForwards(); // internet kartı açıksa port yönlendirmeleri (nft tablosu açılışta yoktur)
     }
@@ -5974,6 +6059,8 @@ const server = app.listen(Number(port), bindHost, () => {
   }, 10 * 60 * 1000);
   // Cihaz engelleri (nft tablosu açılışta yoktur; pi5-gw-restore da yükler — burada DB'deki güncel liste yazılır).
   void reapplyBlockedDevices();
+  // Hazır yapılandırmayla kurulan tünellerin koruma tablosu (wgImport.ts): kaybolursa dakikada bir yeniden yüklenir.
+  startImportGuardWatch();
   // Ağ haritası: cihazların kablolu / Wi-Fi ayrımı için arka planda ARP yanıt süresi ölçümü (linkProbe.ts). Taban çizgisi
   // Pi'nin kabloyla bağlı olduğu ağ geçidi; Pi'nin çıkışı kablosuzsa taban çizgisi alınmaz. Kurulum Wi-Fi'ı istemcileri
   // ölçülmez (kesin bilinir), modem ve Pi'nin kendisi de.

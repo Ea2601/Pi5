@@ -21,6 +21,7 @@ import { execFile, spawn } from 'child_process';
 import { promisify } from 'util';
 import { dbAll, dbGet, dbRun, dbInsert } from './db';
 import { isLinux, getCurrentExternalIp, getLanIdentity, listWireguardTunnels, readNetModeState, wanActive, activeUplink } from './system';
+import { importSummary, orderProbeTunnels } from './wgConf';
 
 const execFileP = promisify(execFile);
 export const WG_IFACE = 'wg_pi';
@@ -494,11 +495,18 @@ async function probeCleanup(): Promise<void> {
   await runInput('nft', ['-f', '-'], 'table inet pi5_wgprobe\ndelete table inet pi5_wgprobe\n').catch(() => {});
 }
 
+// Hazır yapılandırmayla kurulan tüneller (wgImport.ts): arayüz → internet trafiğini taşıyor mu.
+async function importedScope(): Promise<Map<string, boolean>> {
+  const rows = await dbAll(`SELECT id, wg_conf FROM vps_servers WHERE kind = 'import'`).catch(() => [] as any[]);
+  return new Map(rows.map(r => [`wg_vps${Number(r.id)}`, !!importSummary(r.wg_conf)?.full_tunnel]));
+}
+
 async function externalProbe(publicIp: string): Promise<ReachExternal> {
   const untested = (reason: string, via = ''): ReachExternal => ({ status: 'untested', via, reason, sent: 0, received: 0 });
   if (!publicIp) return untested('Evin dış IP adresi alınamadı');
-  // Son el sıkışması 3 dk içinde olan ilk VPS tüneli (deneme paketlerini internete o çıkarır)
-  const tunnels = (await listWireguardTunnels().catch(() => [])).filter(t => t.up);
+  // Son el sıkışması 3 dk içinde olan ilk VPS tüneli (deneme paketlerini internete o çıkarır). Panelin kendi VPS tünelleri
+  // önce; hazır yapılandırmayla kurulanlardan yalnız internet trafiğini taşıyanlar (wgConf.ts orderProbeTunnels).
+  const tunnels = orderProbeTunnels((await listWireguardTunnels().catch(() => [])).filter(t => t.up), await importedScope());
   let iface = '';
   for (const t of tunnels) {
     const hs = await execOut('wg', ['show', t.iface, 'latest-handshakes']);

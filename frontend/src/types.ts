@@ -42,6 +42,19 @@ export interface VpsServer {
   tunnel?: TunnelInfo | null;
   // Uzaktan yönetim: panel erişimi açık istemci sayısı (yalnız tek VPS'te > 0 olabilir).
   panel_access?: number;
+  // 'import': hazır WireGuard yapılandırmasıyla kurulan tünel (backend wgImport.ts) — sunucu panelin değil: SSH, istemci (QR)
+  // ve VPS denetimi yok. Eski backend alanı göndermez: 'ssh' sayılır.
+  kind?: 'ssh' | 'import';
+  import_info?: VpsImportInfo | null;
+}
+
+// İçe aktarılan tünelin gizli olmayan özeti (backend wgConf.ts importSummary; null = kayıt okunamadı).
+export interface VpsImportInfo {
+  address: string;       // Pi'nin tünel adresi (/32)
+  endpoint: string;      // sunucu adres:port
+  allowed_ips: string[]; // tünelin taşıdığı IPv4 aralıkları
+  full_tunnel: boolean;  // internet trafiğini taşıyabilir (bölünmüş tünel değil)
+  mtu: number | null;
 }
 
 export interface TrafficRule {

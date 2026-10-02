@@ -8,11 +8,14 @@
 #   - /etc/nftables.d/pi5-ap.conf     : kurulum Wi-Fi'ı (80/tcp giriş sayfasına, bu ağdan / bu ağa iletim yok)
 #   - /etc/nftables.d/pi5-relay.conf  : uzaktan yönetim süzgeci (yalnız panel erişimi açık VPS istemcileri; özellik
 #                                       kapalıyken dosya yoktur — backend/src/remoteAccess.ts)
+#   - /etc/nftables.d/pi5-wgext.conf  : hazır yapılandırmayla kurulan tünellerden gelen yeni bağlantıları düşürür (böyle
+#                                       tünel yokken dosya yoktur — backend/src/wgImport.ts)
 # Dosyaları backend yazar ve her açılışta yeniden yazar (pi5-ap.conf'u net-mode.sh yazar, pi5-net-guard her açılışta
 # yeniden yükler); bu betik yalnız son hallerini erkenden yükler. Hatalar günlüğe yazılır, açılışı durdurmaz.
 set -u
 log() { logger -t pi5-gw-restore "$*" 2>/dev/null || true; }
-for f in /etc/nftables.d/pi5-wgnat.conf /etc/nftables.d/device-block.conf /etc/nftables.d/pi5-ap.conf /etc/nftables.d/pi5-relay.conf; do
+for f in /etc/nftables.d/pi5-wgnat.conf /etc/nftables.d/device-block.conf /etc/nftables.d/pi5-ap.conf /etc/nftables.d/pi5-relay.conf \
+  /etc/nftables.d/pi5-wgext.conf; do
   [ -s "$f" ] || continue
   out=$(nft -f "$f" 2>&1) || log "yüklenemedi: $f: $out"
 done

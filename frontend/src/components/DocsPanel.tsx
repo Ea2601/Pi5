@@ -427,6 +427,29 @@ function WireguardDoc() {
 4. Bağlantı durumu panelde görünür`}</CodeBlock>
       </DocBlock>
 
+      <DocBlock title="Hazır yapılandırmayla bağlanma">
+        <p>VPN sağlayıcınızın (Mullvad, Proton …), başkasının ya da şirketinizin WireGuard sunucusu için sunucuya bir şey kurulmaz:
+          WireGuard → Sunucular → <strong>Config ile bağlan</strong>'da sağlayıcının verdiği <code>.conf</code> içeriği yapıştırılır ya da
+          dosyadan yüklenir. Tünel bir VPS gibi kart olarak görünür ve Routing'de çıkış olarak seçilir; "tünel düşerse" seçimi, durum
+          uyarıları ve açılışta yeniden bağlanma aynı şekilde çalışır.</p>
+        <table className="doc-table">
+          <thead><tr><th>Yapılandırmada</th><th>Pi'de</th></tr></thead>
+          <tbody>
+            <tr><td>AllowedIPs = 0.0.0.0/0</td><td>Pi'nin trafiği tünele kendiliğinden verilmez; hangi trafiğin çıkacağını Routing kuralları seçer</td></tr>
+            <tr><td>Yalnız bazı aralıklar (ör. şirket ağı)</td><td>Bölünmüş tünel: yalnız o aralıklara giden trafik bu tünelden çıkabilir</td></tr>
+            <tr><td>DNS</td><td>Uygulanmaz — Pi'nin DNS'i (Pi-hole) değişmez</td></tr>
+            <tr><td>PreUp / PostUp / PreDown / PostDown</td><td>Uygulanmaz — Pi'de komut çalıştırılmaz</td></tr>
+            <tr><td>Address (ör. /24)</td><td>İlk IPv4 adres /32 olarak; ev ağıyla çakışan adres reddedilir</td></tr>
+            <tr><td>IPv6 adres ve aralıklar</td><td>Uygulanmaz (yönlendirme IPv4)</td></tr>
+            <tr><td>PersistentKeepalive</td><td>25 sn (tünel durumu el sıkışmayla ölçülür)</td></tr>
+          </tbody>
+        </table>
+        <p>Sunucu panelin olmadığı için bu tünellerden Pi'ye ve ev ağına <strong>yeni bağlantı açılamaz</strong> (giden trafik ve yanıtları
+          geçer); kendi VPS'lerinizin tünellerinde bu kısıt yoktur. İstemci (QR), SSH denetimi ve otomatik onarım yalnız kendi
+          VPS'lerinizdedir. Sağlayıcıda sunucu değişince kartta <strong>Yapılandırmayı değiştir</strong> ile yenisi yapıştırılır, tünele
+          yönlenen kurallar korunur. Tek sunuculu (<code>[Peer]</code>) standart WireGuard yapılandırması gerekir; AmneziaWG desteklenmez.</p>
+      </DocBlock>
+
       <DocBlock title="WireGuard Ayarları">
         <table className="doc-table">
           <thead><tr><th>Ayar</th><th>Açıklama</th></tr></thead>

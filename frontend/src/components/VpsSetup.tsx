@@ -1,7 +1,7 @@
 import {
   Server, Lock, Globe, Loader2, CheckCircle, AlertTriangle, Trash2, Plus,
   Wifi, Settings, Activity, Network, Eye, EyeOff, Copy, X, QrCode, Users,
-  Home, Plug, Unplug, RefreshCw, ChevronDown, FileKey
+  Home, Plug, Unplug, RefreshCw, ChevronDown, FileKey, Upload, Pencil, ShieldCheck
 } from 'lucide-react';
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { useApi, getApi, postApi, putApi, deleteApi } from '../hooks/useApi';
@@ -353,6 +353,8 @@ function QrModal({ client, onClose }: { client: WgClient; onClose: () => void })
 interface InternetStatus {
   internet: boolean; dns: boolean; forwarding: boolean;
   wireguard: boolean; nat: boolean; publicIp: string; allGood: boolean;
+  // Hazır yapılandırma (kind 'import'): SSH denetimi yok — yalnız Pi'den tünel üzerinden ölçülen çıkış IP'si ve nedeni (note).
+  kind?: string; fullTunnel?: boolean; note?: string;
 }
 
 interface RepairResult {
@@ -405,6 +407,119 @@ function InfoRow({ label, tone, title, sub, children }: { label: string; tone?: 
   );
 }
 
+// ─── Hazır yapılandırma (backend wgImport.ts / wgConf.ts) ───
+// "Config ile bağlan" paneli ve kartın "Yapılandırmayı değiştir" penceresi aynı formu kullanır: metin yapıştırılır ya da .conf
+// dosyası tarayıcıda okunur. Panel yapılandırmayı güvenli biçimde uygular; uygulanmayan / değiştirilen satırlar bildirilir.
+const CONF_MAX_BYTES = 16 * 1024;
+const CONF_PLACEHOLDER = `[Interface]
+PrivateKey = …
+Address = 10.2.0.2/32
+
+[Peer]
+PublicKey = …
+AllowedIPs = 0.0.0.0/0
+Endpoint = vpn.ornek.com:51820`;
+const showConfNotes = (notes: unknown) => {
+  if (Array.isArray(notes) && notes.length) toast.info(`Uygulanmayan / değiştirilen: ${notes.join(' · ')}`, { duration: 15000 });
+};
+
+function WgConfForm({ initialName = '', submitLabel, busyLabel, onSubmit, onCancel }: {
+  initialName?: string; submitLabel: string; busyLabel: string;
+  onSubmit: (name: string, config: string) => Promise<void>; // hata fırlatırsa formda gösterilir
+  onCancel: () => void;
+}) {
+  const [name, setName] = useState(initialName);
+  const [text, setText] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+  const fileRef = useRef<HTMLInputElement>(null);
+  const readFile = (f: File | undefined) => {
+    if (!f) return;
+    if (f.size > CONF_MAX_BYTES) { setErr('Dosya çok büyük (en çok 16 KB) — WireGuard yapılandırması mı?'); return; }
+    f.text().then(t => {
+      setText(t);
+      setErr('');
+      if (!name.trim()) setName(f.name.replace(/\.conf$/i, '').slice(0, 60));
+    }, () => setErr('Dosya okunamadı'));
+  };
+  const submit = async () => {
+    if (!text.trim() || busy) return;
+    setBusy(true);
+    setErr('');
+    try { await onSubmit(name.trim(), text); } catch (e) { setErr(errText(e, 'Uygulanamadı')); }
+    setBusy(false);
+  };
+  return (
+    <div className="wg-conf">
+      <div className="form-group">
+        <label><Server size={14} /><span>Ad</span></label>
+        <input type="text" placeholder="ör. Mullvad Stockholm" value={name} maxLength={60}
+          onChange={e => setName(e.target.value)} disabled={busy} />
+      </div>
+      <div className="form-group">
+        <label><FileKey size={14} /><span>WireGuard yapılandırması (.conf)</span></label>
+        <textarea className="wg-conf-text" rows={10} spellCheck={false} autoComplete="off" aria-label="WireGuard yapılandırması"
+          placeholder={CONF_PLACEHOLDER} value={text} onChange={e => setText(e.target.value)} disabled={busy} />
+        <div className="wg-conf-tools">
+          <input ref={fileRef} type="file" accept=".conf,text/plain" hidden
+            onChange={e => { readFile(e.target.files?.[0]); e.target.value = ''; }} />
+          <button type="button" className="wg-btn wg-btn-sm" onClick={() => fileRef.current?.click()} disabled={busy}>
+            <Upload size={12} /> Dosyadan yükle
+          </button>
+          <span className="wg-sub">Sağlayıcının verdiği .conf dosyası ya da metni</span>
+        </div>
+      </div>
+      <p className="wg-conf-note">
+        <ShieldCheck size={14} />
+        <span>Panel yapılandırmayı güvenli biçimde uygular: Pi'nin trafiği bu tünele kendiliğinden verilmez — hangi sitenin, uygulamanın
+          ya da cihazın bu tünelden çıkacağını Routing kuralları belirler. DNS ve PostUp / PreUp gibi komut satırları uygulanmaz.
+          Sunucu tarafından Pi'ye ve ev ağınıza yeni bağlantı açılamaz.</span>
+      </p>
+      {err && <div className="wg-err">{err}</div>}
+      <div className="wg-conf-actions">
+        <button className="btn-primary" onClick={submit} disabled={busy || !text.trim()}>
+          {busy ? <><Loader2 size={16} className="spin" /> {busyLabel}</> : <><Plug size={16} /> {submitLabel}</>}
+        </button>
+        <button className="btn-outline" onClick={onCancel} disabled={busy}>Vazgeç</button>
+      </div>
+    </div>
+  );
+}
+
+// Kartın "Yapılandırmayı değiştir" penceresi: kimlik ve bu tünele yönlenen kurallar korunur. Yapıştırılan metin kaybolmasın diye
+// dışarı tıklayınca kapanmaz.
+function ReplaceConfModal({ server, onClose, onDone }: { server: VpsServer; onClose: () => void; onDone: () => void }) {
+  return (
+    <div style={{
+      position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.7)',
+      display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000,
+    }}>
+      <div className="glass-panel" role="dialog" aria-modal="true" aria-label="Yapılandırmayı değiştir"
+        style={{ padding: 24, maxWidth: 560, width: '92%', maxHeight: '92vh', overflowY: 'auto' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+          <h3 style={{ fontSize: 16, display: 'flex', alignItems: 'center', gap: 8 }}>
+            <Pencil size={18} /> Yapılandırmayı değiştir
+          </h3>
+          <button className="icon-btn icon-btn-sm" onClick={onClose} aria-label="Kapat"><X size={14} /></button>
+        </div>
+        <p className="subtitle" style={{ marginBottom: 14 }}>
+          Bu tünele yönlenen kurallar korunur. Tünel açıksa yeni yapılandırmayla yeniden kurulur (birkaç saniye kesinti);
+          kurulamazsa eskisi geri yüklenir. Tünel kesikse yalnız kaydedilir.
+        </p>
+        <WgConfForm initialName={server.location || ''} submitLabel="Kaydet ve uygula" busyLabel="Uygulanıyor…" onCancel={onClose}
+          onSubmit={async (name, config) => {
+            const r = await putApi(`/vps/${server.id}/config`, { name, config });
+            toast.success(!r.applied ? 'Kaydedildi — tünel bağlanınca kullanılacak'
+              : r.handshake ? 'Yeni yapılandırma uygulandı' : 'Yeni yapılandırma uygulandı — sunucunun yanıtı bekleniyor');
+            showConfNotes(r.notes);
+            onDone();
+            onClose();
+          }} />
+      </div>
+    </div>
+  );
+}
+
 function VpsCard({ server, onConnect, onDisconnect, onDelete, onRefresh, tunnelNonce, panelAuth, panelLockedBy }: {
   server: VpsServer; onConnect: () => Promise<void>; onDisconnect: () => Promise<void>; onDelete: () => void; onRefresh: () => void;
   tunnelNonce: number; panelAuth: string | null; panelLockedBy: string | null;
@@ -424,6 +539,11 @@ function VpsCard({ server, onConnect, onDisconnect, onDelete, onRefresh, tunnelN
   const [busy, setBusy] = useState<'connect' | 'disconnect' | null>(null);
   const [now, setNow] = useState(() => Date.now());
   const refreshTunnel = () => setTunnelPoll(k => k + 1);
+  // Hazır yapılandırmayla kurulan tünel (backend wgImport.ts): sunucu panelin değil — SSH denetimi, onarım ve istemciler yok;
+  // çıkış IP'si Pi'den tünel üzerinden ölçülür, yapılandırma karttan değiştirilir.
+  const imported = server.kind === 'import';
+  const info = server.import_info;
+  const [editing, setEditing] = useState(false);
 
   // İstemciler (açılır liste)
   const [showClients, setShowClients] = useState(false);
@@ -565,15 +685,18 @@ function VpsCard({ server, onConnect, onDisconnect, onDelete, onRefresh, tunnelN
   return (
     <div className={`wg-card wg-t-${headTone}`}>
       <div className="wg-head">
-        <div className="wg-avatar" aria-hidden="true"><Server size={18} /></div>
+        <div className="wg-avatar" aria-hidden="true">{imported ? <FileKey size={18} /> : <Server size={18} />}</div>
         <div className="wg-title">
           <strong>{title}</strong>
-          <span>{server.ip} · {server.username}</span>
+          {imported
+            ? <span title={`${info?.endpoint || server.ip} — hazır yapılandırma (Config ile bağlan)`}>{server.ip} · config</span>
+            : <span>{server.ip} · {server.username}</span>}
         </div>
         <span className={`wg-pill wg-t-${headTone}`} title={badge?.title || 'Tünel durumu okunuyor'}>
           <i className={`wg-dot wg-t-${headTone}`} aria-hidden="true" />{st ? TUNNEL_TEXT[st] : 'Okunuyor…'}
         </span>
-        <button className="wg-icon-btn is-danger" onClick={onDelete} title="VPS'i sil" aria-label={`${title} VPS'ini sil`}>
+        <button className="wg-icon-btn is-danger" onClick={onDelete} title={imported ? 'Tüneli sil' : "VPS'i sil"}
+          aria-label={imported ? `${title} tünelini sil` : `${title} VPS'ini sil`}>
           <Trash2 size={14} />
         </button>
       </div>
@@ -589,6 +712,21 @@ function VpsCard({ server, onConnect, onDisconnect, onDelete, onRefresh, tunnelN
             ? (rate ? <span className="wg-mono">↓ {fmtRate(rate.down)} · ↑ {fmtRate(rate.up)}</span> : <span className="wg-sub">ölçülüyor…</span>)
             : <span className="wg-sub">{tunnel ? 'tünel kapalı' : 'okunuyor…'}</span>}
         </InfoRow>
+        {imported ? (
+          <>
+            <InfoRow label="Kapsam" sub={info ? `Pi'nin tünel adresi ${info.address}` : ''}
+              title={info ? `Bu tünelin taşıyabildiği trafik: ${info.allowed_ips.join(', ')} — hangisinin gerçekten bu tünelden çıkacağını Routing kuralları belirler` : undefined}>
+              {!info ? <span className="wg-sub">yapılandırma okunamadı</span>
+                : info.full_tunnel ? 'Tüm trafik' : <span className="wg-mono wg-ellipsis">yalnız {info.allowed_ips.join(', ')}</span>}
+            </InfoRow>
+            <InfoRow label="Çıkış IP'si" title="Tünelden çıkan trafiğin internette göründüğü adres (Pi'den tünel üzerinden ölçülür)">
+              {ns?.publicIp ? <span className="wg-mono">{ns.publicIp}</span>
+                : <span className="wg-sub wg-ellipsis" title={ns?.note || check.error || undefined}>
+                  {firstCheck || checking ? 'denetleniyor…' : ns?.note || check.error || '—'}</span>}
+            </InfoRow>
+          </>
+        ) : (
+        <>
         <InfoRow label="VPS" tone={vpsTone} title="VPS'e SSH ile erişim (denetim sonucuna göre)">{vpsText}</InfoRow>
         <InfoRow label="Çıkış IP'si" title="VPS'in internete çıktığı adres — tünelden çıkan trafik bu adresle görünür">
           {ns?.publicIp ? <span className="wg-mono">{ns.publicIp}</span> : <span className="wg-sub">{firstCheck ? 'denetleniyor…' : '—'}</span>}
@@ -608,6 +746,8 @@ function VpsCard({ server, onConnect, onDisconnect, onDelete, onRefresh, tunnelN
             })}
           </span>
         </div>
+        </>
+        )}
         <InfoRow label="Kurallar" title={usage && nRules ? [...usage.block, ...usage.isp].join(', ') : undefined}
           sub={usage && nRules ? `tünel düşerse ${usage.block.length} engellenir${usage.isp.length ? `, ${usage.isp.length} operatörden` : ''}` : ''}>
           {!usage ? <span className="wg-sub">okunuyor…</span> : nRules ? <span>{nRules} kural bu VPS'ten çıkıyor</span>
@@ -615,7 +755,7 @@ function VpsCard({ server, onConnect, onDisconnect, onDelete, onRefresh, tunnelN
         </InfoRow>
       </div>
 
-      {ns && !allGood && (
+      {!imported && ns && !allGood && (
         <div className="wg-alert">
           <div className="wg-alert-head">
             <AlertTriangle size={14} /> <span>Bazı denetimler başarısız</span>
@@ -644,16 +784,29 @@ function VpsCard({ server, onConnect, onDisconnect, onDelete, onRefresh, tunnelN
             {busy === 'connect' ? 'Bağlanıyor…' : busy === 'disconnect' ? 'Kesiliyor…' : tunnel?.connected ? 'Tüneli kes' : 'Tüneli bağla'}
           </button>
         )}
-        <button className="wg-btn" onClick={() => { setCheckSeq(s => s + 1); refreshTunnel(); }} disabled={checking} title="VPS'i ve tüneli şimdi denetle">
+        <button className="wg-btn" onClick={() => { setCheckSeq(s => s + 1); refreshTunnel(); }} disabled={checking}
+          title={imported ? "Tüneli ve çıkış IP'sini şimdi denetle" : "VPS'i ve tüneli şimdi denetle"}>
           <RefreshCw size={14} className={checking ? 'spin' : ''} /> Denetle
         </button>
+        {imported ? (
+          <button className="wg-btn wg-btn-drawer" onClick={() => setEditing(true)}
+            title="Yeni yapılandırma yapıştırın (ör. sağlayıcıda sunucu değişti) — bu tünele yönlenen kurallar korunur">
+            <span className="wg-btn-left"><Pencil size={14} /> Yapılandırmayı değiştir</span>
+          </button>
+        ) : (
         <button className="wg-btn wg-btn-drawer" onClick={() => setShowClients(v => !v)} aria-expanded={showClients} title="Bu VPS'in VPN istemcileri">
           <span className="wg-btn-left"><Users size={14} /> İstemciler <span className="wg-count">{clients.length}</span></span>
           <ChevronDown size={14} className="wg-chev" />
         </button>
+        )}
       </div>
 
-      {showClients && (
+      {editing && (
+        <ReplaceConfModal server={server} onClose={() => setEditing(false)}
+          onDone={() => { onRefresh(); refreshTunnel(); setCheckSeq(s => s + 1); }} />
+      )}
+
+      {!imported && showClients && (
         <div className="wg-clients">
           <div className="wg-add">
             <input className="config-input" type="text" placeholder="Yeni istemci adı (örn. iPhone-Ali)" aria-label="Yeni istemci adı"
@@ -722,6 +875,8 @@ export function VpsSetup() {
   // Kurulum bitince artırılır → kartlar tünel durumunu yeniden okur.
   const [tunnelNonce, setTunnelNonce] = useState(0);
   const [showForm, setShowForm] = useState(false);
+  // "Config ile bağlan": hazır WireGuard yapılandırmasıyla tünel (backend wgImport.ts)
+  const [showImport, setShowImport] = useState(false);
   const [steps, setSteps] = useState<SetupStep[]>([]);
 
   // Client management state
@@ -751,9 +906,12 @@ export function VpsSetup() {
     if (selectedVpsId) fetchClients(Number(selectedVpsId));
   }, [selectedVpsId, fetchClients]);
 
+  // Client Yönetimi yalnız panelin kurduğu VPS'ler içindir: hazır yapılandırmayla kurulan tünelin sunucusunda istemci açılamaz.
+  const clientServers = data.servers.filter(s => s.kind !== 'import');
   useEffect(() => {
-    if (data.servers.length > 0 && selectedVpsId === '') {
-      setSelectedVpsId(data.servers[0].id);
+    const first = data.servers.find(s => s.kind !== 'import');
+    if (first && selectedVpsId === '') {
+      setSelectedVpsId(first.id);
     }
   }, [data.servers, selectedVpsId]);
 
@@ -912,10 +1070,17 @@ export function VpsSetup() {
         <div className="widget-header">
           <h3><Server size={20} style={{ marginRight: 8 }} />WireGuard</h3>
           {activeTab === 'overview' && (
-            <button className="btn-primary btn-sm" onClick={() => setShowForm(!showForm)}>
-              <Plus size={14} />
-              <span>Yeni VPS</span>
-            </button>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+              <button className="btn-outline btn-sm" onClick={() => setShowImport(!showImport)}
+                title="VPN sağlayıcısının ya da başka bir sunucunun hazır WireGuard yapılandırmasıyla bağlan">
+                <FileKey size={14} />
+                <span>Config ile bağlan</span>
+              </button>
+              <button className="btn-primary btn-sm" onClick={() => setShowForm(!showForm)}>
+                <Plus size={14} />
+                <span>Yeni VPS</span>
+              </button>
+            </div>
           )}
         </div>
         <p className="subtitle">VPS tünelleri ve canlı durumları, VPN istemcileri, Ev VPN'i ve WireGuard ayarları</p>
@@ -946,6 +1111,9 @@ export function VpsSetup() {
                 <p>Henuz VPS sunucusu eklenmedi</p>
                 <button className="btn-primary" onClick={() => setShowForm(true)}>
                   <Plus size={14} /> Ilk VPS'i Ekle
+                </button>
+                <button className="btn-outline" onClick={() => setShowImport(true)}>
+                  <FileKey size={14} /> Config ile bağlan
                 </button>
               </div>
             </div>
@@ -984,6 +1152,30 @@ export function VpsSetup() {
                     panelLockedBy={panelLockedBy(server.id)} />
                 ))}
               </div>
+            </div>
+          )}
+
+          {showImport && (
+            <div className="glass-panel form-panel" style={{ marginTop: 16, maxWidth: 700 }}>
+              <div className="widget-header">
+                <h3>Hazır yapılandırmayla bağlan</h3>
+                <FileKey size={18} className="text-muted" />
+              </div>
+              <p className="subtitle">
+                VPN sağlayıcınızın (Mullvad, Proton …), başkasının ya da şirketinizin WireGuard sunucusu: sunucuya bir şey kurulmaz,
+                Pi bu yapılandırmayla bağlanır ve tünel Routing'de çıkış olarak seçilebilir.
+              </p>
+              <WgConfForm submitLabel="Bağlan" busyLabel="Bağlanıyor…" onCancel={() => setShowImport(false)}
+                onSubmit={async (name, config) => {
+                  const r = await postApi('/vps/import', { name, config });
+                  toast.success(r.handshake ? "Tünel kuruldu — Routing'de bu çıkışı seçebilirsiniz"
+                    : "Tünel kuruldu, sunucunun yanıtı bekleniyor — Routing'de bu çıkışı seçebilirsiniz");
+                  if (r.fullTunnel === false) toast.info('Bölünmüş tünel: yalnız sunucunun verdiği aralıklara giden trafik bu tünelden çıkabilir', { duration: 9000 });
+                  showConfNotes(r.notes);
+                  setShowImport(false);
+                  setTunnelNonce(n => n + 1);
+                  await refetch();
+                }} />
             </div>
           )}
 
@@ -1055,7 +1247,7 @@ export function VpsSetup() {
             <label>VPS Sunucu Secin</label>
             <Select value={selectedVpsId} onChange={e => setSelectedVpsId(e.target.value ? Number(e.target.value) : '')}>
               <option value="">Sunucu secin...</option>
-              {data.servers.map(s => (
+              {clientServers.map(s => (
                 <option key={s.id} value={s.id}>{s.ip} ({s.location || s.username})</option>
               ))}
             </Select>

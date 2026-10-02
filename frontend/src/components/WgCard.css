@@ -223,6 +223,29 @@
   .wg-client .wg-pa { margin-left: 0; }
 }
 
+/* Hazır yapılandırma formu ("Config ile bağlan" paneli, kartın "Yapılandırmayı değiştir" penceresi) */
+.wg-conf-text {
+  display: block; width: 100%; min-height: 170px; padding: 9px 12px; resize: vertical;
+  border-radius: var(--radius-sm); border: 1px solid var(--panel-border);
+  background: var(--input-bg-soft); color: var(--text-primary);
+  font: 12px/1.5 var(--font-mono); white-space: pre; overflow-x: auto;
+  transition: border-color 0.15s ease;
+}
+.wg-conf-text:focus { outline: none; border-color: var(--accent-color); box-shadow: 0 0 0 3px var(--accent-ring); }
+.wg-conf-text:disabled { opacity: 0.5; }
+.wg-conf-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 8px; }
+.wg-conf-note {
+  display: flex; align-items: flex-start; gap: 8px;
+  margin: 0 0 12px; padding: 9px 10px; border-radius: 10px;
+  background: color-mix(in srgb, var(--success-color) 7%, transparent);
+  color: var(--text-secondary); font-size: 12px; line-height: 1.5;
+}
+.wg-conf-note svg { flex: none; margin-top: 2px; color: var(--success-color); }
+.wg-conf-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+.wg-conf-actions .btn-primary { flex: 1 1 160px; justify-content: center; }
+/* Sağa yaslı değer satırında uzun metin (hazır yapılandırmanın aralıkları / notu) soldan kırpılmasın: sondan "…" */
+.wg-row-value .wg-ellipsis { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
 @media (prefers-reduced-motion: reduce) {
   .wg-dot.wg-t-wait { animation: none; }
   .wg-chev, .wg-btn, .wg-icon-btn, .wg-card { transition: none; }
