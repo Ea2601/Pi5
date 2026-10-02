@@ -20,8 +20,7 @@ export function PairScreen({ onPaired }: { onPaired: (p: Pairing) => void }) {
   const [err, setErr] = useState('');
   const handled = useRef(false);
 
-  const go = async (p: PairPayload | null) => {
-    if (!p) { setErr('Bu bir Klyrix Gate eşleştirme kodu değil'); return; }
+  const go = async (p: PairPayload) => {
     setBusy(true); setErr(''); setScan(false);
     try {
       const name = (Device.deviceName || Device.modelName || (Platform.OS === 'ios' ? 'iPhone' : 'Android')).slice(0, 40);
@@ -58,7 +57,15 @@ export function PairScreen({ onPaired }: { onPaired: (p: Pairing) => void }) {
         {scan ? (
           <View style={{ height: 300, borderRadius: 12, overflow: 'hidden' }}>
             <CameraView style={{ flex: 1 }} facing="back" barcodeScannerSettings={{ barcodeTypes: ['qr'] }}
-              onBarcodeScanned={r => { if (handled.current) return; handled.current = true; void go(parsePayload(r.data)); }} />
+              onBarcodeScanned={r => {
+                if (handled.current) return;
+                handled.current = true;
+                const p = parsePayload(r.data);
+                if (p) { void go(p); return; }
+                // Başka bir kod (barkod, başka QR) yakalandı: söyle, taramayı açık tut — 2 sn sonra yeniden okur
+                setErr('Bu QR Klyrix Gate eşleştirme kodu değil — panelde Yedekleme → Cihaz Yedekleme → «Telefon ekle»deki QR\'ı okutun');
+                setTimeout(() => { handled.current = false; }, 2000);
+              }} />
           </View>
         ) : null}
         <Pressable style={s.btn} disabled={busy} onPress={() => (scan ? setScan(false) : void startScan())}>
@@ -73,7 +80,10 @@ export function PairScreen({ onPaired }: { onPaired: (p: Pairing) => void }) {
               autoCapitalize="none" autoCorrect={false} keyboardType="url" value={addr} onChangeText={setAddr} />
             <TextInput style={s.input} placeholder="Kod (ör. ABCD-EFGH)" placeholderTextColor={C.muted}
               autoCapitalize="characters" autoCorrect={false} value={code} onChangeText={setCode} />
-            <Pressable style={s.btn} disabled={busy} onPress={() => void go(manualPayload(addr, code))}>
+            <Pressable style={s.btn} disabled={busy} onPress={() => {
+              const m = manualPayload(addr, code);
+              if (typeof m === 'string') setErr(m); else void go(m);
+            }}>
               <Text style={s.btnText}>Bağlan</Text>
             </Pressable>
           </View>

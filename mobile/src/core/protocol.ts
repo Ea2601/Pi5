@@ -29,14 +29,18 @@ export function parsePayload(text: string): PairPayload | null {
   if (!hosts.length || code.length !== 8) return null;
   return { hosts, port, code, name: typeof j.n === 'string' ? j.n.slice(0, 64) : '' };
 }
-// Elle giriş: "192.168.0.153" + "ABCD-EFGH" (port isteğe bağlı: "192.168.0.153:8095")
-export function manualPayload(address: string, code: string): PairPayload | null {
-  const m = /^\s*([^\s:]+)(?::(\d{1,5}))?\s*$/.exec(address);
-  if (!m || !validHost(m[1])) return null;
+// Elle giriş: "192.168.0.153" + "ABCD-EFGH". Panelin adresi gibi yazılan da kabul edilir ("http://192.168.0.153/",
+// "192.168.0.153:80"): şema ve yol atılır, panel portu (80 / 443 / 3000) mobil yedekleme portuna çevrilir; başka port
+// açıkça yazıldıysa o kullanılır. Geçersizse neyin yanlış olduğunu söyleyen metin döner.
+export function manualPayload(address: string, code: string): PairPayload | string {
+  const a = address.trim().replace(/^[a-z][a-z0-9+.-]*:\/\//i, '').replace(/[/?#].*$/, '');
+  const m = /^([^\s:]+)(?::(\d{1,5}))?$/.exec(a);
+  if (!m || !validHost(m[1])) return 'Pi\'nin adresi geçersiz — ör. 192.168.1.153 (panelde «Telefon ekle» penceresinin altında yazar)';
   const c = normCode(code);
-  if (c.length !== 8) return null;
-  const port = m[2] ? Number(m[2]) : DEFAULT_PORT;
-  if (port < 1 || port > 65535) return null;
+  if (c.length !== 8) return 'Kod 8 karakter olmalı — ör. ABCD-EFGH (panelde «Telefon ekle» penceresinde yazar)';
+  let port = m[2] ? Number(m[2]) : DEFAULT_PORT;
+  if (port === 80 || port === 443 || port === 3000) port = DEFAULT_PORT;
+  if (port < 1 || port > 65535) return 'Port geçersiz';
   return { hosts: [m[1]], port, code: c, name: '' };
 }
 

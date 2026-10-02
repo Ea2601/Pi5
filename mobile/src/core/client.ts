@@ -28,16 +28,25 @@ function check(r: HttpResponse): any {
   return j;
 }
 
-// Sırayla dener (ev ağı adresleri, sabit ad, Ev VPN'i); ilk yanıt veren Klyrix Gate kullanılır
+// Neden ulaşılamadı: zaman aşımı (adres yanlış ağda / güvenlik duvarı) ya da bağlantı kurulamadı (yanlış adres, kapalı)
+const failReason = (e: unknown): string =>
+  (/abort/i.test(e instanceof Error ? `${e.name} ${e.message}` : String(e)) ? 'zaman aşımı' : 'bağlanılamadı');
+
+// Sırayla dener (ev ağı adresleri, sabit ad, Ev VPN'i); ilk yanıt veren Klyrix Gate kullanılır. Hiçbiri olmazsa her adresin
+// nedeni hata metninde (hangi adres, neden) — telefonda neyin yanlış olduğu görünsün.
 export async function findHost(http: Http, hosts: string[], port: number, prefer = ''): Promise<string> {
   const order = prefer && hosts.includes(prefer) ? [prefer, ...hosts.filter(h => h !== prefer)] : hosts;
+  const why: string[] = [];
   for (const h of order) {
     try {
       const r = await http.request(`http://${h}:${port}/v1/hello`, { method: 'GET', timeoutMs: 2500 });
       if (r.status === 200 && parse(r).app === 'klyrix-gate') return h;
-    } catch { /* sıradaki adres */ }
+      why.push(`${h}: ${r.status === 200 ? 'Klyrix Gate değil' : `yanıt ${r.status}`}`);
+    } catch (e) {
+      why.push(`${h}: ${failReason(e)}`);
+    }
   }
-  throw new PiError(0, 'Pi\'ye ulaşılamadı — telefon ev Wi-Fi\'ında mı (ya da Ev VPN\'i açık mı)?');
+  throw new PiError(0, `Pi'ye ulaşılamadı (${why.join(' · ')}). Telefon ev Wi-Fi'ında mı (ya da Ev VPN'i açık mı), panelde mobil yedekleme açık mı?`);
 }
 
 export async function pair(http: Http, p: PairPayload, deviceName: string, platform: string): Promise<Pairing> {
