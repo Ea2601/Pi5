@@ -19,9 +19,12 @@ export type Radio = IwPhy & {
   ifaces: string[]; driver: string; bus: Bus; usbSpeedMbps: number | null;
   ap: boolean; sta: boolean; mesh: boolean; apSta: boolean; apMesh: boolean; apAp: boolean; fourAddr: boolean | null;
 };
+// Ağ kartı türü (sürücüye göre; tak-çalıştır algılama ve WAN aday listesi etiketi): ethernet, USB modem / telefon paylaşımı,
+// SIM'li modem (desteklenmiyor), Wi-Fi. permMac: kalıcı (fabrika) MAC — MAC kopyalanmış kartta da aynı; yoksa geçerli adres.
+export type PortKind = 'ethernet' | 'usb-modem' | 'wwan' | 'wifi';
 export type EthPort = {
   name: string; driver: string; bus: Bus; usbSpeedMbps: number | null; speedMbps: number | null;
-  carrier: boolean | null; mac: string; uplink: boolean;
+  carrier: boolean | null; mac: string; uplink: boolean; kind: PortKind; permMac: string;
 };
 // Donanım profili (scripts/platform.sh detect — eşikler yalnız orada): bellek sınıfı, mimari, ekran çıkışı, takas.
 // rpi: Raspberry Pi kartı; arch: kullanıcı alanı (dpkg), kernelArch: uname -m; memClassMiB: MemTotal'dan büyük ya da eşit
@@ -382,57 +385,110 @@ export function readPlatform(): Promise<Platform | null> {
   return platformRun;
 }
 
+// ─── Kart türü ───
+
+// USB modem / telefon paylaşımı sürücüleri (HiLink 4G modem, Android RNDIS, iPhone): TEK liste. Aynı içerik
+// scripts/net-mode.sh BAK_USB_DRIVERS (yedek hat USB türü) ve FailoverPanel USB_DRIVERS'ta — bu sürümde onlar değişmez,
+// üçünün eşitliğini test denetler. USB 2.5G Ethernet adaptörü cdc_ncm ile bağlanırsa o da bu türe düşer.
+export const USB_MODEM_DRIVERS: readonly string[] = ['rndis_host', 'cdc_ether', 'cdc_ncm', 'ipheth'];
+// SIM'li modemler (QMI / MBIM; AT ile çevirmeli Huawei NCM çubuk kipi ve Sierra DirectIP): APN / PIN ya da çevirme
+// (AT^NDISDUP / AT!SCACT) ister, çevrilmeden DHCP almaz — tanınır, desteklenmez (ayrı faz). DEVTYPE=wwan'a bakılmaz:
+// cdc_ether'in wwan_info aygıtları (Telit, bazı ZTE) yedek hattın USB türüyle (BAK_USB_DRIVERS) çakışırdı.
+export const WWAN_DRIVERS: readonly string[] = ['qmi_wwan', 'cdc_mbim', 'huawei_cdc_ncm', 'sierra_net'];
+export function portKind(driver: string, wireless = false): PortKind {
+  if (wireless) return 'wifi';
+  if (USB_MODEM_DRIVERS.includes(driver)) return 'usb-modem';
+  if (WWAN_DRIVERS.includes(driver)) return 'wwan';
+  return 'ethernet';
+}
+
+// `ip -j link show` çıktısı → kart adı → kalıcı MAC (permaddr; iproute2 yalnız geçerli adresten farklıysa yazar —
+// yazmadığı kartta kalıcı MAC geçerli adrestir). net-mode.sh perm_mac ile aynı anlam (orada önce ethtool -P).
+export function parsePermAddrs(json: string): Map<string, string> {
+  const out = new Map<string, string>();
+  let links: unknown;
+  try { links = JSON.parse(json); } catch { return out; }
+  if (!Array.isArray(links)) return out;
+  for (const l of links as { ifname?: unknown; permaddr?: unknown }[]) {
+    const mac = typeof l?.permaddr === 'string' ? l.permaddr.toLowerCase() : '';
+    if (typeof l?.ifname === 'string' && /^([0-9a-f]{2}:){5}[0-9a-f]{2}$/.test(mac)) out.set(l.ifname, mac);
+  }
+  return out;
+}
+// dev verilirse yalnız o kart (tak-çalıştır: yeni kart için bir kez). ip yoksa / hata: boş (geçerli adres kullanılır).
+export async function readPermAddrs(dev?: string): Promise<Map<string, string>> {
+  try {
+    const { stdout } = await execFileP('ip', ['-j', 'link', 'show', ...(dev ? ['dev', dev] : [])], { timeout: 5000, maxBuffer: 4 * 1024 * 1024 });
+    return parsePermAddrs(stdout);
+  } catch { return new Map(); }
+}
+
 // ─── Canlı okuma (Linux) ───
 
 const readText = (p: string) => { try { return fs.readFileSync(p, 'utf8').replace(/\0/g, '').trim(); } catch { return ''; } };
+// Fiziksel kablolu kart: Ethernet türü (type=1), aygıtı var (sanal değil: VLAN, köprü, veth, dummy elenir), kablosuz değil.
+const isWiredCard = (base: string) => !(readText(`${base}/type`) !== '1' || fs.existsSync(`${base}/wireless`) || fs.existsSync(`${base}/phy80211`)
+  || fs.existsSync(`${base}/bridge`) || !fs.existsSync(`${base}/device`));
+// Wi-Fi kartı (tak-çalıştır): aynı süzgeç, kablosuz olanlar.
+const isWifiCard = (base: string) => readText(`${base}/type`) === '1' && (fs.existsSync(`${base}/wireless`) || fs.existsSync(`${base}/phy80211`))
+  && !fs.existsSync(`${base}/bridge`) && fs.existsSync(`${base}/device`);
 const driverOf = (devPath: string) => { try { return path.basename(fs.realpathSync(path.join(devPath, 'driver'))); } catch { return ''; } };
+// USB aygıt dizini (speed + idVendor dosyaları olan) arayüz dizininin üstlerinde; USB değilse ya da bulunamazsa ''.
+function usbDevDir(devPath: string): string {
+  let real = '';
+  try { real = fs.realpathSync(devPath); } catch { return ''; }
+  if (!/\/usb\d*\//.test(real)) return '';
+  for (let d = real; d.length > 5; d = path.dirname(d)) {
+    if (fs.existsSync(path.join(d, 'idVendor')) && fs.existsSync(path.join(d, 'speed'))) return d;
+  }
+  return '';
+}
 function busInfo(devPath: string): { bus: Bus; usbSpeedMbps: number | null } {
   let real = '';
   try { real = fs.realpathSync(devPath); } catch { return { bus: 'onboard', usbSpeedMbps: null }; }
   if (!/\/usb\d*\//.test(real)) return { bus: 'onboard', usbSpeedMbps: null };
-  // USB aygıt dizini (speed + idVendor dosyaları olan) arayüz dizininin üstlerinde
-  for (let d = real; d.length > 5; d = path.dirname(d)) {
-    if (fs.existsSync(path.join(d, 'idVendor')) && fs.existsSync(path.join(d, 'speed'))) {
-      const s = Number(readText(path.join(d, 'speed')));
-      return { bus: 'usb', usbSpeedMbps: Number.isFinite(s) && s > 0 ? s : null };
-    }
-  }
-  return { bus: 'usb', usbSpeedMbps: null };
+  const d = usbDevDir(real);
+  if (!d) return { bus: 'usb', usbSpeedMbps: null };
+  const s = Number(readText(path.join(d, 'speed')));
+  return { bus: 'usb', usbSpeedMbps: Number.isFinite(s) && s > 0 ? s : null };
 }
 const onPath = (bin: string) => ['/usr/sbin', '/usr/bin', '/sbin', '/bin', '/usr/local/sbin', '/usr/local/bin'].some(d => fs.existsSync(path.join(d, bin)));
 async function hasModule(name: string): Promise<boolean> {
   try { await execFileP('modinfo', ['-n', name], { timeout: 5000 }); return true; } catch { return false; }
 }
 
-// opts yalnız test içindir: sahte /sys kökü, hazır `iw list` çıktısı ve hazır donanım profili.
-export async function readHardware(net: Omit<Hardware['net'], 'uplinkIface'>, opts: { root?: string; iwText?: string; platform?: Platform | null } = {}): Promise<Hardware> {
+// opts yalnız test içindir: sahte /sys kökü, hazır `iw list` / `ip -j link show` çıktısı ve hazır donanım profili.
+export async function readHardware(net: Omit<Hardware['net'], 'uplinkIface'>, opts: { root?: string; iwText?: string; linkJson?: string; platform?: Platform | null } = {}): Promise<Hardware> {
   const R = opts.root || '';
   let uplinkIface: string | null = null;
   try {
     const { stdout } = await execFileP('ip', ['-j', '-4', 'route', 'show', 'default'], { timeout: 5000 });
     uplinkIface = (JSON.parse(stdout) as any[]).find(r => r?.dev)?.dev || null;
   } catch { /* rota yok */ }
+  const perm = opts.linkJson !== undefined ? parsePermAddrs(opts.linkJson) : await readPermAddrs();
 
   const eth: EthPort[] = [];
   let names: string[] = [];
   try { names = fs.readdirSync(`${R}/sys/class/net`); } catch { /* yok */ }
   for (const name of names.sort()) {
     const base = `${R}/sys/class/net/${name}`;
-    if (readText(`${base}/type`) !== '1' || fs.existsSync(`${base}/wireless`) || fs.existsSync(`${base}/phy80211`)
-      || fs.existsSync(`${base}/bridge`) || !fs.existsSync(`${base}/device`)) continue;
+    if (!isWiredCard(base)) continue;
     const speed = Number(readText(`${base}/speed`));
     const carrier = readText(`${base}/carrier`);
     // Ev Wi-Fi'ı açıkken varsayılan rota köprüdedir (br0): köprünün portu olan kart da bağlantı kartıdır.
     let master = '';
     try { master = path.basename(fs.readlinkSync(`${base}/master`)); } catch { /* köprüde değil */ }
+    const driver = driverOf(`${base}/device`);
+    const mac = readText(`${base}/address`);
     eth.push({
-      name, driver: driverOf(`${base}/device`), ...busInfo(`${base}/device`),
+      name, driver, ...busInfo(`${base}/device`),
       speedMbps: Number.isFinite(speed) && speed > 0 ? speed : null,
       carrier: carrier === '1' ? true : carrier === '0' ? false : null,
       // İnternet kartı VLAN / PPPoE ile bağlıysa varsayılan rota o arayüzdedir (wan.35 / pppwan): kartın kendisi çıkıştır.
-      mac: readText(`${base}/address`),
+      mac,
       uplink: !!uplinkIface && (name === uplinkIface || master === uplinkIface
         || (!!net.wanDev && uplinkIface === net.wanDev && name === net.wanPort)),
+      kind: portKind(driver), permMac: perm.get(name) || mac.toLowerCase(),
     });
   }
 
@@ -464,5 +520,66 @@ export async function readHardware(net: Omit<Hardware['net'], 'uplinkIface'>, op
     tools: Object.fromEntries(toolNames.map(t => [t, onPath(t)])),
     modules: Object.fromEntries(modNames.map((m, i) => [m, mods[i]])),
     net: { ...net, uplinkIface },
+  };
+}
+
+// ─── Tak-çalıştır taraması (portWatch.ts; yalnız algılama açıkken) ───
+
+// Ucuz liste (her yoklamada): kablolu kartlar readHardware ile aynı süzgeçle, Wi-Fi kartları radyo (phy) başına bir kez —
+// aynı radyoda açılan ek arayüzler (ap0, mesh0 …) yeni kart sayılmaz. key: kablolu kartta ad + ifindex (çıkarılıp başka
+// kart aynı adla takılırsa yeni anahtar), Wi-Fi'da radyo adı (yeniden takılan USB radyo yeni phy numarası alır).
+export type NetCardRef = { name: string; key: string; wifi: boolean; phy: string };
+export function listNetCards(root = ''): NetCardRef[] {
+  let names: string[] = [];
+  try { names = fs.readdirSync(`${root}/sys/class/net`); } catch { return []; }
+  const out: NetCardRef[] = [];
+  const phys = new Set<string>();
+  for (const name of names.sort()) {
+    const base = `${root}/sys/class/net/${name}`;
+    if (isWiredCard(base)) out.push({ name, key: `${name}#${readText(`${base}/ifindex`)}`, wifi: false, phy: '' });
+    else if (isWifiCard(base)) {
+      const phy = readText(`${base}/phy80211/name`) || name;
+      if (phys.has(phy)) continue;
+      phys.add(phy);
+      out.push({ name, key: `phy:${phy}`, wifi: true, phy });
+    }
+  }
+  return out;
+}
+
+// Ayrıntı (yalnız yeni anahtarda bir kez): sürücü, USB hızı, bağlantı hızı, kablo, geçerli MAC. Wi-Fi'da MAC radyonun
+// kalıcı adresi (/sys/class/ieee80211/<phy>/macaddress), hız ve kablo yok. USB aygıtında ayrıca:
+//  - usbVersion: aygıtın bildirdiği USB sürümü (bcdUSB, `version`; 2.00 / 2.10 / 3.20). USB 3 aygıt USB 2 portta 2.10
+//    bildirir: 2.10'dan küçükse aygıt kesin USB 2'dir (mavi porta takmak hızı değiştirmez).
+//  - usbId: aygıt kimliği (idVendor:idProduct + seri no; seri yoksa USB port yolu, ör. 3-1) — adresi her bağlanışta
+//    değişen kartın tak-çalıştır kimliği (portWatch.ts).
+//  - addrRandom: çekirdek kartın adresini rastgele verdi (addr_assign_type 1: ZTE cdc_ether, geçersiz EEPROM MAC).
+export type NetCard = {
+  name: string; kind: PortKind; driver: string; bus: Bus; usbSpeedMbps: number | null; speedMbps: number | null;
+  carrier: boolean | null; mac: string; usbVersion: number | null; usbId: string; addrRandom: boolean;
+};
+function usbDetail(devPath: string): { usbVersion: number | null; usbId: string } {
+  const d = usbDevDir(devPath);
+  if (!d) return { usbVersion: null, usbId: '' };
+  const v = parseFloat(readText(path.join(d, 'version')));
+  const id = [readText(path.join(d, 'idVendor')), readText(path.join(d, 'idProduct'))].join(':');
+  const serial = readText(path.join(d, 'serial'));
+  return { usbVersion: Number.isFinite(v) && v > 0 ? v : null, usbId: serial ? `${id}:${serial}` : `${id}@${path.basename(d)}` };
+}
+export function describeNetCard(ref: NetCardRef, root = ''): NetCard {
+  const base = `${root}/sys/class/net/${ref.name}`;
+  const driver = driverOf(`${base}/device`);
+  if (ref.wifi) {
+    const mac = (readText(`${root}/sys/class/ieee80211/${ref.phy}/macaddress`) || readText(`${base}/address`)).toLowerCase();
+    return { name: ref.name, kind: 'wifi', driver, ...busInfo(`${base}/device`), speedMbps: null, carrier: null, mac, ...usbDetail(`${base}/device`), addrRandom: false };
+  }
+  const speed = Number(readText(`${base}/speed`));
+  const carrier = readText(`${base}/carrier`);
+  return {
+    name: ref.name, kind: portKind(driver), driver, ...busInfo(`${base}/device`),
+    speedMbps: Number.isFinite(speed) && speed > 0 ? speed : null,
+    carrier: carrier === '1' ? true : carrier === '0' ? false : null,
+    mac: readText(`${base}/address`).toLowerCase(),
+    ...usbDetail(`${base}/device`), addrRandom: readText(`${base}/addr_assign_type`) === '1',
   };
 }

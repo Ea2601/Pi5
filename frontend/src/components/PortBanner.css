@@ -1,0 +1,18 @@
+/* Tak-çalıştır ağ kartı: bant (PortBanner) ve Cihaz Rolleri'ndeki açma / kapatma, yoksay düğmeleri. Bant düzeni
+   .panel-auth-banner / .panel-auth-offer'dan gelir (App.css). Düğme rengi = ne yaptığı: açan yeşil, kapatan / yoksayan
+   kırmızı — DHCP sihirbazının .btn-on / .btn-off tonları (o sınıflar yalnız .dhcp-wizard altında). Renkler değişkenden:
+   açık temada da okunur. */
+.btn-primary.pb-on { background: color-mix(in srgb, var(--success-color) 65%, #000); color: #fff; }
+.btn-primary.pb-on:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--success-color) 70%, #000); box-shadow: 0 4px 12px var(--success-glow);
+}
+.btn-outline.pb-off {
+  border-color: var(--danger-color); background: color-mix(in srgb, var(--danger-color) 8%, transparent);
+  color: color-mix(in srgb, var(--danger-color) 75%, var(--text-primary));
+}
+.btn-outline.pb-off:hover:not(:disabled) {
+  border-color: var(--danger-color); background: color-mix(in srgb, var(--danger-color) 16%, transparent);
+  color: color-mix(in srgb, var(--danger-color) 75%, var(--text-primary));
+}
+.btn-outline.pb-off:disabled, .btn-primary.pb-on:disabled { opacity: 0.45; cursor: not-allowed; }
+.pb-banner .panel-auth-actions { flex-shrink: 0; }

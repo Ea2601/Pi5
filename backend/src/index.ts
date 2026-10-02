@@ -39,6 +39,7 @@ import { startLinkProbe, probeSamples, probeBaseline, noteTopologyView, type Pro
 import { startTrafficRecorder, usageSummary, appActivity, appDefsFrom } from './trafficHistory';
 import { qosStatus, validateLimit, saveLimit, deleteLimit, resetQuota, normMac, runQos, migrateThrottleRules, startQos, isProtectedMac, normalizeLimitMacs } from './qos';
 import { readHardware, evaluateRoles } from './hardware';
+import { initPortWatch, setPortWatch, portWatchEnabled, listPorts, liveCard, idFromUsb, setPortState, planPortWizard, readCardNet } from './portWatch';
 import { readHomeStations } from './homeWifi';
 import { STARTUP_ROLE, isSatellite, readRole, writeRole, type DeviceRole } from './role';
 import {
@@ -4119,6 +4120,72 @@ app.post('/api/failover/test', async (req, res) => {
   res.json({ success: true, force_until: Number(r.kv.force_until) || 0 });
 });
 
+// Tak-çalıştır ağ kartı algılama (G1.4-A, portWatch.ts): yeni takılan kart bildirilir, sihirbaz rol önerir. Rol HİÇBİR
+// ZAMAN buradan atanmaz — sihirbaz WAN router / yedek hat panelini kart seçili açar (deneme + "Kalıcı yap" orada).
+// Ayar (hotplug_watch) yalnız PUT /api/ports/settings'ten; varsayılan kapalı. Yazma: netAdminGuard + yazma sınırı.
+// Ana cihaza özgü: uyduda tüm uçlar 409.
+app.use('/api/ports', (req, res, next) => (req.method === 'GET' ? next() : writeLimiter(req, res, next)), (req, res, next) => {
+  if (isSatellite()) return res.status(409).json({ error: 'Bu cihaz uydu — ağ kartı algılama ana cihazdadır' });
+  void netAdminGuard(req, res, next);
+});
+const portMac = (v: unknown) => (isValidMac(v) ? String(v).trim().toLowerCase().replace(/-/g, ':') : '');
+
+app.get('/api/ports', async (_req, res) => {
+  try {
+    const ports = await listPorts();
+    res.json({ supported: isLinux, enabled: await portWatchEnabled(), ports, pending: ports.filter(p => p.state === 'pending') });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.put('/api/ports/settings', async (req, res) => {
+  const enabled = req.body?.enabled;
+  if (typeof enabled !== 'boolean') return res.status(400).json({ error: "'enabled' true ya da false olmalı" });
+  if (enabled && !isLinux) return res.status(409).json({ error: 'Ağ kartı algılama yalnız Pi üzerinde çalışır' });
+  try {
+    const r = await setPortWatch(enabled);
+    await recordEvent('hotplug', !enabled ? 'Tak-çalıştır ağ kartı algılama kapatıldı'
+      : `Tak-çalıştır ağ kartı algılama açıldı (${r.baseline ? `${r.baseline} takılı kart bilinen sayıldı` : 'bilinen sayılacak yeni kart yok'})`);
+    res.json({ success: true, ...r });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Sihirbaz: kartın kaydı, güncel ayrıntısı, ağ durumu, uyarılar ve rol seçenekleri (ön koşullarıyla). Algılama açıkken.
+app.get('/api/ports/:mac', async (req, res) => {
+  const mac = portMac(req.params.mac);
+  if (!mac) return res.status(400).json({ error: 'Geçersiz MAC adresi' });
+  try {
+    if (!(await portWatchEnabled())) return res.status(409).json({ error: 'Tak-çalıştır algılama kapalı' });
+    const port = (await listPorts()).find(p => p.mac === mac);
+    if (!port) return res.status(404).json({ error: 'Kart bulunamadı' });
+    const card = liveCard(mac);
+    let piDhcp = false;
+    try { piDhcp = (await execFileP('pihole-FTL', ['--config', 'dhcp.active'], { timeout: 5000 })).stdout.trim() === 'true'; } catch { /* FTL yok */ }
+    const net = card ? await readCardNet(card.name) : { conn: '', ipv4: [], defaultRoute: false };
+    const plan = planPortWizard({ card, ns: readNetModeState(), piDhcp, ...net });
+    res.json({ port, card, idFromUsb: idFromUsb(card, mac), net, ...plan });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Yoksay: bant ve bekleyen listesi bu kartı bir daha göstermez. Bilinen: rol akışına gönderildi (WAN router / yedek hat).
+for (const [action, state] of [['dismiss', 'dismissed'], ['known', 'known']] as const) {
+  app.post(`/api/ports/:mac/${action}`, async (req, res) => {
+    const mac = portMac(req.params.mac);
+    if (!mac) return res.status(400).json({ error: 'Geçersiz MAC adresi' });
+    try {
+      if (!(await setPortState(mac, state))) return res.status(404).json({ error: 'Kart bulunamadı' });
+      res.json({ success: true, state });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+}
+
 // Wi-Fi köprüsü (aynı ağ, R4 C): Pi üst Wi-Fi'a istemci olarak bağlanır; kalıcı yapılınca ev tarafı kartındaki (eth0)
 // cihazlar üst ağla aynı ağda olur (ARP vekili, NAT yok), adresi modem (aktarma) ya da Pi (modem ağında ayrı aralık)
 // dağıtır, DNS Pi-hole'a çekilir. Deneme yalnız üst Wi-Fi'ı sınar (eth0 eski profilinde, panel açık kalır); kalıcı yap
@@ -4519,7 +4586,7 @@ const BACKUP_MERGE_TABLES = new Set(['service_config', 'service_status', 'app_se
 // yerel DNS kayıtları "dışarıdan eklenmiş" sayılıp hiç silinmez, "Panel güncellendi" olayı yinelenir, bildirilmiş uyarı
 // yeniden çıkar.
 const BACKUP_SKIP_SETTINGS = new Set(['last_seen_version', 'pihole_hosts_managed', 'storage_job_notified', 'wg_reach_watch',
-  'cron_defaults_seeded', 'accent_gray_migrated']);
+  'cron_defaults_seeded', 'accent_gray_migrated', 'hotplug_watch']);
 
 async function restoreTable(table: string, rows: any[]): Promise<number> {
   if (!Array.isArray(rows)) return 0;
@@ -6539,6 +6606,8 @@ const server = app.listen(Number(port), bindHost, () => {
     startTrafficRecorder();
     // Cihaz hız sınırı ve kota (Bant Genişliği → Kota ve Hız): açılıştan 15 sn sonra, sonra dakikada bir.
     startQos({ protectedMacs: blockProtectedMacs });
+    // Tak-çalıştır ağ kartı algılama (portWatch.ts): yalnız ayar açıksa (varsayılan kapalı) 10 sn'de bir /sys okunur.
+    void initPortWatch().catch((e: any) => console.error('[tak-çalıştır]', e?.message || e));
   }
   } // !isSatellite
   // Cron: panel görevleri zamanlayıcıya yazılır, ancak bu başarılıysa eski pi5-maintenance satırları çıkarılır (önce yeni

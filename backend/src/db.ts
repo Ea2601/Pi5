@@ -500,6 +500,15 @@ export const initDb = () => {
     db.run(`CREATE INDEX IF NOT EXISTS idx_web_visits_first ON web_visits(first_at)`);
     db.run(`CREATE INDEX IF NOT EXISTS idx_web_visits_device ON web_visits(device, first_at)`);
 
+    // Tak-çalıştır ağ kartları (portWatch.ts): kalıcı MAC başına bir satır; state = pending (bildirildi, rol seçilmedi) |
+    // known (taban çizgisi ya da rol akışına gönderildi) | dismissed (yoksay). Zamanlar UTC (CURRENT_TIMESTAMP). Satırları
+    // yalnız algılama açıkken izleyici yazar; cihaza özgü olduğundan yedeğe girmez (BACKUP_TABLES'ta yok).
+    db.run(`CREATE TABLE IF NOT EXISTS net_ports (
+      perm_mac TEXT PRIMARY KEY, name TEXT NOT NULL DEFAULT '', driver TEXT DEFAULT '', kind TEXT DEFAULT 'ethernet',
+      bus TEXT DEFAULT '', usb_speed INTEGER, first_seen DATETIME DEFAULT CURRENT_TIMESTAMP,
+      last_seen DATETIME DEFAULT CURRENT_TIMESTAMP, state TEXT NOT NULL DEFAULT 'pending'
+    )`);
+
     // ═══════════════════ CRON VARSAYILANLARI ═══════════════════
     // Varsayılan bakım görevleri (Sistem & Log → Cron) yalnız BİR KEZ eklenir. Eskiden her açılışta INSERT OR IGNORE ile
     // ekleniyordu ama cron_jobs.name UNIQUE olmadığından IGNORE hiç işlemedi: her yeniden başlatma/güncelleme listeye aynı

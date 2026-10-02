@@ -46,12 +46,13 @@ function Alert({ kind, children }: { kind: 'ok' | 'err' | 'info'; children: Reac
   );
 }
 
-export function FailoverPanel({ ports, onChange }: { ports: FailoverEthPort[]; onChange?: () => void }) {
+// initialKind / initialPort: tak-çalıştır sihirbazı paneli bu tür ve kart seçili açar (yalnız form ön seçimi).
+export function FailoverPanel({ ports, onChange, initialKind = 'eth', initialPort = '' }: { ports: FailoverEthPort[]; onChange?: () => void; initialKind?: Kind; initialPort?: string }) {
   const [st, setSt] = useState<FailoverState | null>(null);
   const [loadErr, setLoadErr] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
-  const [kind, setKind] = useState<Kind>('eth');
-  const [port, setPort] = useState('');
+  const [kind, setKind] = useState<Kind>(initialKind);
+  const [port, setPort] = useState(initialPort);
   const [type, setType] = useState<BakType>('dhcp');
   const [vlan, setVlan] = useState('');
   const [mtu, setMtu] = useState('');
@@ -86,7 +87,9 @@ export function FailoverPanel({ ports, onChange }: { ports: FailoverEthPort[]; o
   // öbür kartta sürer). Eski durum çıktısında (wifi_roles yok) ilk kart ve yayın aşamaları.
   const wifiRoles = (st.wifi_roles || '').split(',').filter(Boolean).map(x => ({ dev: x.slice(0, x.indexOf('=')), role: x.slice(x.indexOf('=') + 1) }));
   const wifiFree = wifiRoles.find(r => !r.role)?.dev || '';
-  const wifiDev = wifiRoles.length ? wifiFree || wifiRoles[0].dev : st.home_iface || st.ap_iface || '';
+  // Tak-çalıştır sihirbazının seçtiği yeni Wi-Fi kartı boşsa hotspot onunla kurulur (yoksa eskisi gibi ilk boş kart).
+  const wifiPick = initialKind === 'wifi' && initialPort && wifiRoles.some(r => r.dev === initialPort && !r.role) ? initialPort : '';
+  const wifiDev = wifiRoles.length ? wifiPick || wifiFree || wifiRoles[0].dev : st.home_iface || st.ap_iface || '';
   const wifiBusy = wifiRoles.length ? !wifiFree : st.ap_stage !== 'none' || st.home_stage !== 'none';
   const wifiBusyRole = wifiRoles.length ? wifiRoles[0].role : "kurulum Wi-Fi'ı ya da ev Wi-Fi'ı yayını";
   // Ethernet kartları: ana hattın kartı ve USB modem / telefon sürücülü arayüzler hariç; ev ağı kartı yalnız VLAN ile (sonda).

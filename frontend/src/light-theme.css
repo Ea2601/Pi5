@@ -205,3 +205,8 @@
   background: var(--bg-surface) !important; border-color: var(--panel-border) !important;
   box-shadow: 0 6px 20px rgba(15, 23, 42, 0.10);
 }
+
+/* ── 7. Tak-çalıştır (Cihaz Rolleri → PortWizard.css) ──
+   Tembel sayfa CSS'i bu katmandan sonra yüklenir: eşit özgüllükte bileşen kuralı kazanacağından tam :root.light-theme. */
+/* PortWizard.css .pw-item */
+:root.light-theme .pw-item { background: rgba(15, 23, 42, 0.025); }

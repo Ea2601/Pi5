@@ -29,6 +29,7 @@ import { CaseControlPanel } from './components/CaseControlPanel';
 import { KioskSettingsPanel } from './components/KioskSettingsPanel';
 import { StoragePanel } from './components/StoragePanel';
 import { PanelAuthBanner } from './components/PanelAuthBanner';
+import { PortBanner } from './components/PortBanner';
 import { LoginScreen } from './components/LoginScreen';
 import { NetworkBackdrop } from './components/NetworkBackdrop';
 import { LiveVersionNotice } from './components/LiveVersionNotice';
@@ -77,11 +78,14 @@ function App() {
   const [session, setSession] = useState(0);
   // Cihaz rolü (R2): mesh uydusunda menü sadeleşir (ağ geçidi sayfaları gizli). Eski arka uç / hata → ana cihaz.
   const [role, setRole] = useState<DeviceRole>('main');
+  // Rolün yanıtlandığı oturum: ana cihaza özgü bant (tak-çalıştır) rol belli olmadan açılmaz (uyduda istek atmasın).
+  const [roleFor, setRoleFor] = useState(-1);
   useEffect(() => {
     let alive = true;
     fetch('/api/system/role').then(r => (r.ok ? r.json() : null)).then(d => {
       if (alive && d?.role === 'satellite') setRole('satellite');
-    }).catch(() => {});
+      if (alive) setRoleFor(session);
+    }).catch(() => { if (alive) setRoleFor(session); });
     return () => { alive = false; };
   }, [session]);
   const navTabs = useMemo(() => navTabsFor(role), [role]);
@@ -237,6 +241,7 @@ function App() {
             userName={auth?.user}
           />
           <PanelAuthBanner />
+          {roleFor === session && role === 'main' && <PortBanner />}
           <div className="dashboard-content" key={activeTab}>
             <ErrorBoundary>
               {renderTab()}

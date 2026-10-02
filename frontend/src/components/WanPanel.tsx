@@ -26,7 +26,8 @@ interface WanStatus {
   wan_single?: boolean; wan_dhcp_vendor?: string; wan_dhcp_client_id?: string; wan_dhcp_hostname?: string;
   wan_ssid?: string; wan_kind?: 'wifi' | 'ethernet' | ''; wan_signal?: number; wifi_roles?: string;
 }
-export interface WanEthPort { name: string; bus: 'usb' | 'onboard'; usbSpeedMbps: number | null; carrier: boolean | null }
+// kind (hardware.ts): USB modem / SIM'li modem aday listesinde etiketlenir, çıkarılmaz (4G HiLink ana hat da olabilir).
+export interface WanEthPort { name: string; bus: 'usb' | 'onboard'; usbSpeedMbps: number | null; carrier: boolean | null; kind?: string }
 // Repeater (R4 A): Wi-Fi radyosu (Donanım: iw) — istemci (managed) kipindeki kart üst Wi-Fi'a bağlanabilir.
 export interface WanRadio { ifaces: string[]; sta: boolean; bus: 'usb' | 'onboard' }
 
@@ -67,12 +68,13 @@ function Alert({ kind, children }: { kind: 'ok' | 'err' | 'info'; children: Reac
   );
 }
 
-export function WanPanel({ ports, radios = [], onChange }: { ports: WanEthPort[]; radios?: WanRadio[]; onChange?: () => void }) {
+// initialPort: tak-çalıştır sihirbazı paneli bu kart seçili açar (yalnız form ön seçimi; deneme yine kullanıcının düğmesiyle).
+export function WanPanel({ ports, radios = [], onChange, initialPort = '' }: { ports: WanEthPort[]; radios?: WanRadio[]; onChange?: () => void; initialPort?: string }) {
   const [st, setSt] = useState<WanStatus | null>(null);
   const [loadErr, setLoadErr] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   // Bağlantı formu
-  const [port, setPort] = useState('');
+  const [port, setPort] = useState(initialPort);
   const [type, setType] = useState<WanType>('dhcp');
   const [addr, setAddr] = useState('');
   const [gw, setGw] = useState('');
@@ -108,7 +110,8 @@ export function WanPanel({ ports, radios = [], onChange }: { ports: WanEthPort[]
 
   const title = 'İnternet bağlantısı (WAN)';
   const icon = <Globe size={18} style={{ marginRight: 8 }} />;
-  if (!st) return loadErr ? <Panel title={title} icon={icon}><p className="rl-muted">Durum okunamadı: {loadErr}</p></Panel> : null;
+  // wn-main: yalnız işaret (stil yok) — tak-çalıştır sihirbazı bu paneli bulup görünür alana kaydırır (RolesPanel).
+  if (!st) return loadErr ? <Panel title={title} icon={icon} className="wn-main"><p className="rl-muted">Durum okunamadı: {loadErr}</p></Panel> : null;
   if (!st.supported || st.satellite) return null;
 
   const isStatic = st.stage === 'static';
@@ -242,7 +245,7 @@ export function WanPanel({ ports, radios = [], onChange }: { ports: WanEthPort[]
     st.wan_dhcp_hostname && `cihaz adı ${st.wan_dhcp_hostname}`].filter(Boolean).join(' · ');
 
   return (
-    <Panel title={title} icon={icon} actions={state} className="wn-panel"
+    <Panel title={title} icon={icon} actions={state} className="wn-panel wn-main"
       subtitle="WAN router rolü: modem ya da ONT ikinci Ethernet kartına bağlanır, ev ağı ayrı kartta kalır — ya da tek port + VLAN anahtarı, ya da Wi-Fi ile üst ağa (repeater).">
       <div className="hw-body">
         {stage === 'none' && (
@@ -284,7 +287,7 @@ export function WanPanel({ ports, radios = [], onChange }: { ports: WanEthPort[]
                 <span>İnternet kartı</span>
                 <select value={chosen} disabled={!options.length && !wifiOpts.length}
                   onChange={e => { setPort(e.target.value); if (type === 'pppoe' && wifiOpts.some(w => w.name === e.target.value)) setType('dhcp'); }}>
-                  {candidates.map(p => <option key={p.name} value={p.name}>{p.name} · {busText(p)} · {p.carrier ? 'kablo takılı' : p.carrier === false ? 'kablo yok' : '—'}</option>)}
+                  {candidates.map(p => <option key={p.name} value={p.name}>{p.name} · {busText(p)}{p.kind === 'usb-modem' ? ' · USB modem' : p.kind === 'wwan' ? " · SIM'li modem" : ''} · {p.carrier ? 'kablo takılı' : p.carrier === false ? 'kablo yok' : '—'}</option>)}
                   {lanPortInfo && <option value={lanPortInfo.name}>{lanPortInfo.name} · tek port (VLAN anahtarı)</option>}
                   {wifiOpts.map(w => <option key={w.name} value={w.name}>{w.name} · Wi-Fi ({w.bus === 'usb' ? 'USB' : 'dahili'}) · repeater</option>)}
                 </select>

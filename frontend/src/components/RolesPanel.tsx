@@ -1,3 +1,4 @@
+import { useCallback, useEffect, useState } from 'react';
 import type { ReactNode } from 'react';
 import { Layers, Router, Globe, Wifi, Repeat2, Cable, Share2, Check, X, CircleHelp, Cpu, Info, TriangleAlert, RefreshCw, Package } from 'lucide-react';
 import { useApi } from '../hooks/useApi';
@@ -7,6 +8,8 @@ import { MeshPanel } from './MeshPanel';
 import { WanPanel } from './WanPanel';
 import { FailoverPanel } from './FailoverPanel';
 import { RepeaterPanel } from './RepeaterPanel';
+import { PortWatchCard, type PortPick } from './PortWizard';
+import { toast } from '../toast';
 
 // Cihaz Rolleri: Pi'nin takılı donanımına göre hangi ağ rollerini üstlenebileceği (R0). WAN router (R3) "Yönlendirme"
 // grubunun altındaki İnternet bağlantısı panelinden (WanPanel), erişim noktası (R1) "Kablosuz yayın" grubunun altındaki
@@ -23,7 +26,10 @@ type Check = { ok: boolean | null; label: string; value: string };
 type Note = { kind: 'warn' | 'info'; text: string };
 type Need = { item: string; model?: string; chip?: string };
 type RoleEval = { id: RoleId; group: RoleGroup; status: RoleStatus; phase: string | null; checks: Check[]; need: Need[]; notes: Note[] };
-type EthPort = { name: string; driver: string; bus: 'usb' | 'onboard'; usbSpeedMbps: number | null; speedMbps: number | null; carrier: boolean | null; mac: string; uplink: boolean };
+type EthPort = {
+  name: string; driver: string; bus: 'usb' | 'onboard'; usbSpeedMbps: number | null; speedMbps: number | null; carrier: boolean | null; mac: string; uplink: boolean;
+  kind?: 'ethernet' | 'usb-modem' | 'wwan' | 'wifi'; permMac?: string; // tak-çalıştır (G1.4-A); eski arka uçta yok
+};
 type Radio = {
   phy: string; ifaces: string[]; driver: string; bus: 'usb' | 'onboard'; usbSpeedMbps: number | null; modes: string[]; bands: string[];
   ap: boolean; sta: boolean; mesh: boolean; apSta: boolean; apMesh: boolean; fourAddr: boolean | null;
@@ -151,6 +157,29 @@ export function RolesPanel() {
   const { data, error, loading, refetch } = useApi<HardwareResp | null>('/system/hardware', null);
   const roles = data?.roles || [];
   const counts = STATUS_ORDER.map(s => ({ s, n: roles.filter(r => r.status === s).length })).filter(x => x.n > 0);
+  // Tak-çalıştır sihirbazının seçimi: WAN router / yedek hat paneli kart seçili yeniden kurulur (key) ve görünür alana
+  // kaydırılır. Rol uygulanmaz — panelde deneme düğmesine kullanıcı basar.
+  const [wanPick, setWanPick] = useState<{ port: string; n: number } | null>(null);
+  const [bakPick, setBakPick] = useState<{ port: string; kind: PortPick['kind']; n: number } | null>(null);
+  const [scrollTo, setScrollTo] = useState<{ sel: string; n: number } | null>(null);
+  const pick = useCallback(async (p: PortPick) => {
+    await refetch(); // yeni kart donanım listesinde olsun (paneller kart listesini buradan alır)
+    if (p.role === 'wan') setWanPick(prev => ({ port: p.port, n: (prev?.n || 0) + 1 }));
+    else setBakPick(prev => ({ port: p.port, kind: p.kind, n: (prev?.n || 0) + 1 }));
+    setScrollTo(prev => ({ sel: p.role === 'wan' ? '.wn-main' : '.bk-panel', n: (prev?.n || 0) + 1 }));
+    toast.info(`${p.port} seçili: ${p.role === 'wan' ? 'İnternet bağlantısı (WAN)' : 'Yedek hat'} paneli — ayarları girip denemeyi başlatın; Pi'de henüz hiçbir şey değişmedi`);
+  }, [refetch]);
+  // Panel durumu yüklenince görünür (ilk istek; WAN durumu Pi'de birkaç saniye sürebilir): bulunana kadar kısa aralıklarla
+  // en çok 15 sn denenir.
+  useEffect(() => {
+    if (!scrollTo) return;
+    let tries = 0;
+    const id = setInterval(() => {
+      const el = document.querySelector(scrollTo.sel);
+      if (el || ++tries > 100) { clearInterval(id); el?.scrollIntoView({ behavior: 'smooth', block: 'start' }); }
+    }, 150);
+    return () => clearInterval(id);
+  }, [scrollTo]);
 
   return (
     <div className="fade-in page-stack rl-page">
@@ -181,6 +210,8 @@ export function RolesPanel() {
         {data?.iwMissing && (
           <div className="rl-banner"><TriangleAlert size={14} /> <span><EN>Wi-Fi</EN> radyolarının yetenekleri okunamadı: <code>iw</code> kurulu değil. Bir sonraki güncellemede kendiliğinden kurulur.</span></div>
         )}
+        {/* Tak-çalıştır algılama (ana cihaz): aç / kapat, bekleyen yeni kartlar, rol sihirbazı. */}
+        {data?.supported && data.net?.role !== 'satellite' && <PortWatchCard onPick={p => { void pick(p); }} />}
       </Panel>
 
       {data?.supported && GROUPS.map(g => {
@@ -192,11 +223,11 @@ export function RolesPanel() {
             <div className="rl-grid">{items.map(r => <RoleCard key={r.id} r={r} />)}</div>
             {/* WAN router (R3): ikinci Ethernet kartı varsa (ya da rol açıksa) ana cihazda. */}
             {g.id === 'routing' && data.net?.role !== 'satellite' && items.some(r => r.id === 'wan-router' && (r.status === 'available' || r.status === 'active')) && (
-              <WanPanel ports={data.eth || []} radios={data.radios || []} onChange={refetch} />
+              <WanPanel key={`wan-${wanPick?.n || 0}`} initialPort={wanPick?.port} ports={data.eth || []} radios={data.radios || []} onChange={refetch} />
             )}
             {/* Yedek hat: Pi ağ geçidiyken (LAN router ya da WAN router) ana cihazda; ön koşulları panel kendisi söyler. */}
             {g.id === 'routing' && data.net?.role !== 'satellite' && (
-              <FailoverPanel ports={data.eth || []} onChange={refetch} />
+              <FailoverPanel key={`bak-${bakPick?.n || 0}`} initialKind={bakPick?.kind} initialPort={bakPick?.port} ports={data.eth || []} onChange={refetch} />
             )}
             {/* Uyduda ev Wi-Fi'ı ana cihazdan gelir (net-mode.sh sat); panel yalnız ana cihazda. */}
             {g.id === 'wireless' && data.net?.role !== 'satellite' && items.some(r => r.id === 'ap' && (r.status === 'available' || r.status === 'active')) && (
