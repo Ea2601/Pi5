@@ -1,0 +1,10 @@
+<!-- Bildirim simgesi: yukarı ok + taban (yükleme). Android küçük simgeyi tek renk (beyaz) çizer. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+  android:width="24dp"
+  android:height="24dp"
+  android:viewportWidth="24"
+  android:viewportHeight="24">
+  <path
+    android:fillColor="#FFFFFFFF"
+    android:pathData="M11,16V7.83L7.41,11.41L6,10L12,4L18,10L16.59,11.41L13,7.83V16ZM5,18H19V20H5Z" />
+</vector>

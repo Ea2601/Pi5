@@ -1,7 +1,7 @@
-# Expo / yerel derleme çıktıları (expo prebuild, eas build)
+# Expo / yerel derleme çıktıları (expo prebuild, eas build). Yalnız kökteki: modules/*/android, ios yerel modül kaynağıdır.
 .expo/
-ios/
-android/
+/ios/
+/android/
 web-build/
 *.jks
 *.p8
