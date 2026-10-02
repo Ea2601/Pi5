@@ -116,11 +116,11 @@ flowchart TD
 
 ### 🚀 3. Tünelleme, VPN & Trafik Yönetimi
 - **WireGuard VPS Köprüsü:** Tek tıkla VPS tüneli kurma, istemci yapılandırmaları ve mobil cihazlar için anlık QR kod üretimi.
-- **Politika Bazlı Yönlendirme (Policy Routing):** Cihaz bazında veya uygulama bazında trafiği yerel internete ya da VPN tüneline dinamik yönlendirme.
+- **Politika Bazlı Yönlendirme (Policy Routing):** Belirli uygulamaların, alan adlarının ya da hazır listelerin (yetişkin / kumar) trafiğini yerel internete ya da VPS'e giden şifreli WireGuard tüneline yönlendirme; kural başına DPI atlatma ve kill-switch, uygulamalar için zaman pencereleri.
 - **Dinamik DNS (DDNS):** Cloudflare, DuckDNS ve No-IP entegrasyonu ile değişen IP adresinizi otomatik güncelleme.
 
 ### 📊 4. Canlı Ağ Haritası & Gözlemlenebilirlik
-- **Ağ Topolojisi & Cihaz Profilleri:** Ağdaki tüm bağlı cihazları otomatik keşfetme, özel isim/grup atama ve tek tıkla ağdan izole etme.
+- **Ağ Topolojisi & Cihaz Keşfi:** Ağdaki tüm bağlı cihazları otomatik keşfetme, özel isim/grup atama ve tek tıkla ağdan izole etme.
 - **Bant Genişliği, Hız Sınırı ve Kota:** Cihaz başına anlık veri tüketimi; cihaz başına indirme / yükleme hız sınırı ve günlük / aylık kota (dolunca internet kesilir ya da yavaşlatılır, dönem başında kendiliğinden kalkar), %80 ve %100'de uyarı. Pi'de nftables ile uygulanır.
 - **Dahili Hız Testi:** Ağ geçidi üzerinden doğrudan internet bağlantı hızını ölçümleme.
 - **Ebeveyn Kontrolü:** Belirli cihazlar için zaman kısıtlamaları ve güvenli internet profilleri.

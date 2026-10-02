@@ -115,11 +115,11 @@ flowchart TD
 
 ### 🚀 3. VPN Tunnels & Hybrid Routing
 - **WireGuard VPS Bridge:** One-click tunnel provisioning to remote VPS endpoints, configuration management, and instant mobile QR code generation.
-- **Policy-Based Routing:** Route specific devices or application categories either directly through WAN or encrypted through WireGuard.
+- **Policy-Based Routing:** Route specific applications, domains or ready-made lists (adult / gambling) either directly through your ISP or encrypted through a WireGuard tunnel to your VPS — with optional DPI bypass, a per-rule kill-switch and, for applications, scheduled time windows.
 - **Dynamic DNS (DDNS):** Automatic IP synchronization with Cloudflare, DuckDNS, and No-IP.
 
 ### 📊 4. Network Observability & Device Intelligence
-- **Mesh Topology & Discovery:** Automatic LAN host discovery, vendor profiling, custom naming, and instant device isolation/blocking.
+- **Mesh Topology & Discovery:** Automatic LAN host discovery, custom naming and device groups, and instant device isolation/blocking.
 - **Bandwidth, Speed Limits & Quotas:** Real-time throughput per device; per-device download / upload speed limits and daily / monthly quotas (when used up, internet is cut or slowed until the period resets), alerts at 80% and 100%. Enforced on the Pi with nftables.
 - **Integrated Speedtest:** Benchmark your WAN and VPN throughput directly from the gateway hardware.
 - **Parental Controls:** Schedule internet access times and block entire service categories per child device.
