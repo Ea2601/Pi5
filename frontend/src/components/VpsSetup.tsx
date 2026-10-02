@@ -67,7 +67,7 @@ function StepIndicator({ step }: { step: SetupStep }) {
       padding: '10px 14px', borderRadius: 'var(--radius-sm)',
       background: step.status === 'running' ? 'var(--accent-glow)' :
         step.status === 'success' ? 'var(--success-glow)' :
-        step.status === 'error' ? 'var(--danger-glow)' : 'rgba(255,255,255,0.01)',
+        step.status === 'error' ? 'var(--danger-glow)' : 'var(--surface-faint)',
       border: '1px solid',
       borderColor: step.status === 'running' ? 'rgba(59,130,246,0.2)' :
         step.status === 'success' ? 'rgba(34,197,94,0.2)' :
@@ -240,12 +240,12 @@ function ClientCard({ client, vpsLabel, onShowConfig, onShowQr, onDelete, panelA
     <div style={{
       padding: 16, borderRadius: 'var(--radius)',
       border: '1px solid var(--panel-border)',
-      background: 'rgba(255,255,255,0.02)',
+      background: 'var(--surface-subtle)',
       transition: 'all 0.15s',
     }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
         <Users size={16} style={{ color: 'var(--accent-color)' }} />
-        <span style={{ fontWeight: 600, fontSize: 14, color: '#f8fafc', flex: 1 }}>{client.name}</span>
+        <span style={{ fontWeight: 600, fontSize: 14, color: 'var(--text-strong)', flex: 1 }}>{client.name}</span>
         <button className="btn-outline btn-sm" style={{ fontSize: 10, padding: '2px 6px', color: 'var(--danger-color)', borderColor: 'var(--danger-color)' }}
           title="Client'ı sil (VPS'ten de kaldırır)"
           disabled={deleting}
@@ -295,7 +295,7 @@ function ConfigModal({ client, onClose }: { client: WgClient; onClose: () => voi
 
   return (
     <div style={{
-      position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.7)',
+      position: 'fixed', inset: 0, background: 'var(--overlay-strong)',
       display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000,
     }} onClick={onClose}>
       <div className="glass-panel" style={{ padding: 24, maxWidth: 520, width: '90%' }} onClick={e => e.stopPropagation()}>
@@ -306,9 +306,9 @@ function ConfigModal({ client, onClose }: { client: WgClient; onClose: () => voi
           <button className="icon-btn icon-btn-sm" onClick={onClose}><X size={14} /></button>
         </div>
         <pre style={{
-          background: '#060a0f', border: '1px solid var(--panel-border)',
+          background: 'var(--code-bg)', border: '1px solid var(--panel-border)',
           borderRadius: 'var(--radius-sm)', padding: 16,
-          fontFamily: 'var(--font-mono)', fontSize: 12, color: 'var(--text-primary)',
+          fontFamily: 'var(--font-mono)', fontSize: 12, color: 'var(--code-ink)',
           overflowX: 'auto', lineHeight: 1.8, whiteSpace: 'pre-wrap',
         }}>
           {client.config}
@@ -326,7 +326,7 @@ function ConfigModal({ client, onClose }: { client: WgClient; onClose: () => voi
 function QrModal({ client, onClose }: { client: WgClient; onClose: () => void }) {
   return (
     <div style={{
-      position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.7)',
+      position: 'fixed', inset: 0, background: 'var(--overlay-strong)',
       display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000,
     }} onClick={onClose}>
       <div className="glass-panel" style={{ padding: 24, maxWidth: 360, width: '90%', textAlign: 'center' }} onClick={e => e.stopPropagation()}>
@@ -337,7 +337,7 @@ function QrModal({ client, onClose }: { client: WgClient; onClose: () => void })
           <button className="icon-btn icon-btn-sm" onClick={onClose}><X size={14} /></button>
         </div>
         <div style={{
-          background: '#111820', borderRadius: 'var(--radius)',
+          background: 'var(--bg-surface)', borderRadius: 'var(--radius)',
           padding: 24, border: '1px solid var(--panel-border)',
         }}>
           <img src={client.qr_data} alt={`QR - ${client.name}`} style={{ width: '100%', maxWidth: 200 }} />
@@ -491,7 +491,7 @@ function WgConfForm({ initialName = '', submitLabel, busyLabel, onSubmit, onCanc
 function ReplaceConfModal({ server, onClose, onDone }: { server: VpsServer; onClose: () => void; onDone: () => void }) {
   return (
     <div style={{
-      position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.7)',
+      position: 'fixed', inset: 0, background: 'var(--overlay-strong)',
       display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000,
     }}>
       <div className="glass-panel" role="dialog" aria-modal="true" aria-label="Yapılandırmayı değiştir"
@@ -1257,7 +1257,7 @@ export function VpsSetup() {
             <>
               <div style={{
                 display: 'flex', gap: 8, alignItems: 'center', marginTop: 16,
-                padding: 12, background: 'rgba(0,0,0,0.15)', borderRadius: 'var(--radius-sm)',
+                padding: 12, background: 'var(--surface-sunken)', borderRadius: 'var(--radius-sm)',
                 border: '1px solid var(--panel-border)',
               }}>
                 <input className="config-input" style={{ flex: 1, minWidth: 0 }}

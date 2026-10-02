@@ -483,7 +483,7 @@ function AboutSection() {
               <div key={i} style={{
                 display: 'flex', alignItems: 'center', gap: 8,
                 padding: '5px 10px', borderRadius: 8,
-                background: 'rgba(255,255,255,0.02)', border: '1px solid var(--panel-border)',
+                background: 'var(--surface-subtle)', border: '1px solid var(--panel-border)',
                 fontSize: 12, color: 'var(--text-primary)',
               }}>
                 <span style={{ color: 'var(--success-color)', flexShrink: 0 }}>+</span>

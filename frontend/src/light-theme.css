@@ -1,0 +1,207 @@
+/* Açık tema katmanı — main.tsx en son yükler; tüm kurallar yalnız açık temada geçerli, koyu tema değişmez.
+   Neden: bileşen kuralları koyu tema için yazılmış (beyaz saydam zemin / çizgi, siyah gölge ve örtü, zifiri siyah kod alanı);
+   açık temada bunlar ya görünmüyor ya da göze batıyordu. İlke: açık tema koyunun tersi değil, yumuşak kontrast (renk
+   değişkenleri index.css'teki :root.light-theme bloğunda). Terminal, log ve kod alanları ters çevrilmez: koyu "ada" kalır.
+   :where(:root.light-theme) özgüllüğü artırmaz: aynı seçicinin koyu kuralını sıra ile (bu dosya en sonda) ezer; daha özgül
+   durum kuralları (ör. .dhcp-step-active .dhcp-step-num) kendiliğinden kazanır. */
+
+/* ── 1. Beyaz saydam zemin ve çizgilerin açık karşılıkları (kaynak dosya:satır) ── */
+/* App.css:162 */
+:where(:root.light-theme) .nav-item:hover { background: rgba(15, 23, 42, 0.05); }
+/* App.css:332 */
+:where(:root.light-theme) .user-profile { background: rgba(15, 23, 42, 0.04); }
+/* App.css:598 */
+:where(:root.light-theme) .dash-meta { background: rgba(15, 23, 42, 0.033); }
+/* App.css:636 */
+:where(:root.light-theme) .svc-chip { background: rgba(15, 23, 42, 0.03); }
+/* App.css:700 */
+:where(:root.light-theme) .progress-bar { background: rgba(15, 23, 42, 0.05); }
+/* App.css:722 */
+:where(:root.light-theme) .service-row { background: rgba(15, 23, 42, 0.025); }
+/* App.css:1137 */
+:where(:root.light-theme) .hw-steps code { background: rgba(15, 23, 42, 0.06); }
+/* App.css:1151 */
+:where(:root.light-theme) .wn-fwd { border-top: 1px solid rgba(15, 23, 42, 0.09); }
+/* App.css:1164 */
+:where(:root.light-theme) .ms-pair { background: rgba(15, 23, 42, 0.03); }
+/* App.css:1169 */
+:where(:root.light-theme) .ms-pair-info code { background: rgba(15, 23, 42, 0.06); }
+/* App.css:1175 */
+:where(:root.light-theme) .ms-role { border-top: 1px solid rgba(15, 23, 42, 0.09); }
+/* App.css:1221 */
+:where(:root.light-theme) .voip-rule { background: rgba(15, 23, 42, 0.03); }
+/* App.css:1232 */
+:where(:root.light-theme) .voip-rule:hover { background: rgba(15, 23, 42, 0.05); }
+/* App.css:1309 */
+:where(:root.light-theme) .blocked-item { background: rgba(15, 23, 42, 0.025); }
+/* App.css:1329 */
+:where(:root.light-theme) .pihole-flow { background: rgba(15, 23, 42, 0.03); }
+/* App.css:1394 */
+:where(:root.light-theme) .zapret-mode { background: rgba(15, 23, 42, 0.025); }
+/* App.css:1428 */
+:where(:root.light-theme) .domain-row { background: rgba(15, 23, 42, 0.025); }
+/* App.css:1462 */
+:where(:root.light-theme) .fw-row { background: rgba(15, 23, 42, 0.03); }
+/* App.css:1532 */
+:where(:root.light-theme) .vps-card { background: rgba(15, 23, 42, 0.03); }
+/* App.css:1855 */
+:where(:root.light-theme) .routing-row:not(.routing-header-row):hover { background: rgba(15, 23, 42, 0.045); }
+/* App.css:1859 */
+:where(:root.light-theme) .routing-header-row { border-bottom: 1px solid rgba(15, 23, 42, 0.09); }
+/* App.css:1871 */
+:where(:root.light-theme) .app-icon-sm { background: rgba(15, 23, 42, 0.06); }
+/* App.css:1888 */
+:where(:root.light-theme) .routing-suggest-item { border-top: 1px solid rgba(15, 23, 42, 0.085); }
+/* App.css:1912 */
+:where(:root.light-theme) .panel-auth-banner code { background: rgba(15, 23, 42, 0.06); }
+/* App.css:2019 */
+:where(:root.light-theme) .routing-apply { border: 1px solid rgba(15, 23, 42, 0.1); background: rgba(15, 23, 42, 0.04); }
+/* App.css:2036 */
+:where(:root.light-theme) .dhcp-step { background: rgba(15, 23, 42, 0.028); }
+/* App.css:2048 */
+:where(:root.light-theme) .dhcp-step-num { background: rgba(15, 23, 42, 0.06); }
+/* App.css:2066 */
+:where(:root.light-theme) .dhcp-option { border: 1px solid rgba(15, 23, 42, 0.09); background: rgba(15, 23, 42, 0.028); }
+/* App.css:2295 */
+:where(:root.light-theme) .config-category-header:hover { background: rgba(15, 23, 42, 0.04); }
+/* App.css:2321 */
+:where(:root.light-theme) .config-item { border-bottom: 1px solid rgba(15, 23, 42, 0.075); }
+/* App.css:2334 */
+:where(:root.light-theme) .config-item:hover { background: rgba(15, 23, 42, 0.038); }
+/* App.css:2573 */
+:where(:root.light-theme) .jail-row { background: rgba(15, 23, 42, 0.028); }
+/* App.css:2624 */
+:where(:root.light-theme) .ban-row { background: rgba(15, 23, 42, 0.025); }
+/* App.css:2641 */
+:where(:root.light-theme) .ban-country { background: rgba(15, 23, 42, 0.045); }
+/* App.css:2665 */
+:where(:root.light-theme) .cron-row { background: rgba(15, 23, 42, 0.028); border: 1px solid rgba(15, 23, 42, 0.08); }
+/* App.css:2676 */
+:where(:root.light-theme) .cron-row:hover { background: rgba(15, 23, 42, 0.045); }
+/* App.css:2704 */
+:where(:root.light-theme) .cron-output-head { background: rgba(15, 23, 42, 0.03); }
+/* App.css:2721 */
+:where(:root.light-theme) .bw-limit-card { background: rgba(15, 23, 42, 0.028); }
+/* App.css:2892 */
+:where(:root.light-theme) .cron-help-item:hover { background: rgba(15, 23, 42, 0.05); }
+/* App.css:2938 */
+:where(:root.light-theme) .docs-nav-item:hover { background: rgba(15, 23, 42, 0.045); }
+/* App.css:3000 */
+:where(:root.light-theme) .doc-card { background: rgba(15, 23, 42, 0.03); }
+/* App.css:3036 */
+:where(:root.light-theme) .doc-table th { background: rgba(15, 23, 42, 0.035); }
+/* App.css:3048 */
+:where(:root.light-theme) .doc-table td { border-bottom: 1px solid rgba(15, 23, 42, 0.075); }
+/* App.css:3142 */
+:where(:root.light-theme) .faq-item { border: 1px solid rgba(15, 23, 42, 0.08); }
+/* App.css:3148 */
+:where(:root.light-theme) .faq-question { background: rgba(15, 23, 42, 0.028); }
+/* App.css:3165 */
+:where(:root.light-theme) .faq-question:hover { background: rgba(15, 23, 42, 0.045); }
+/* App.css:3229 */
+:where(:root.light-theme) .terminal-cmd-group-header:hover { background: rgba(15, 23, 42, 0.05); }
+/* App.css:3477 */
+:where(:root.light-theme) .vpn-card { background: rgba(15, 23, 42, 0.03); }
+/* App.css:3609 */
+:where(:root.light-theme) .notif-item { background: rgba(15, 23, 42, 0.035); }
+
+/* Aynı özgüllükteki durum sınıfları, yukarıdaki zemin / çizgi kurallarından sonra yeniden — yoksa açık temada kaybolurlardı */
+:where(:root.light-theme) .nav-item.active { background: var(--accent-glow); }
+:where(:root.light-theme) .routing-apply-ok { background: var(--success-glow); border-color: var(--success-color); }
+:where(:root.light-theme) .routing-apply-err { background: var(--danger-glow); border-color: var(--danger-color); }
+:where(:root.light-theme) .dhcp-option-main { border-color: var(--accent-color); }
+:where(:root.light-theme) .fw-row-custom { background: color-mix(in srgb, var(--accent-color) 6%, transparent); }
+:where(:root.light-theme) .zapret-mode-active { border-color: var(--success-color); background: rgba(22, 163, 74, 0.06); }
+:where(:root.light-theme) .vpn-connected { border-color: rgba(22, 163, 74, 0.28); background: rgba(22, 163, 74, 0.05); }
+
+/* ── 2. Kartlar, gölgeler, örtüler ── */
+/* Panel dışındaki özet kartları arka plan çizimiyle karışıyordu */
+:where(:root.light-theme) .stat-card { background: rgba(255, 255, 255, 0.72); box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04); }
+:where(:root.light-theme) .stat-card:hover { background: rgba(255, 255, 255, 0.92); }
+:where(:root.light-theme) .modal-backdrop { background: rgba(15, 23, 42, 0.32); }
+:where(:root.light-theme) .modal-container { box-shadow: 0 20px 50px rgba(15, 23, 42, 0.16); }
+:where(:root.light-theme) .sidebar-backdrop { background: rgba(15, 23, 42, 0.28); }
+:where(:root.light-theme) .topo-drawer { box-shadow: 0 10px 30px rgba(15, 23, 42, 0.12); }
+:where(:root.light-theme) .cron-add-form { background: var(--surface-sunken); }
+:where(:root.light-theme) .login-brand svg { filter: drop-shadow(0 6px 16px rgba(30, 41, 59, 0.18)); }
+/* Arka plandaki ağ çizimi açık zeminde öne çıkıyordu */
+:where(:root.light-theme) .net-bg-panel { opacity: 0.6; }
+:root.light-theme ::-webkit-scrollbar-thumb { background: rgba(15, 23, 42, 0.14); }
+:root.light-theme ::-webkit-scrollbar-thumb:hover { background: rgba(15, 23, 42, 0.24); }
+
+/* ── 3. Sekmeler, düğmeler, rozetler, bantlar ── */
+/* Sekme şeridi: koyu temanın siyah %20 şeridi açık temada ağır gri bant gibiydi → hafif zemin, etkin sekme beyaz kart */
+:where(:root.light-theme) .service-tabs { background: rgba(15, 23, 42, 0.035); box-shadow: inset 0 0 0 1px rgba(15, 23, 42, 0.05); }
+:where(:root.light-theme) .service-tab { color: var(--text-secondary); }
+:where(:root.light-theme) .service-tab:hover { color: var(--text-primary); background: rgba(15, 23, 42, 0.04); }
+:where(:root.light-theme) .service-tab-active,
+:where(:root.light-theme) .service-tab-active:hover {
+  color: var(--accent-color); background: var(--bg-surface);
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.08), 0 0 0 1px rgba(15, 23, 42, 0.06);
+}
+:where(:root.light-theme) .btn-outline:hover:not(:disabled) { background: rgba(15, 23, 42, 0.04); }
+:where(:root.light-theme) .terminal-history-btn { background: var(--surface-soft); border-color: var(--panel-border); color: var(--text-secondary); }
+:where(:root.light-theme) .terminal-history-btn:hover { background: rgba(15, 23, 42, 0.06); }
+/* Rozet ve bant yazısı -700 tonu: -600 renk %10 zeminde küçük yazıda okunmuyordu */
+:where(:root.light-theme) .badge-success { color: var(--success-ink); }
+:where(:root.light-theme) .badge-error { color: var(--danger-ink); }
+:where(:root.light-theme) .badge-warning { background: var(--warning-glow); color: var(--warning-ink); }
+:where(:root.light-theme) .badge-neutral { background: rgba(100, 116, 139, 0.11); }
+:where(:root.light-theme) .alert-success { color: var(--success-ink); border-color: rgba(22, 163, 74, 0.25); }
+:where(:root.light-theme) .alert-error { color: var(--danger-ink); border-color: rgba(220, 38, 38, 0.22); }
+:where(:root.light-theme) .route-direct { background: rgba(100, 116, 139, 0.11); }
+:where(:root.light-theme) .route-zapret { background: rgba(234, 88, 12, 0.10); }
+:where(:root.light-theme) .stat-icon-emerald { background: rgba(5, 150, 105, 0.10); color: #059669; }
+:where(:root.light-theme) .stat-icon-purple { background: rgba(139, 92, 246, 0.10); }
+:where(:root.light-theme) .stat-icon-orange { background: rgba(234, 88, 12, 0.09); }
+:where(:root.light-theme) .stat-icon-cyan { background: rgba(8, 145, 178, 0.09); }
+:where(:root.light-theme) .config-changed { box-shadow: 0 0 0 2px rgba(217, 119, 6, 0.15) !important; }
+/* Durum noktası atımı: neon yeşil / kırmızı halka yerine açık temanın tonları */
+@keyframes pulse-light {
+  0% { box-shadow: 0 0 0 0 rgba(22, 163, 74, 0.45); }
+  70% { box-shadow: 0 0 0 7px rgba(22, 163, 74, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(22, 163, 74, 0); }
+}
+@keyframes pulse-red-light {
+  0% { box-shadow: 0 0 0 0 rgba(220, 38, 38, 0.45); }
+  70% { box-shadow: 0 0 0 7px rgba(220, 38, 38, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(220, 38, 38, 0); }
+}
+:where(:root.light-theme) .dot.pulse { animation-name: pulse-light; }
+:where(:root.light-theme) .dot-error { animation-name: pulse-red-light; }
+
+/* ── 4. Yazı ── */
+/* Sabit #f8fafc (koyu temanın başlık beyazı) açık zeminde görünmüyordu; #0f172a ise siyaha çalıyordu */
+:root.light-theme .stat-value { color: var(--text-strong); }
+:where(:root.light-theme) .vps-ip,
+:where(:root.light-theme) .doc-block-title { color: var(--text-strong); }
+
+/* ── 5. Koyu adalar: terminal, sistem logu, kod blokları ters çevrilmez ──
+   Zemin koyu kalır (zifiri siyah yerine yumuşak lacivert); içindeki yazı ve durum renkleri koyu temanın değerlerine döner —
+   eskiden zemin siyah kalırken yazı açık temanın koyu rengine dönüyor, kod blokları okunmuyordu. */
+:root.light-theme :is(.terminal-output, .terminal-input-bar, .terminal-log, .doc-code) {
+  --text-primary: #e2e8f0;
+  --text-secondary: #94a3b8;
+  --text-muted: #64748b;
+  --success-color: #4ade80;
+  --danger-color: #f87171;
+  --warning-color: #fbbf24;
+  --cyan-color: #22d3ee;
+  --purple-color: #c084fc;
+  --panel-border: rgba(255, 255, 255, 0.08);
+  background: var(--code-bg);
+  color: var(--code-ink);
+}
+/* Terminal sistem satırının çivit rengi (#6366f1) lacivert zeminde silikti */
+:where(:root.light-theme) .terminal-line-system { color: #818cf8; }
+
+/* ── 6. Grafikler (recharts): ızgara / eksen koyu temaya göre beyaz saydamdı, ipucu kutusu koyu zeminliydi ── */
+:where(:root.light-theme) .recharts-cartesian-grid line { stroke: rgba(15, 23, 42, 0.07); }
+:where(:root.light-theme) .recharts-cartesian-axis-line,
+:where(:root.light-theme) .recharts-cartesian-axis-tick-line { stroke: rgba(15, 23, 42, 0.16); }
+:where(:root.light-theme) .recharts-cartesian-axis-tick-value { fill: var(--text-secondary); }
+/* Hız Testi ipucu kutusunun satır içi koyu zemini (#111820) — satır içi stil ancak !important ile ezilir */
+:root.light-theme .recharts-default-tooltip {
+  background: var(--bg-surface) !important; border-color: var(--panel-border) !important;
+  box-shadow: 0 6px 20px rgba(15, 23, 42, 0.10);
+}

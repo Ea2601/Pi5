@@ -332,9 +332,9 @@ function BlockingView() {
             const blocked = isBlocked(device);
             return (
               <div key={device.mac_address} className="list-item"
-                style={blocked ? { borderLeft: '3px solid #ef4444', background: 'rgba(239,68,68,0.06)' } : {}}>
+                style={blocked ? { borderLeft: '3px solid var(--danger-color)', background: 'color-mix(in srgb, var(--danger-color) 6%, transparent)' } : {}}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 10, flex: 1 }}>
-                  {blocked ? <WifiOff size={16} style={{ color: '#ef4444' }} /> : <Wifi size={16} style={{ color: '#10b981' }} />}
+                  {blocked ? <WifiOff size={16} style={{ color: 'var(--danger-color)' }} /> : <Wifi size={16} style={{ color: '#10b981' }} />}
                   <div style={{ minWidth: 0, flex: 1 }}>
                     {editing === device.mac_address ? (
                       <div className="dev-rename">
@@ -450,7 +450,7 @@ function HistoryView() {
                 <div key={event.id ?? i} className="list-item" style={{ gap: 12 }}>
                   <span style={{
                     width: 10, height: 10, borderRadius: '50%',
-                    background: up ? '#10b981' : '#ef4444',
+                    background: up ? '#10b981' : 'var(--danger-color)',
                     flexShrink: 0
                   }} />
                   <div style={{ flex: 1 }}>
@@ -492,11 +492,11 @@ function UnknownView() {
     <div style={{ marginTop: 14 }}>
       {data.devices.length > 0 && (
         <div style={{
-          background: 'rgba(245, 158, 11, 0.12)', border: '1px solid rgba(245, 158, 11, 0.3)',
+          background: 'color-mix(in srgb, var(--warning-color) 12%, transparent)', border: '1px solid color-mix(in srgb, var(--warning-color) 30%, transparent)',
           borderRadius: 8, padding: '10px 16px', marginBottom: 14, display: 'flex', alignItems: 'center', gap: 10
         }}>
-          <AlertTriangle size={18} style={{ color: '#f59e0b' }} />
-          <span style={{ color: '#f59e0b', fontWeight: 500 }}>
+          <AlertTriangle size={18} style={{ color: 'var(--warning-color)' }} />
+          <span style={{ color: 'var(--warning-ink)', fontWeight: 500 }}>
             {data.devices.length} bilinmeyen cihaz tespit edildi
           </span>
         </div>
@@ -515,7 +515,7 @@ function UnknownView() {
         <div className="list-items">
           {data.devices.map(device => (
             <div key={device.mac_address} className="list-item"
-              style={{ borderLeft: '3px solid #f59e0b', background: 'rgba(245,158,11,0.04)' }}>
+              style={{ borderLeft: '3px solid var(--warning-color)', background: 'color-mix(in srgb, var(--warning-color) 4%, transparent)' }}>
               <div style={{ flex: 1 }}>
                 <strong>{deviceLabel(device)}</strong>
                 <div className="text-muted" style={{ fontSize: 12 }}>

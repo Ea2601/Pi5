@@ -204,7 +204,7 @@ export function Topbar({ onShowAlerts, onMenu, menuOpen = false, title = '', onL
               <div key={c.hash} style={{
                 display: 'flex', gap: 8, alignItems: 'flex-start',
                 padding: '6px 10px', borderRadius: 8,
-                background: 'rgba(255,255,255,0.03)', border: '1px solid var(--panel-border)',
+                background: 'var(--surface-soft)', border: '1px solid var(--panel-border)',
               }}>
                 <code style={{ color: 'var(--accent-color)', fontSize: 11, flexShrink: 0, fontFamily: 'var(--font-mono)' }}>
                   {c.hash}

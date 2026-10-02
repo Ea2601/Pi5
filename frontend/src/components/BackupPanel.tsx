@@ -141,8 +141,8 @@ export function BackupPanel() {
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14 }}>
           {/* Export Section */}
           <div style={{
-            background: 'rgba(255,255,255,0.03)', borderRadius: 8, padding: 20,
-            border: '1px solid rgba(255,255,255,0.06)'
+            background: 'var(--surface-soft)', borderRadius: 8, padding: 20,
+            border: '1px solid var(--line-soft)'
           }}>
             <h4 style={{ marginBottom: 12, display: 'flex', alignItems: 'center', gap: 8 }}>
               <Download size={18} style={{ color: 'var(--accent-color)' }} /> Yedek Al
@@ -158,8 +158,8 @@ export function BackupPanel() {
 
           {/* Import Section */}
           <div style={{
-            background: 'rgba(255,255,255,0.03)', borderRadius: 8, padding: 20,
-            border: '1px solid rgba(255,255,255,0.06)'
+            background: 'var(--surface-soft)', borderRadius: 8, padding: 20,
+            border: '1px solid var(--line-soft)'
           }}>
             <h4 style={{ marginBottom: 12, display: 'flex', alignItems: 'center', gap: 8 }}>
               <Upload size={18} style={{ color: '#f59e0b' }} /> Geri Yükle

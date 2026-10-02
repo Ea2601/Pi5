@@ -41,32 +41,77 @@
   --option-bg: #111820;
   /* Marka wordmark mürekkebi — koyu temada açık (dark logo varyantı) */
   --brand-ink: #F8FAFC;
+  /* Satır içi stillerde sabit yazılmış koyu tema değerlerinin karşılığı (koyu temada birebir aynı; açık temada light-theme.css
+     katmanıyla birlikte ayrı değer): başlık yazısı, rozet yazısı, ince yüzeyler, örtü, koyu kod/terminal adası. */
+  --text-strong: #f8fafc;
+  --success-ink: #22c55e;
+  --danger-ink: #ef4444;
+  --warning-ink: #f59e0b;
+  --warning-glow: rgba(245, 158, 11, 0.15);
+  --surface-faint: rgba(255, 255, 255, 0.01);
+  --surface-subtle: rgba(255, 255, 255, 0.02);
+  --surface-soft: rgba(255, 255, 255, 0.03);
+  --surface-code: rgba(255, 255, 255, 0.06);
+  --line-soft: rgba(255, 255, 255, 0.06);
+  --surface-sunken: rgba(0, 0, 0, 0.15);
+  --overlay-strong: rgba(0, 0, 0, 0.7);
+  --code-bg: #060a0f;
+  --code-ink: #e2e8f0;
   /* Native açılır menü / kaydırma çubuğu vb. koyu render etsin */
   color-scheme: dark;
 }
 
-/* Light Theme */
+/* Light Theme — koyunun tersi değil, yumuşak kontrast: kırık beyaz yüzeyler, siyaha çalmayan yazı, -600 tonunda sakin durum
+   renkleri, hafif gölge. Bileşen kuralları light-theme.css'te (koyu tema için yazılmış sabit renklerin açık karşılıkları). */
 :root.light-theme {
-  --bg-color: #f1f5f9;
-  --bg-surface: #ffffff;
-  --panel-bg: rgba(255, 255, 255, 0.85);
-  --panel-border: rgba(0, 0, 0, 0.08);
-  --panel-border-hover: rgba(0, 0, 0, 0.15);
-  --text-primary: #1e293b;
-  --text-secondary: #475569;
-  --text-muted: #94a3b8;
-  /* Marka grisi açık temada slate-700: ikincil yazı zaten slate-600 (#475569) — aynı olsaydı aktif menü/bağlantı sıradan
-     yazıdan ayırt edilemezdi (ölçüldü: 1.0:1). Beyazda ~10:1; üzerinde beyaz yazı ~10:1. */
-  --accent-color: #334155;
-  --accent-hover: #1e293b;
-  --accent-glow: rgba(51, 65, 85, 0.10);
-  --accent-ring: rgba(51, 65, 85, 0.40);
+  --bg-color: #eef2f6;
+  --bg-surface: #fbfcfd;
+  --panel-bg: rgba(251, 252, 253, 0.84);
+  --panel-border: rgba(15, 23, 42, 0.08);
+  --panel-border-hover: rgba(15, 23, 42, 0.14);
+  /* Yazı: ana ~11:1, ikincil ~6:1, soluk ~3.7:1 (eski soluk #94a3b8 2.6:1'di, küçük yazıda okunmuyordu) */
+  --text-primary: #283548;
+  --text-secondary: #566375;
+  --text-muted: #7b8798;
+  --text-strong: #1f2b3d;
+  /* Marka grisi açık temada slate-600: dolu düğme koyu lacivert blok gibi göze batmasın (beyaz yazı ~7.6:1). İkincil yazıdan
+     (#566375) koyu; etkin menü ayrıca kalın + zemin vurgusu taşır. */
+  --accent-color: #475569;
+  --accent-hover: #334155;
+  --accent-glow: rgba(71, 85, 105, 0.10);
+  --accent-ring: rgba(71, 85, 105, 0.32);
   --accent-contrast: #ffffff;
+  /* Durum renkleri: -500 neon tonları beyazda göz alıyordu → -600; rozet/bant yazısı -700 (ink), zemin %8-10 */
+  --success-color: #16a34a;
+  --success-glow: rgba(22, 163, 74, 0.10);
+  --success-ink: #15803d;
+  --danger-color: #dc2626;
+  --danger-glow: rgba(220, 38, 38, 0.08);
+  --danger-ink: #b91c1c;
+  --warning-color: #d97706;
+  --warning-glow: rgba(217, 119, 6, 0.10);
+  --warning-ink: #b45309;
+  --purple-color: #8b5cf6;
+  --orange-color: #ea580c;
+  --cyan-color: #0891b2;
+  /* Gölge: koyu temanın siyah %30 gölgesi her kartın altında koyu leke bırakıyordu */
+  --glass-shadow: 0 1px 2px rgba(15, 23, 42, 0.04), 0 4px 16px -6px rgba(15, 23, 42, 0.10);
+  --glass-sheen: inset 0 1px 0 rgba(255, 255, 255, 0.6);
   /* Form control surfaces — açık temada koyu yerine hafif nötr yüzeyler */
-  --input-bg: rgba(15, 23, 42, 0.05);
-  --input-bg-hover: rgba(15, 23, 42, 0.09);
-  --input-bg-soft: rgba(15, 23, 42, 0.04);
-  --option-bg: #ffffff;
+  --input-bg: rgba(15, 23, 42, 0.04);
+  --input-bg-hover: rgba(15, 23, 42, 0.07);
+  --input-bg-soft: rgba(15, 23, 42, 0.03);
+  --option-bg: #fbfcfd;
+  --surface-faint: rgba(15, 23, 42, 0.025);
+  --surface-subtle: rgba(15, 23, 42, 0.03);
+  --surface-soft: rgba(15, 23, 42, 0.035);
+  --surface-code: rgba(15, 23, 42, 0.06);
+  --line-soft: rgba(15, 23, 42, 0.09);
+  --surface-sunken: rgba(15, 23, 42, 0.03);
+  --overlay-strong: rgba(15, 23, 42, 0.42);
+  /* Kod / terminal adası ters çevrilmez: koyu kalır, zifiri siyah yerine yumuşak lacivert */
+  --code-bg: #1f2836;
+  --code-ink: #e2e8f0;
   /* Marka wordmark mürekkebi — açık temada koyu (light logo varyantı) */
   --brand-ink: #0F172A;
   /* Native açılır menü / kaydırma çubuğu vb. açık render etsin */
@@ -79,7 +124,7 @@
 }
 :root.light-theme h1, :root.light-theme h2, :root.light-theme h3,
 :root.light-theme h4, :root.light-theme h5, :root.light-theme h6 {
-  color: #0f172a;
+  color: var(--text-strong);
 }
 
 /* Accent Color Variants — Ayarlar → Görünüm → Vurgu Rengi (varsayılan gri = sınıfsız). Hem koyu hem açık temada geçerli. */

@@ -11,6 +11,8 @@ import '@fontsource/jetbrains-mono/400.css'
 import '@fontsource/jetbrains-mono/500.css'
 import './index.css'
 import App from './App.tsx'
+// Açık tema katmanı App'in (ve bileşenlerin) stillerinden SONRA gelmeli: koyu tema için yazılmış sabit renkleri sıra ile ezer
+import './light-theme.css'
 import { getStoredTheme, applyThemeClass } from './theme'
 import { installAuthInterceptor } from './auth'
 

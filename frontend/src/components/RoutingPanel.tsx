@@ -656,7 +656,7 @@ function DomainRoutingView({ onApplied }: { onApplied: () => void }) {
           </div>
         </div>
         <p className="subtitle">
-          Belirli domain'leri farklı VPS'ler üzerinden yönlendirin. Wildcard desteklenir: <code style={{ fontSize: 11, background: 'rgba(255,255,255,0.06)', padding: '1px 4px', borderRadius: 8 }}>*.example.com</code> veya kelime (alan-adı son eki): <code style={{ fontSize: 11, background: 'rgba(255,255,255,0.06)', padding: '1px 4px', borderRadius: 8 }}>youtube</code> (youtube.com ve tüm alt alan adları — DNS son-ek eşleşmesi)
+          Belirli domain'leri farklı VPS'ler üzerinden yönlendirin. Wildcard desteklenir: <code style={{ fontSize: 11, background: 'var(--surface-code)', padding: '1px 4px', borderRadius: 8 }}>*.example.com</code> veya kelime (alan-adı son eki): <code style={{ fontSize: 11, background: 'var(--surface-code)', padding: '1px 4px', borderRadius: 8 }}>youtube</code> (youtube.com ve tüm alt alan adları — DNS son-ek eşleşmesi)
         </p>
         {!sug.available && sug.reason && SUGGEST_UNAVAILABLE[sug.reason] && (
           <p className="routing-suggest-note">{SUGGEST_UNAVAILABLE[sug.reason]}</p>
