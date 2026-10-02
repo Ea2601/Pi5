@@ -2056,6 +2056,7 @@ button.user-profile { cursor: pointer; font-family: var(--font-family); transiti
 }
 .dhcp-step-body ul, .dhcp-step-body ol { margin: 0; padding-left: 18px; }
 .dhcp-step-body code { font-size: 11px; background: rgba(255, 255, 255, 0.08); padding: 1px 5px; border-radius: 6px; }
+:root.light-theme .dhcp-step-body code { background: var(--input-bg-hover); }
 .dhcp-step .routing-apply, .dhcp-wizard .routing-apply { margin-top: 0; }
 .routing-apply .dhcp-ack {
   border: 1px solid var(--danger-color); border-radius: 8px; padding: 4px 10px; font-size: 12px; color: var(--text-primary);
@@ -2456,6 +2457,9 @@ button.user-profile { cursor: pointer; font-family: var(--font-family); transiti
   background: rgba(255, 255, 255, 0.03);
   border-color: var(--panel-border);
 }
+/* Açık tema: beyaz saydam zemin ve kenar açık zeminde görünmüyordu (satırlar birbirinden ayrılmıyordu) */
+:root.light-theme .list-item { background: var(--input-bg-soft); border-color: var(--panel-border); }
+:root.light-theme .list-item:hover { background: var(--input-bg-hover); border-color: var(--panel-border-hover); }
 
 .list-item-disabled {
   opacity: 0.45;
