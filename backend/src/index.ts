@@ -49,6 +49,8 @@ import {
   readSatState, MeshError, validSatId, removePeerKeys, meshHello, publishMdns, discoverKlyrix, requestSatelliteUpdate,
 } from './mesh';
 import { authGate, registerAuthRoutes } from './auth';
+import { registerNotifyRoutes, startNotify } from './notify';
+import { startDeviceWatch } from './deviceWatch';
 import { validateSchedule, validateCommand, syncCronJobs, readJobStatuses, readSystemCron, syncCronOnStartup, runningJobs, jobOutput, startJobNow } from './cronSync';
 import { validateListValue, normalizeListValue, syncPiholeLists, lastListSync, externalPiholeEntries, startSystemHostsWatch,
   ADLIST_PRESETS, setAdlistPreset, ensureDefaultAdlistPreset } from './piholeLists';
@@ -176,6 +178,8 @@ app.use(['/api/terminal', '/api/cron', '/api/backup', '/api/system', '/api/servi
 // Uzaktan yönetim anahtarı (VPS istemcisine panel erişimi, remoteAccess.ts): yalnız bu yol — /api/vps'in geri kalanı değil.
 app.use('/api/vps/:id/clients/:clientId/panel-access', writeLimiter, (req, res, next) => { void netAdminGuard(req, res, next); });
 registerAuthRoutes(app);
+// Dış bildirim (notify.ts): /api/notify — GET dışı yazma sınırı + netAdminGuard, uyduda 409 (gövdeler modülde).
+registerNotifyRoutes(app, { guard: (req, res, next) => { void netAdminGuard(req, res, next); }, writeLimiter });
 
 // Graceful shutdown. Hat Kalitesi açıksa (wanMonitor.ts) bekleyen ölçümler yazılır ve hat durumu kaydedilir (en çok 2 sn);
 // kapalıyken hemen çıkılır.
@@ -6609,6 +6613,8 @@ const server = app.listen(Number(port), bindHost, () => {
   void reapplyBlockedDevices();
   // Hazır yapılandırmayla kurulan tünellerin koruma tablosu (wgImport.ts): kaybolursa dakikada bir yeniden yüklenir.
   startImportGuardWatch();
+  // Dış bildirim (notify.ts): yalnız açık kanal varsa (varsayılan yok) 10 sn'de bir olay geçmişi okunur.
+  startNotify();
   // Ağ haritası: cihazların kablolu / Wi-Fi ayrımı için arka planda ARP yanıt süresi ölçümü (linkProbe.ts). Taban çizgisi
   // Pi'nin kabloyla bağlı olduğu ağ geçidi; Pi'nin çıkışı kablosuzsa taban çizgisi alınmaz. Kurulum Wi-Fi'ı istemcileri
   // ölçülmez (kesin bilinir), modem ve Pi'nin kendisi de.
@@ -6635,6 +6641,8 @@ const server = app.listen(Number(port), bindHost, () => {
     startQos({ protectedMacs: blockProtectedMacs });
     // Tak-çalıştır ağ kartı algılama (portWatch.ts): yalnız ayar açıksa (varsayılan kapalı) 10 sn'de bir /sys okunur.
     void initPortWatch().catch((e: any) => console.error('[tak-çalıştır]', e?.message || e));
+    // Yeni cihaz bildirimi (deviceWatch.ts): yalnız ayar açıksa (varsayılan kapalı) 60 sn'de bir komşu tablosu okunur.
+    void startDeviceWatch({ protectedMacs: blockProtectedMacs }).catch((e: any) => console.error('[yeni cihaz]', e?.message || e));
   }
   // Hat Kalitesi (wanMonitor.ts): ayar kapalıysa hiçbir şey yapmaz (zamanlayıcı, ping, tablo yok).
   startWanMonitor();

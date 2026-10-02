@@ -1,0 +1,89 @@
+/* Bildirimler → Dış kanallar (NotifyChannels.tsx). Adım kartları, kilit ve sihirbazdaki yeşil düğme DHCP sihirbazının
+   sınıflarından (.dhcp-wizard / .dhcp-step / .btn-on, App.css); burada düzen ve sihirbaz dışındaki aç / kapat düğmeleri.
+   Düğme rengi = ne yaptığı: açan yeşil, kapatan / silen kırmızı (renkler değişkenden — açık temada da okunur). Açık tema
+   karşılığı light-theme.css sonundaki "Dış bildirim kanalları" bölümünde. */
+.nc-page { margin-top: 14px; display: flex; flex-direction: column; gap: 14px; }
+.nc-note { margin-top: 10px; }
+.nc-desc { margin: 10px 0 0; color: var(--text-secondary); font-size: 12px; line-height: 1.55; }
+.nc-help { margin: 0; color: var(--text-secondary); font-size: 12px; line-height: 1.55; overflow-wrap: anywhere; }
+.nc-help code, .nc-check code { font-size: 11px; background: rgba(255, 255, 255, 0.08); padding: 1px 5px; border-radius: 6px; }
+
+.btn-primary.nc-on { background: color-mix(in srgb, var(--success-color) 65%, #000); color: #fff; }
+.btn-primary.nc-on:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--success-color) 70%, #000); box-shadow: 0 4px 12px var(--success-glow);
+}
+.btn-outline.nc-off {
+  border-color: var(--danger-color); background: color-mix(in srgb, var(--danger-color) 8%, transparent);
+  color: color-mix(in srgb, var(--danger-color) 75%, var(--text-primary));
+}
+.btn-outline.nc-off:hover:not(:disabled) {
+  border-color: var(--danger-color); background: color-mix(in srgb, var(--danger-color) 16%, transparent);
+  color: color-mix(in srgb, var(--danger-color) 75%, var(--text-primary));
+}
+.btn-outline.nc-off:disabled, .btn-primary.nc-on:disabled { opacity: 0.45; cursor: not-allowed; }
+/* Sihirbazdaki "Kaydet ve aç": test başarılı olmadan kilitli */
+.nc-wizard .btn-primary.btn-on:disabled { opacity: 0.45; cursor: not-allowed; box-shadow: none; }
+
+.nc-list { list-style: none; margin: 12px 0 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.nc-item {
+  display: flex; flex-direction: column; gap: 6px; padding: 10px 12px; border-radius: 10px;
+  border: 1px solid var(--panel-border); background: rgba(255, 255, 255, 0.015);
+}
+.nc-item-off { opacity: 0.75; }
+.nc-item-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; min-width: 0; }
+.nc-item-head strong { overflow-wrap: anywhere; }
+.nc-item-icon { display: inline-flex; color: var(--text-secondary); }
+.nc-item-meta { color: var(--text-secondary); font-size: 12px; overflow-wrap: anywhere; }
+.nc-item .nc-note { margin-top: 0; }
+.nc-item-act { flex-wrap: wrap; }
+
+.nc-wizard { margin-top: 14px; }
+.nc-wizard-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.nc-wizard-head .dhcp-wizard-title { margin: 0; }
+.nc-kinds { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+.nc-kind {
+  display: flex; flex-direction: column; gap: 4px; text-align: left; padding: 10px 12px; border-radius: 10px; cursor: pointer;
+  border: 1px solid var(--panel-border); background: rgba(255, 255, 255, 0.015); color: var(--text-primary);
+  font-family: var(--font-family);
+}
+.nc-kind:hover { border-color: var(--accent-color); }
+.nc-kind-on { border-color: var(--accent-color); box-shadow: 0 0 0 2px var(--accent-glow); }
+.nc-kind-title { display: inline-flex; align-items: center; gap: 6px; font-weight: 600; font-size: 13px; }
+.nc-kind-desc { color: var(--text-secondary); font-size: 12px; line-height: 1.45; }
+.nc-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 12px; }
+.nc-grid .form-group { margin-bottom: 8px; min-width: 0; }
+.nc-grid .config-input, .nc-grid .config-select { width: 100%; }
+.nc-wide { grid-column: 1 / -1; }
+.nc-check { display: flex; align-items: flex-start; gap: 8px; font-size: 12px; line-height: 1.5; color: var(--text-secondary); cursor: pointer; }
+.nc-check input { margin-top: 2px; flex-shrink: 0; accent-color: var(--accent-color); }
+.nc-time { display: flex; align-items: center; gap: 8px; }
+.nc-time .config-input { width: 120px; }
+
+.nc-sources > summary { cursor: pointer; font-size: 12px; color: var(--text-primary); }
+.nc-sources[open] > summary { margin-bottom: 8px; }
+.nc-sources > .nc-help { margin-bottom: 8px; }
+.nc-src-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px 14px; margin-bottom: 10px; }
+.nc-src-row, .nc-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-width: 0; font-size: 12px; }
+.nc-src-row > span { overflow-wrap: anywhere; color: var(--text-secondary); }
+.nc-src-sel { width: 150px; flex-shrink: 0; }
+.nc-row { margin-top: 12px; color: var(--text-secondary); }
+
+.nc-deliv { list-style: none; margin: 8px 0 0; padding: 0; display: flex; flex-direction: column; }
+.nc-deliv-row {
+  display: flex; align-items: center; gap: 6px 10px; flex-wrap: wrap; padding: 7px 0; font-size: 12px;
+  border-bottom: 1px solid var(--panel-border);
+}
+.nc-deliv-row:last-child { border-bottom: none; }
+.nc-deliv-time { color: var(--text-muted); white-space: nowrap; min-width: 92px; }
+.nc-deliv-main { flex: 1 1 200px; min-width: 0; overflow-wrap: anywhere; color: var(--text-secondary); }
+.nc-deliv-main strong { color: var(--text-primary); }
+.nc-deliv-err { flex-basis: 100%; color: var(--text-muted); overflow-wrap: anywhere; }
+
+@media (max-width: 768px) {
+  .nc-kinds, .nc-grid, .nc-src-list { grid-template-columns: minmax(0, 1fr); }
+  .nc-src-sel { width: 130px; }
+  /* "Bildir, etiketle" 130 px'e sığmıyordu: seçici satırın altına iner, kalan genişliği alır */
+  .nc-row { flex-wrap: wrap; }
+  .nc-row .nc-src-sel { width: auto; flex: 1 1 170px; }
+  .nc-item-act > button { flex: 1 1 auto; }
+}

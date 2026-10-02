@@ -1,6 +1,7 @@
-import { Bell, AlertTriangle, AlertCircle, Info, CheckCircle, Filter, CheckCheck, Loader2, MailOpen } from 'lucide-react';
+import { Bell, AlertTriangle, AlertCircle, Info, CheckCircle, Filter, CheckCheck, Loader2, MailOpen, Send, History } from 'lucide-react';
 import { useApi, postApi, getApi } from '../hooks/useApi';
-import { useState, useMemo, useEffect } from 'react';
+import { useState, useMemo, useEffect, lazy, Suspense, Component } from 'react';
+import type { ReactNode } from 'react';
 import { Panel, Badge } from './ui';
 import { toast } from '../toast';
 import { type AlertItem, type AlertsPage, sourceLabel, parseAlertTime, dayLabel, severityMeta, notifyAlertsChanged, onAlertsChanged, markRead } from '../alerts';
@@ -9,13 +10,37 @@ import { AlertDetailModal } from './AlertDetailModal';
 // Uyarılar + olay geçmişi (backend events.ts): sağlık denetiminin uyarıları (type=health) ve panelde yapılan işlemler
 // (type=event: güncelleme, Unbound/Zapret/Pi-hole ayarları, VPS, cihaz engeli, Cron hatası, servis, DHCP / ağ modu).
 // Bilgi olayları okunmuş gelir; okunmamış sayısı yalnız uyarı/kritik içindir. Kayıtlar 30 gün tutulur. Son kayıtlar
-// üst çubuktaki zilden de görülür (NotificationBell); okundu bilgisi ikisi arasında anında paylaşılır.
+// üst çubuktaki zilden de görülür (NotificationBell); okundu bilgisi ikisi arasında anında paylaşılır. "Dış kanallar"
+// sekmesi uyarıları kullanıcının kendi Telegram / Discord / webhook kanalına iletmeyi ve yeni cihaz bildirimini yönetir.
 type SeverityFilter = 'all' | 'critical' | 'warning' | 'info';
+
+// "Dış kanallar" sekmesi (Telegram / Discord / webhook, yeni cihaz bildirimi — notify.ts) ayrı parça: ana paket büyümesin,
+// yalnız sekme açılınca yüklenir. Parça yüklenemezse (güncellemeden sonra eski sekme) yalnız bu bölüm yerine kısa not çıkar.
+const NotifyChannels = lazy(() => import('./NotifyChannels').then(m => ({ default: m.NotifyChannels })));
+class NotifyBoundary extends Component<{ children: ReactNode }, { failed: boolean }> {
+  state = { failed: false };
+  static getDerivedStateFromError() {
+    return { failed: true };
+  }
+  componentDidCatch(error: Error) {
+    console.error('Dış kanallar bölümü:', error);
+  }
+  render() {
+    if (!this.state.failed) return this.props.children;
+    return (
+      <div className="glass-panel" style={{ marginTop: 14, padding: '14px 16px', display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 10 }}>
+        <span className="text-muted" style={{ fontSize: 13, flex: '1 1 220px' }}>Dış kanallar bölümü yüklenemedi — sayfayı yenileyin.</span>
+        <button className="btn-outline btn-sm" onClick={() => window.location.reload()}>Sayfayı yenile</button>
+      </div>
+    );
+  }
+}
 
 const PAGE = 50;
 
 export function AlertsPanel() {
   const [filter, setFilter] = useState<SeverityFilter>('all');
+  const [channels, setChannels] = useState(false); // "Dış kanallar" sekmesi açık
   const [unreadOnly, setUnreadOnly] = useState(false);
   const [rev, setRev] = useState(0); // "Tümünü okundu say" sonrası liste baştan yüklenir
   const [ackingAll, setAckingAll] = useState(false);
@@ -49,29 +74,48 @@ export function AlertsPanel() {
       <Panel title="Uyarı Merkezi" icon={<Bell size={20} style={{ marginRight: 8 }} />}
         subtitle="Sistem uyarıları ve panelde yapılan işlemlerin geçmişi — son 30 gün"
         badge={unread.count > 0 ? <Badge variant="error">{unread.count} okunmamış</Badge> : <Badge variant="success">Temiz</Badge>}>
-        <div className="service-tabs">
-          {tabs.map(tab => (
-            <button key={tab.id}
-              className={`service-tab ${filter === tab.id ? 'service-tab-active' : ''}`}
-              onClick={() => setFilter(tab.id)}>
-              {tab.icon}<span>{tab.label}</span>
+        {/* Görünüm: geçmiş ya da dış kanallar (telefonda da kaydırmadan görünsün diye süzgeçten ayrı satır) */}
+        <div className="service-tabs" aria-label="Bildirimler görünümü">
+          <button className={`service-tab ${!channels ? 'service-tab-active' : ''}`} onClick={() => setChannels(false)} aria-pressed={!channels}>
+            <History size={14} /><span>Geçmiş</span>
+          </button>
+          <button className={`service-tab ${channels ? 'service-tab-active' : ''}`} onClick={() => setChannels(true)} aria-pressed={channels}>
+            <Send size={14} /><span>Dış kanallar</span>
+          </button>
+        </div>
+        {!channels && <>
+          <div className="service-tabs" style={{ marginTop: 8 }}>
+            {tabs.map(tab => (
+              <button key={tab.id}
+                className={`service-tab ${filter === tab.id ? 'service-tab-active' : ''}`}
+                onClick={() => setFilter(tab.id)}>
+                {tab.icon}<span>{tab.label}</span>
+              </button>
+            ))}
+          </div>
+          <div className="alert-toolbar">
+            <button className={`btn-outline btn-sm ${unreadOnly ? 'alert-chip-on' : ''}`} onClick={() => setUnreadOnly(v => !v)}
+              aria-pressed={unreadOnly}>
+              <MailOpen size={13} /> Yalnız okunmamış
             </button>
-          ))}
-        </div>
-        <div className="alert-toolbar">
-          <button className={`btn-outline btn-sm ${unreadOnly ? 'alert-chip-on' : ''}`} onClick={() => setUnreadOnly(v => !v)}
-            aria-pressed={unreadOnly}>
-            <MailOpen size={13} /> Yalnız okunmamış
-          </button>
-          <button className="btn-outline btn-sm" onClick={handleAckAll} disabled={ackingAll || unread.count === 0}>
-            {ackingAll ? <Loader2 size={13} className="spin" /> : <CheckCheck size={13} />} Tümünü okundu say
-          </button>
-        </div>
+            <button className="btn-outline btn-sm" onClick={handleAckAll} disabled={ackingAll || unread.count === 0}>
+              {ackingAll ? <Loader2 size={13} className="spin" /> : <CheckCheck size={13} />} Tümünü okundu say
+            </button>
+          </div>
+        </>}
       </Panel>
 
-      <div style={{ marginTop: 14 }}>
-        <AlertList key={`${query}#${rev}`} query={query} unreadOnly={unreadOnly} />
-      </div>
+      {channels ? (
+        <NotifyBoundary>
+          <Suspense fallback={<div style={{ textAlign: 'center', padding: 30, color: 'var(--text-muted)' }}><Loader2 size={20} className="spin" /></div>}>
+            <NotifyChannels />
+          </Suspense>
+        </NotifyBoundary>
+      ) : (
+        <div style={{ marginTop: 14 }}>
+          <AlertList key={`${query}#${rev}`} query={query} unreadOnly={unreadOnly} />
+        </div>
+      )}
     </div>
   );
 }

@@ -1,7 +1,7 @@
 import {
   BookOpen, ShieldBan, Zap, Flame, Globe, Server, ShieldAlert,
   Clock, Network, Route, ChevronDown, ChevronRight, Terminal,
-  AlertTriangle, CheckCircle, Info, Cpu, Smartphone, Cloud
+  AlertTriangle, CheckCircle, Info, Cpu, Smartphone, Cloud, Bell
 } from 'lucide-react';
 import { useState } from 'react';
 import { Panel, Badge } from './ui';
@@ -92,6 +92,12 @@ export function DocsPanel() {
       title: 'Ağ Topolojisi',
       icon: <Network size={15} />,
       content: <NetworkDoc />,
+    },
+    {
+      id: 'notify',
+      title: 'Dış Bildirimler',
+      icon: <Bell size={15} />,
+      content: <NotifyDoc />,
     },
     {
       id: 'cron',
@@ -619,6 +625,50 @@ Trafik izleme: Her cihazın anlık download/upload hızı gösterilir`}</CodeBlo
           </tbody>
         </table>
       </DocBlock>
+    </div>
+  );
+}
+
+function NotifyDoc() {
+  return (
+    <div className="doc-page">
+      <h3>Dış Bildirimler (Telegram / Discord / webhook)</h3>
+      <p>Bildirimler → Dış kanallar: uyarıları yalnız sizin açtığınız kanala gönderir — varsayılan kapalı. Kanal yokken hiçbir şey dışarı
+        gitmez; Klyrix'e hiçbir zaman bir şey gönderilmez.</p>
+
+      <DocBlock title="Kanal ekleme">
+        <ul>
+          <li><strong>Telegram:</strong> @BotFather ile bot kurun, token'ı ve sohbet kimliğini girin (botunuza önce bir mesaj yazın).</li>
+          <li><strong>Discord:</strong> kanalın webhook adresi. Mesajlar kimseyi etiketlemez (@everyone dahil).</li>
+          <li><strong>Webhook:</strong> kendi adresiniz; JSON gövde (<code>v, device, alertId, severity, source, sourceLabel, message, createdAt</code>),
+            isteğe bağlı <code>X-Klyrix-Signature</code> (HMAC-SHA256). İnternetteki adres yalnız https; ev ağındaki hedef (Home Assistant) açık onayla.</li>
+        </ul>
+        <p>Sihirbaz sırası: tür → bilgiler → "Test mesajı gönder" → "Kaydet ve aç". Test başarılı olmadan kaydedilmez. Token ve adresler
+          /etc/pi5-gateway/notify altında yalnız root'un okuyabildiği dosyada durur; panel ayarlarına, yedeğe ve günlüklere girmez.</p>
+      </DocBlock>
+
+      <DocBlock title="Ne gider">
+        <ul>
+          <li>Varsayılan: uyarı ve kritik kayıtlar + önemden bağımsız yeni cihaz, hat kalitesi (kesildi / geri geldi), yedek hat geçişi, yeni ağ kartı.
+            Aynı ana hat olayı hem yedek hat geçişinden hem hat kalitesinden gelirse Telegram / Discord'a tek bildirim gider.</li>
+          <li>5 dk'lık tek ping denetimi ("İnternet") varsayılan gönderilmez; kaynak süzgecinden değiştirilebilir.</li>
+          <li>Kanal açılınca yalnız yeni kayıtlar gider (geçmiş gönderilmez). Aynı tür kayıt 10 dk'da bir; birikirse (20'den çok) tek özet.</li>
+          <li>Kısa kip (varsayılan): ne olduğu yazar, cihaz adı / IP / MAC yazmaz — ayrıntı panelde. Tam metin kipinde kayıt olduğu gibi gider.</li>
+          <li>Sessiz saatler (isteğe bağlı): aralıkta yalnız kritik gider, diğerleri bitince tek özet.</li>
+        </ul>
+      </DocBlock>
+
+      <DocBlock title="Yeni cihaz bildirimi">
+        <p>Açıkken 60 sn'de bir komşu tablosu okunur; açarken bağlı cihazlar ve DHCP kirası süren (uyuyan) cihazlar bilinen sayılır. Pi DHCP
+          dağıtmıyorsa, açarken kapalı olan ve cihaz listesinde hiç görünmemiş bir cihaz ilk bağlanışında bir kez "yeni" sayılabilir. Yeni cihaz bir dakika sonra (DHCP adıyla)
+          Bildirimler'e yazılır; otomatik engel yoktur. Gizli (rastgele) Wi-Fi adresli cihazlar etiketlenir ya da isteğe göre bildirilmez.
+          Ev VPN istemcileri komşu tablosunda görünmediği için kapsam dışıdır.</p>
+      </DocBlock>
+
+      <DocTip type="warning">
+        "Ana hat kesildi" bildirimi kopuk hattan gönderilemez: yedek hat açıksa hemen yedek hattan gider, yoksa hat dönünce "geri geldi"
+        bildirimi gelir. Bildirim Pi'nin kendi bağlantısından çıkar (Telegram / Discord'u VPS'e yönlendirdiyseniz tünelden).
+      </DocTip>
     </div>
   );
 }

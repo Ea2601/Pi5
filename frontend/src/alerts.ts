@@ -15,7 +15,11 @@ export interface AlertItem {
 }
 export interface AlertsPage { alerts: AlertItem[]; hasMore?: boolean }
 
+// Eşi: backend/src/notify.ts SOURCE_LABEL (dış bildirim metni) — yeni kaynak iki haritaya birlikte eklenir.
 const SOURCE_LABEL: Record<string, string> = {
+  'netmode-bak': 'Yedek hat', 'netmode-bak-health': 'Yedek hat', 'netmode-wan': 'İnternet kartı', 'netmode-rep': 'Wi-Fi köprüsü',
+  'netmode-home': "Ev Wi-Fi'ı", firewall: 'Güvenlik duvarı', fail2ban: 'Fail2Ban', 'routing-list': 'Yönlendirme listesi',
+  'vps-tunnel': 'VPS tüneli', 'device-new': 'Yeni cihaz', notify: 'Dış bildirim', pcap: 'Paket kaydı', geo: 'Geo-IP',
   cpu: 'İşlemci', memory: 'Bellek', disk: 'Disk', dns: 'DNS', network: 'İnternet', dhcp: 'DHCP', 'dhcp-rogue': 'DHCP',
   'dhcp-probe': 'DHCP', netmode: 'Ağ modu', 'netmode-ap': 'Ağ modu', 'netmode-missing': 'Ağ modu', service: 'Servis', update: 'Güncelleme',
   unbound: 'Unbound', zapret: 'Zapret', pihole: 'Pi-hole', vps: 'VPS', device: 'Cihaz', cron: 'Cron', vpn: 'Ev VPN',
@@ -26,7 +30,11 @@ export const sourceLabel = (s: string) => SOURCE_LABEL[(s || '').split(':')[0]] 
 
 // Bildirimin ilgili sayfası (ayrıntı penceresindeki "git" düğmesi). Kaynak backend'deki recordEvent / sağlık denetimi
 // adıdır; servis uyarıları "service:<ad>[:<arayüz>]". Ağ modu (netmode) olayları birden çok sayfayı ilgilendirir: bağlantı yok.
+// 'notify' (dış bildirim kanalı uyarısı) bağlantısız: zaten Bildirimler'de; metni "Dış kanallar" sekmesini söyler.
 const SOURCE_TAB: Record<string, TabId> = {
+  'netmode-bak': 'roles', 'netmode-bak-health': 'roles', 'netmode-wan': 'roles', 'netmode-rep': 'roles', 'netmode-home': 'roles',
+  firewall: 'firewall', fail2ban: 'fail2ban', 'routing-list': 'routing', 'vps-tunnel': 'vps', 'device-new': 'devicecontrol',
+  pcap: 'nettools', geo: 'firewall',
   cpu: 'dashboard', memory: 'dashboard', disk: 'dashboard', network: 'dashboard', dns: 'unbound',
   dhcp: 'dhcp', 'dhcp-rogue': 'dhcp', 'dhcp-probe': 'dhcp', unbound: 'unbound', zapret: 'zapret', pihole: 'pihole',
   vps: 'vps', vpn: 'vps', device: 'devicecontrol', update: 'maintenance', cron: 'maintenance', mesh: 'roles',

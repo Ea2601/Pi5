@@ -226,3 +226,11 @@
 }
 /* "şu an" rozeti: yeşil mürekkep %10 yeşil zeminde 4.1:1 kalıyordu — yüzey zemini + yeşil çizgi */
 :root.light-theme .ag-badge.is-now { background: var(--bg-surface); border-color: rgba(22, 163, 74, 0.35); }
+
+/* ── 9. Dış bildirim kanalları (Bildirimler → NotifyChannels.css; 8. bölüm Ağ Ajandası — G5.1) ──
+   Tembel sekme CSS'i bu katmandan sonra yüklenir: eşit özgüllükte bileşen kuralı kazanacağından tam :root.light-theme.
+   .nc-kind-on yalnız kenar / gölge değiştirir (zemini ezilmez). */
+:root.light-theme .nc-item,
+:root.light-theme .nc-kind { background: rgba(15, 23, 42, 0.025); }
+:root.light-theme .nc-help code,
+:root.light-theme .nc-check code { background: var(--input-bg-hover); }
