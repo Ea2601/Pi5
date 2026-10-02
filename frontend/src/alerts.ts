@@ -20,7 +20,7 @@ const SOURCE_LABEL: Record<string, string> = {
   'dhcp-probe': 'DHCP', netmode: 'Ağ modu', 'netmode-ap': 'Ağ modu', 'netmode-missing': 'Ağ modu', service: 'Servis', update: 'Güncelleme',
   unbound: 'Unbound', zapret: 'Zapret', pihole: 'Pi-hole', vps: 'VPS', device: 'Cihaz', cron: 'Cron', vpn: 'Ev VPN',
   mesh: 'Mesh', storage: 'Depolama', bandwidth: 'Bant genişliği', backup: 'Yedekleme', vault: 'Yedekleme',
-  sync: 'Cihaz yedekleme', visits: 'Ziyaret Geçmişi', hotplug: 'Ağ kartı',
+  sync: 'Cihaz yedekleme', visits: 'Ziyaret Geçmişi', hotplug: 'Ağ kartı', 'wan-monitor': 'Hat kalitesi',
 };
 export const sourceLabel = (s: string) => SOURCE_LABEL[(s || '').split(':')[0]] || s || 'Sistem';
 
@@ -32,6 +32,7 @@ const SOURCE_TAB: Record<string, TabId> = {
   vps: 'vps', vpn: 'vps', device: 'devicecontrol', update: 'maintenance', cron: 'maintenance', mesh: 'roles',
   storage: 'storage', bandwidth: 'bandwidth', backup: 'backup', vault: 'backup', sync: 'backup', visits: 'visits',
   hotplug: 'roles',
+  'wan-monitor': 'speedtest',
 };
 const SERVICE_TAB: Record<string, TabId> = {
   pihole: 'pihole', unbound: 'unbound', zapret: 'zapret', fail2ban: 'fail2ban', nftables: 'firewall', wireguard: 'vps',
@@ -39,6 +40,15 @@ const SERVICE_TAB: Record<string, TabId> = {
 export function alertTab(source: string): TabId | null {
   const [head, name] = (source || '').split(':');
   return (head === 'service' ? SERVICE_TAB[name] : SOURCE_TAB[head]) || null;
+}
+// Sayfanın alt sekmesi (Hız Testi → Hat Kalitesi): "git" düğmesi sayfayı o sekmede açar. Sayfanın hatırladığı sekme yazılır
+// (sayfa yeni açılıyorsa) ve olay yayınlanır (sayfa zaten açıksa hash değişmez).
+export const SPEEDTEST_TAB_KEY = 'pi5-speedtest-tab';
+export const SPEEDTEST_TAB_EVENT = 'pi5-speedtest-tab';
+export function openAlertSubTab(source: string): void {
+  if ((source || '').split(':')[0] !== 'wan-monitor') return;
+  try { localStorage.setItem(SPEEDTEST_TAB_KEY, 'quality'); } catch { /* depolama yok */ }
+  window.dispatchEvent(new CustomEvent(SPEEDTEST_TAB_EVENT, { detail: 'quality' }));
 }
 
 export const parseAlertTime = (s: string) => new Date(s.replace(' ', 'T') + 'Z'); // SQLite CURRENT_TIMESTAMP = UTC

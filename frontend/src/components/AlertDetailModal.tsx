@@ -5,7 +5,7 @@ import { postApi } from '../hooks/useApi';
 import { toast } from '../toast';
 import { Badge, Modal } from './ui';
 import { tabLabel } from '../nav';
-import { type AlertItem, alertTab, fullTime, notifyAlertsChanged, parseAlertTime, relativeTime, severityMeta, sourceLabel } from '../alerts';
+import { type AlertItem, alertTab, fullTime, notifyAlertsChanged, openAlertSubTab, parseAlertTime, relativeTime, severityMeta, sourceLabel } from '../alerts';
 
 // Bildirimin ayrıntısı: zildeki ve Bildirimler sayfasındaki satıra tıklanınca açılır. Tam metin (listede 3 satırla
 // kısalır), zaman, kaynak, okundu durumu; "Okundu say" ve ilgili sayfaya git. Pencere body'ye taşınır: zil paneli ve
@@ -39,6 +39,7 @@ export function AlertDetailModal({ alert, onClose, onNavigate }: {
     if (!tab) return;
     onClose();
     onNavigate?.();
+    openAlertSubTab(alert.source);
     window.location.hash = `#${tab}`;
   };
 

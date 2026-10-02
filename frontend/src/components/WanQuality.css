@@ -1,0 +1,91 @@
+/* Hız Testi → Hat Kalitesi (WanQuality) — tembel parça; renkler token'la (açık tema index.css değişkenlerinden gelir).
+   Düğme rengi = ne yaptığı: açan yeşil (dolu), kapatan kırmızı (çerçeve). Dolu yeşilde beyaz yazı için yeşil koyulaştırılır. */
+.wq { margin-top: 14px; }
+.wq-gap { margin-top: 14px; }
+.wq-loading { display: flex; justify-content: center; padding: 24px; }
+.wq-help { font-size: 13px; color: var(--text-secondary); line-height: 1.55; margin: 6px 0 0; overflow-wrap: anywhere; }
+.wq-mono { font-family: var(--font-mono); font-size: 12px; overflow-wrap: anywhere; }
+.wq-bad { color: var(--danger-color); }
+
+.btn-primary.wq-on { background: color-mix(in srgb, var(--success-color) 65%, #000); color: #fff; }
+.btn-primary.wq-on:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--success-color) 72%, #000); box-shadow: 0 4px 12px var(--success-glow);
+}
+.btn-outline.wq-off {
+  border-color: var(--danger-color); background: color-mix(in srgb, var(--danger-color) 8%, transparent);
+  color: color-mix(in srgb, var(--danger-color) 75%, var(--text-primary));
+}
+.btn-outline.wq-off:hover:not(:disabled) {
+  border-color: var(--danger-color); background: color-mix(in srgb, var(--danger-color) 16%, transparent);
+  color: color-mix(in srgb, var(--danger-color) 75%, var(--text-primary));
+}
+
+.wq-note {
+  display: flex; align-items: flex-start; gap: 8px; margin: 8px 0 0; padding: 10px 12px; border-radius: var(--radius-sm);
+  border: 1px solid var(--panel-border); background: var(--input-bg-soft); font-size: 13px; line-height: 1.5;
+}
+.wq-note > svg { flex-shrink: 0; margin-top: 3px; color: var(--accent-color); }
+.wq-note > span { min-width: 0; overflow-wrap: anywhere; }
+
+/* Ayarlar: telefonda alt alta, geniş ekranda yan yana */
+.wq-settings { display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px 16px; margin-top: 12px; align-items: end; }
+.wq-field { display: flex; flex-direction: column; gap: 4px; min-width: 0; font-size: 12px; color: var(--text-secondary); }
+.wq-field .config-select { width: 100%; }
+.wq-check { display: flex; align-items: flex-start; gap: 8px; font-size: 13px; line-height: 1.45; cursor: pointer; min-width: 0; }
+.wq-check input { margin-top: 2px; width: 16px; height: 16px; flex-shrink: 0; accent-color: var(--accent-color); }
+.wq-check span { min-width: 0; }
+@media (min-width: 760px) {
+  .wq-settings { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .wq-check { grid-column: 1 / -1; }
+}
+@media (min-width: 1100px) {
+  .wq-settings { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1.2fr); }
+  .wq-check { grid-column: auto; padding-bottom: 8px; }
+}
+
+/* Hat kartları */
+.wq-lines { display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px; }
+@media (min-width: 900px) { .wq-lines { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+.wq-line {
+  display: flex; flex-direction: column; gap: 6px; padding: 12px 14px; border-radius: var(--radius-sm); min-width: 0;
+  border: 1px solid var(--panel-border); background: var(--input-bg-soft);
+}
+.wq-line.is-down { border-color: color-mix(in srgb, var(--danger-color) 45%, transparent); background: var(--danger-glow); }
+.wq-line-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; }
+.wq-line-name { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px; min-width: 0; font-size: 14px; }
+.wq-kind { font-size: 12px; color: var(--text-secondary); }
+.wq-metrics { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin-top: 2px; }
+.wq-metrics > div { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.wq-metrics span { font-size: 11px; color: var(--text-secondary); }
+.wq-metrics strong { font-size: 17px; font-weight: 600; color: var(--text-strong); font-variant-numeric: tabular-nums; }
+.wq-metrics strong.wq-bad { color: var(--danger-color); }
+.wq-metrics strong.wq-na { font-size: 13px; font-weight: 500; color: var(--text-secondary); }
+.wq-day { margin: 0; font-size: 12px; color: var(--text-secondary); overflow-wrap: anywhere; }
+.wq-line-note { display: flex; align-items: flex-start; gap: 6px; margin: 0; font-size: 12px; line-height: 1.45; color: var(--text-secondary); }
+.wq-line-note > svg { flex-shrink: 0; margin-top: 2px; color: var(--accent-color); }
+.wq-line-note.is-warn { color: var(--text-primary); }
+.wq-line-note.is-warn > svg { color: var(--warning-color); }
+.wq-line-note > span { min-width: 0; overflow-wrap: anywhere; }
+
+/* Grafik */
+.wq-period { display: flex; gap: 4px; }
+.wq-period .btn-sm { font-size: 11px; padding: 2px 8px; }
+.wq-chart-title { margin: 8px 0 4px; font-size: 12px; color: var(--text-secondary); }
+.wq-chart { width: 100%; height: 230px; }
+.wq-chart-sm { height: 150px; }
+.wq-legend { color: var(--text-secondary); }
+
+/* Kesintiler */
+.wq-outages { display: flex; flex-direction: column; gap: 6px; }
+.wq-outage {
+  display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 2px 12px; align-items: center; padding: 8px 12px;
+  border-radius: var(--radius-sm); background: var(--input-bg-soft); font-size: 13px;
+}
+.wq-outage-line { min-width: 0; overflow-wrap: anywhere; }
+.wq-outage-time { grid-column: 1; font-size: 12px; color: var(--text-secondary); font-variant-numeric: tabular-nums; }
+.wq-outage-dur { grid-column: 2; grid-row: 1 / span 2; font-weight: 600; font-variant-numeric: tabular-nums; }
+@media (min-width: 760px) {
+  .wq-outage { grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr) auto; }
+  .wq-outage-time { grid-column: 2; grid-row: 1; }
+  .wq-outage-dur { grid-column: 3; grid-row: 1; }
+}

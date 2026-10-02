@@ -30,6 +30,7 @@ import {
 import type { RangeRoute } from './system';
 import { listForwards, addForward, setForwardEnabled, deleteForward, applyPortForwards, prepareForwardRestore } from './wan';
 import { runSpeedTest, SpeedtestUnavailable, type SpeedResult } from './speedtest';
+import { registerWanMonitorRoutes, startWanMonitor, shutdownWanMonitor } from './wanMonitor';
 import { ASN_TOKEN, getAsnPrefixes, normalizeCidr, refreshAsnIfStale } from './ipRanges';
 import { getRoutingSuggestions, MAX_HOURS as SUGGEST_MAX_HOURS } from './domainSuggest';
 import { startUpdate, getUpdateStatus, getBuildMode, setBuildMode, isBuildMode } from './update';
@@ -171,19 +172,25 @@ app.use('/api', authGate);
 // terminali çalıştıramasın). Ağ uçlarındaki (netmode, wan …) denetimin aynısı; localhost (kiosk) ve IP güvenilir.
 // netAdminGuard aşağıda tanımlı: istek anında çağrılır.
 app.use(['/api/terminal', '/api/cron', '/api/backup', '/api/system', '/api/services', '/api/storage', '/api/firewall',
-  '/api/fail2ban', '/api/unbound', '/api/bandwidth', '/api/vault', '/api/sync', '/api/mobile', '/api/pihole/blocking'], (req, res, next) => { void netAdminGuard(req, res, next); });
+  '/api/fail2ban', '/api/unbound', '/api/bandwidth', '/api/vault', '/api/sync', '/api/mobile', '/api/pihole/blocking', '/api/wan-monitor'], (req, res, next) => { void netAdminGuard(req, res, next); });
 // Uzaktan yönetim anahtarı (VPS istemcisine panel erişimi, remoteAccess.ts): yalnız bu yol — /api/vps'in geri kalanı değil.
 app.use('/api/vps/:id/clients/:clientId/panel-access', writeLimiter, (req, res, next) => { void netAdminGuard(req, res, next); });
 registerAuthRoutes(app);
 
-// Graceful shutdown
+// Graceful shutdown. Hat Kalitesi açıksa (wanMonitor.ts) bekleyen ölçümler yazılır ve hat durumu kaydedilir (en çok 2 sn);
+// kapalıyken hemen çıkılır.
+const exitAfterWanMonitor = () => {
+  const flush = shutdownWanMonitor();
+  if (!flush) process.exit(0);
+  void Promise.race([flush.catch(() => {}), new Promise(r => setTimeout(r, 2000))]).finally(() => process.exit(0));
+};
 process.on('SIGTERM', () => {
   console.log('SIGTERM received, shutting down gracefully...');
-  process.exit(0);
+  exitAfterWanMonitor();
 });
 process.on('SIGINT', () => {
   console.log('SIGINT received, shutting down...');
-  process.exit(0);
+  exitAfterWanMonitor();
 });
 
 initDb();
@@ -2782,6 +2789,16 @@ app.get('/api/speedtest/history', async (req, res) => {
   }
 });
 
+// ─── Hat Kalitesi (wanMonitor.ts) ───
+// Hat başına kayıp / gecikme / jitter geçmişi ve "hat kesildi / geri geldi" olayı; varsayılan kapalı. Yazma ucu netAdminGuard
+// (yukarıdaki önek listesi) + writeLimiter; uyduda tüm uçlar 409 (hatlar ana cihazındır).
+app.use('/api/wan-monitor', (req, res, next) => {
+  if (isSatellite()) return res.status(409).json({ error: 'Bu cihaz uydu — hat izleme ana cihazdadır' });
+  if (req.method !== 'GET') return writeLimiter(req, res, next);
+  next();
+});
+registerWanMonitorRoutes(app);
+
 // ─── Otomatik hız testi zamanlayıcı ───────────────────────────────────────
 // Varsayılan 6 saatte bir. 10 dk çok agresifti: tam speedtest hattı her seferinde
 // ~30-60sn doyurur; gateway olduğu için 10 dk'da bir bunu yapmak üzerinden geçen tüm
@@ -4593,8 +4610,9 @@ const BACKUP_MERGE_TABLES = new Set(['service_config', 'service_status', 'app_se
 // Yedekten geri gelmeyen çalışma kayıtları (panelin kendi defteri): eski değer geri gelirse ör. panelin Pi-hole'a yazdığı
 // yerel DNS kayıtları "dışarıdan eklenmiş" sayılıp hiç silinmez, "Panel güncellendi" olayı yinelenir, bildirilmiş uyarı
 // yeniden çıkar.
+// wan_monitor: hatta özgü ölçüm ayarı — başka bir cihazın / kotalı hattın yedeğiyle kendiliğinden ping başlatmasın.
 const BACKUP_SKIP_SETTINGS = new Set(['last_seen_version', 'pihole_hosts_managed', 'storage_job_notified', 'wg_reach_watch',
-  'cron_defaults_seeded', 'accent_gray_migrated', 'hotplug_watch']);
+  'cron_defaults_seeded', 'accent_gray_migrated', 'hotplug_watch', 'wan_monitor']);
 
 async function restoreTable(table: string, rows: any[]): Promise<number> {
   if (!Array.isArray(rows)) return 0;
@@ -6617,6 +6635,8 @@ const server = app.listen(Number(port), bindHost, () => {
     // Tak-çalıştır ağ kartı algılama (portWatch.ts): yalnız ayar açıksa (varsayılan kapalı) 10 sn'de bir /sys okunur.
     void initPortWatch().catch((e: any) => console.error('[tak-çalıştır]', e?.message || e));
   }
+  // Hat Kalitesi (wanMonitor.ts): ayar kapalıysa hiçbir şey yapmaz (zamanlayıcı, ping, tablo yok).
+  startWanMonitor();
   } // !isSatellite
   // Cron: panel görevleri zamanlayıcıya yazılır, ancak bu başarılıysa eski pi5-maintenance satırları çıkarılır (önce yeni
   // dosya). Veritabanı ilk kurulum işleri bitsin diye kısa gecikmeyle.
