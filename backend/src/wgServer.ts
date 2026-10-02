@@ -14,6 +14,8 @@
 //    inet filter tablosunda giriş/iletme politikası drop ise oraya kendi zincirleriyle izin eklenir (başka tablodaki accept
 //    drop'u geçemez; drop ise her tabloda kesindir — misafir yalıtımı bu yüzden kendi tablosunda yeterli).
 //  - Ekleme/silme/rol değişikliği bağlı istemcileri koparmadan `wg syncconf` ile uygulanır.
+//  - Klyrix/Gate uygulama eşleri (gateApp.ts, registerAppPeers) aynı arayüzde ama ayrı tabloda: gizli anahtarları telefonda
+//    kalır; Pi'de yalnız uygulama kapısına (APP_PORT) ulaşırlar, iletme kapalı (VPN değil). Adresleri istemcilerle aynı ağdan.
 import fs from 'fs';
 import path from 'path';
 import dgram from 'dgram';
@@ -40,10 +42,30 @@ const PRIVATE_NETS = '10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10, 
 // kontrolünün "tüm ağda DNS" yönlendirmesi de 53'e iner). Geri kalan her şey (yasak liste değil izin listesi) düşer.
 const GUEST_PI_PORTS = '53';
 const KEY = /^[A-Za-z0-9+/]{42}[AEIMQUYcgkosw048]=$/;
+export const validWgKey = (k: unknown): k is string => typeof k === 'string' && KEY.test(k);
+// Klyrix/Gate uygulama kapısı (gateApp.ts): Pi'de yalnız WG_SERVER_IP üzerinde dinler.
+export const APP_PORT = 8097;
 
 export type PeerRole = 'admin' | 'guest';
 interface ServerRow { private_key: string; public_key: string; enabled: number }
 interface PeerRow { id: number; name: string; ip: string; public_key: string; private_key: string; role: PeerRole; created_at: string }
+
+// Klyrix/Gate uygulama eşleri (gateApp.ts — kendi tablosunda; gizli anahtarları Pi'de hiç yok): yapılandırmaya ve kurallara
+// eklenir. Uygulama eşi VPN istemcisi değildir: Pi'de yalnız uygulama kapısına (APP_PORT) ulaşır, iletme kapalıdır.
+export interface AppPeer { id: number; ip: string; public_key: string }
+let appPeersProvider: () => Promise<AppPeer[]> = async () => [];
+export function registerAppPeers(fn: () => Promise<AppPeer[]>): void { appPeersProvider = fn; }
+const appPeers = () => appPeersProvider().catch((e: any): AppPeer[] => {
+  console.error('[ev-vpn] uygulama eşleri okunamadı:', e?.message || e);
+  return [];
+});
+// Bir Ev VPN'i istemcisinin adresini ya da anahtarını (veya sunucunun anahtarını) taşıyan uygulama eşi yazılmaz: aynı adres
+// iki eşte olamaz — buluttan geri yüklenen istemci önceliklidir; panel o telefonu "çakışıyor" diye gösterir (gateApp.ts).
+function usableApps(s: ServerRow, peers: PeerRow[], apps: AppPeer[]): AppPeer[] {
+  const ips = new Set(peers.map(p => p.ip));
+  const keys = new Set([s.public_key, ...peers.map(p => p.public_key)]);
+  return apps.filter(a => KEY.test(a.public_key) && /^10\.77\.77\.\d{1,3}$/.test(a.ip) && !ips.has(a.ip) && !keys.has(a.public_key));
+}
 
 let tablesReady: Promise<void> | null = null;
 function ensureTables(): Promise<void> {
@@ -155,7 +177,7 @@ function routeWgMtu(): number {
   }
 }
 
-export function renderServerConf(s: ServerRow, peers: PeerRow[]): string {
+export function renderServerConf(s: ServerRow, peers: PeerRow[], apps: AppPeer[] = []): string {
   return [
     "# Klyrix Gate paneli yönetir (VPS WireGuard → Ev VPN'i); elle düzenlemeyin.",
     '[Interface]',
@@ -172,28 +194,40 @@ export function renderServerConf(s: ServerRow, peers: PeerRow[]): string {
       '', `# ${p.name} (${p.role === 'admin' ? 'yönetici' : 'misafir'})`, '[Peer]',
       `PublicKey = ${p.public_key}`, `AllowedIPs = ${p.ip}/32`,
     ]),
+    // Uygulama eşinin adı yoruma girmez (kullanıcının yazdığı ad; satır sonu vb. taşıyabilir): kayıt numarası yeter
+    ...apps.flatMap(a => ['', `# Klyrix/Gate uygulaması #${a.id}`, '[Peer]', `PublicKey = ${a.public_key}`, `AllowedIPs = ${a.ip}/32`]),
     '',
   ].join('\n');
 }
 
-export function renderNft(peers: PeerRow[]): string {
+export function renderNft(peers: PeerRow[], apps: AppPeer[] = []): string {
   const guests = peers.filter(p => p.role !== 'admin').map(p => p.ip);
+  const appIps = apps.map(a => a.ip);
   return [
     "# Klyrix Gate — Ev VPN'i (wg_pi) kuralları; panel yazar, arayüzün PostUp'ı yükler.",
     'table inet pi5_wgsrv',
     'delete table inet pi5_wgsrv',
     'table inet pi5_wgsrv {',
     `  set guests { type ipv4_addr;${guests.length ? ` elements = { ${guests.join(', ')} }` : ''} }`,
+    `  set apps { type ipv4_addr;${appIps.length ? ` elements = { ${appIps.join(', ')} }` : ''} }`,
     '  chain input {',
     '    type filter hook input priority filter - 1; policy accept;',
     `    iifname "${WG_IFACE}" ip saddr @guests ct state established,related accept`,
     `    iifname "${WG_IFACE}" ip saddr @guests meta l4proto { tcp, udp } th dport { ${GUEST_PI_PORTS} } accept`,
     `    iifname "${WG_IFACE}" ip saddr @guests icmp type echo-request accept`,
     `    iifname "${WG_IFACE}" ip saddr @guests drop`,
+    // Uygulama eşi: Pi'de yalnız uygulama kapısı (+ ping); uygulama kapısına wg_pi dışından (ev ağı, loopback hariç) gelinmez
+    `    iifname "${WG_IFACE}" ip saddr @apps ct state established,related accept`,
+    `    iifname "${WG_IFACE}" ip saddr @apps tcp dport ${APP_PORT} accept`,
+    `    iifname "${WG_IFACE}" ip saddr @apps icmp type echo-request accept`,
+    `    iifname "${WG_IFACE}" ip saddr @apps drop`,
+    `    iifname != { "${WG_IFACE}", "lo" } tcp dport ${APP_PORT} drop`,
     '  }',
     '  chain forward {',
     '    type filter hook forward priority filter - 1; policy accept;',
     `    iifname "${WG_IFACE}" ip saddr @guests ip daddr { ${PRIVATE_NETS} } drop`,
+    // Uygulama eşi VPN değildir: hiçbir yere iletilmez (ev ağı da internet de kapalı)
+    `    iifname "${WG_IFACE}" ip saddr @apps drop`,
     '  }',
     '}',
     'table ip pi5_wgsrv_nat',
@@ -283,8 +317,9 @@ async function doApply(): Promise<WgApplyResult> {
       if (up()) return { ok: false, running: true, error: `Ev VPN'i durdurulamadı: ${stopErr.slice(0, 200) || 'arayüz hâlâ açık'}` };
       return { ok: true, running: false };
     }
-    writeFile(NFT_FILE, renderNft(peers), 0o644);
-    writeFile(CONF, renderServerConf(s, peers), 0o600);
+    const apps = usableApps(s, peers, await appPeers());
+    writeFile(NFT_FILE, renderNft(peers, apps), 0o644);
+    writeFile(CONF, renderServerConf(s, peers, apps), 0o600);
     if (up()) {
       await execFileP('bash', ['-c', `wg syncconf ${WG_IFACE} <(wg-quick strip ${WG_IFACE})`], { timeout: 15000 });
       // MTU syncconf ile uygulanmaz (wg-quick yönergesi): internet kartı PPPoE'ye geçtiyse / çıktıysa arayüzde ayarlanır.
@@ -349,12 +384,28 @@ export async function setServerEnabled(enabled: boolean): Promise<WgApplyResult>
   return applyWgServer();
 }
 
+// Boş tünel adresi: Ev VPN istemcileri ve uygulama eşleri aynı ağı (10.77.77.2–254) paylaşır. İstemciler alttan, uygulama
+// eşleri üstten (fromTop) alır: buluttan geri yüklenen istemci listesi sonradan eşleşmiş bir telefonun adresine denk gelmesin.
+// Uygulama eşleri okunamazsa adres verilmez (çakışan adres vermektense hata).
+export async function freePeerIp(fromTop = false): Promise<string> {
+  const used = new Set([...(await peerRows()).map(p => p.ip), ...(await appPeersProvider()).map(a => a.ip)]);
+  for (let k = 2; k <= 254; k++) {
+    const i = fromTop ? 256 - k : k;
+    if (!used.has(WG_PREFIX + i)) return WG_PREFIX + i;
+  }
+  throw new Error('İstemci adresi kalmadı (en çok 253 istemci)');
+}
+// Sunucunun genel anahtarı (yoksa üretilir) — uygulama eşleşmesi yanıtı için
+export async function serverPublicKey(): Promise<string> {
+  return (await serverRow(true))!.public_key;
+}
+export async function serverEnabled(): Promise<boolean> {
+  return !!(await serverRow().catch(() => null))?.enabled;
+}
+
 export async function addPeer(name: string, role: PeerRole): Promise<{ id: number; ip: string; apply: WgApplyResult | null }> {
   await serverRow(true);
-  const used = new Set((await peerRows()).map(p => p.ip));
-  let ip = '';
-  for (let i = 2; i <= 254 && !ip; i++) if (!used.has(WG_PREFIX + i)) ip = WG_PREFIX + i;
-  if (!ip) throw new Error('İstemci adresi kalmadı (en çok 253 istemci)');
+  const ip = await freePeerIp();
   const k = await genKeyPair();
   const id = await dbInsert('INSERT INTO wg_server_peers (name, ip, public_key, private_key, role) VALUES (?, ?, ?, ?, ?)',
     [name, ip, k.pub, k.priv, role]);

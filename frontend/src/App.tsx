@@ -116,8 +116,9 @@ function App() {
     setNavOpen(false);
     setNeedLogin(true);
   }, []);
-  // Çıkış yalnız giriş ekranı modunda anlamlı (şifre penceresinde tarayıcı kimliği unutmaz; Pi'nin kendi ekranı muaf).
-  const canLogout = auth?.mode === 'form' && !auth.loopback;
+  // Çıkış yalnız giriş ekranı modunda anlamlı (şifre penceresinde tarayıcı kimliği unutmaz; Pi'nin kendi ekranı ve
+  // Klyrix/Gate uygulaması muaf).
+  const canLogout = auth?.mode === 'form' && !auth.loopback && !auth.app;
 
   // Sekme seçilince menü çekmecesi kapanır.
   const goTab = useCallback((tab: TabId) => {

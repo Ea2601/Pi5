@@ -8,6 +8,7 @@ export interface AuthStatus {
   trial_ends: number;
   authenticated: boolean;
   loopback: boolean;
+  app?: boolean; // Klyrix/Gate uygulamasının içinden (eşleşmiş telefon): çıkış yok
   user?: string;
   now: number;
 }

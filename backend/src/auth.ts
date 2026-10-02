@@ -22,8 +22,9 @@ const FAIL_MAX = 5;
 const GLOBAL_FAIL_MAX_PER_MIN = 20;
 // Oturumsuz erişilebilen uçlar (req.originalUrl'ün yolu birebir). Kodlanmış/../ içeren yollar bunlara denk sayılmaz.
 // /api/mesh/pair ve /api/mesh/sync: uydular (R2) ana cihaza oturumsuz gelir; kimliği 6 haneli kod / uyduya özel anahtar
-// kanıtlar (mesh.ts). panel-auth.sh'nin nginx haritası da aynı iki yolu muaf tutar.
-const EXEMPT = new Set(['/api/auth/login', '/api/auth/logout', '/api/auth/status', '/api/captive', '/api/mesh/pair', '/api/mesh/sync']);
+// kanıtlar (mesh.ts). /api/app/pair: Klyrix/Gate uygulaması eşleşmesi; sahipliği panel şifresi ya da paneldeki kod kanıtlar
+// (gateApp.ts). panel-auth.sh'nin nginx haritası da aynı yolları muaf tutar.
+const EXEMPT = new Set(['/api/auth/login', '/api/auth/logout', '/api/auth/status', '/api/captive', '/api/mesh/pair', '/api/mesh/sync', '/api/app/pair']);
 
 export type LoginMode = 'basic' | 'form';
 
@@ -180,6 +181,37 @@ function recordFail(ip: string): number {
   return Math.max(0, FAIL_MAX - f.count);
 }
 
+// Uygulama kapısından gelen istek işareti (gateApp.ts koyar): yalnız sunucu tarafında, istek nesnesinin kendi alanı
+export const GATE_APP = Symbol('klyrix-gate-app');
+export function isGateAppRequest(req: unknown): boolean {
+  return !!(req as Record<symbol, unknown>)[GATE_APP];
+}
+
+// Panel şifresi kurulu mu (htpasswd'de kullanıcı var mı): Klyrix/Gate uygulaması eşleşme ekranında şifre seçeneği
+export function panelPasswordSet(): boolean {
+  return readUsers().size > 0;
+}
+
+// Panel şifresi (htpasswd'deki herhangi bir kullanıcının şifresi) — Klyrix/Gate uygulaması eşleşmesinde sahiplik kanıtı.
+// Giriş ekranıyla aynı deneme sınırı (IP başına 15 dk'da 5 yanlış). Panel koruması hiç kurulmadıysa (kullanıcı yok) 'none'.
+export async function verifyPanelPassword(password: unknown, ip: string): Promise<'ok' | 'bad' | 'none' | { wait: number }> {
+  const wait = blockedFor(ip);
+  if (wait > 0) return { wait };
+  const users = [...readUsers().keys()];
+  if (!users.length) return 'none';
+  const pw = typeof password === 'string' ? password : '';
+  const valid = pw.length > 0 && Buffer.byteLength(pw, 'utf8') <= 512 && !/[\r\n\0]/.test(pw);
+  for (const u of users) {
+    if (valid && await checkPassword(u, pw)) {
+      fails.delete(ip);
+      return 'ok';
+    }
+  }
+  recordFail(ip);
+  await new Promise(r => setTimeout(r, 400));
+  return 'bad';
+}
+
 const cookieAttrs = 'Path=/; HttpOnly; SameSite=Strict';
 const originalPath = (req: express.Request) => String(req.originalUrl || '').split('?')[0];
 
@@ -187,6 +219,9 @@ const originalPath = (req: express.Request) => String(req.originalUrl || '').spl
 export const authGate: express.RequestHandler = (req, res, next) => {
   if (readLoginMode().mode !== 'form') return next();
   if (EXEMPT.has(originalPath(req)) || isLoopbackIp(req.ip)) return next();
+  // Klyrix/Gate uygulama kapısı (gateApp.ts): isteği kendi dinleyicisi, eşleşmiş WireGuard eşinden geldiği doğrulanınca
+  // işaretler (istemci bunu başlıkla koyamaz — nesnenin sembol alanıdır)
+  if (isGateAppRequest(req)) return next();
   const user = sessionUser(req);
   if (user) { res.locals.pi5User = user; return next(); }
   res.set('Cache-Control', 'no-store');
@@ -201,10 +236,13 @@ export function registerAuthRoutes(app: express.Express): void {
     const { mode, trialEnds } = readLoginMode();
     const loopback = isLoopbackIp(req.ip);
     const user = mode === 'form' ? sessionUser(req) : null;
+    // Klyrix/Gate uygulaması: kimliği eşleşmiş telefonun tünelidir — giriş ekranı ve çıkış düğmesi yok
+    const app = isGateAppRequest(req);
     res.json({
       mode, trial_ends: trialEnds, loopback,
-      // basic: nginx zaten doğruladı (buraya ulaştıysa). form: geçerli çerez ya da Pi'nin kendisi.
-      authenticated: mode === 'basic' || loopback || !!user,
+      // basic: nginx zaten doğruladı (buraya ulaştıysa). form: geçerli çerez, Pi'nin kendisi ya da uygulama kapısı.
+      authenticated: mode === 'basic' || loopback || app || !!user,
+      ...(app ? { app: true } : {}),
       user: user || undefined,
       now: Math.floor(Date.now() / 1000),
     });

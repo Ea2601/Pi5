@@ -3,6 +3,7 @@ import { useState } from 'react';
 import { useApi, postApi, putApi, deleteApi, getApi } from '../hooks/useApi';
 import { Badge, Modal, Select } from './ui';
 import { PiVpnReachability } from './PiVpnReachability';
+import { GateAppCard } from './GateAppCard';
 import { toast } from '../toast';
 import { relativeTime } from '../alerts';
 
@@ -45,7 +46,7 @@ export function PiVpnServer() {
 
   const toggle = async () => {
     const next = !st?.enabled;
-    if (!next && !confirm("Ev VPN'i kapatılırsa bağlı bütün istemcilerin bağlantısı kesilir. Devam edilsin mi?")) return;
+    if (!next && !confirm("Ev VPN'i kapatılırsa bağlı bütün istemcilerin ve Klyrix/Gate uygulamalarının bağlantısı kesilir. Devam edilsin mi?")) return;
     setToggling(true);
     try {
       await postApi('/wg-server/enable', { enabled: next });
@@ -169,6 +170,9 @@ export function PiVpnServer() {
         {/* İlk kurulum rehberi: sabit adımlar yerine test sonucuna göre (tek modem / çift NAT / CGNAT) adım adım */}
         {st?.supported !== false && <PiVpnReachability running={!!st?.running} />}
       </div>
+
+      {/* Klyrix/Gate yönetim uygulaması: aynı kanal (wg_pi), ayrı eşler — telefonda VPN yok */}
+      <GateAppCard />
 
       <div className="glass-panel widget-large" style={{ marginTop: 14 }}>
         <div className="widget-header"><h3>Ev VPN'i istemcileri</h3></div>

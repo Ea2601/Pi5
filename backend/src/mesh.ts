@@ -718,6 +718,9 @@ export function renderAvahiService(o: { id: string; role: 'main' | 'satellite'; 
     `    <txt-record>id=${o.id}</txt-record>`,
     `    <txt-record>role=${o.role}</txt-record>`,
     `    <txt-record>proto=${o.proto}</txt-record>`,
+    // Klyrix/Gate yönetim uygulaması bu cihazla eşleşebilir (gateApp.ts, POST /api/app/pair; uydu ana cihazdan yönetilir).
+    // Keşif bilinmeyen alanı yok sayar.
+    ...(o.role === 'main' ? ['    <txt-record>app=1</txt-record>'] : []),
     '  </service>',
     '</service-group>',
     '',

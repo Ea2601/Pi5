@@ -72,6 +72,7 @@ import { piholeConfigView, applyPiholeSettings, getBlocking, setBlocking, migrat
 import { syncStatus, enableSync, disableSync, acceptDevice, rejectDevice, removeDevice, acceptFolder, rejectFolder, removeFolder,
   updateFolder, setCloud, syncBlocksSatellite, startSyncWatch } from './sync';
 import { mobileStatus, setMobile, startPairing, cancelPairing as cancelMobilePairing, removeMobileDevice, removeMobilePerson, mobileBlocksSatellite, startMobile } from './mobile';
+import { registerGateAppRoutes, startGateApp } from './gateApp';
 import { vaultStatus, vaultJob, noteVaultJob, connectVault, saveSettings, startBackup, listSnapshots, disableVault,
   startVaultWatch, vaultLeftover, vaultBlocksSatellite, resumeVault, restoreFetch, restorePreview, applyRestore, discardRestore,
   restoreFiles, listKeys, removeOldKey } from './vault';
@@ -5150,6 +5151,12 @@ app.post('/api/mobile/pair/cancel', syncRoute(async () => { cancelMobilePairing(
 app.post('/api/mobile/devices/remove', syncRoute(req => removeMobileDevice(req.body?.id, req.body?.files === true)));
 app.post('/api/mobile/people/remove', syncRoute(req => removeMobilePerson(req.body?.id)));
 startMobile();
+
+// Klyrix/Gate yönetim uygulaması (gateApp.ts): telefon Pi'yi panelin kendisiyle yönetir; aralarında Ev VPN'i kanalında
+// şifreli, kalıcı bağlantı (telefonda VPN açılmaz). Eşleşme ucu oturumsuz (kod / panel şifresi); panel yazma uçları yazma
+// sınırı + netAdminGuard; uyduda 409. Ev VPN'i eşleşmeyle açılırsa internet kartı güvenlik duvarı da yenilenir.
+registerGateAppRoutes(app, { guard: (req, res, next) => { void netAdminGuard(req, res, next); }, writeLimiter, onTunnelEnabled: wanFirewallReload });
+startGateApp();
 
 // ─── Parental Controls ───
 // Ebeveyn kontrolleri (parental.ts): kural = kime (cihaz / grup) × neyi (tüm internet | kategori + site) × ne zaman. Kurallar
