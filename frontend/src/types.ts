@@ -191,6 +191,10 @@ export interface SpeedTestResult {
   server: string;
   isp: string;
   timestamp: string;
+  // 1 = akıllı kuyruk açıkken ölçüldü (kısılmış: hattın gerçek hızı değil, ayarlanan bant); eski kayıt / sürümde yok ya da 0
+  shaped?: number | null;
+  // yük altındaki gecikme (ms; Ookla) — yoksa null
+  loaded_ms?: number | null;
 }
 
 export interface ParentalRule {

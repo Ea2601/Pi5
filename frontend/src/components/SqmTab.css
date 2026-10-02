@@ -1,0 +1,53 @@
+/* Bant Genişliği → Gecikme (Akıllı Kuyruk) (SqmTab.tsx). Adım kartları, kilit ve yeşil / kırmızı düğmeler DHCP sihirbazının
+   sınıflarından (.dhcp-wizard / .dhcp-step / .btn-on / .btn-off, App.css); burada yalnız düzen. Renkler değişkenden (açık temada
+   da okunur); açık tema karşılığı light-theme.css sonundaki "Akıllı kuyruk" bölümünde. */
+.sqm-page { margin-top: 14px; display: flex; flex-direction: column; gap: 14px; }
+.sqm-note { margin-top: 10px; }
+.sqm-line { display: flex; align-items: center; gap: 8px; margin-top: 10px; font-size: 13px; color: var(--text-secondary); overflow-wrap: anywhere; }
+.sqm-line svg { flex-shrink: 0; color: var(--accent-color); }
+.sqm-line strong { color: var(--text-primary); }
+.sqm-summary {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px 12px; flex-wrap: wrap; margin-top: 10px;
+  padding: 9px 12px; border-radius: 10px; border: 1px solid var(--panel-border); background: rgba(255, 255, 255, 0.015);
+  font-size: 12px; color: var(--text-secondary);
+}
+.sqm-summary > span { display: inline-flex; align-items: center; gap: 6px; min-width: 0; overflow-wrap: anywhere; }
+.sqm-summary > span svg { flex-shrink: 0; color: var(--success-color); }
+.sqm-warn-list { list-style: none; margin: 10px 0 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.sqm-warn-list li { display: flex; align-items: flex-start; gap: 6px; font-size: 12px; line-height: 1.5; color: var(--text-secondary); }
+.sqm-warn-list li svg { flex-shrink: 0; margin-top: 3px; color: var(--warning-color); }
+
+.sqm-wizard { margin-top: 0; }
+.sqm-wizard-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.sqm-wizard-head .dhcp-wizard-title { margin: 0; }
+.sqm-help { margin: 0; color: var(--text-secondary); font-size: 12px; line-height: 1.55; overflow-wrap: anywhere; }
+.sqm-muted { color: var(--text-muted); font-size: 11.5px; line-height: 1.45; }
+.sqm-checks { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 3px; }
+.sqm-checks li { display: flex; align-items: center; gap: 6px; font-size: 12px; overflow-wrap: anywhere; }
+.sqm-checks li svg { flex-shrink: 0; }
+.sqm-checks li.is-ok svg { color: var(--success-color); }
+.sqm-checks li.is-bad svg { color: var(--danger-color); }
+.sqm-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 12px; }
+.sqm-grid .form-group { margin-bottom: 8px; min-width: 0; }
+.sqm-grid .config-input, .sqm-grid .config-select { width: 100%; min-width: 0; }
+.sqm-wide { grid-column: 1 / -1; }
+.sqm-measure { display: flex; align-items: center; gap: 8px 10px; flex-wrap: wrap; }
+.sqm-measure .btn-outline { flex-shrink: 0; }
+.sqm-measure .sqm-muted { flex: 1 1 220px; }
+.sqm-result {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px 12px; flex-wrap: wrap;
+  padding: 8px 12px; border-radius: 10px; border: 1px solid var(--panel-border); background: rgba(255, 255, 255, 0.015);
+  font-size: 12px; color: var(--text-secondary);
+}
+.sqm-result strong { color: var(--text-primary); }
+.sqm-result > span { min-width: 0; overflow-wrap: anywhere; }
+.sqm-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.sqm-actions .btn-primary, .sqm-actions .btn-outline { display: inline-flex; align-items: center; gap: 6px; }
+.sqm-wizard .btn-primary.btn-on:disabled { opacity: 0.45; cursor: not-allowed; box-shadow: none; }
+/* Satır içi (esnek kutu değil): dar ekranda metin parçaları ayrı sütunlara bölünmesin; süre tek parça kalsın */
+.sqm-countdown svg { vertical-align: -2px; margin-right: 4px; color: var(--warning-color); }
+.sqm-countdown strong { white-space: nowrap; }
+
+@media (max-width: 600px) {
+  .sqm-grid { grid-template-columns: minmax(0, 1fr); }
+}

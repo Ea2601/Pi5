@@ -1,7 +1,8 @@
-import { Activity, AlertTriangle, ArrowDown, ArrowUp, Edit3, Gauge, Plus, RotateCcw, Trash2, Wifi } from 'lucide-react';
+import { Activity, AlertTriangle, ArrowDown, ArrowUp, Edit3, Gauge, Loader2, Plus, RotateCcw, Timer, Trash2, Wifi } from 'lucide-react';
 import { useApi, putApi, postApi, deleteApi } from '../hooks/useApi';
-import { useMemo, useState } from 'react';
+import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react';
 import { Panel, StatCard, Badge, Modal, Select, SelectOption } from './ui';
+import { ErrorBoundary } from './ErrorBoundary';
 import { toast } from '../toast';
 import { BANDWIDTH_TAB_KEY } from '../nav';
 
@@ -10,7 +11,27 @@ import { BANDWIDTH_TAB_KEY } from '../nav';
 // uygulanmıyordu). Sınır canlı tablodaki satırdan ya da "Kota ve Hız" sekmesinden eklenir. Hız Mbps, kota GB girilir
 // (backend kbps / MB saklar).
 
-type BandwidthTab = 'live' | 'limits';
+// Gecikme (Akıllı Kuyruk, backend sqm.ts) ayrı parça: ana paket büyümesin — yalnız sekme açılınca yüklenir.
+const SqmTab = lazy(() => import('./SqmTab').then(m => ({ default: m.SqmTab }), () => {
+  throw new Error('Akıllı kuyruk bölümü yüklenemedi — sayfayı yenileyin (panel güncellenmiş olabilir)');
+}));
+
+type BandwidthTab = 'live' | 'limits' | 'sqm';
+
+// Dar ekranda (telefon) uzun sekme adı kısalır — üç sekme 390 px'e sığsın (tam ad title / aria-label'da). Seçili sekme,
+// çubuk yine taşarsa görünür alana kaydırılır (yalnız çubuk; sayfa kaymaz).
+const NARROW_MQ = '(max-width: 600px)';
+function useNarrow(): boolean {
+  const [narrow, setNarrow] = useState(() => { try { return window.matchMedia(NARROW_MQ).matches; } catch { return false; } });
+  useEffect(() => {
+    let mq: MediaQueryList;
+    try { mq = window.matchMedia(NARROW_MQ); } catch { return; }
+    const on = () => setNarrow(mq.matches);
+    mq.addEventListener?.('change', on);
+    return () => mq.removeEventListener?.('change', on);
+  }, []);
+  return narrow;
+}
 
 interface LiveEntry {
   device_mac: string;
@@ -237,7 +258,7 @@ export function BandwidthPanel() {
   const [activeTab, setActiveTab] = useState<BandwidthTab>(() => {
     try {
       const t = sessionStorage.getItem(BANDWIDTH_TAB_KEY);
-      if (t) { sessionStorage.removeItem(BANDWIDTH_TAB_KEY); return t === 'limits' ? 'limits' : 'live'; }
+      if (t) { sessionStorage.removeItem(BANDWIDTH_TAB_KEY); return t === 'limits' || t === 'sqm' ? t : 'live'; }
     } catch { /* depolama yok */ }
     return 'live';
   });
@@ -247,10 +268,20 @@ export function BandwidthPanel() {
   const [editor, setEditor] = useState<EditorTarget | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
 
-  const tabs: { id: BandwidthTab; label: string; icon: React.ReactNode }[] = [
+  const tabs: { id: BandwidthTab; label: string; short?: string; icon: React.ReactNode }[] = [
     { id: 'live', label: 'Canlı İzleme', icon: <Activity size={14} /> },
     { id: 'limits', label: 'Kota ve Hız', icon: <Gauge size={14} /> },
+    { id: 'sqm', label: 'Gecikme (Akıllı Kuyruk)', short: 'Gecikme', icon: <Timer size={14} /> },
   ];
+  const narrow = useNarrow();
+  const tabBar = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const bar = tabBar.current, el = bar?.querySelector<HTMLElement>('.service-tab-active');
+    if (!bar || !el || bar.scrollWidth <= bar.clientWidth) return;
+    const b = bar.getBoundingClientRect(), r = el.getBoundingClientRect();
+    if (r.right > b.right) bar.scrollLeft += r.right - b.right + 4;
+    else if (r.left < b.left) bar.scrollLeft -= b.left - r.left + 4;
+  }, [activeTab, narrow]);
 
   const limits = useMemo(() => limitsData.limits || [], [limitsData.limits]);
   const limitOf = useMemo(() => new Map(limits.map(l => [l.device_mac.toLowerCase(), l])), [limits]);
@@ -316,14 +347,18 @@ export function BandwidthPanel() {
     <div className="fade-in">
       <Panel title="Bant Genişliği Yönetimi" icon={<Gauge size={20} style={{ marginRight: 8 }} />}
         subtitle="Cihaz bazlı trafik izleme, hız sınırı ve kullanım kotası">
-        <div className="service-tabs">
-          {tabs.map(tab => (
-            <button key={tab.id}
-              className={`service-tab ${activeTab === tab.id ? 'service-tab-active' : ''}`}
-              onClick={() => setActiveTab(tab.id)}>
-              {tab.icon}<span>{tab.label}</span>
-            </button>
-          ))}
+        <div className="service-tabs" ref={tabBar}>
+          {tabs.map(tab => {
+            const short = narrow && tab.short;
+            return (
+              <button key={tab.id}
+                className={`service-tab ${activeTab === tab.id ? 'service-tab-active' : ''}`}
+                title={short ? tab.label : undefined} aria-label={short ? tab.label : undefined}
+                onClick={() => setActiveTab(tab.id)}>
+                {tab.icon}<span>{short || tab.label}</span>
+              </button>
+            );
+          })}
         </div>
       </Panel>
 
@@ -467,6 +502,14 @@ export function BandwidthPanel() {
             )}
           </Panel>
         </div>
+      )}
+
+      {activeTab === 'sqm' && (
+        <ErrorBoundary>
+          <Suspense fallback={<div style={{ display: 'flex', justifyContent: 'center', padding: 24 }}><Loader2 size={18} className="spin" /></div>}>
+            <SqmTab />
+          </Suspense>
+        </ErrorBoundary>
       )}
 
       {editor && (

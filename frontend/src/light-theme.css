@@ -235,3 +235,9 @@
 :root.light-theme .nc-kind { background: rgba(15, 23, 42, 0.025); }
 :root.light-theme .nc-help code,
 :root.light-theme .nc-check code { background: var(--input-bg-hover); }
+
+/* ── 10. Akıllı kuyruk (Bant Genişliği → Gecikme, SqmTab.css; 9. bölüm Dış bildirim kanalları — G2.1) ──
+   Tembel sekme CSS'i bu katmandan sonra yüklenir: eşit özgüllükte bileşen kuralı kazanacağından tam :root.light-theme.
+   Yalnız zemin değişir; durum sınıfı yok (kenar / yazı renkleri değişkenden). */
+:root.light-theme .sqm-summary,
+:root.light-theme .sqm-result { background: rgba(15, 23, 42, 0.025); }

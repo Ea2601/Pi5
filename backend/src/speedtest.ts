@@ -20,9 +20,12 @@ const STATE_DIR = '/run/pi5-speedtest';
 const STATE_FILE = `${STATE_DIR}/state`;
 const TIMEOUT_MS = 150000;
 
+// loaded_ms: yük altındaki gecikme (Ookla indirme / yükleme sırasındaki latency.iqm değerlerinin büyüğü — bufferbloat
+// göstergesi; akıllı kuyruk sihirbazı, sqm.ts). Alan yoksa (eski Ookla, speedtest-cli) null.
 export type SpeedResult = {
   download_mbps: number; upload_mbps: number; ping_ms: number;
   jitter_ms: number | null; packet_loss: number | null; server: string; isp: string;
+  loaded_ms: number | null;
 };
 
 // Araç kurulu değil (HTTP 503) — diğer hatalar ölçüm hatasıdır.
@@ -51,6 +54,7 @@ export function parseOoklaJson(stdout: string): SpeedResult {
   const where = [s.location, s.country].filter(Boolean);
   const server = [s.name, where.length ? `${where[0]}${where[1] ? ` (${where[1]})` : ''}` : ''].filter(Boolean).join(' — ') || 'Bilinmiyor';
   const jitter = num(d.ping?.jitter), loss = num(d.packetLoss);
+  const loaded = [num(d.download?.latency?.iqm), num(d.upload?.latency?.iqm)].filter((v): v is number => v !== null && v >= 0);
   return {
     download_mbps: r1((dl * 8) / 1e6),
     upload_mbps: r1((ul * 8) / 1e6),
@@ -59,6 +63,7 @@ export function parseOoklaJson(stdout: string): SpeedResult {
     packet_loss: loss === null ? null : Math.round(loss * 100) / 100,
     server,
     isp: typeof d.isp === 'string' && d.isp ? d.isp : 'Bilinmiyor',
+    loaded_ms: loaded.length ? r1(Math.max(...loaded)) : null,
   };
 }
 
@@ -75,6 +80,7 @@ export function parseLegacyJson(stdout: string): SpeedResult {
     packet_loss: null,
     server: `speedtest-cli: ${s.sponsor ? `${s.sponsor} — ${s.name}` : 'Bilinmiyor'}${s.cc ? ` (${s.cc})` : ''}`,
     isp: d.client?.isp || 'Bilinmiyor',
+    loaded_ms: null,
   };
 }
 

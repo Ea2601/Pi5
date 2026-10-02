@@ -226,6 +226,10 @@ export function SpeedTestPanel() {
                 <div key={t.id} className="routing-row" style={{ fontSize: 12 }}>
                   <span style={{ flex: 1, fontFamily: 'var(--font-mono)', fontSize: 11 }}>
                     {fmtDbTime(t.timestamp)}
+                    {t.shaped ? (
+                      <span className="badge badge-warning" style={{ marginLeft: 6, fontFamily: 'var(--font-family)' }}
+                        title="Akıllı kuyruk açıkken ölçüldü: hız hattın gerçek hızı değil, ayarlanan banttır (Bant Genişliği → Gecikme)">kısılmış</span>
+                    ) : null}
                   </span>
                   <span style={{ width: 80, color: '#3b82f6', fontWeight: 600 }}>{t.download_mbps.toFixed(1)}</span>
                   <span style={{ width: 80, color: '#10b981', fontWeight: 600 }}>{t.upload_mbps.toFixed(1)}</span>

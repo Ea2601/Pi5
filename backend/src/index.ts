@@ -31,6 +31,7 @@ import type { RangeRoute } from './system';
 import { listForwards, addForward, setForwardEnabled, deleteForward, applyPortForwards, prepareForwardRestore } from './wan';
 import { runSpeedTest, SpeedtestUnavailable, type SpeedResult } from './speedtest';
 import { registerWanMonitorRoutes, startWanMonitor, shutdownWanMonitor } from './wanMonitor';
+import { registerSqmRoutes, startSqm, sqmShaping, sqmSatelliteCleanup, disable as disableSqm } from './sqm';
 import { ASN_TOKEN, getAsnPrefixes, normalizeCidr, refreshAsnIfStale } from './ipRanges';
 import { getRoutingSuggestions, MAX_HOURS as SUGGEST_MAX_HOURS } from './domainSuggest';
 import { startUpdate, getUpdateStatus, getBuildMode, setBuildMode, isBuildMode } from './update';
@@ -2771,18 +2772,25 @@ app.post('/api/visits/clear', async (req, res) => {
 // ─── Speed Test ───
 // Ölçüm (speedtest.ts) + kayıt tek işlemdir: manuel test otomatik ölçüm sürerken gelirse ikinci ölçüm başlatılmaz, aynı
 // sonucu alır (eskiden iki ölçüm aynı anda hattı paylaşıp ikisi de düşük çıkabilirdi) ve sonuç bir kez kaydedilir.
+// Akıllı kuyruk (sqm.ts) ölçümün başında ya da sonunda hattı kısıyorsa kayıt shaped=1 (ölçülen = ayarlanan bant, hattın
+// gerçek hızı değil); kalibrasyon ölçümü kuyruğu kaldırır → 0. loaded_ms: yük altındaki gecikme (Ookla; yoksa NULL).
 let speedtestRun: Promise<SpeedResult> | null = null;
 function measureAndStore(): Promise<SpeedResult> {
   if (!speedtestRun) {
+    const shapedAtStart = sqmShaping();
     speedtestRun = runSpeedTest().then(async r => {
       await dbRun(
-        'INSERT INTO speed_tests (download_mbps, upload_mbps, ping_ms, jitter_ms, packet_loss, server, isp) VALUES (?, ?, ?, ?, ?, ?, ?)',
-        [r.download_mbps, r.upload_mbps, r.ping_ms, r.jitter_ms, r.packet_loss, r.server, r.isp]
+        'INSERT INTO speed_tests (download_mbps, upload_mbps, ping_ms, jitter_ms, packet_loss, server, isp, shaped, loaded_ms) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        [r.download_mbps, r.upload_mbps, r.ping_ms, r.jitter_ms, r.packet_loss, r.server, r.isp, shapedAtStart || sqmShaping() ? 1 : 0, r.loaded_ms]
       );
       return r;
     }).finally(() => { speedtestRun = null; });
   }
   return speedtestRun;
+}
+// Süren ölçüm bitene kadar bekler (akıllı kuyruk kalibrasyonu kısılmış bir ölçüme katılmasın).
+async function speedtestIdle(): Promise<void> {
+  while (speedtestRun) await speedtestRun.catch(() => {});
 }
 
 app.post('/api/speedtest/run', async (_req, res) => {
@@ -2818,6 +2826,16 @@ app.use('/api/wan-monitor', (req, res, next) => {
   next();
 });
 registerWanMonitorRoutes(app);
+
+// ─── Gecikme / akıllı kuyruk (sqm.ts, G1.1-A) ───
+// Hat düzeyi CAKE; varsayılan kapalı, açma 5 dk'lık denemedir. Yazma uçları netAdminGuard ('/api/bandwidth' öneki) +
+// writeLimiter; uyduda tüm uçlar 409 (hat ana cihazındır). Kalibrasyon tek ölçüm yolunu (measureAndStore) kullanır.
+app.use('/api/bandwidth/sqm', (req, res, next) => {
+  if (isSatellite()) return res.status(409).json({ error: 'Bu cihaz uydu — akıllı kuyruk ana cihazdadır' });
+  if (req.method !== 'GET') return writeLimiter(req, res, next);
+  next();
+});
+registerSqmRoutes(app, { measure: () => measureAndStore(), idle: () => speedtestIdle(), isLoopback: ip => isLoopbackClient(ip) });
 
 // ─── Otomatik hız testi zamanlayıcı ───────────────────────────────────────
 // Varsayılan 6 saatte bir. 10 dk çok agresifti: tam speedtest hattı her seferinde
@@ -4421,6 +4439,9 @@ app.post('/api/system/role', netAdminGuard, async (req, res) => {
       // Durum okunamadıysa da kapatma denenir (bilinmeyen "kapalı" sayılmaz); kapatılamazsa rol değişmez.
       const ms = await mainMeshState();
       if (ms.configured || ms.unknown) await setMainWireless(false, 0);
+      // Akıllı kuyruk (sqm.ts) uyduda çalışmaz: ayarı varsa kapatılır, kendi kuyrukları kaldırılır (ayar yoksa hiçbir şey).
+      // Kaldırılamazsa rol yine değişir: uydu açılışında yeniden denenir (sqmSatelliteCleanup).
+      await disableSqm('satellite').catch((e: any) => console.error('[sqm] uyduya geçişte:', e?.message || e));
     } else {
       await leaveMain();
     }
@@ -4662,8 +4683,9 @@ const BACKUP_MERGE_TABLES = new Set(['service_config', 'service_status', 'app_se
 // yerel DNS kayıtları "dışarıdan eklenmiş" sayılıp hiç silinmez, "Panel güncellendi" olayı yinelenir, bildirilmiş uyarı
 // yeniden çıkar.
 // wan_monitor: hatta özgü ölçüm ayarı — başka bir cihazın / kotalı hattın yedeğiyle kendiliğinden ping başlatmasın.
+// sqm_config: hatta özgü bant (akıllı kuyruk) — başka bir cihaza / hatta geri yüklenip hattı yanlış bantla kısmasın.
 const BACKUP_SKIP_SETTINGS = new Set(['last_seen_version', 'pihole_hosts_managed', 'storage_job_notified', 'wg_reach_watch',
-  'cron_defaults_seeded', 'accent_gray_migrated', 'hotplug_watch', 'wan_monitor']);
+  'cron_defaults_seeded', 'accent_gray_migrated', 'hotplug_watch', 'wan_monitor', 'sqm_config']);
 
 async function restoreTable(table: string, rows: any[]): Promise<number> {
   if (!Array.isArray(rows)) return 0;
@@ -6671,6 +6693,8 @@ const server = app.listen(Number(port), bindHost, () => {
   if (isSatellite()) {
     console.log('[rol] uydu — ağ geçidi işleri kapalı, ana cihazla senkron');
     startSatelliteAgent();
+    // Akıllı kuyruk ana cihazındır: ayarı varsa kapatılır, kalmış kuyruk kaldırılır (ayar yoksa tc çağrılmaz).
+    sqmSatelliteCleanup();
   } else {
   // Uydular: çevrimdışı uyarısı 5 dk'da bir.
   setInterval(() => { void checkOfflineSatellites(); }, 5 * 60 * 1000);
@@ -6770,6 +6794,8 @@ const server = app.listen(Number(port), bindHost, () => {
     startQos({ protectedMacs: blockProtectedMacs });
     // Dış takvim eşitlemesi (calendarSync.ts): yalnız bağlı takvim varsa kaynak başına zamanlayıcı; yoksa hiçbir şey.
     void startCalendarSync().catch((e: any) => console.error('[takvim]', e?.message || e));
+    // Hat düzeyi akıllı kuyruk (sqm.ts): ayar yoksa hiçbir şey yapmaz (tc yok); açıksa 15 sn'de bir uzlaştırma.
+    startSqm();
     // Tak-çalıştır ağ kartı algılama (portWatch.ts): yalnız ayar açıksa (varsayılan kapalı) 10 sn'de bir /sys okunur.
     void initPortWatch().catch((e: any) => console.error('[tak-çalıştır]', e?.message || e));
     // Yeni cihaz bildirimi (deviceWatch.ts): yalnız ayar açıksa (varsayılan kapalı) 60 sn'de bir komşu tablosu okunur.

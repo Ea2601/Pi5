@@ -438,6 +438,10 @@ export const initDb = () => {
     db.run(`ALTER TABLE speed_tests ADD COLUMN jitter_ms REAL DEFAULT 0`, () => {});
     db.run(`ALTER TABLE speed_tests ADD COLUMN packet_loss REAL DEFAULT 0`, () => {});
     db.run(`ALTER TABLE speed_tests ADD COLUMN isp TEXT DEFAULT ''`, () => {});
+    // Akıllı kuyruk (sqm.ts): shaped=1 → ölçüm kuyruk açıkken (kısılmış hattan) yapıldı; loaded_ms: yük altındaki gecikme
+    // (Ookla latency.iqm; yoksa NULL). Eski kayıtlar kısılmamış (0) sayılır.
+    db.run(`ALTER TABLE speed_tests ADD COLUMN shaped INTEGER DEFAULT 0`, () => {});
+    db.run(`ALTER TABLE speed_tests ADD COLUMN loaded_ms REAL`, () => {});
 
     db.run(`CREATE TABLE IF NOT EXISTS alerts (
       id INTEGER PRIMARY KEY AUTOINCREMENT,

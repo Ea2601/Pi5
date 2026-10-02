@@ -194,6 +194,9 @@ export function evaluateRoles(hw: Hardware): RoleEval[] {
   // WAN router panelinden açılır (net-mode.sh wan); ön koşul kalıcı sabit adres + Pi DHCP (ev ağına adresi Pi verir).
   // Tek port (R3b): ev ağı kartı + VLAN destekli yönetilebilir anahtar — internet VLAN'ı etiketli, ev ağı etiketsiz.
   const usb2Eth = eth.filter(e => e.bus === 'usb' && e.usbSpeedMbps !== null && e.usbSpeedMbps < 5000);
+  // Akıllı kuyruk (Bant Genişliği → Gecikme): hat düzeyi CAKE için gereken çekirdek modülleri.
+  const sqmMissing = SQM_MODULES.filter(m => !hw.modules[m]);
+  const sqmReady = sqmMissing.length === 0;
   const wanStage = hw.net.wanStage || 'none';
   const wanOn = wanStage === 'on';
   const wanNotes: Note[] = usb2Eth.map(e => ({ kind: 'warn', text: `${e.name} USB 2 portunda: hız ~300 Mbps ile sınırlı. Adaptörü mavi USB 3 portuna takın.` }));
@@ -216,6 +219,7 @@ export function evaluateRoles(hw: Hardware): RoleEval[] {
         : []),
       { ok: hw.modules['8021q'] ?? null, label: 'VLAN (operatör isterse)', value: hw.modules['8021q'] ? 'hazır' : 'modül yok' },
       { ok: hw.tools.pppd ? !!hw.modules.pppoe : null, label: 'PPPoE (operatör isterse)', value: hw.tools.pppd ? (hw.modules.pppoe ? 'hazır' : 'modül yok') : 'panel güncellemesiyle kurulur' },
+      { ok: sqmReady, label: 'Akıllı kuyruk (SQM)', value: sqmReady ? 'hazır' : `modül yok${sqmMissing.length < SQM_MODULES.length ? ` (${sqmMissing.join(', ')})` : ''}` },
       ...(hw.net.wanStage === 'on' ? bakRows : []),
     ],
     need: eth.length >= 2 || (wanOn && hw.net.wanSingle) ? [] : [HW_SUGGEST.usbEth], // tek portta öneri (daha basit kurulum)
@@ -452,10 +456,32 @@ function busInfo(devPath: string): { bus: Bus; usbSpeedMbps: number | null } {
   const s = Number(readText(path.join(d, 'speed')));
   return { bus: 'usb', usbSpeedMbps: Number.isFinite(s) && s > 0 ? s : null };
 }
-const onPath = (bin: string) => ['/usr/sbin', '/usr/bin', '/sbin', '/bin', '/usr/local/sbin', '/usr/local/bin'].some(d => fs.existsSync(path.join(d, bin)));
-async function hasModule(name: string): Promise<boolean> {
-  try { await execFileP('modinfo', ['-n', name], { timeout: 5000 }); return true; } catch { return false; }
+// Kartın bağlantısı (USB 2 uyarısı için; akıllı kuyruk, sqm.ts): readHardware ile aynı okuma.
+export const ifaceBus = (name: string, root = '') => busInfo(`${root}/sys/class/net/${name}/device`);
+export const onPath = (bin: string) => ['/usr/sbin', '/usr/bin', '/sbin', '/bin', '/usr/local/sbin', '/usr/local/bin'].some(d => fs.existsSync(path.join(d, bin)));
+// Çekirdeğe gömülü (builtin) modüller: modinfo bunları her sürümde bulamaz (zapret-install.sh ile aynı denetim). Çekirdek
+// çalışırken değişmez: bir kez okunur.
+let builtinMods: Set<string> | null = null;
+function builtinModules(): Set<string> {
+  if (!builtinMods) {
+    builtinMods = new Set();
+    try {
+      for (const l of fs.readFileSync(`/lib/modules/${os.release()}/modules.builtin`, 'utf8').split('\n')) {
+        const b = path.basename(l.trim()).replace(/\.ko(\.\w+)?$/, '');
+        if (b) builtinMods.add(b.replace(/-/g, '_'));
+      }
+    } catch { /* dosya yok */ }
+  }
+  return builtinMods;
 }
+// Modül yüklenebilir (modinfo), yüklü (/sys/module) ya da çekirdeğe gömülü.
+export async function hasModule(name: string): Promise<boolean> {
+  try { await execFileP('modinfo', ['-n', name], { timeout: 5000 }); return true; } catch { /* dosya yok — gömülü olabilir */ }
+  const n = name.replace(/-/g, '_');
+  return fs.existsSync(`/sys/module/${n}`) || builtinModules().has(n);
+}
+// Akıllı kuyruk (SQM, sqm.ts) için gereken çekirdek modülleri: CAKE, giriş kuyruğu, IFB, yönlendirme eylemi, tümünü eşleyen süzgeç.
+export const SQM_MODULES = ['sch_cake', 'sch_ingress', 'ifb', 'act_mirred', 'cls_matchall'] as const;
 
 // opts yalnız test içindir: sahte /sys kökü, hazır `iw list` / `ip -j link show` çıktısı ve hazır donanım profili.
 export async function readHardware(net: Omit<Hardware['net'], 'uplinkIface'>, opts: { root?: string; iwText?: string; linkJson?: string; platform?: Platform | null } = {}): Promise<Hardware> {
@@ -507,7 +533,7 @@ export async function readHardware(net: Omit<Hardware['net'], 'uplinkIface'>, op
   }
 
   const toolNames = ['iw', 'nmcli', 'wpa_supplicant', 'hostapd', 'batctl', 'pppd'];
-  const modNames = ['mac80211', 'batman_adv', '8021q', 'pppoe'];
+  const modNames = ['mac80211', 'batman_adv', '8021q', 'pppoe', ...SQM_MODULES];
   const [mods, platform] = await Promise.all([
     Promise.all(modNames.map(hasModule)),
     opts.platform !== undefined ? Promise.resolve(opts.platform) : readPlatform(),

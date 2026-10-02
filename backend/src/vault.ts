@@ -1506,7 +1506,10 @@ export async function resumeVault(): Promise<void> {
 export async function vaultStatus(): Promise<Record<string, unknown>> {
   const c = readConf();
   const last = readLast();
-  const up = await dbGet('SELECT upload_mbps FROM speed_tests WHERE upload_mbps > 0 ORDER BY id DESC LIMIT 1').catch(() => null);
+  // Yükleme hızı önerisi: en son kısılmamış ölçüm (akıllı kuyruk açıkken ölçülen kayıt shaped=1 — hattın gerçek hızı değil,
+  // ayarlanan bant); kısılmamış kayıt yoksa en son kayıt. Kuyruk hiç açılmadıysa her kayıt 0: bugünkü sorguyla aynı sonuç.
+  const up = await dbGet('SELECT upload_mbps FROM speed_tests WHERE upload_mbps > 0 ORDER BY COALESCE(shaped, 0) ASC, id DESC LIMIT 1')
+    .catch(() => dbGet('SELECT upload_mbps FROM speed_tests WHERE upload_mbps > 0 ORDER BY id DESC LIMIT 1')).catch(() => null);
   const restic = ['/usr/bin/restic', '/usr/local/bin/restic'].some(p => fs.existsSync(p));
   const n = (v?: string) => numOf(v) ?? null;
   return {

@@ -1,7 +1,7 @@
 import {
   BookOpen, ShieldBan, Zap, Flame, Globe, Server, ShieldAlert,
   Clock, Network, Route, ChevronDown, ChevronRight, Terminal,
-  AlertTriangle, CheckCircle, Info, Cpu, Smartphone, Cloud, Bell
+  AlertTriangle, CheckCircle, Info, Cpu, Smartphone, Cloud, Bell, Timer
 } from 'lucide-react';
 import { useState } from 'react';
 import { Panel, Badge } from './ui';
@@ -98,6 +98,13 @@ export function DocsPanel() {
       title: 'Dış Bildirimler',
       icon: <Bell size={15} />,
       content: <NotifyDoc />,
+    },
+    {
+      id: 'sqm',
+      title: 'Akıllı Kuyruk (Gecikme)',
+      icon: <Timer size={15} />,
+      badge: 'SQM',
+      content: <SqmDoc />,
     },
     {
       id: 'cron',
@@ -668,6 +675,63 @@ function NotifyDoc() {
       <DocTip type="warning">
         "Ana hat kesildi" bildirimi kopuk hattan gönderilemez: yedek hat açıksa hemen yedek hattan gider, yoksa hat dönünce "geri geldi"
         bildirimi gelir. Bildirim Pi'nin kendi bağlantısından çıkar (Telegram / Discord'u VPS'e yönlendirdiyseniz tünelden).
+      </DocTip>
+    </div>
+  );
+}
+
+function SqmDoc() {
+  return (
+    <div className="doc-page">
+      <h3>Akıllı Kuyruk (SQM: CAKE)</h3>
+      <p>Bant Genişliği → Gecikme (Akıllı Kuyruk) — varsayılan kapalı. Biri büyük bir dosya indirirken ya da yüklerken (yedek, video
+        gönderme) oyunda, görüntülü görüşmede ping'in yüzlerce ms'ye fırlamasına <em>bufferbloat</em> denir: paketler modemin /
+        operatörün büyük tamponunda bekler. Akıllı kuyruk hattı ölçülen hızın biraz altında Pi'de kuyruklar; kuyruk Pi'de oluştuğu
+        için CAKE gecikmeyi düşük tutar ve hattı cihazlar arasında adil paylaştırır (bir cihazın indirmesi diğerlerini boğmaz).</p>
+
+      <DocBlock title="Nasıl açılır">
+        <ol>
+          <li><strong>Hat ve ön koşullar:</strong> internet arayüzü ve çekirdek modülleri (sch_cake, ifb, act_mirred, cls_matchall, sch_ingress) denetlenir.</li>
+          <li><strong>Bant:</strong> elle girin (hız testindeki değerin %90–95'i iyi bir başlangıçtır) ya da "Ölç" (Ookla) — hattın gerçek
+            hızının %90'ı önerilir: hız testi yalnız veriyi sayar, kuyruk paket başlıklarını da sayar; öneri bunu hesaba katar, sonuçta
+            ölçülen hızın ~%90'ı kullanılır. Ölçüm boyunca kuyruk geçici kaldırılır, evde 30–60 sn gecikme artabilir; yedek hattayken
+            ölçülmez. Bağlantı türü paket başına ek yükü belirler: Ethernet / fiber (önerilen), kablo internet (DOCSIS), VDSL, ADSL; VLAN
+            (+4 bayt) ve PPPoE (+8 bayt) hattan kendiliğinden eklenir (tek portta VLAN payı ihtiyatlıdır: etiket çoğu zaman yalnız Pi ile
+            anahtar arasındadır — ~%0,3 fazla sayar, zararsız).</li>
+          <li><strong>Dene (5 dk):</strong> kuyruk takılır; 5 dk içinde "Kalıcı yap"a basılmazsa Pi'deki zamanlayıcı kuyruğu kendiliğinden
+            kaldırır — panel kapansa da. "Kalıcı yap" ev ağındaki bir cihazdan kabul edilir (Pi'nin kendi ekranından değil).</li>
+        </ol>
+      </DocBlock>
+
+      <DocBlock title="Neyi çözer, neyi çözmez">
+        <ul>
+          <li><strong>Çözer:</strong> hat doluyken gecikmenin artması (hedef: doygun indirme / yüklemede ping artışı kablolu hatta ~15 ms'nin altında),
+            tek cihazın tüm hattı kaplaması (adalet cihaz başınadır; öncelik sınıfı / DSCP işareti kullanılmaz — tüm trafik tek sınıf).</li>
+          <li><strong>Bedeli:</strong> hızın %5–15'i feda edilir (bant ölçülen hızın altında ayarlanır). Hız testi kuyruk açıkken ayarlanan
+            bandı gösterir — geçmişte "kısılmış" işaretlidir; otomatik ölçüm kuyruğu kaldırmaz.</li>
+          <li><strong>Çözmez:</strong> operatörün kendi gecikmesi ve kaybı, Wi-Fi'ın (ayrı erişim noktasının) kendi kuyruğu, uzak sunucu
+            yavaşlığı. Hızı değişen hatlarda (4G, uydu) sabit bant ya israf ya yetersizdir. VPS tüneli kullanan cihazlar hatta tek akış görünür.</li>
+          <li><strong>Hız:</strong> çok hızlı hatlarda (yüzlerce Mbps) Pi'nin işlemcisi yetmeyebilir — denemede "Kuyrukla hız testi"
+            beklenenin (bant × paket verimi) %85'inin altındaysa bandı düşürün ya da kapatın. USB 2 portundaki kart ~300 Mbps ile sınırlıdır.</li>
+        </ul>
+      </DocBlock>
+
+      <DocBlock title="Hangi kurulumlarda">
+        <ul>
+          <li>Ayrı internet kartı (WAN router: DHCP, sabit, PPPoE, VLAN), tek port VLAN (kuyruk yalnız VLAN / PPPoE arayüzüne, ev ağı kartına asla),
+            Wi-Fi ile internet (repeater A) ve Wi-Fi köprüsü (aynı ağ, repeater C).</li>
+          <li><strong>Yakında:</strong> tek bacaklı kurulum (modem ile ev ağı aynı kartta) ve ev Wi-Fi köprüsü (br0); yedek hat kuyruğu (yedek hatta
+            geçilince kuyruk devre dışıdır).</li>
+          <li>İnternet hattı değişirse (başka kart, PPPoE / VLAN değişti) kuyruk takılmaz ve uyarı çıkar: bandı yeniden ölçün.</li>
+        </ul>
+      </DocBlock>
+
+      <DocTip type="info">
+        Kapatma: panelde "Kapat" ya da SSH'tan <code>sudo bash /opt/pi5-gateway/scripts/sqm.sh off</code> — kuyruğu hemen kaldırır ve panel
+        ayarını da kapatır (backend durmuşsa açılışta). (<code>sqm.sh clear</code> yalnız kuyruğu kaldırır: ayar açıksa 15 sn içinde geri
+        takılır.) Yalnız akıllı kuyruğun kendi kuyrukları (ca1e:, ca1f:, ifb-klx0, giriş süzgeci 4910; giriş kuyruğu yalnız onu
+        kendisi eklediyse) kaldırılır; cihaz hız sınırları ve kotalar etkilenmez. Ayar yedekten geri yüklenmez (hatta özgüdür): yeni
+        cihazda bant yeniden ölçülür.
       </DocTip>
     </div>
   );
