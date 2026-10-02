@@ -125,8 +125,8 @@ checks = [
  ("cihazlar (toplam, engelli)", "SELECT COUNT(*), SUM(blocked) FROM devices"),
  ("routing: app kuralları (VPS/DPI)", "SELECT app_name, exit_node, dpi_bypass FROM traffic_routing WHERE enabled=1 AND (exit_node<>'isp' OR dpi_bypass=1)"),
  ("routing: domain kuralları", "SELECT domain, exit_node, dpi_bypass, enabled FROM domain_routing"),
- ("panel Pi-hole listeleri (yalnız DB)", "SELECT list_type, COUNT(*) FROM pihole_lists GROUP BY list_type"),
- ("statik DHCP (yalnız DB)", "SELECT COUNT(*) FROM dhcp_leases WHERE is_static=1"),
+ ("panel Pi-hole listeleri (Pi-hole'a eşitlenir)", "SELECT list_type, COUNT(*) FROM pihole_lists GROUP BY list_type"),
+ ("statik DHCP rezervasyonu (Pi-hole dhcp.hosts'a yazılır)", "SELECT COUNT(*) FROM dhcp_leases WHERE is_static=1"),
  ("ebeveyn kuralı / cihaz hız-kota sınırı (etkin)", "SELECT (SELECT COUNT(*) FROM parental_rules), (SELECT COUNT(*) FROM bandwidth_limits WHERE enabled=1)"),
 ]
 if c:

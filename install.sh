@@ -89,7 +89,7 @@ apt install -y -qq \
   curl git build-essential \
   sqlite3 libsqlite3-dev \
   nginx certbot python3-certbot-nginx apache2-utils \
-  qrencode speedtest-cli vnstat \
+  qrencode speedtest-cli vnstat etherwake \
   ipset iptables wireguard-tools iputils-arping iw ppp \
   conntrack usb-modeswitch usbmuxd \
   parprouted dhcp-helper dnsmasq-base avahi-daemon avahi-utils

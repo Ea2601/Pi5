@@ -10,6 +10,10 @@
 #   disable [--force]    DHCP'yi kapatır; modemin DHCP'si açık olmalı (--force: denetlemeden — kurtarma)
 #   ensure               güncelleme/açılış: süresi geçen denemeyi geri alır. DHCP'yi ASLA kendiliğinden açmaz.
 #   ack                  "modemin DHCP'sini geri açın" uyarısını (modem_warn) kaldırır
+#   hosts --set JSON     panelin sabit IP rezervasyonları (JSON dizi: "MAC,IP[,ad]") → Pi-hole dhcp.hosts. Panelin önceki
+#                        girdileri (hosts.panel) çıkarılıp yenileri eklenir; Pi'nin kartları için yazılan "MAC,ignore" satırları
+#                        ve Pi-hole'a başka yoldan eklenen girdiler kalır (aynı MAC'li olanın yerini panelinki alır).
+#                        FTL dururken yazılır, geri okunur; DNS gelmezse önceki liste geri konur. DHCP kapalıyken de yazılır.
 # Kurtarma:  sudo bash /opt/pi5-gateway/scripts/pi-dhcp.sh disable --force   (sonra modemin DHCP'sini açın)
 # Anahtarlar yalnız FTL DURMUŞKEN yazılır: çalışan FTL pihole.toml'daki her değişikliği görüp kendini yeniden başlatır
 # (anahtar başına bir restart; başlatma sınırı 60 sn'de 5). Sıra: işaret dosyası → stop → yaz → geri oku → start →
@@ -22,6 +26,7 @@ DIR=/etc/pi5-gateway/dhcp
 STATE=$DIR/state
 SNAP=$DIR/snapshot
 ADDED=$DIR/hosts.added
+PANEL=$DIR/hosts.panel   # panelin son yazdığı rezervasyonlar (hosts --set)
 TOML=/etc/pihole/pihole.toml
 TOML_BAK=$DIR/pihole.toml.bak
 NET_STATE=/etc/pi5-gateway/net/state
@@ -78,6 +83,23 @@ elif cmd == 'minus':
     print(dump([x for x in load(a[0]) if x not in drop]))
 elif cmd == 'same':
     sys.exit(0 if load(a[0]) == load(a[1]) else 1)
+elif cmd == 'check-hosts':
+    # Panelin rezervasyonları: "mac,ip" ya da "mac,ip,ad" (küçük harf MAC; ad: harf, rakam, -)
+    ent = re.compile(r'^([0-9a-f]{2}:){5}[0-9a-f]{2},(\d{1,3})(\.\d{1,3}){3}(,[A-Za-z0-9][A-Za-z0-9-]{0,62})?$')
+    v = load(a[0])
+    macs = [x.split(',')[0] for x in v]
+    sys.exit(0 if all(ent.match(x) for x in v) and len(set(macs)) == len(macs) else 1)
+elif cmd == 'panel-merge':
+    # panel-merge MEVCUT ESKİ_PANEL YENİ_PANEL → panelin eski girdileri çıkar; yeni girdilerle aynı MAC'li (ignore olmayan)
+    # başka girdiler de çıkar (Pi-hole'dan eklenmiş eski hali); yeni panel girdileri sona eklenir.
+    cur, old, new = load(a[0]), load(a[1]), load(a[2])
+    macs = {x.split(',')[0].strip().lower() for x in new}
+    def keep(x):
+        if x in old:
+            return False
+        p = [t.strip().lower() for t in x.split(',')]
+        return not (p[0] in macs and 'ignore' not in p)
+    print(dump([x for x in cur if keep(x)] + new))
 elif cmd == 'probe':
     # probe TARAMA_JSON KENDİ_IP... → servers= (Pi'nin kendisi dışındakiler), own=, other=
     own = set(a[1:])
@@ -722,6 +744,45 @@ cmd_ack() {
   echo "ok=1"
 }
 
+write_panel_hosts() {
+  if ftl_running; then FTL_ERR="pihole-FTL durdurulamadı — ayar yazılmadı"; return 1; fi
+  ftl_set dhcp.hosts "$HOSTS_NEW" || return 1
+  local got
+  if got=$(toml_hosts) && pyh same "$got" "$HOSTS_NEW" 2>/dev/null; then return 0; fi
+  FTL_ERR="geri okuma tutmadı"
+  ftl_set dhcp.hosts "$HOSTS_OLD" || true
+  return 1
+}
+restore_panel_hosts() { ftl_set dhcp.hosts "$HOSTS_OLD"; }
+
+cmd_hosts() {
+  local want old merged
+  [ "${1:-}" = --set ] || die "kullanım: hosts --set JSON"
+  want=${2:-}
+  pyh check-hosts "$want" 2>/dev/null || die "geçersiz rezervasyon listesi (MAC,IP[,ad]; her MAC bir kez)"
+  mkdir -p "$DIR" && chmod 700 "$DIR"
+  HOSTS_OLD=$(toml_hosts) || die "Pi-hole sabit kira listesi (dhcp.hosts) okunamadı"
+  old='[]'; [ -s "$PANEL" ] && old=$(cat "$PANEL")
+  merged=$(pyh panel-merge "$HOSTS_OLD" "$old" "$want" 2>/dev/null) || die "rezervasyonlar birleştirilemedi"
+  if pyh same "$HOSTS_OLD" "$merged" 2>/dev/null; then
+    printf '%s' "$want" > "$PANEL.tmp" && mv -f "$PANEL.tmp" "$PANEL"
+    echo "changed=0"; echo "result=ok"; return 0
+  fi
+  HOSTS_NEW=$merged
+  if ! with_ftl_stopped write_panel_hosts; then
+    ftl_health dns || true
+    die "Pi-hole sabit kira listesini reddetti${FTL_ERR:+: $FTL_ERR}"
+  fi
+  if ! ftl_health dns; then
+    with_ftl_stopped restore_panel_hosts
+    ftl_health dns || true
+    die "yeni sabit kiralarla DNS gelmedi — önceki liste geri kondu ($HEALTH_DETAIL)"
+  fi
+  printf '%s' "$want" > "$PANEL.tmp" && mv -f "$PANEL.tmp" "$PANEL"
+  log "sabit kiralar: $want"
+  echo "changed=1"; echo "result=ok"
+}
+
 cmd_ensure() {
   mkdir -p "$DIR" && chmod 700 "$DIR"
   read_state
@@ -749,7 +810,7 @@ if ! flock -w 60 9; then
 fi
 # Değişiklik yapan komutlar yarıda kesilmez (net-mode.sh ile aynı): panel yeniden başlatılırken ya da SSH oturumu kapanırken
 # gelen TERM/HUP, FTL durmuşken betiği öldürüp evi DNS'siz bırakmasın. systemd yine de süre dolunca durdurabilir.
-case "$cmd" in enable|confirm|rollback|disable) trap '' TERM HUP ;; esac
+case "$cmd" in enable|confirm|rollback|disable|hosts) trap '' TERM HUP ;; esac
 case "$cmd" in
   probe) cmd_probe "$@" ;;
   enable) cmd_enable "$@" ;;
@@ -758,5 +819,6 @@ case "$cmd" in
   disable) cmd_disable "$@" ;;
   ensure) cmd_ensure ;;
   ack) cmd_ack ;;
-  *) die "bilinmeyen komut: $cmd (status|probe|enable|confirm|rollback|disable|ensure|ack)" ;;
+  hosts) cmd_hosts "$@" ;;
+  *) die "bilinmeyen komut: $cmd (status|probe|enable|confirm|rollback|disable|ensure|ack|hosts)" ;;
 esac

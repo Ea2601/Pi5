@@ -130,7 +130,9 @@ function GroupsView() {
       setAddingMember(null);
       setSelectedMac('');
       await refetch();
-    } catch { /* */ }
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Üye eklenemedi');
+    }
   };
 
   const colorOptions = ['#3b82f6', '#10b981', '#8b5cf6', '#f59e0b', '#ef4444', '#ec4899'];
@@ -150,6 +152,10 @@ function GroupsView() {
             <Plus size={14} /> Yeni Grup
           </button>
         </div>
+        <p className="text-muted" style={{ fontSize: 12, margin: '0 0 10px', lineHeight: 1.5 }}>
+          Gruplar Ebeveyn Kontrolü kurallarında hedef olarak kullanılır (kural → Kime → grup): gruba eklenen cihaz o kurallara
+          girer. Bir kuralda kullanılan grup, kuraldan çıkarılmadan silinemez.
+        </p>
 
         {showAdd && (
           <div className="cron-add-form">

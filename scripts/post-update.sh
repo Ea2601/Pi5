@@ -153,9 +153,10 @@ fi
 #     Wi-Fi köprüsü (aynı ağ): parprouted (ARP vekili), dhcp-helper (DHCP aktarma; paketin kendi servisi kurulumdan ÖNCE
 #     maskelenir — yoksa UDP 67'yi tutup Pi DHCP'sini bozardı), dnsmasq-base ("Pi dağıtır" kipi; hizmet kurmaz),
 #     avahi-daemon (http://klyrix.local). avahi-utils: avahi-browse — Klyrix cihaz keşfi (Uydular → Ağda ara).
+#     etherwake: Ağ Araçları → Wake-on-LAN (ev ağı kartından sihirli paket; eskiden hiç kurulmuyordu).
 systemctl mask --now dhcp-helper.service >/dev/null 2>&1 || true
 if ! pkg_ensure wireguard-tools ipset iptables iputils-arping iw ppp conntrack usb-modeswitch usbmuxd \
-     parprouted dhcp-helper dnsmasq-base avahi-daemon avahi-utils; then
+     parprouted dhcp-helper dnsmasq-base avahi-daemon avahi-utils etherwake; then
   echo "  [pkg] UYARI: sistem paketleri kurulamadı (ayrıntı yukarıda)" >> "$LOG"
 fi
 

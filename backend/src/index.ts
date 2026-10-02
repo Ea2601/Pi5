@@ -2,7 +2,8 @@ import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
-import { initDb, dbAll, dbRun, dbGet, dbInsert } from './db';
+import { initDb, dbAll, dbRun, dbGet, dbInsert, dbRunChanges } from './db';
+import { loadOverrides, applyOverrides, overrideSig, noteScheduleApplied, startScheduleWatch, checkSchedule, scheduleActive, supported as scheduleSupported, type Schedule } from './trafficSchedule';
 import { setupWireGuardVPS, testSSHConnection, executeSetupStep, addWireGuardClient, connectPi5ToVps, disconnectPi5FromVps, removeWireGuardClient, removeWireGuardClients } from './ssh';
 import { readVpsTunnels, readTunnelTransfer, validVpsId, staleTunnels, setTunnelStale } from './vpsTunnel';
 import { importTunnel, connectImported, replaceImportedConf, removeImportedTunnel, importedExitIp, importedAddressOwner,
@@ -66,7 +67,7 @@ import { vaultStatus, vaultJob, noteVaultJob, connectVault, saveSettings, startB
   startVaultWatch, vaultLeftover, vaultBlocksSatellite, resumeVault, restoreFetch, restorePreview, applyRestore, discardRestore,
   restoreFiles, listKeys, removeOldKey } from './vault';
 import { rulesWithStatus as parentalRulesWithStatus, createRule as createParentalRule, updateRule as updateParentalRule,
-  deleteRule as deleteParentalRule, startParental, CATEGORIES as PARENTAL_CATEGORIES, dnsGuardStatus, setDnsGuardAll } from './parental';
+  deleteRule as deleteParentalRule, startParental, CATEGORIES as PARENTAL_CATEGORIES, dnsGuardStatus, setDnsGuardAll, listRules as listParentalRules } from './parental';
 import { noteContentView, contentForClients, contentStatus } from './contentActivity';
 import { startVisits, listVisits, clearVisits, visitStatus, RETENTION_DAYS as VISIT_RETENTION_DAYS } from './visits';
 import { SITE_CATS, siteCategoryInfo } from './siteCategories';
@@ -1944,7 +1945,10 @@ function routeEffectText(u: { block: string[]; isp: string[] }): string {
 async function applyAllRoutingRulesNow() {
   if (!isLinux) return;
   // 1. App routing: expand domains column into individual domain entries
-  const appRules = await dbAll('SELECT app_name, domains, exit_node, dpi_bypass, vps_fallback, enabled FROM traffic_routing WHERE enabled = 1 AND domains != ""');
+  // Trafik Kontrolü → Zamanlayıcı: etkin pencere kuralın çıkışının / DPI'ının yerine geçer (trafficSchedule.ts)
+  const schedOv = await loadOverrides();
+  const appRules = applyOverrides(await dbAll('SELECT id, app_name, domains, exit_node, dpi_bypass, vps_fallback, enabled FROM traffic_routing WHERE enabled = 1 AND domains != ""') as any[], schedOv);
+  noteScheduleApplied(overrideSig(schedOv));
   const domainRules = await dbAll('SELECT domain, exit_node, dpi_bypass, vps_fallback, enabled, redirect_url FROM domain_routing WHERE enabled = 1');
   // Kayıtlı olmayan VPS'e yönlenen kural (silinmiş VPS'in eski kaydı) ISP sayılır: "engelle" tablosu sahipsiz kalıcı
   // engele dönmesin.
@@ -3256,13 +3260,23 @@ app.post('/api/wol/send', async (req, res) => {
   }
   try {
     if (isLinux) {
-      // Real WoL magic packet via etherwake or wakeonlan — execFile (no shell), arg passed safely
+      // Sihirli paket ev ağı kartından (etherwake -i; kart verilmezse eth0 kullanılırdı — köprü br0 / başka kartta yanlış).
+      // Yedek: wakeonlan, ev ağının yayın adresine (varsayılan 255.255.255.255 internet kartından çıkabilirdi).
+      const lan = await getLanIdentity().catch(() => null);
+      const errs: string[] = [];
       try {
-        await execFileP('etherwake', [mac_address], { timeout: 5000 });
-      } catch {
-        await execFileP('wakeonlan', [mac_address], { timeout: 5000 });
+        await execFileP('etherwake', [...(lan?.iface ? ['-i', lan.iface] : []), mac_address], { timeout: 5000 });
+      } catch (e1: any) {
+        errs.push(e1?.code === 'ENOENT' ? 'etherwake kurulu değil' : `etherwake: ${String(e1?.stderr || e1?.message || e1).trim().slice(0, 120)}`);
+        const bcast = lan?.ip && lan.prefix ? (() => { const m = (0xffffffff << (32 - lan.prefix)) >>> 0; const n = lan.ip.split('.').reduce((a, o) => (a << 8) + Number(o), 0) >>> 0; const b = (n | (~m >>> 0)) >>> 0; return [24, 16, 8, 0].map(s => (b >>> s) & 255).join('.'); })() : '';
+        try {
+          await execFileP('wakeonlan', [...(bcast ? ['-i', bcast] : []), mac_address], { timeout: 5000 });
+        } catch (e2: any) {
+          errs.push(e2?.code === 'ENOENT' ? 'wakeonlan kurulu değil' : `wakeonlan: ${String(e2?.stderr || e2?.message || e2).trim().slice(0, 120)}`);
+          return res.status(500).json({ error: `Sihirli paket gönderilemedi (${errs.join('; ')}) — paneli güncelleyin (etherwake kurulur)` });
+        }
       }
-      res.json({ success: true, message: `WoL magic packet gönderildi: ${mac_address}` });
+      res.json({ success: true, message: `WoL magic packet gönderildi: ${mac_address}${lan?.iface ? ` (${lan.iface})` : ''}` });
     } else {
       // Dev mode — UDP broadcast magic packet via Node.js
       const dgram = require('dgram');
@@ -3332,6 +3346,8 @@ app.get('/api/dhcp/leases', async (_req, res) => {
         const fs = require('fs');
         const p = '/etc/pihole/dhcp.leases';
         if (fs.existsSync(p)) {
+          // Rezervasyonu olan cihazın gerçek kirası da gösterilir (eskiden gizleniyordu: cihazın aslında aldığı adres
+          // görünmüyordu); has_reservation ile işaretlenir.
           const staticMacs = new Set((staticLeases as any[]).map(l => String(l.mac_address).toLowerCase()));
           const txt: string = fs.readFileSync(p, 'utf8');
           for (const line of txt.split('\n')) {
@@ -3339,13 +3355,13 @@ app.get('/api/dhcp/leases', async (_req, res) => {
             if (parts[0] === 'duid') continue;
             if (parts.length < 4 || !/^\d+$/.test(parts[0])) continue;
             const [exp, mac, ip, host] = parts;
-            if (!/^[0-9a-f]{2}(:[0-9a-f]{2}){5}$/i.test(mac) || staticMacs.has(mac.toLowerCase())) continue; // statikler tekrar eklenmez
+            if (!/^[0-9a-f]{2}(:[0-9a-f]{2}){5}$/i.test(mac)) continue;
             dynamic.push({
               mac_address: mac,
               ip_address: ip,
               hostname: host && host !== '*' ? host : '',
               lease_end: exp && exp !== '0' ? new Date(Number(exp) * 1000).toISOString() : null,
-              is_static: 0,
+              is_static: 0, has_reservation: staticMacs.has(mac.toLowerCase()) ? 1 : 0,
             });
           }
         }
@@ -3387,18 +3403,60 @@ app.get('/api/dhcp/status', async (_req, res) => {
   }
 });
 
+// Sabit IP rezervasyonu (Ağ Araçları → DHCP): Pi'nin DHCP sunucusuna (Pi-hole dhcp.hosts, pi-dhcp.sh hosts) uygulanır.
+// Eskiden yalnız panelin veritabanına yazılıyordu. Önce veritabanı, sonra tüm liste Pi-hole'a; Pi-hole reddederse / DNS
+// gelmezse veritabanı değişikliği geri alınır. Pi DHCP'si kapalıyken de yazılır (açılınca geçerli olur).
+const ipToInt = (ip: string) => ip.split('.').reduce((a, o) => (a << 8) + Number(o), 0) >>> 0;
+async function dhcpSubnet(): Promise<{ base: number; mask: number; router: string }> {
+  const get = async (k: string) => (await execFileP('pihole-FTL', ['--config', k], { timeout: 5000 }).then(r => r.stdout.trim(), () => '')).replace(/^"|"$/g, '');
+  const [start, netmask, router] = await Promise.all([get('dhcp.start'), get('dhcp.netmask'), get('dhcp.router')]);
+  const v4 = /^(\d{1,3})(\.\d{1,3}){3}$/;
+  if (v4.test(start) && v4.test(netmask) && netmask !== '0.0.0.0') {
+    const mask = ipToInt(netmask);
+    return { base: (ipToInt(start) & mask) >>> 0, mask, router };
+  }
+  const [net, len] = NET_CLIENT_CIDR.split('/');
+  const mask = (0xffffffff << (32 - Number(len))) >>> 0;
+  return { base: (ipToInt(net) & mask) >>> 0, mask, router: net };
+}
+async function applyStaticLeases(): Promise<string | null> {
+  if (!isLinux || !require('fs').existsSync(PI_DHCP_SCRIPT)) return null;
+  const rows = await dbAll('SELECT mac_address, ip_address, hostname FROM dhcp_leases WHERE is_static = 1 ORDER BY ip_address') as any[];
+  const list = rows.map(r => [String(r.mac_address).toLowerCase(), r.ip_address, ...(r.hostname ? [r.hostname] : [])].join(','));
+  const r = await runExclusiveDnsTask(() => runKvScript(PI_DHCP_SCRIPT, ['hosts', '--set', JSON.stringify(list)], 240000));
+  return r.code === 0 ? null : kvError(r, 'Pi-hole sabit kiraları yazılamadı');
+}
+
 app.post('/api/dhcp/static', async (req, res) => {
   try {
-    const { mac_address, ip_address, hostname } = req.body;
-    if (!mac_address || !ip_address) {
-      return res.status(400).json({ error: 'mac_address ve ip_address gerekli' });
+    const { mac_address, ip_address, hostname } = req.body ?? {};
+    const mac = String(mac_address ?? '').trim().toLowerCase().replace(/-/g, ':');
+    const ip = String(ip_address ?? '').trim();
+    const name = String(hostname ?? '').trim();
+    if (!/^([0-9a-f]{2}:){5}[0-9a-f]{2}$/.test(mac) || mac === '00:00:00:00:00:00') return res.status(400).json({ error: 'Geçersiz MAC adresi (ör. aa:bb:cc:dd:ee:ff)' });
+    if (!/^(25[0-5]|2[0-4]\d|1?\d?\d)(\.(25[0-5]|2[0-4]\d|1?\d?\d)){3}$/.test(ip)) return res.status(400).json({ error: 'Geçersiz IP adresi' });
+    if (name && !/^[A-Za-z0-9][A-Za-z0-9-]{0,62}$/.test(name)) return res.status(400).json({ error: 'Ad yalnız harf, rakam ve - içerebilir (en çok 63)' });
+    const sub = await dhcpSubnet();
+    const n = ipToInt(ip);
+    if (((n & sub.mask) >>> 0) !== sub.base || n === sub.base || n === ((sub.base | (~sub.mask >>> 0)) >>> 0) || ip === sub.router) {
+      return res.status(400).json({ error: 'IP, Pi\'nin dağıttığı ağda ve ağ geçidinden / ağ adresinden farklı olmalı' });
     }
+    const clash = await dbGet('SELECT mac_address FROM dhcp_leases WHERE is_static = 1 AND ip_address = ? AND lower(mac_address) != ?', [ip, mac]);
+    if (clash) return res.status(409).json({ error: `Bu IP başka bir cihaza ayrılmış (${clash.mac_address})` });
+    const prev = await dbGet('SELECT mac_address, ip_address, hostname, is_static FROM dhcp_leases WHERE lower(mac_address) = ?', [mac]);
+    if (prev && prev.mac_address !== mac) await dbRun('UPDATE dhcp_leases SET mac_address = ? WHERE mac_address = ?', [mac, prev.mac_address]);
     await dbRun(
       `INSERT INTO dhcp_leases (mac_address, ip_address, hostname, is_static) VALUES (?, ?, ?, 1)
        ON CONFLICT(mac_address) DO UPDATE SET ip_address = ?, hostname = ?, is_static = 1`,
-      [mac_address, ip_address, hostname || '', ip_address, hostname || '']
+      [mac, ip, name, ip, name]
     );
-    await recordEvent('dhcp', `Sabit IP ataması: ${hostname || mac_address} → ${ip_address}`);
+    const err = await applyStaticLeases();
+    if (err) {
+      if (prev) await dbRun('UPDATE dhcp_leases SET mac_address = ?, ip_address = ?, hostname = ?, is_static = ? WHERE mac_address = ?', [prev.mac_address, prev.ip_address, prev.hostname, prev.is_static, mac]);
+      else await dbRun('DELETE FROM dhcp_leases WHERE mac_address = ?', [mac]);
+      return res.status(400).json({ error: err });
+    }
+    await recordEvent('dhcp', `Sabit IP ataması: ${name || mac} → ${ip}`);
     res.json({ success: true });
   } catch (e: any) {
     res.status(500).json({ error: e.message });
@@ -3407,7 +3465,14 @@ app.post('/api/dhcp/static', async (req, res) => {
 
 app.delete('/api/dhcp/static/:mac', async (req, res) => {
   try {
-    await dbRun('UPDATE dhcp_leases SET is_static = 0 WHERE mac_address = ?', [req.params.mac]);
+    const mac = String(req.params.mac).toLowerCase();
+    const n = await dbRunChanges('UPDATE dhcp_leases SET is_static = 0 WHERE lower(mac_address) = ? AND is_static = 1', [mac]);
+    if (!n) return res.status(404).json({ error: 'Rezervasyon bulunamadı' });
+    const err = await applyStaticLeases();
+    if (err) {
+      await dbRun('UPDATE dhcp_leases SET is_static = 1 WHERE lower(mac_address) = ?', [mac]);
+      return res.status(400).json({ error: err });
+    }
     await recordEvent('dhcp', `Sabit IP ataması kaldırıldı: ${req.params.mac}`);
     res.json({ success: true });
   } catch (e: any) {
@@ -4866,12 +4931,15 @@ startParental({ protectedMacs: blockProtectedMacs });
 // ─── Traffic Schedules ───
 app.get('/api/routing/schedules', async (_req, res) => {
   try {
-    const schedules = await dbAll(`
+    const rows = await dbAll(`
       SELECT ts.*, tr.app_name, tr.category
       FROM traffic_schedules ts
       LEFT JOIN traffic_routing tr ON ts.traffic_routing_id = tr.id
       ORDER BY ts.id
-    `);
+    `) as Schedule[];
+    // active: pencere şu an açık (routing'de uygulanıyor); unsupported: "Engelle" — zamanlayıcı engelleyemez (Ebeveyn Kontrolü)
+    const now = new Date();
+    const schedules = rows.map(r => ({ ...r, active: scheduleSupported(r) && scheduleActive(r, now), unsupported: !scheduleSupported(r) }));
     res.json({ schedules });
   } catch (e: any) {
     res.status(500).json({ error: e.message });
@@ -4886,6 +4954,10 @@ app.post('/api/routing/schedules', async (req, res) => {
       return res.status(400).json({ error: 'traffic_routing_id, time_start ve time_end gerekli' });
     }
     const exitNode = schedule_exit_node ?? schedule_route_type ?? 'isp';
+    const vpsIdList = (await dbAll('SELECT id FROM vps_servers') as any[]).map(r => String(r.id));
+    const bad = checkSchedule({ time_start, time_end, days_of_week, schedule_exit_node: exitNode }, vpsIdList);
+    if (bad) return res.status(400).json({ error: bad });
+    if (!(await dbGet('SELECT id FROM traffic_routing WHERE id = ?', [traffic_routing_id]))) return res.status(400).json({ error: 'Kural bulunamadı' });
     const vpsId = schedule_vps_id ?? (exitNode !== 'isp' && exitNode !== 'blocked' ? Number(exitNode) || null : null);
     await dbRun(
       `INSERT INTO traffic_schedules
@@ -4893,6 +4965,7 @@ app.post('/api/routing/schedules', async (req, res) => {
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [traffic_routing_id, schedule_route_type ?? exitNode, exitNode, schedule_dpi_bypass ? 1 : 0, vpsId, time_start, time_end, days_of_week || '', enabled !== undefined ? (enabled ? 1 : 0) : 1]
     );
+    void applyAllRoutingRules().catch((e: any) => console.error('[zamanlayıcı] routing:', e?.message || e));
     res.json({ success: true });
   } catch (e: any) {
     res.status(500).json({ error: e.message });
@@ -4902,6 +4975,9 @@ app.post('/api/routing/schedules', async (req, res) => {
 app.put('/api/routing/schedules/:id', async (req, res) => {
   try {
     const { enabled, schedule_exit_node, schedule_dpi_bypass, time_start, time_end, days_of_week } = req.body;
+    const vpsIdList = (await dbAll('SELECT id FROM vps_servers') as any[]).map(r => String(r.id));
+    const bad = checkSchedule({ time_start, time_end, days_of_week, schedule_exit_node }, vpsIdList, true);
+    if (bad) return res.status(400).json({ error: bad });
     const updates: string[] = [];
     const params: any[] = [];
     if (enabled !== undefined) { updates.push('enabled = ?'); params.push(enabled ? 1 : 0); }
@@ -4913,6 +4989,7 @@ app.put('/api/routing/schedules/:id', async (req, res) => {
     if (updates.length === 0) return res.json({ success: true });
     params.push(req.params.id);
     await dbRun(`UPDATE traffic_schedules SET ${updates.join(', ')} WHERE id = ?`, params);
+    void applyAllRoutingRules().catch((e: any) => console.error('[zamanlayıcı] routing:', e?.message || e));
     res.json({ success: true });
   } catch (e: any) {
     res.status(500).json({ error: e.message });
@@ -4922,20 +4999,24 @@ app.put('/api/routing/schedules/:id', async (req, res) => {
 app.delete('/api/routing/schedules/:id', async (req, res) => {
   try {
     await dbRun('DELETE FROM traffic_schedules WHERE id = ?', [req.params.id]);
+    void applyAllRoutingRules().catch((e: any) => console.error('[zamanlayıcı] routing:', e?.message || e));
     res.json({ success: true });
   } catch (e: any) {
     res.status(500).json({ error: e.message });
   }
 });
 
+// Pencere başlayıp bitince routing yeniden uygulanır (30 sn'de bir denetim; uyduda çalışmaz)
+startScheduleWatch(() => applyAllRoutingRules());
+
 // ─── Device Groups ───
 app.get('/api/devices/groups', async (_req, res) => {
   try {
     const groups = await dbAll('SELECT * FROM device_groups ORDER BY id');
     const members = await dbAll(`
-      SELECT dgm.group_id, dgm.device_mac, d.hostname, d.ip_address, d.device_type
+      SELECT dgm.group_id, dgm.device_mac, dgm.device_mac AS mac_address, d.hostname, d.ip_address, d.device_type
       FROM device_group_members dgm
-      LEFT JOIN devices d ON dgm.device_mac = d.mac_address
+      LEFT JOIN devices d ON lower(dgm.device_mac) = lower(d.mac_address)
     `);
     const result = groups.map((g: any) => ({
       ...g,
@@ -4967,8 +5048,9 @@ app.post('/api/devices/groups/:id/members', async (req, res) => {
     if (!device_mac) {
       return res.status(400).json({ error: 'device_mac gerekli' });
     }
+    if (!isValidMac(device_mac)) return res.status(400).json({ error: 'Geçersiz MAC adresi' });
     await dbRun('INSERT OR IGNORE INTO device_group_members (group_id, device_mac) VALUES (?, ?)',
-      [req.params.id, device_mac]);
+      [req.params.id, String(device_mac).toLowerCase()]);
     res.json({ success: true });
   } catch (e: any) {
     res.status(500).json({ error: e.message });
@@ -4977,8 +5059,10 @@ app.post('/api/devices/groups/:id/members', async (req, res) => {
 
 app.delete('/api/devices/groups/:id/members/:mac', async (req, res) => {
   try {
-    await dbRun('DELETE FROM device_group_members WHERE group_id = ? AND device_mac = ?',
+    // Eskiden arayüz "undefined" gönderiyor, 0 satır silinip yine başarı dönüyordu (üye hiç çıkmıyordu)
+    const n = await dbRunChanges('DELETE FROM device_group_members WHERE group_id = ? AND lower(device_mac) = lower(?)',
       [req.params.id, req.params.mac]);
+    if (!n) return res.status(404).json({ error: 'Üye bu grupta bulunamadı' });
     res.json({ success: true });
   } catch (e: any) {
     res.status(500).json({ error: e.message });
@@ -4987,6 +5071,10 @@ app.delete('/api/devices/groups/:id/members/:mac', async (req, res) => {
 
 app.delete('/api/devices/groups/:id', async (req, res) => {
   try {
+    // Ebeveyn Kontrolü kuralında hedef olan grup silinmez (kural sahipsiz "grup #N" ile kalırdı): önce kuraldan çıkarılır
+    const gid = Number(req.params.id);
+    const users = (await listParentalRules().catch(() => [])).filter(r => r.targets.groups.includes(gid)).map(r => r.name);
+    if (users.length) return res.status(409).json({ error: `Bu grup Ebeveyn Kontrolü kurallarında kullanılıyor (${users.join(', ')}) — önce kurallardan çıkarın` });
     await dbRun('DELETE FROM device_group_members WHERE group_id = ?', [req.params.id]);
     await dbRun('DELETE FROM device_groups WHERE id = ?', [req.params.id]);
     res.json({ success: true });

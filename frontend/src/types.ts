@@ -221,6 +221,10 @@ export interface TrafficSchedule {
   time_end: string;
   days_of_week: string;
   enabled: number;
+  schedule_exit_node?: string;
+  schedule_dpi_bypass?: number;
+  active?: boolean;      // pencere şu an açık (routing'de uygulanıyor)
+  unsupported?: boolean; // eski "Engelle" penceresi: zamanlayıcı engelleyemez (Ebeveyn Kontrolü)
   app_name?: string;
 }
 

@@ -6,6 +6,7 @@ import { useApi, postApi, putApi, deleteApi } from '../hooks/useApi';
 import { Panel, Badge, Select } from './ui';
 import type { TrafficRule, TrafficSchedule } from '../types';
 import { TrafficAnalytics } from './TrafficAnalytics';
+import { toast } from '../toast';
 import { openBandwidthLimits } from '../nav';
 
 interface VpsServer { id: number; ip: string; location: string }
@@ -106,21 +107,27 @@ function SchedulerView() {
       setSelectedDays([]);
       setShowAdd(false);
       await refetch();
-    } catch { /* */ }
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Zamanlama eklenemedi');
+    }
   };
 
   const handleDelete = async (id: number) => {
     try {
       await deleteApi(`/routing/schedules/${id}`);
       await refetch();
-    } catch { /* */ }
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Silinemedi');
+    }
   };
 
   const handleToggle = async (schedule: TrafficSchedule) => {
     try {
       await putApi(`/routing/schedules/${schedule.id}`, { enabled: schedule.enabled ? 0 : 1 });
       await refetch();
-    } catch { /* */ }
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Değiştirilemedi');
+    }
   };
 
   return (
@@ -132,6 +139,12 @@ function SchedulerView() {
             <Plus size={14} /> Yeni Zamanlama
           </button>
         </div>
+
+        <p className="text-muted" style={{ fontSize: 12, margin: '0 0 10px', lineHeight: 1.5 }}>
+          Seçilen gün ve saatlerde kuralın çıkışı (operatör / VPS) ve DPI atlatması değişir; pencere bitince kuralın kendi
+          ayarına döner (Pi'nin saatiyle; bitiş başlangıçtan küçükse gece yarısını aşar, ör. 22:00–06:00). Belirli saatlerde bir
+          siteyi ya da cihazı engellemek için <strong>Ebeveyn Kontrolü</strong>'nü kullanın.
+        </p>
 
         {showAdd && (
           <div className="cron-add-form">
@@ -154,7 +167,6 @@ function SchedulerView() {
                   {vpsList.map(v => (
                     <option key={v.id} value={String(v.id)}>VPS {v.location} ({v.ip})</option>
                   ))}
-                  <option value="blocked">Engelle</option>
                 </Select>
               </div>
               <div className="form-group">
@@ -208,8 +220,8 @@ function SchedulerView() {
           {data.schedules.map(schedule => {
             const days = schedule.days_of_week ? schedule.days_of_week.split(',') : [];
             const dayNames = days.map(d => DAY_LABELS.find(dl => dl.key === d)?.label || d).join(', ');
-            const exitNode = (schedule as any).schedule_exit_node || schedule.schedule_route_type || 'isp';
-            const dpi = (schedule as any).schedule_dpi_bypass || 0;
+            const exitNode = schedule.schedule_exit_node || schedule.schedule_route_type || 'isp';
+            const dpi = schedule.schedule_dpi_bypass || 0;
             const label = getScheduleLabel(exitNode, dpi, vpsList);
             const badgeVariant = getScheduleBadgeVariant(exitNode, dpi);
             return (
@@ -226,9 +238,12 @@ function SchedulerView() {
                     {schedule.time_start} - {schedule.time_end} &middot; {dayNames}
                   </div>
                 </div>
-                <Badge variant={badgeVariant}>
-                  {label}
-                </Badge>
+                {schedule.unsupported
+                  ? <Badge variant="warning">Uygulanmıyor — Ebeveyn Kontrolü'nü kullanın</Badge>
+                  : <>
+                      {schedule.active && <Badge variant="success">Şu an etkin</Badge>}
+                      <Badge variant={badgeVariant}>{label}</Badge>
+                    </>}
                 <button className="icon-btn icon-btn-sm cron-delete" onClick={() => handleDelete(schedule.id)} title="Sil">
                   <Trash2 size={13} />
                 </button>

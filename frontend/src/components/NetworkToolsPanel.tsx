@@ -1,5 +1,5 @@
-import { Wrench, Power, Search, Server, Plus, Loader } from 'lucide-react';
-import { useApi, postApi } from '../hooks/useApi';
+import { Wrench, Power, Search, Server, Plus, Loader, Trash2 } from 'lucide-react';
+import { useApi, postApi, deleteApi } from '../hooks/useApi';
 import { useState } from 'react';
 import { Panel, Badge, Select } from './ui';
 import { toast } from '../toast';
@@ -19,6 +19,7 @@ interface DhcpLease {
   hostname: string;
   lease_end: string;
   is_static: number;
+  has_reservation?: number; // dinamik kira: bu cihazın sabit rezervasyonu da var
 }
 
 interface DhcpData {
@@ -55,10 +56,10 @@ export function NetworkToolsPanel() {
     if (!wolTarget) return;
     setWolSending(true);
     try {
-      await postApi('/wol/send', { mac_address: wolTarget });
-      toast.success('Wake-on-LAN paketi gonderildi!');
-    } catch {
-      toast.error('Gonderim basarisiz oldu.');
+      const r = await postApi('/wol/send', { mac_address: wolTarget });
+      toast.success(r?.message || 'Wake-on-LAN paketi gönderildi');
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Gönderim başarısız oldu');
     }
     setWolSending(false);
   };
@@ -88,9 +89,23 @@ export function NetworkToolsPanel() {
       setNewResMac('');
       setNewResIp('');
       setNewResHostname('');
+      toast.success('Rezervasyon Pi-hole\'a uygulandı');
       await refetchDhcp();
-    } catch { /* */ }
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Rezervasyon eklenemedi');
+    }
     setAddingRes(false);
+  };
+
+  const handleDeleteReservation = async (mac: string) => {
+    if (!confirm(`${mac} için sabit IP rezervasyonu kaldırılsın mı? Cihaz sonraki kira yenilemesinde havuzdan adres alır.`)) return;
+    try {
+      await deleteApi(`/dhcp/static/${encodeURIComponent(mac)}`);
+      toast.success('Rezervasyon kaldırıldı');
+      await refetchDhcp();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Rezervasyon kaldırılamadı');
+    }
   };
 
   return (
@@ -202,12 +217,13 @@ export function NetworkToolsPanel() {
                 <span style={{ flex: 1 }}>Hostname</span>
                 <span style={{ flex: 1 }}>Bitis</span>
                 <span style={{ flex: 0.5 }}>Tip</span>
+                <span style={{ width: 28 }} />
               </div>
               {dhcpData.leases.length === 0 && (
                 <div className="empty-state" style={{ padding: '20px' }}>DHCP kiralamalari bulunamadi.</div>
               )}
               {dhcpData.leases.map(lease => (
-                <div key={lease.mac_address} className="ban-row">
+                <div key={`${lease.is_static ? 's' : 'd'}-${lease.mac_address}`} className="ban-row">
                   <span style={{ flex: 1, fontFamily: 'monospace', fontSize: '0.8rem' }}>{lease.mac_address}</span>
                   <span style={{ flex: 1, fontFamily: 'monospace', fontSize: '0.8rem' }}>{lease.ip_address}</span>
                   <span style={{ flex: 1 }}>{lease.hostname || '-'}</span>
@@ -216,8 +232,16 @@ export function NetworkToolsPanel() {
                   </span>
                   <span style={{ flex: 0.5 }}>
                     <Badge variant={lease.is_static ? 'info' : 'neutral'}>
-                      {lease.is_static ? 'Statik' : 'Dinamik'}
+                      {lease.is_static ? 'Rezervasyon' : lease.has_reservation ? 'Kira (rezerveli)' : 'Dinamik'}
                     </Badge>
+                  </span>
+                  <span style={{ width: 28, display: 'flex', justifyContent: 'flex-end' }}>
+                    {lease.is_static ? (
+                      <button className="icon-btn icon-btn-sm cron-delete" title="Rezervasyonu kaldır" aria-label={`${lease.mac_address} rezervasyonunu kaldır`}
+                        onClick={() => void handleDeleteReservation(lease.mac_address)}>
+                        <Trash2 size={13} />
+                      </button>
+                    ) : null}
                   </span>
                 </div>
               ))}
@@ -225,7 +249,8 @@ export function NetworkToolsPanel() {
           </Panel>
 
           <div style={{ marginTop: 14 }}>
-            <Panel title="Statik Rezervasyon Ekle" icon={<Plus size={18} style={{ marginRight: 8 }} />}>
+            <Panel title="Statik Rezervasyon Ekle" icon={<Plus size={18} style={{ marginRight: 8 }} />}
+              subtitle="Pi'nin DHCP sunucusu (Pi-hole) bu cihaza her zaman aynı adresi verir. Adres Pi'nin dağıttığı ağda olmalı; Pi DHCP'si kapalıyken de kaydedilir, açılınca geçerli olur. Cihaz yeni adresi bir sonraki kira yenilemesinde alır.">
               <div className="list-add-form">
                 <div className="list-add-row">
                   <input className="config-input" type="text"

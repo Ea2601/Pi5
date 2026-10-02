@@ -17,6 +17,7 @@
 //    başlar ve site denenir; açılmazsa geri alınır. Site başına günde en çok bir otomatik tarama.
 //  - Liste dosyaları değişince nfqws onları kendiliğinden yeniden okur; yalnız config değişince (çalışıyorsa) yeniden
 //    başlatılır. Özgün config bir kez config.pi5-orig olarak saklanır.
+import { applyOverrides, loadOverrides } from './trafficSchedule';
 import fs from 'fs';
 import path from 'path';
 import { execFile } from 'child_process';
@@ -59,7 +60,9 @@ export function cleanDpiDomain(raw: unknown): string | null {
 export async function collectDpiDomains(): Promise<{ hostlist: string[]; exclude: string[]; manual: string[]; fromRouting: string[];
   fromLists: { id: ListId; label: string; count: number }[]; dpiRules: number; vpsDpiRules: number }> {
   const zap = await dbAll('SELECT list_type, domain FROM zapret_domains WHERE enabled = 1') as any[];
-  const apps = await dbAll("SELECT domains, exit_node FROM traffic_routing WHERE enabled = 1 AND dpi_bypass = 1 AND domains != ''") as any[];
+  // Trafik Zamanlayıcı'nın etkin penceresi kuralın DPI'ını / çıkışını değiştirebilir (routing motoruyla aynı: trafficSchedule.ts)
+  const apps = applyOverrides(await dbAll("SELECT id, domains, exit_node, dpi_bypass FROM traffic_routing WHERE enabled = 1 AND domains != ''") as any[], await loadOverrides())
+    .filter(r => Number(r.dpi_bypass) === 1);
   const doms = await dbAll("SELECT domain, exit_node, redirect_url FROM domain_routing WHERE enabled = 1 AND dpi_bypass = 1") as any[];
   const isp = (e: unknown) => !e || e === 'isp';
   const hostlist = new Set<string>(), fromRouting = new Set<string>();

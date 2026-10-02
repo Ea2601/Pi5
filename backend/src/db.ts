@@ -34,6 +34,16 @@ export function dbRun(sql: string, params: any[] = []): Promise<void> {
   });
 }
 
+// Etkilenen satır sayısı (UPDATE / DELETE): "silindi" demeden önce gerçekten bir satırın değiştiği denetlenir.
+export function dbRunChanges(sql: string, params: any[] = []): Promise<number> {
+  return new Promise((resolve, reject) => {
+    db.run(sql, params, function (this: { changes: number }, err) {
+      if (err) reject(err);
+      else resolve(this.changes);
+    });
+  });
+}
+
 // INSERT için güvenli id dönüşü — last_insert_rowid() yarışını önler (this.lastID aynı ifadeye ait).
 export function dbInsert(sql: string, params: any[] = []): Promise<number> {
   return new Promise((resolve, reject) => {

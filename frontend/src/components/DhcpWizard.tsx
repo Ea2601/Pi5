@@ -803,8 +803,8 @@ export function DhcpWizard({ dhcp, net, netErr, reload }: Props) {
           <>
             <span>
               Pi-hole cihazlara <code>{poolStart}–{poolEnd}</code> arası adres dağıtır; ağ geçidi ve DNS <code>{clientIp}</code>.
-              İlk 5 dakika denemedir (kira 5 dk). Paneldeki statik IP rezervasyonları henüz Pi-hole'a aktarılmıyor (yalnız panel
-              veritabanında duruyor).
+              İlk 5 dakika denemedir (kira 5 dk). Sabit IP rezervasyonları Ağ Araçları → DHCP'den eklenir ve Pi-hole'a uygulanır
+              (DHCP açılınca geçerli olur).
             </span>
             <div className="panel-auth-actions">
               <button className="btn-primary btn-sm btn-on" onClick={enablePi} disabled={!!busy || !isStatic || !wifiReady || !probeOk}>
