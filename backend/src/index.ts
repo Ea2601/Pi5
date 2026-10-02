@@ -50,6 +50,7 @@ import {
 } from './mesh';
 import { authGate, registerAuthRoutes } from './auth';
 import { registerNotifyRoutes, startNotify } from './notify';
+import { registerPcapRoutes, startPcap } from './pcap';
 import { startDeviceWatch } from './deviceWatch';
 import { validateSchedule, validateCommand, syncCronJobs, readJobStatuses, readSystemCron, syncCronOnStartup, runningJobs, jobOutput, startJobNow } from './cronSync';
 import { validateListValue, normalizeListValue, syncPiholeLists, lastListSync, externalPiholeEntries, startSystemHostsWatch,
@@ -181,6 +182,8 @@ app.use('/api/vps/:id/clients/:clientId/panel-access', writeLimiter, (req, res, 
 registerAuthRoutes(app);
 // Dış bildirim (notify.ts): /api/notify — GET dışı yazma sınırı + netAdminGuard, uyduda 409 (gövdeler modülde).
 registerNotifyRoutes(app, { guard: (req, res, next) => { void netAdminGuard(req, res, next); }, writeLimiter });
+// Paket kaydı (pcap.ts): /api/pcap — GET dışı yazma sınırı + netAdminGuard, uyduda 409; yalnız panel koruması açıkken (modülde).
+registerPcapRoutes(app, { guard: (req, res, next) => { void netAdminGuard(req, res, next); }, writeLimiter, protectedMacs: blockProtectedMacs });
 
 // Graceful shutdown. Hat Kalitesi açıksa (wanMonitor.ts) bekleyen ölçümler yazılır ve hat durumu kaydedilir (en çok 2 sn);
 // kapalıyken hemen çıkılır.
@@ -6773,6 +6776,8 @@ const server = app.listen(Number(port), bindHost, () => {
   }
   // Hat Kalitesi (wanMonitor.ts): ayar kapalıysa hiçbir şey yapmaz (zamanlayıcı, ping, tablo yok).
   startWanMonitor();
+  // Paket kaydı (pcap.ts): kayıt yoksa hiçbir şey yapmaz; kayıt sürerken panel yeniden başladıysa temizlik zamanlayıcısı kurulur.
+  startPcap();
   } // !isSatellite
   // Cron: panel görevleri zamanlayıcıya yazılır, ancak bu başarılıysa eski pi5-maintenance satırları çıkarılır (önce yeni
   // dosya). Veritabanı ilk kurulum işleri bitsin diye kısa gecikmeyle.

@@ -1,11 +1,18 @@
-import { Wrench, Power, Search, Server, Plus, Loader, Trash2 } from 'lucide-react';
+import { Wrench, Power, Search, Server, Plus, Loader, Trash2, FileSearch, Loader2 } from 'lucide-react';
 import { useApi, postApi, deleteApi } from '../hooks/useApi';
-import { useState } from 'react';
+import { lazy, Suspense, useEffect, useState } from 'react';
 import { Panel, Badge, Select, SelectOption } from './ui';
+import { ErrorBoundary } from './ErrorBoundary';
 import { toast } from '../toast';
+import { NETTOOLS_TAB_KEY, NETTOOLS_TAB_EVENT, peekLink, clearLink } from '../pcapLink';
 import type { Device } from '../types';
 
-type ToolTab = 'wol' | 'portscan' | 'dhcp';
+type ToolTab = 'wol' | 'portscan' | 'dhcp' | 'pcap';
+
+// Paket Kaydı (backend pcap.ts) ayrı parça: ana paket büyümesin — yalnız sekme açılınca yüklenir.
+const PcapTool = lazy(() => import('./PcapTool').then(m => ({ default: m.PcapTool }), () => {
+  throw new Error('Paket Kaydı bölümü yüklenemedi — sayfayı yenileyin (panel güncellenmiş olabilir)');
+}));
 
 interface PortScanResult {
   port: number;
@@ -27,7 +34,15 @@ interface DhcpData {
 }
 
 export function NetworkToolsPanel() {
-  const [activeTab, setActiveTab] = useState<ToolTab>('wol');
+  // Başka sayfadan Paket Kaydı'na geçiş (Cihaz Yönetimi kısayolu, bildirimin "git" düğmesi — pcapLink.ts; tek seferlik)
+  const [activeTab, setActiveTab] = useState<ToolTab>(() => (peekLink(NETTOOLS_TAB_KEY) === 'pcap' ? 'pcap' : 'wol'));
+  useEffect(() => {
+    clearLink(NETTOOLS_TAB_KEY);
+    // Sayfa zaten açıkken bildirimin "git" düğmesi (alerts.ts openAlertSubTab)
+    const onTab = (e: Event) => { if ((e as CustomEvent<string>).detail === 'pcap') setActiveTab('pcap'); };
+    window.addEventListener(NETTOOLS_TAB_EVENT, onTab);
+    return () => window.removeEventListener(NETTOOLS_TAB_EVENT, onTab);
+  }, []);
   const { data: devicesData } = useApi<{ devices: Device[] }>('/devices', { devices: [] });
   const { data: dhcpData, refetch: refetchDhcp } = useApi<DhcpData>('/dhcp/leases', { leases: [] });
 
@@ -50,6 +65,7 @@ export function NetworkToolsPanel() {
     { id: 'wol', label: 'WoL', icon: <Power size={14} /> },
     { id: 'portscan', label: 'Port Tarayici', icon: <Search size={14} /> },
     { id: 'dhcp', label: 'DHCP', icon: <Server size={14} /> },
+    { id: 'pcap', label: 'Paket Kaydı', icon: <FileSearch size={14} /> },
   ];
 
   const handleWol = async () => {
@@ -273,6 +289,14 @@ export function NetworkToolsPanel() {
             </Panel>
           </div>
         </div>
+      )}
+
+      {activeTab === 'pcap' && (
+        <ErrorBoundary>
+          <Suspense fallback={<div style={{ textAlign: 'center', padding: 30, color: 'var(--text-muted)' }}><Loader2 size={20} className="spin" /></div>}>
+            <PcapTool />
+          </Suspense>
+        </ErrorBoundary>
       )}
     </div>
   );

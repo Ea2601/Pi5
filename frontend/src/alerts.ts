@@ -3,6 +3,7 @@
 // olay yayını (pencere olayı) da buradadır.
 import { AlertCircle, AlertTriangle, Info, type LucideIcon } from 'lucide-react';
 import type { TabId } from './types';
+import { NETTOOLS_TAB_KEY, NETTOOLS_TAB_EVENT } from './pcapLink';
 
 export interface AlertItem {
   id: number;
@@ -55,7 +56,14 @@ export function alertTab(source: string): TabId | null {
 export const SPEEDTEST_TAB_KEY = 'pi5-speedtest-tab';
 export const SPEEDTEST_TAB_EVENT = 'pi5-speedtest-tab';
 export function openAlertSubTab(source: string): void {
-  if ((source || '').split(':')[0] !== 'wan-monitor') return;
+  const head = (source || '').split(':')[0];
+  // Paket kaydı olayı → Ağ Araçları'nın Paket Kaydı sekmesi (pcapLink.ts: sayfa açılınca bir kez okunur; zaten açıksa olayla)
+  if (head === 'pcap') {
+    if (window.location.hash !== '#nettools') { try { sessionStorage.setItem(NETTOOLS_TAB_KEY, 'pcap'); } catch { /* depolama yok */ } }
+    else window.dispatchEvent(new CustomEvent(NETTOOLS_TAB_EVENT, { detail: 'pcap' }));
+    return;
+  }
+  if (head !== 'wan-monitor') return;
   try { localStorage.setItem(SPEEDTEST_TAB_KEY, 'quality'); } catch { /* depolama yok */ }
   window.dispatchEvent(new CustomEvent(SPEEDTEST_TAB_EVENT, { detail: 'quality' }));
 }

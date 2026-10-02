@@ -85,11 +85,12 @@ step "2/10 — Bağımlılıklar Kuruluyor"
 # dhcp-helper paketi kurulunca kendi servisini açıp UDP 67'yi tutar (Pi DHCP'siyle çakışır): servis kurulumdan ÖNCE
 # maskelenir; Wi-Fi köprüsü (net-mode.sh rep) kendi birimini yalnız köprü açıkken çalıştırır.
 systemctl mask --now dhcp-helper.service >/dev/null 2>&1 || true
+# tcpdump: Ağ Araçları → Paket Kaydı (scripts/pcap-run.sh); servis açmaz, yalnız kayıt başlatılınca çalışır.
 apt install -y -qq \
   curl git build-essential \
   sqlite3 libsqlite3-dev \
   nginx certbot python3-certbot-nginx apache2-utils \
-  qrencode speedtest-cli vnstat etherwake \
+  qrencode speedtest-cli vnstat etherwake tcpdump \
   ipset iptables wireguard-tools iputils-arping iw ppp \
   conntrack usb-modeswitch usbmuxd \
   parprouted dhcp-helper dnsmasq-base avahi-daemon avahi-utils

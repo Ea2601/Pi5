@@ -1,12 +1,13 @@
 import { useEffect, useState } from 'react';
 import {
   Users, Shield, Clock, AlertTriangle, Plus, ChevronDown, ChevronRight,
-  Wifi, WifiOff, Check, X, Monitor, Smartphone, HardDrive, Palette, Trash2, Pencil
+  Wifi, WifiOff, Check, X, Monitor, Smartphone, HardDrive, Palette, Trash2, Pencil, FileSearch
 } from 'lucide-react';
 import { useApi, getApi, postApi, putApi, deleteApi } from '../hooks/useApi';
 import { Panel, Badge, Select, SelectOption } from './ui';
 import type { Device } from '../types';
 import { toast } from '../toast';
+import { openPacketCapture } from '../pcapLink';
 
 // Arka uç ad bilgisini Pi-hole DHCP kiralarından ya da elle verilen addan doldurur (name_manual=1: elle).
 type Dev = Device & { name_manual?: number };
@@ -364,6 +365,9 @@ function BlockingView() {
                 </div>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                   {blocked && <Badge variant="error">Engelli</Badge>}
+                  {/* Ağ Araçları → Paket Kaydı, bu cihaz seçili (pcapLink.ts) */}
+                  <button className="icon-btn icon-btn-sm" onClick={() => openPacketCapture(device.mac_address)}
+                    title="Paket kaydı" aria-label={`${deviceLabel(device)}: paket kaydı`}><FileSearch size={13} /></button>
                   <button
                     className={`toggle-btn ${blocked ? 'toggle-off' : 'toggle-on'}`}
                     onClick={() => handleToggleBlock(device.mac_address, blocked)}

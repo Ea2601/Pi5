@@ -1,0 +1,81 @@
+/* Ağ Araçları → Paket Kaydı (PcapTool) — tembel parça; renkler token'la (--line-soft, --surface-faint, --input-bg-soft,
+   --*-ink açık temada index.css'ten kendi değerini alır). Düğme rengi = ne yaptığı: başlatan / indiren yeşil (App.css
+   .btn-on), durduran / silen kırmızı (.btn-off). */
+.pk { margin-top: 14px; }
+.pk-loading { display: flex; justify-content: center; padding: 24px; }
+.pk-mono { font-family: var(--font-mono); font-size: 12px; color: var(--text-secondary); overflow-wrap: anywhere; }
+.pk-help { margin: 8px 0 0; font-size: 12px; line-height: 1.55; color: var(--text-secondary); overflow-wrap: anywhere; }
+.pk-warn { color: var(--warning-ink); }
+.pk-bad { color: var(--danger-ink); }
+
+.pk-note {
+  display: flex; align-items: flex-start; gap: 8px; margin: 12px 0 0; padding: 10px 12px; border-radius: var(--radius-sm);
+  border: 1px solid var(--panel-border); background: var(--input-bg-soft); font-size: 13px; line-height: 1.5;
+}
+.pk-note > svg { flex-shrink: 0; margin-top: 3px; color: var(--accent-color); }
+.pk-note > span { min-width: 0; overflow-wrap: anywhere; }
+.pk-note-warn { border-color: color-mix(in srgb, var(--warning-color) 45%, transparent); background: color-mix(in srgb, var(--warning-color) 8%, transparent); }
+.pk-note-warn > svg { color: var(--warning-ink); }
+.pk-note-bad > svg { color: var(--danger-ink); }
+.pk-scope { color: var(--text-secondary); font-size: 12px; }
+
+.pk-lock {
+  display: flex; align-items: flex-start; gap: 12px; margin-top: 12px; padding: 14px 16px; border-radius: var(--radius-sm);
+  border: 1px solid color-mix(in srgb, var(--warning-color) 45%, transparent); background: color-mix(in srgb, var(--warning-color) 7%, transparent);
+}
+.pk-lock > svg { flex-shrink: 0; margin-top: 2px; color: var(--warning-ink); }
+.pk-lock strong { display: block; font-size: 14px; }
+.pk-lock p { margin: 6px 0 10px; font-size: 13px; line-height: 1.55; color: var(--text-secondary); }
+
+.pk-form { display: flex; flex-direction: column; gap: 14px; margin-top: 12px; }
+.pk-step { padding: 12px 14px; border-radius: var(--radius-sm); border: 1px solid var(--line-soft); background: var(--surface-faint); min-width: 0; }
+.pk-step h4 { display: flex; align-items: center; gap: 8px; margin: 0 0 10px; font-size: 13px; font-weight: 600; }
+.pk-num {
+  display: inline-flex; align-items: center; justify-content: center; width: 20px; height: 20px; border-radius: 50%;
+  font-size: 11px; font-weight: 700; background: var(--accent-color); color: var(--accent-contrast);
+}
+.pk-row { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.pk-row .pk-select { flex: 1; min-width: 0; }
+
+.pk-seg { display: inline-flex; gap: 6px; flex-wrap: wrap; }
+.pk-seg-btn {
+  padding: 6px 14px; border-radius: 999px; border: 1px solid var(--panel-border); background: transparent; cursor: pointer;
+  color: var(--text-primary); font-family: var(--font-family); font-size: 13px;
+}
+.pk-seg-btn:hover { border-color: var(--accent-color); }
+.pk-seg-on { border-color: var(--accent-color); box-shadow: 0 0 0 2px var(--accent-glow); font-weight: 600; }
+
+.pk-modes { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin-top: 12px; }
+.pk-mode {
+  position: relative; display: flex; flex-direction: column; gap: 4px; padding: 10px 12px 10px 36px; border-radius: 10px;
+  border: 1px solid var(--panel-border); background: var(--surface-faint); cursor: pointer; min-width: 0;
+}
+.pk-mode input { position: absolute; left: 12px; top: 12px; margin: 0; accent-color: var(--accent-color); }
+.pk-mode:hover { border-color: var(--accent-color); }
+.pk-mode-on { border-color: var(--accent-color); box-shadow: 0 0 0 2px var(--accent-glow); }
+.pk-mode-title { display: inline-flex; align-items: center; gap: 6px; flex-wrap: wrap; font-weight: 600; font-size: 13px; }
+.pk-mode-desc { color: var(--text-secondary); font-size: 12px; line-height: 1.45; }
+
+.pk-legal { display: flex; align-items: flex-start; gap: 8px; }
+.pk-legal > svg { flex-shrink: 0; margin-top: 2px; color: var(--text-secondary); }
+.pk-legal p { margin: 0; font-size: 12px; line-height: 1.6; color: var(--text-secondary); }
+.pk-check { display: flex; align-items: flex-start; gap: 8px; margin-top: 10px; font-size: 13px; line-height: 1.5; cursor: pointer; }
+.pk-check input { margin-top: 3px; flex-shrink: 0; accent-color: var(--accent-color); }
+
+.pk-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+.pk-form > .pk-actions { margin-top: 0; }
+.pk .btn-primary.btn-on:disabled, .pk .btn-outline.btn-off:disabled { opacity: 0.45; cursor: not-allowed; box-shadow: none; }
+
+.pk-job { margin-top: 12px; padding: 12px 14px; border-radius: var(--radius-sm); border: 1px solid var(--panel-border); background: var(--surface-faint); }
+.pk-job-done { border-color: color-mix(in srgb, var(--success-color) 40%, transparent); }
+.pk-job-failed { border-color: color-mix(in srgb, var(--danger-color) 40%, transparent); }
+.pk-job-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; min-width: 0; }
+.pk-job-head strong { overflow-wrap: anywhere; }
+.pk-job-meta { margin-top: 6px; font-size: 12px; color: var(--text-secondary); }
+.pk-bar { height: 6px; margin-top: 10px; border-radius: 3px; overflow: hidden; background: var(--line-soft); }
+.pk-bar-fill { height: 100%; border-radius: 3px; background: var(--accent-color); transition: width 0.9s linear; }
+
+@media (max-width: 640px) {
+  .pk-modes { grid-template-columns: 1fr; }
+  .pk-step { padding: 10px 12px; }
+}
