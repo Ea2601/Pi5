@@ -1003,7 +1003,9 @@ export function VpsSetup() {
     try {
       await deleteApi(`/vps/${id}`);
       await refetch();
-    } catch { /* */ }
+    } catch (e) {
+      toast.error(errText(e, 'VPS silinemedi'));
+    }
   };
 
   const handleAddClient = async () => {

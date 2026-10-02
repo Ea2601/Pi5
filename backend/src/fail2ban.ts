@@ -99,8 +99,14 @@ export async function readFail2banSettings(): Promise<Fail2banSettings> {
   } catch { /* varsayılan */ }
   const legacy = await legacySettings();
   const s = legacy || { ...F2B_DEFAULTS };
-  await dbRun('INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)', [SETTINGS_KEY, JSON.stringify(s)]).catch(() => {});
-  await dbRun("DELETE FROM service_config WHERE service = 'fail2ban'").catch(() => {});
+  // Eski satırlar yalnız yeni kayıt yazıldıktan sonra silinir: yazılamazsa (ör. veritabanı meşgul) kullanıcının beyaz listesi
+  // ve süreleri kaybolmasın, sonraki okumada yeniden taşınır.
+  try {
+    await dbRun('INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)', [SETTINGS_KEY, JSON.stringify(s)]);
+    await dbRun("DELETE FROM service_config WHERE service = 'fail2ban'");
+  } catch (e: any) {
+    console.error('[fail2ban] ayarlar taşınamadı (sonra yeniden denenecek):', e?.message || e);
+  }
   return s;
 }
 
@@ -165,10 +171,15 @@ export async function applyFail2banSettings(s: Fail2banSettings, opts: { onlyIfC
   let old: string | null = null;
   try { old = fs.readFileSync(PANEL_JAIL, 'utf8'); } catch { /* ilk kez */ }
   if (opts.onlyIfChanged && old === content) return { ok: true, changed: false };
-  const restore = () => {
+  // Geri alma başarısız olabilir (disk): sonuç "geri alındı" demesin, bozuk dosya diskte kalır
+  const restore = (): boolean => {
     try {
-      if (old === null) fs.unlinkSync(PANEL_JAIL); else fs.writeFileSync(PANEL_JAIL, old, { mode: 0o644 });
-    } catch { /* */ }
+      if (old === null) fs.rmSync(PANEL_JAIL, { force: true }); else fs.writeFileSync(PANEL_JAIL, old, { mode: 0o644 });
+      return true;
+    } catch (e: any) {
+      console.error('[fail2ban] eski yapılandırma geri yazılamadı:', e?.message || e);
+      return false;
+    }
   };
   try {
     fs.mkdirSync(JAIL_D, { recursive: true });
@@ -178,15 +189,19 @@ export async function applyFail2banSettings(s: Fail2banSettings, opts: { onlyIfC
   }
   const test = await execFileP('fail2ban-client', ['-t'], { timeout: 30000 }).then(() => '', (e: any) => String(e?.stderr || e?.stdout || e?.message || e).trim());
   if (test) {
-    restore();
-    return { ok: false, changed: false, rolledBack: true, error: `Yapılandırma sınamadan geçmedi: ${test.split('\n').slice(-3).join(' ').slice(0, 300)}` };
+    const back = restore();
+    return { ok: false, changed: false, rolledBack: back, error: `Yapılandırma sınamadan geçmedi: ${test.split('\n').slice(-3).join(' ').slice(0, 300)}${back ? '' : ' — eski dosya da geri yazılamadı'}` };
   }
   if (await f2bActive()) {
     const rl = await execFileP('fail2ban-client', ['reload'], { timeout: 60000 }).then(() => '', (e: any) => String(e?.stderr || e?.stdout || e?.message || e).trim());
     if (rl) {
-      restore();
-      await execFileP('fail2ban-client', ['reload'], { timeout: 60000 }).catch(() => {});
-      return { ok: false, changed: false, rolledBack: true, error: `Fail2Ban yeniden yüklenemedi: ${rl.slice(0, 300)}` };
+      const back = restore();
+      const rl2 = await execFileP('fail2ban-client', ['reload'], { timeout: 60000 }).then(() => '', (e: any) => String(e?.stderr || e?.message || e).trim());
+      if (rl2) console.error('[fail2ban] eski yapılandırmayla da yeniden yüklenemedi:', rl2);
+      return {
+        ok: false, changed: false, rolledBack: back && !rl2,
+        error: `Fail2Ban yeniden yüklenemedi: ${rl.slice(0, 300)}${!back ? ' — eski dosya geri yazılamadı' : rl2 ? ' — eski yapılandırmayla da yüklenemedi, Fail2Ban\'ı denetleyin' : ''}`,
+      };
     }
   }
   await dbRun('INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)', [SETTINGS_KEY, JSON.stringify(s)]);

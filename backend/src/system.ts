@@ -5,6 +5,7 @@ import os from 'os';
 import { promises as dnsPromises } from 'dns';
 import sqlite3 from 'sqlite3';
 import { shq } from './util';
+import { recordEventOnce } from './events';
 import { encodeRouteMark, decodeVpsMark, decodeLegacyVpsMark, isManagedRuleMark, normFallback, DPI_ONLY_MARK, LEGACY_DPI_ONLY_MARK, ISP_FALLBACK_BIT, ROUTE_MARK_MASK, LEARN_MARK_BIT, type VpsMark } from './routeMarks';
 import { planListRouting, configureListDns, listSetForName, parseUpstreams, type ListRoute } from './listDns';
 import { collapsedList } from './categoryLists';
@@ -1165,7 +1166,16 @@ function writeIfChanged(file: string, content: string): boolean {
   let old: string | null = null;
   try { old = fs.readFileSync(file, 'utf8'); } catch { /* dosya yok */ }
   if (old === content) return false;
-  try { fs.writeFileSync(file, content); } catch { return false; }
+  try {
+    fs.writeFileSync(file, content);
+  } catch (e: any) {
+    // Yazılacak kural yoksa (boş dosya; ör. Pi-hole henüz kurulmadı, dizin yok) kayıp da yok — uyarı gereksiz
+    if (!content.trim()) return false;
+    // Disk dolu / salt okunur: kural kaydedildi ama DNS'e uygulanmadı — sessiz kalmasın
+    console.error(`[routing] ${file} yazılamadı:`, e?.message || e);
+    void recordEventOnce('routing', `DNS yönlendirme dosyası yazılamadı (${file.split('/').pop()}): ${e?.code || e?.message || e} — disk dolu ya da salt okunur olabilir; kurallar uygulanmadı`, 'warning', 60);
+    return false;
+  }
   return true;
 }
 
@@ -1960,10 +1970,19 @@ export async function applyDomainRouting(domains?: DomainRoute[], ranges: RangeR
     for (const host of CAPTIVE_CHECK_HOSTS) if (!mappedHosts.has(host)) mapLines.push(`    "${host}" "${AP_PORTAL_URL}";`);
   }
   mapLines.push('}');
-  try {
+  // nginx kurulu değilse (dizin yok) harita yazılmaz — eskisi gibi sessiz
+  if (fs.existsSync('/etc/nginx/conf.d')) try {
     fs.writeFileSync('/etc/nginx/conf.d/pi5-redirect-map.conf', mapLines.join('\n') + '\n');
-    await run('nginx -t 2>/dev/null && (nginx -s reload 2>/dev/null || systemctl reload nginx 2>/dev/null) || true');
-  } catch { /* */ }
+    // Sınamadan geçmezse yüklenmez (çalışan yapılandırma kalır) ama sessiz de kalmaz: yönlendirme kuralları çalışmaz
+    const t = await run('command -v nginx >/dev/null 2>&1 || { echo none; exit 0; }; nginx -t >/dev/null 2>&1 && echo ok || echo fail');
+    if (t === 'ok') await run('nginx -s reload 2>/dev/null || systemctl reload nginx 2>/dev/null || true');
+    else if (t === 'fail') {
+      console.error('[routing] nginx yapılandırma sınaması geçmedi — yönlendirme haritası yüklenmedi');
+      void recordEventOnce('routing', 'Alan adı yönlendirme haritası nginx sınamasından geçmedi, yüklenmedi — yönlendirme kuralları çalışmıyor (Sistem Logları)', 'warning', 60);
+    }
+  } catch (e: any) {
+    console.error('[routing] nginx yönlendirme haritası yazılamadı:', e?.message || e);
+  }
 
   // İşaret şeması: routeMarks.ts — ISP (0), yalnız DPI (200), VPS tüneli 0x8000|id (+DPI, +tünel düşerse operatörden
   // devam). Geçersiz çıkış (VPS kimliği sayı değil / 8191'den büyük) ISP sayılır ve günlüğe yazılır.
@@ -2346,7 +2365,14 @@ async function readLocalRules(): Promise<{ twin: Map<number, number>; main: Map<
 // Tünel rotası arayüz varsa ve tünel "yanıt vermiyor" onaylanmamışsa konur; onaylıysa kaldırılır (izleyici, index.ts).
 async function syncMarkTable(mark: number, v: VpsMark, staleVps: ReadonlySet<number>): Promise<void> {
   const iface = `wg_vps${v.vpsId}`;
-  if (!v.ispFallback) await run(`ip route replace unreachable default metric 1000 table ${mark} 2>/dev/null || true`);
+  if (!v.ispFallback) {
+    await run(`ip route replace unreachable default metric 1000 table ${mark} 2>/dev/null || true`);
+    // Kill-switch doğrulaması: kurulamadıysa tünel düşünce bu kuralların trafiği operatöre (ISP) sızar — sessiz kalmasın
+    if (!/unreachable default/.test(await run(`ip route show table ${mark} 2>/dev/null`))) {
+      console.error(`[routing] kill-switch kurulamadı (tablo ${mark}, wg_vps${v.vpsId})`);
+      void recordEventOnce('routing', `Kill-switch kurulamadı (VPS ${v.vpsId}, tablo ${mark}): tünel düşerse "engelle" kuralları operatöre sızabilir`, 'critical', 60);
+    }
+  }
   if (!fs.existsSync(`/sys/class/net/${iface}`)) return;
   if (staleVps.has(v.vpsId)) {
     await run(`ip route del default dev ${iface} table ${mark} 2>/dev/null || true`);

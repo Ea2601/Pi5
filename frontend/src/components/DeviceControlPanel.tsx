@@ -99,7 +99,9 @@ function GroupsView() {
       setNewGroup({ name: '', description: '', color: '#3b82f6', icon: 'monitor' });
       setShowAdd(false);
       await refetch();
-    } catch { /* */ }
+    } catch (e) {
+      toast.error(e instanceof Error && e.message ? e.message : 'Grup oluşturulamadı');
+    }
   };
 
   const handleDeleteGroup = async (group: DeviceGroup) => {
@@ -490,7 +492,9 @@ function UnknownView() {
     try {
       await postApi(`/devices/${mac}/approve`, {});
       await refetch();
-    } catch { /* */ }
+    } catch (e) {
+      toast.error(e instanceof Error && e.message ? e.message : 'Cihaz onaylanamadı');
+    }
     setApproving(null);
   };
 

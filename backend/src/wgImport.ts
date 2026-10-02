@@ -21,6 +21,7 @@ import { localNetworks, cidrOverlaps, clientTunnelIp } from './remoteAccess';
 import { lanNetworks } from './fail2ban';
 import { WG_NET } from './wgServer';
 import { parseWgVpsConf } from './vault';
+import { recordEventOnce } from './events';
 import { parseImportedConf, renderImportedConf, renderStoredConf, importSummary, WGEXT_NFT_FILE, type WgImportConf } from './wgConf';
 
 const execFileP = promisify(execFile);
@@ -159,8 +160,13 @@ async function tunnelDown(iface: string): Promise<void> {
   await execFileP('systemctl', ['disable', '--now', `wg-quick@${iface}`], { timeout: 15000 }).catch(() => {});
   await execFileP('wg-quick', ['down', iface], { timeout: 15000 }).catch(() => {});
 }
+// Tünel şimdi açık; etkinleştirilemezse yalnız açılışta geri gelmez — bağlantı başarılı sayılır ama iz kalır
 const enableUnit = (iface: string) =>
-  execFileP('systemctl', ['enable', `wg-quick@${iface}`], { timeout: 10000 }).then(() => {}, () => {});
+  execFileP('systemctl', ['enable', `wg-quick@${iface}`], { timeout: 10000 }).then(() => {}, (e: any) => {
+    const msg = String(e?.stderr || e?.message || e).trim().split('\n').pop() || 'bilinmeyen hata';
+    console.error(`[wg-import] wg-quick@${iface} etkinleştirilemedi:`, msg);
+    void recordEventOnce('vps', `Tünel ${iface} açılışta kendiliğinden gelmeyecek (etkinleştirilemedi): ${msg}`, 'warning', 60);
+  });
 const unitEnabled = (iface: string) =>
   execFileP('systemctl', ['is-enabled', `wg-quick@${iface}`], { timeout: 5000 }).then(r => r.stdout.trim() === 'enabled', () => false);
 
@@ -284,7 +290,8 @@ export function replaceImportedConf(id: number, nameRaw: unknown, raw: unknown):
       await syncGuardNow();
       await tunnelUp(iface);
     } catch (e: any) {
-      await dbRun('UPDATE vps_servers SET ip = ?, location = ?, wg_conf = ? WHERE id = ?', [row.ip, row.location, row.wg_conf, id]).catch(() => {});
+      const dbBack = await dbRun('UPDATE vps_servers SET ip = ?, location = ?, wg_conf = ? WHERE id = ?', [row.ip, row.location, row.wg_conf, id])
+        .then(() => true, (d: any) => { console.error('[wg-import] eski kayıt geri yazılamadı:', d?.message || d); return false; });
       const old = renderStoredConf(row.wg_conf);
       let back = false;
       if (old) {
@@ -293,7 +300,7 @@ export function replaceImportedConf(id: number, nameRaw: unknown, raw: unknown):
       }
       return {
         ok: false, status: 500,
-        error: `${String(e?.message || e)} — eski yapılandırma geri yüklendi${back ? ' ve tünel yeniden açıldı' : ''}`,
+        error: `${String(e?.message || e)} — ${dbBack ? `eski yapılandırma geri yüklendi${back ? ' ve tünel yeniden açıldı' : ''}` : 'eski kayıt veritabanına geri yazılamadı: yapılandırmayı yeniden içe aktarın'}`,
       };
     }
     await enableUnit(iface);

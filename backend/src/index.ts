@@ -244,7 +244,13 @@ app.post('/api/system/reboot', (_req, res) => {
   }
   res.json({ success: true, message: 'Pi 5 yeniden başlatılıyor...' });
   // Respond first, then reboot after a short delay
-  setTimeout(() => { _execFile('reboot', [], () => {}); }, 1500);
+  setTimeout(() => {
+    _execFile('reboot', [], err => {
+      if (!err) return;
+      console.error('[sistem] yeniden başlatılamadı:', err.message);
+      void recordEvent('system', `Pi yeniden başlatılamadı: ${err.message}`, 'warning');
+    });
+  }, 1500);
 });
 
 // ─── Services ───
@@ -3104,7 +3110,10 @@ if (isLinux) {
 
       // Cleanup old alerts (30 days)
       await dbRun(`DELETE FROM alerts WHERE created_at < datetime('now', '-30 days')`);
-    } catch { /* silent */ }
+    } catch (e: any) {
+      // Bir adım hata verince sonrakiler (DHCP denetimi, Fail2Ban, arka plan olayları, temizlik) bu turda atlanır
+      console.error('[sağlık] denetim yarıda kaldı:', e?.message || e);
+    }
   };
   // Run first check after 30 seconds, then every 5 minutes
   setTimeout(healthCheck, 30000);
@@ -4264,7 +4273,11 @@ app.post('/api/system/role', netAdminGuard, async (req, res) => {
       if (await piDhcpActive()) return res.status(409).json({ error: PI_DHCP_BUSY_MSG });
       if ((await listSatellites()).length) return res.status(409).json({ error: 'Bu cihaza eşleşmiş uydular var — önce onları kaldırın' });
       const wg = await wgServerStatus().catch(() => null);
-      if (wg && 'enabled' in wg && wg.enabled) await setServerEnabled(false);
+      if (!wg) return res.status(500).json({ error: "Ev VPN'inin durumu okunamadı — rol değiştirilmedi" });
+      if ('enabled' in wg && wg.enabled) {
+        const off = await setServerEnabled(false);
+        if (!off.ok) return res.status(500).json({ error: `Ev VPN'i kapatılamadı — rol değiştirilmedi: ${off.error || 'bilinmeyen hata'}` });
+      }
       // Durum okunamadıysa da kapatma denenir (bilinmeyen "kapalı" sayılmaz); kapatılamazsa rol değişmez.
       const ms = await mainMeshState();
       if (ms.configured || ms.unknown) await setMainWireless(false, 0);
@@ -6149,7 +6162,10 @@ async function computeUpdateCheck(): Promise<unknown> {
     // Servis ortamında HOME yok → ~/.gitconfig'teki safe.directory görünmez ("dubious ownership"); her çağrıda
     // --global --add yeni kopya ekliyordu. Güvenli dizin komut satırından verilir (git ≥ 2.36).
     const git = 'git -c safe.directory=/opt/pi5-gateway -C /opt/pi5-gateway';
-    await exec(`${git} fetch origin master`, { timeout: 15000 }).catch(() => {});
+    // Ulaşılamazsa eski origin/master'la karşılaştırılır: sonuç "güncelleme yok" olabilir — hata da döner
+    const fetchErr = await exec(`${git} fetch origin master`, { timeout: 15000 })
+      .then(() => '', (e: any) => redactSecrets(String(e?.stderr || e?.message || e).trim().split('\n').pop() || 'bilinmeyen hata'));
+    if (fetchErr) console.error('[güncelleme] sunucuya ulaşılamadı:', fetchErr);
     // Compare HEAD with origin/master
     const { stdout: logOutput } = await exec(
       `${git} log HEAD..origin/master --format="%h|%s|%cr" 2>/dev/null`,
@@ -6176,6 +6192,7 @@ async function computeUpdateCheck(): Promise<unknown> {
       commits,
       currentVersion,
       commitCount: commits.length,
+      ...(fetchErr ? { error: `Güncelleme sunucusuna ulaşılamadı: ${fetchErr.slice(0, 200)}` } : {}),
     };
   } catch (e: any) {
     return { available: false, commits: [], currentVersion: 'v2.0', error: e.message };

@@ -67,7 +67,10 @@ function LogsView() {
     try {
       await postApi(endpoint, body);
       await refetch();
-    } catch { /* */ }
+    } catch (e) {
+      // Zapret güncelleme / yeniden başlatma / log temizleme başarısızsa söylensin (eskiden yalnız dönen simge duruyordu)
+      toast.error(e instanceof Error && e.message ? e.message : 'İşlem başarısız');
+    }
     setActionLoading(null);
   };
 

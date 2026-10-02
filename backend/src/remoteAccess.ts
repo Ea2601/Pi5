@@ -177,7 +177,8 @@ async function currentRoutes(): Promise<RelayRoute[]> {
   return out;
 }
 const delRoute = (r: RelayRoute) =>
-  execFileP('ip', ['-4', 'route', 'del', `${r.ip}/32`, 'dev', r.iface, 'proto', RELAY_PROTO], { timeout: 5000 }).catch(() => {});
+  execFileP('ip', ['-4', 'route', 'del', `${r.ip}/32`, 'dev', r.iface, 'proto', RELAY_PROTO], { timeout: 5000 })
+    .then(() => '', (e: any) => `${r.ip} ${r.iface}: ${String(e?.stderr || e?.message || e).trim().split('\n').pop()}`);
 const tableExists = () =>
   execFileP('nft', ['list', 'table', 'inet', NFT_TABLE], { timeout: 5000 }).then(() => true, () => false);
 const errText = (e: any) => String(e?.stderr || e?.message || e).trim().split('\n').pop()?.slice(0, 300) || 'bilinmeyen hata';
@@ -223,13 +224,20 @@ export async function syncRemoteAccess(): Promise<RelayPlan> {
   const key = (r: RelayRoute) => `${r.ip} ${r.iface}`;
   if (!plan.nft) {
     // Kaldırma: önce rotalar, sonra tablo ve dosya — bugünkü durum.
-    for (const r of current) await delRoute(r);
-    if (await tableExists()) await execFileP('nft', ['delete', 'table', 'inet', NFT_TABLE], { timeout: 5000 }).catch(() => {});
+    const errs: string[] = [];
+    for (const r of current) { const e = await delRoute(r); if (e) errs.push(e); }
+    if (await tableExists()) {
+      await execFileP('nft', ['delete', 'table', 'inet', NFT_TABLE], { timeout: 5000 }).catch((e: any) => { errs.push(`nft: ${errText(e)}`); });
+    }
     try { fs.unlinkSync(RELAY_NFT_FILE); } catch { /* yok */ }
     nftApplied = '';
     const left = await currentRoutes().catch(() => null);
     cleanVerified = !!left && !left.length && !fs.existsSync(RELAY_NFT_FILE) && !(await tableExists());
     if (plan.error) throw new Error(plan.error);
+    // Erişim hâlâ açık (dönüş rotası ya da süzgeç kaldı): "kapatıldı" denmesin; izleyici 30 sn'de bir yeniden dener
+    if (!cleanVerified) {
+      throw new Error(`Uzaktan panel erişimi tam kaldırılamadı${left ? ` (${left.length} dönüş rotası kaldı)` : ' (rotalar okunamadı)'}${errs.length ? `: ${errs.join('; ').slice(0, 300)}` : ''} — 30 sn'de bir yeniden denenecek`);
+    }
     return plan;
   }
   cleanVerified = false;

@@ -274,10 +274,14 @@ async function doApply(): Promise<WgApplyResult> {
     const peers = await peerRows();
     const up = () => fs.existsSync(`/sys/class/net/${WG_IFACE}`);
     if (!s || !s.enabled) {
-      await execFileP('systemctl', ['disable', '--now', UNIT], { timeout: 30000 }).catch(() => {});
+      const stopErr = await execFileP('systemctl', ['disable', '--now', UNIT], { timeout: 30000 })
+        .then(() => '', (e: any) => String(e?.stderr || e?.message || e).trim().split('\n').pop() || 'bilinmeyen hata');
       await runInput('nft', ['-f', '-'], 'table inet pi5_wgsrv\ndelete table inet pi5_wgsrv\ntable ip pi5_wgsrv_nat\ndelete table ip pi5_wgsrv_nat\n').catch(() => {});
       await syncDropPolicyTables(false).catch(() => {});
-      return { ok: true, running: up() };
+      // Arayüz hâlâ ayaktaysa kapatma başarısız: "kapatıldı" denmesin (UDP 51820 açık kalır). Birim hiç kurulmamışsa
+      // systemctl hata verir ama arayüz yoktur — başarı.
+      if (up()) return { ok: false, running: true, error: `Ev VPN'i durdurulamadı: ${stopErr.slice(0, 200) || 'arayüz hâlâ açık'}` };
+      return { ok: true, running: false };
     }
     writeFile(NFT_FILE, renderNft(peers), 0o644);
     writeFile(CONF, renderServerConf(s, peers), 0o600);
