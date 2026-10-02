@@ -270,7 +270,9 @@ async function upload(dev: DeviceRow, u: URL, req: http.IncomingMessage): Promis
   const part = path.join(partDir, partName(key));
   let have = 0;
   try { have = fs.statSync(part).size; } catch { /* yok */ }
-  if (offset !== have) throw Object.assign(httpError(409, 'Kaldığı yerden sürdürülmeli'), { received: have });
+  // offset 0 her zaman kabul: yarım dosya baştan yazılır (iOS arka plan yüklemesi bütün dosyayı yeniden gönderir)
+  if (offset === 0) have = 0;
+  else if (offset !== have) throw Object.assign(httpError(409, 'Kaldığı yerden sürdürülmeli'), { received: have });
   if (free !== null && free - (size - have) < reserve) {
     await recordEventOnce('sync', `Yedek diski dolu: ${dev.name} telefonundan gelen dosyalar yazılamıyor (boş yer yetmiyor)`, 'warning', 720);
     throw httpError(507, 'Yedek diskinde yer yok');
@@ -285,7 +287,7 @@ async function upload(dev: DeviceRow, u: URL, req: http.IncomingMessage): Promis
     },
   });
   try {
-    await pipeline(req, counter, fs.createWriteStream(part, { flags: 'a', mode: 0o640 }));
+    await pipeline(req, counter, fs.createWriteStream(part, { flags: offset === 0 ? 'w' : 'a', mode: 0o640 }));
   } finally {
     active.delete(id);
   }
