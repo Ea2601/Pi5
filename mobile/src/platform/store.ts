@@ -34,8 +34,9 @@ const drop = (key: string) => SecureStore.deleteItemAsync(key).catch(() => {});
 
 export const loadPairing = () => read<Pairing2>(K.pairing);
 export const savePairing = (p: Pairing2) => write(K.pairing, p);
-// Uygulamanın eski sürümünün (şifresiz, kişisiz) eşleşmesi: yeni sürümde yeniden eşleştirilir
+// Uygulamanın eski sürümünün (şifresiz, kişisiz) eşleşmesi: yeni sürümde yeniden eşleştirilir, eşleşince silinir
 export const hasLegacyPairing = async (): Promise<boolean> => !!(await SecureStore.getItemAsync(K.legacy).catch(() => null));
+export const dropLegacyPairing = () => drop(K.legacy);
 
 export async function loadKey(profileId: string): Promise<Uint8Array | null> {
   const v = await SecureStore.getItemAsync(K.key(profileId)).catch(() => null);

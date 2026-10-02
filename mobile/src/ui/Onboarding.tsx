@@ -17,7 +17,7 @@ import { manualPayload, parsePayload, type PairPayload } from '../core/protocol.
 import { makeCipher, newKey } from '../platform/cipher.ts';
 import { http } from '../platform/http.ts';
 import { mediaAccess } from '../platform/media.ts';
-import { forgetPairing, savePairing, saveKey } from '../platform/store.ts';
+import { dropLegacyPairing, forgetPairing, savePairing, saveKey } from '../platform/store.ts';
 import { Btn, Step } from './kit.tsx';
 import { Logo, Wordmark } from './Header.tsx';
 import { FONT } from './theme.ts';
@@ -46,6 +46,7 @@ export function Onboarding({ initial, legacy, onDone }: { initial: Pairing2 | nu
       const name = (Device.deviceName || Device.modelName || (Platform.OS === 'ios' ? 'iPhone' : 'Android')).slice(0, 40);
       const { pairing } = await pair2(http, pl, name, Platform.OS === 'ios' ? 'ios' : 'android');
       await savePairing(pairing);
+      await dropLegacyPairing();
       setPaired(pairing);
     } catch (e) {
       setErr(msg(e));

@@ -1,6 +1,6 @@
 // Telefonun fotoğraf / video kitaplığı (expo-media-library yeni sorgu API'si). Yedekleme yalnız okur: hiçbir şey silinmez
 // ya da değişmez. Geri yükleme yalnız ekler: çözülen dosya "Klyrix Gate Sync" albümüne yeni öğe olarak yazılır.
-import { File, Paths } from 'expo-file-system';
+import { Directory, File, FileMode, Paths } from 'expo-file-system';
 import { Album, Asset, AssetField, MediaType, Query, getPermissionsAsync, requestPermissionsAsync, presentPermissionsPicker } from 'expo-media-library';
 import type { AssetMetadata } from 'expo-media-library';
 import type { Sink } from '../core/restore.ts';
@@ -39,7 +39,9 @@ export function mediaSource(o: { videos: boolean }): Source {
       const f = new File(await new Asset(item.src).getUri());
       if (!f.exists) return null;
       const size = f.size;
-      const h = f.open();
+      // Salt okunur: varsayılan okuma-yazma kipi Android'de başka uygulamanın (kameranın) dosyası için yazma izni ister ve
+      // reddedilir (kapsamlı depolama); iOS'ta da fotoğraf kitaplığı dosyası güncellemeye açılamaz
+      const h = f.open(FileMode.ReadOnly);
       return {
         size,
         read: async (offset, length) => {
@@ -74,11 +76,13 @@ export function gallerySink(o: { sameDevice: boolean }): Sink {
       return present.has(item.src);
     },
     async begin(item: ManifestItem) {
-      const f = new File(Paths.cache, 'klyrix-restore', `${Date.now()}-${n++}-${safeName(item.name, item.kind)}`);
+      // Öğe başına geçici klasör: galeri dosyanın adını yoldaki son parçadan alır (özgün ad kalsın, önek eklenmesin)
+      const dir = new Directory(Paths.cache, 'klyrix-restore', `${Date.now()}-${n++}`);
+      const f = new File(dir, safeName(item.name, item.kind));
       f.create({ intermediates: true, overwrite: true });
       const h = f.open();
       let pos = 0;
-      const cleanup = () => { try { f.delete(); } catch { /* önbellek: sistem de temizler */ } };
+      const cleanup = () => { try { dir.delete(); } catch { /* önbellek: sistem de temizler */ } };
       return {
         async write(bytes) {
           h.offset = pos;

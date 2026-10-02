@@ -16,7 +16,7 @@ listelenir, telefona geri yüklenir ve silinir. Pi tarafı: `backend/src/mobile.
   Pi eski yedekleri seyreltir (son 14 gün günlük, 8 hafta haftalık, 12 ay aylık); silinen yedek 30 gün çöpte kalır.
 - **Geri yükleme:** yedeğin içerik listesi açılır, telefonda olmayanlar indirilip çözülür ve «Klyrix Gate Sync» albümüne eklenir.
   Telefonda hiçbir şey silinmez ya da değişmez.
-- **Arka plan:** `expo-background-task` (Android en sık 15 dakikada bir; iOS sistemin seçtiği zamanlarda, çoğunlukla gece).
+- **Arka plan:** `expo-background-task` (Android yaklaşık saatte bir — sistem pil için erteleyebilir; iOS sistemin seçtiği zamanlarda, çoğunlukla gece).
   Ayarlar: kendiliğinden yedekle, yalnız Wi-Fi'da, videolar.
 - **Ağ:** Pi'ye ev ağında ya da Ev VPN'iyle HTTP (port 8095) ile bağlanılır — panelin kendisi gibi; içerik zaten şifreli.
 

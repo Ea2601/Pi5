@@ -55,7 +55,7 @@ export function SettingsTab({ pairing, settings, onSettings, pi, onForget }: {
         <Text style={s.small}>
           {Platform.OS === 'ios'
             ? 'iOS arka planda yedeklemeyi sistemin seçtiği zamanlarda (çoğunlukla gece, şarjdayken) kısa süreler için çalıştırır; büyük arşivler için uygulamayı açık tutun.'
-            : 'Android arka planda en sık 15 dakikada bir yedekler; pil tasarrufu uygulamayı kısıtlarsa açık tutun.'}
+            : 'Android arka planda yaklaşık saatte bir yedekler (sistem pil için erteleyebilir); pil tasarrufu uygulamayı kısıtlarsa açık tutun.'}
         </Text>
       </Card>
 
