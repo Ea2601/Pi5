@@ -14,6 +14,13 @@ export class Asset {
   id: string;
   constructor(id: string) { this.id = id; }
   async getUri() { return ''; }
+  static async create() { return new Asset('onizleme'); }
+}
+export class Album {
+  id: string;
+  constructor(id: string) { this.id = id; }
+  static async get() { return null; }
+  static async create() { return new Album('onizleme'); }
 }
 const granted = { granted: true, status: 'granted', accessPrivileges: 'all', canAskAgain: true, expires: 'never' };
 export async function getPermissionsAsync() { return granted; }

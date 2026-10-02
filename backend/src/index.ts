@@ -66,7 +66,7 @@ import { shareStatus, enableShare, disableShare, setSharePassword, addUsbShare, 
 import { piholeConfigView, applyPiholeSettings, getBlocking, setBlocking, migratePiholeConfigRows, type ConfigRow } from './piholeConfig';
 import { syncStatus, enableSync, disableSync, acceptDevice, rejectDevice, removeDevice, acceptFolder, rejectFolder, removeFolder,
   updateFolder, setCloud, syncBlocksSatellite, startSyncWatch } from './sync';
-import { mobileStatus, setMobile, startPairing, cancelPairing as cancelMobilePairing, removeMobileDevice, mobileBlocksSatellite, startMobile } from './mobile';
+import { mobileStatus, setMobile, startPairing, cancelPairing as cancelMobilePairing, removeMobileDevice, removeMobilePerson, mobileBlocksSatellite, startMobile } from './mobile';
 import { vaultStatus, vaultJob, noteVaultJob, connectVault, saveSettings, startBackup, listSnapshots, disableVault,
   startVaultWatch, vaultLeftover, vaultBlocksSatellite, resumeVault, restoreFetch, restorePreview, applyRestore, discardRestore,
   restoreFiles, listKeys, removeOldKey } from './vault';
@@ -5041,8 +5041,8 @@ app.post('/api/sync/folders/update', syncRoute(req => updateFolder(req.body || {
 app.post('/api/sync/cloud', syncRoute(req => setCloud(req.body?.enabled)));
 startSyncWatch();
 
-// Mobil yedekleme (mobile.ts): Klyrix/Gate Sync uygulaması telefonun fotoğraf / videolarını ayrı bir porttan (8095) yükler; panel
-// açar / kapatır, hedef diski seçer, eşleştirme kodu (QR) üretir, cihaz kaldırır. Kapılar /api/sync ile aynı.
+// Mobil yedekleme (mobile.ts): Klyrix/Gate Sync uygulaması telefonun yedeklerini ayrı bir porttan (8095) şifreli yükler; panel
+// açar / kapatır, yeni kişilerin diskini seçer, bir kişi için eşleştirme kodu (QR) üretir, telefon ya da kişi kaldırır. Kapılar /api/sync ile aynı.
 app.use('/api/mobile', (req, res, next) => {
   if (isSatellite()) return res.status(409).json({ error: 'Bu cihaz uydu — mobil yedekleme ana cihazdadır' });
   if (req.method !== 'GET') return writeLimiter(req, res, next);
@@ -5056,9 +5056,10 @@ app.get('/api/mobile', async (_req, res) => {
   }
 });
 app.post('/api/mobile/settings', syncRoute(req => setMobile(req.body || {}).then(() => ({}))));
-app.post('/api/mobile/pair', syncRoute(() => startPairing()));
+app.post('/api/mobile/pair', syncRoute(req => startPairing(req.body || {})));
 app.post('/api/mobile/pair/cancel', syncRoute(async () => { cancelMobilePairing(); return {}; }));
-app.post('/api/mobile/devices/remove', syncRoute(req => removeMobileDevice(req.body?.id).then(() => ({}))));
+app.post('/api/mobile/devices/remove', syncRoute(req => removeMobileDevice(req.body?.id, req.body?.files === true)));
+app.post('/api/mobile/people/remove', syncRoute(req => removeMobilePerson(req.body?.id)));
 startMobile();
 
 // ─── Parental Controls ───

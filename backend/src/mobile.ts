@@ -1,13 +1,16 @@
-// Mobil yedekleme (C3): Klyrix/Gate Sync uygulaması (iOS / Android, mobile/ klasörü) telefonun fotoğraf ve videolarını Pi'nin yedek
-// diskine yükler. Cihaz Yedekleme'nin (sync.ts) üstüne kurulur ve onun açık olmasını ister: aynı hedef diskler (sync.sh
-// target — bağlama noktası denetimi, SD karta asla), aynı sahiplik (klyrix-sync, 2750), aynı salt okunur Yedekler
-// paylaşımı (geri yükleme) ve Bulut Yedeği. Klasör düzeni: <kök>/<cihaz>/Kamera/<yıl>/<ay>/<dosya>.
+// Mobil yedekleme (C3): Klyrix/Gate Sync uygulaması (iOS / Android, mobile/ klasörü) ile Pi arasındaki HTTP ucu.
+//  - v2 (mobileStore.ts): kişi profilleri, uçtan uca şifreli nesneler ve anlık görüntüler (yedekler: liste, çöp, geri
+//    yükleme). Pi'nin özel alanına yazılır (paylaşımların dışında); Cihaz Yedekleme'ye (Syncthing) gerek yoktur.
+//  - v1 (uygulamanın eski sürümü, şifresiz): fotoğraf ve videoları Cihaz Yedekleme'nin (sync.ts) Yedekler klasörüne yükler
+//    ve onun açık olmasını ister: aynı hedef diskler (sync.sh target — bağlama noktası denetimi, SD karta asla), aynı
+//    sahiplik (klyrix-sync, 2750), salt okunur Yedekler paylaşımı ve Bulut Yedeği. Klasör düzeni:
+//    <kök>/<cihaz>/Kamera/<yıl>/<ay>/<dosya>. Yeni sürüm yayılana dek kalır; panel bu cihazları "eski sürüm" diye gösterir.
 //  - Ayrı HTTP dinleyicisi (MOBILE_PORT), yalnız açıkken. Güvenlik duvarı: politikası drop olan giriş zincirlerine
 //    pi5_mobile_in (sync.ts / share.ts deseni, aynı jump yerleşimi) — ev ağı + Ev VPN yöneticileri; VPS tünelleri değil.
 //    Ev VPN misafirleri wgServer.ts izin listesinde (yalnız DNS) zaten düşer. Dinleyici ayrıca özel olmayan adresi reddeder.
-//  - Eşleştirme: panel tek kullanımlık kod üretir (10 dk; QR'da Pi'nin adresleriyle); uygulama kodu cihaz anahtarına
-//    çevirir. Veritabanında anahtarın yalnız SHA-256'sı. Cihaz kaldırılınca anahtar geçersiz; dosyaları diskte kalır.
-//  - Uç YALNIZ YÜKLER: dosya içeriği okunamaz, silinemez, üzerine yazılamaz (aynı ad → yeni ad). Anahtar ele geçse bile
+//  - Eşleştirme: panel bir kişi (yeni ya da var olan) için tek kullanımlık kod üretir (10 dk; QR'da Pi'nin adresleriyle);
+//    uygulama kodu cihaz anahtarına çevirir. Veritabanında anahtarın yalnız SHA-256'sı. Cihaz kaldırılınca anahtar geçersiz.
+//  - v1 uç YALNIZ YÜKLER: dosya içeriği okunamaz, silinemez, üzerine yazılamaz (aynı ad → yeni ad). Anahtar ele geçse bile
 //    yedekler okunamaz; yalnız o cihazın klasörüne yeni dosya eklenebilir. HTTP (ev ağı), panelin kendisi gibi.
 //  - Yükleme sürdürülebilir: parça parça (offset) ya da tek istekte bütün dosya (iOS arka plan yüklemesi); gövde akışla
 //    diske yazılır (bellekte tutulmaz). Yarım dosya <cihaz>/.klyrix-part'ta bekler, tamamlanınca yerine taşınır.
@@ -25,8 +28,13 @@ import { isLinux, getLanIdentity } from './system';
 import { recordEvent, recordEventOnce } from './events';
 import { onWgRulesChanged, WG_IFACE, WG_SERVER_IP } from './wgServer';
 import { shareJumpPlan, onUsbRemove } from './share';
-import { syncEnabled, prepareTargetRoot, listTargets, safeName, qrDataUrl, SYNC_DNS_NAME } from './sync';
+import { syncEnabled, prepareTargetRoot, listTargets, backupRoots, safeName, qrDataUrl, SYNC_DNS_NAME } from './sync';
 import { isSatellite } from './role';
+import {
+  ensureStoreTables, getProfile, profileOut, setKeyCheck, checkObjects, objectState, putObject, sendObject, listSnapshots,
+  createSnapshot, trashSnapshot, untrashSnapshot, usage, storeGc, abortStore, listProfiles, removeProfile, createProfile,
+  checkNewPerson, targetProblem, prepareStoreRoot, storeProblem, type ProfileSummary,
+} from './mobileStore';
 
 const execFileP = promisify(execFile);
 
@@ -50,18 +58,23 @@ const SYNC_USER = 'klyrix-sync';
 export interface MobileConf { enabled: boolean; target: string }
 export interface MobileDevice { id: number; name: string; platform: string; created_at: string; last_seen: string; files: number; bytes: number }
 export interface MobileStatus {
-  supported: boolean;                 // Pi + Cihaz Yedekleme açık
+  supported: boolean;                 // Pi üzerinde
   enabled: boolean;
   listening: boolean;
   error: string;                      // dinleyici açılamadıysa (ör. port kullanımda)
   port: number;
-  target: string;
-  targets: ReturnType<typeof listTargets>;
-  devices: MobileDevice[];
-  pairing: { code: string; expires: number } | null;
+  target: string;                     // yeni kişilerin yedek diski
+  targets: (ReturnType<typeof listTargets>[number] & { problem: string | null })[];
+  profiles: ProfileSummary[];         // kişiler (v2, şifreli)
+  legacy: MobileDevice[];             // eski sürümle eşleştirilen telefonlar (v1, şifresiz, Yedekler klasörü)
+  syncOn: boolean;                    // Cihaz Yedekleme açık (eski sürüm yalnız onunla yükler)
+  lastDevice: { id: number; name: string; person: string } | null; // en son eşleştirilen (panel eşleşmeyi bundan anlar)
+  pairing: { code: string; expires: number; person: string } | null;
   hosts: string[];
 }
-interface DeviceRow { id: number; name: string; platform: string; token_hash: string; dir: string; files: number; bytes: number; last_seen: string }
+interface DeviceRow {
+  id: number; name: string; platform: string; token_hash: string; dir: string; files: number; bytes: number; last_seen: string; profile_id: string;
+}
 
 // ── veritabanı ve ayar ──────────────────────────────────────────────────────
 let tablesReady: Promise<void> | null = null;
@@ -74,6 +87,7 @@ function ensureTables(): Promise<void> {
     await dbRun(`CREATE TABLE IF NOT EXISTS mobile_files (
       device_id INTEGER NOT NULL, key TEXT NOT NULL, path TEXT NOT NULL, size INTEGER NOT NULL,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP, PRIMARY KEY (device_id, key))`);
+    await ensureStoreTables();
   })().catch(e => { tablesReady = null; throw e; });
   return tablesReady;
 }
@@ -98,7 +112,8 @@ const sha256 = (s: string) => crypto.createHash('sha256').update(s).digest('hex'
 const httpError = (status: number, msg: string) => Object.assign(new Error(msg), { status });
 
 // ── eşleştirme ──────────────────────────────────────────────────────────────
-let pairing: { code: string; expires: number; fails: number } | null = null;
+// Kod bir kişiye bağlıdır: var olan kişi (profile) ya da telefon eşleşince oluşturulacak yeni kişi (person)
+let pairing: { code: string; expires: number; fails: number; profile: string; person: string } | null = null;
 function newCode(): string {
   let s = '';
   for (let i = 0; i < 8; i++) s += CODE_ALPHA[crypto.randomInt(CODE_ALPHA.length)];
@@ -116,19 +131,35 @@ async function piHosts(): Promise<string[]> {
   return [...new Set(out)];
 }
 
-export async function startPairing(): Promise<{ code: string; expires: number; qr: string; hosts: string[]; payload: string }> {
-  needActive(await readMobileConf());
+// body: { profile: kişi kimliği } ya da { person: yeni kişinin adı }
+export async function startPairing(body: { profile?: unknown; person?: unknown }): Promise<{ code: string; expires: number; qr: string; hosts: string[]; payload: string; person: string }> {
+  const conf = await readMobileConf();
+  needOn(conf);
+  await ensureTables();
+  let profile = '';
+  let person = '';
+  if (typeof body?.profile === 'string' && body.profile) {
+    const p = await getProfile(body.profile);
+    if (!p) throw new Error('Kişi bulunamadı');
+    profile = p.id;
+    person = p.name;
+  } else {
+    person = await checkNewPerson(body?.person);
+    const bad = targetProblem(conf.target);
+    if (bad) throw new Error(bad);
+  }
   const hosts = await piHosts();
   if (!hosts.length) throw new Error("Pi'nin ev ağı adresi okunamadı");
-  pairing = { code: newCode(), expires: Date.now() + PAIR_TTL_MS, fails: 0 };
+  pairing = { code: newCode(), expires: Date.now() + PAIR_TTL_MS, fails: 0, profile, person };
   // QR içeriği uygulamanın tanıdığı biçim: t = tür, v = sürüm, h = adresler, p = port, c = kod, n = Pi'nin adı
   const payload = JSON.stringify({ t: 'klyrix-backup', v: 1, h: hosts, p: MOBILE_PORT, c: pairing.code, n: os.hostname() });
   const qr = await qrDataUrl(payload).catch(() => '');
-  return { code: pairing.code, expires: pairing.expires, qr, hosts, payload };
+  return { code: pairing.code, expires: pairing.expires, qr, hosts, payload, person };
 }
 export function cancelPairing(): void { pairing = null; }
 
-async function pairDevice(body: any): Promise<{ token: string; device: { id: number; name: string } }> {
+// Kodu doğrular ve tüketir (tek kullanımlık; bekleme yok: iki telefon aynı kodu kullanamaz). Yanlış kod sayılır.
+function takeCode(body: any): { profile: string; person: string } {
   const p = liveCode();
   if (!p) throw httpError(403, 'Eşleştirme kodu yok ya da süresi doldu — panelde yeni kod alın');
   const code = typeof body?.code === 'string' ? body.code.toUpperCase().replace(/[^A-Z0-9]/g, '') : '';
@@ -136,10 +167,40 @@ async function pairDevice(body: any): Promise<{ token: string; device: { id: num
     if (++p.fails >= PAIR_MAX_FAILS) pairing = null; // kaba kuvvet: kod düşer
     throw httpError(403, 'Eşleştirme kodu yanlış');
   }
-  const name = typeof body?.name === 'string' ? body.name.replace(/[\u0000-\u001f\u007f<>]/g, '').trim().slice(0, 40) : '';
+  pairing = null;
+  return { profile: p.profile, person: p.person };
+}
+const deviceName = (body: any): string => (typeof body?.name === 'string' ? body.name.replace(/[\u0000-\u001f\u007f<>]/g, '').trim().slice(0, 40) : '');
+const devicePlatform = (body: any): string => (body?.platform === 'ios' || body?.platform === 'android' ? body.platform : '');
+const platformLabel = (p: string) => (p === 'ios' ? ' (iOS)' : p === 'android' ? ' (Android)' : '');
+
+// v2: telefon kişiye eklenir (yeni kişiyse şimdi oluşturulur, yedekleri o anki hedef diskte durur)
+async function pairDevice2(body: any): Promise<{ token: string; device: { id: number; name: string }; profile: unknown }> {
+  const name = deviceName(body);
   if (!name) throw httpError(400, 'Cihaz adı gerekli');
-  const platform = body?.platform === 'ios' || body?.platform === 'android' ? body.platform : '';
-  pairing = null; // tek kullanımlık
+  const spec = takeCode(body);
+  await ensureTables();
+  let p = spec.profile ? await getProfile(spec.profile) : undefined;
+  if (spec.profile && !p) throw httpError(409, 'Bu kişi panelden kaldırılmış — panelde yeni kod alın');
+  if (!p) {
+    const conf = await readMobileConf();
+    const bad = targetProblem(conf.target);
+    if (bad) throw httpError(503, bad);
+    p = await createProfile(spec.person || name, conf.target);
+  }
+  const platform = devicePlatform(body);
+  const token = crypto.randomBytes(32).toString('base64url');
+  const id = await dbInsert('INSERT INTO mobile_devices (name, platform, token_hash, dir, profile_id) VALUES (?, ?, ?, ?, ?)', [name, platform, sha256(token), '', p.id]);
+  await recordEvent('sync', `Telefon / tablet eşleştirildi: ${name}${platformLabel(platform)} — ${p.name}, Klyrix/Gate Sync`);
+  return { token, device: { id, name }, profile: await profileOut(p, id) };
+}
+
+// v1 (eski uygulama): kişisiz, şifresiz; dosyalar Yedekler klasörüne
+async function pairDevice(body: any): Promise<{ token: string; device: { id: number; name: string } }> {
+  const name = deviceName(body);
+  if (!name) throw httpError(400, 'Cihaz adı gerekli');
+  takeCode(body);
+  const platform = devicePlatform(body);
   await ensureTables();
   const used = new Set((await dbAll('SELECT dir FROM mobile_devices') as { dir: string }[]).map(r => r.dir.toLowerCase()));
   const base = safeName(name, 'Telefon');
@@ -147,7 +208,7 @@ async function pairDevice(body: any): Promise<{ token: string; device: { id: num
   for (let i = 2; used.has(dir.toLowerCase()); i++) dir = `${base}-${i}`;
   const token = crypto.randomBytes(32).toString('base64url');
   const id = await dbInsert('INSERT INTO mobile_devices (name, platform, token_hash, dir) VALUES (?, ?, ?, ?)', [name, platform, sha256(token), dir]);
-  await recordEvent('sync', `Telefon / tablet eşleştirildi: ${name}${platform ? ` (${platform === 'ios' ? 'iOS' : 'Android'})` : ''} — Klyrix/Gate Sync`);
+  await recordEvent('sync', `Telefon / tablet eşleştirildi: ${name}${platformLabel(platform)} — Klyrix/Gate Sync eski sürüm (şifresiz, Yedekler klasörü)`);
   return { token, device: { id, name } };
 }
 
@@ -309,13 +370,16 @@ async function upload(dev: DeviceRow, u: URL, req: http.IncomingMessage): Promis
   return { received, done: true, path: path.relative(root, dest) };
 }
 
+// Gövde bayt olarak toplanır, sonunda çözülür (çok baytlı harf parçalar arasında bölünse de bozulmaz)
 async function readJson(req: http.IncomingMessage, max = 256 * 1024): Promise<any> {
-  let body = '';
+  const parts: Buffer[] = [];
+  let n = 0;
   for await (const c of req) {
-    body += c;
-    if (body.length > max) throw httpError(413, 'İstek çok büyük');
+    n += (c as Buffer).length;
+    if (n > max) throw httpError(413, 'İstek çok büyük');
+    parts.push(c as Buffer);
   }
-  try { return JSON.parse(body || '{}'); } catch { throw httpError(400, 'Geçersiz JSON'); }
+  try { return JSON.parse(Buffer.concat(parts).toString('utf8') || '{}'); } catch { throw httpError(400, 'Geçersiz JSON'); }
 }
 const privateAddr = (a: string): boolean => {
   const ip = a.replace(/^::ffff:/, '');
@@ -324,6 +388,39 @@ const privateAddr = (a: string): boolean => {
   const [a1, a2] = [Number(m[1]), Number(m[2])];
   return a1 === 10 || a1 === 127 || (a1 === 172 && a2 >= 16 && a2 <= 31) || (a1 === 192 && a2 === 168);
 };
+
+// v2: kişinin şifreli deposu (mobileStore.ts). Cihaz yalnız kendi kişisinin nesnelerini ve yedeklerini görür.
+const SNAPSHOT_BODY_MAX = 80 * 2 ** 20; // ~1 milyon nesne kimliği
+async function handleV2(dev: DeviceRow, u: URL, req: http.IncomingMessage, res: http.ServerResponse, send: (code: number, body: unknown) => void): Promise<void> {
+  if (!dev.profile_id) return send(409, { error: 'Bu telefon uygulamanın eski sürümüyle eşleştirilmiş — uygulamada yeniden eşleştirin' });
+  needOn(await readMobileConf());
+  const p = await getProfile(dev.profile_id);
+  if (!p) return send(401, { error: 'Kişi panelden kaldırılmış — panelden yeniden eşleştirin' });
+  const route = `${req.method} ${u.pathname}`;
+  if (route === 'GET /v2/profile') return send(200, await profileOut(p, dev.id));
+  if (route === 'PUT /v2/profile/keycheck') {
+    await setKeyCheck(p, (await readJson(req, 4096))?.keyCheck);
+    return send(200, {});
+  }
+  if (route === 'POST /v2/objects/check') return send(200, await checkObjects(p, (await readJson(req, 128 * 1024))?.ids));
+  const om = /^\/v2\/objects\/([0-9a-f]{64})(\/state)?$/.exec(u.pathname);
+  if (om && req.method === 'GET' && om[2]) return send(200, await objectState(p, om[1]));
+  if (om && req.method === 'PUT' && !om[2]) return send(200, await putObject(p, om[1], u, req));
+  if (om && req.method === 'GET' && !om[2]) return sendObject(p, om[1], req, res);
+  if (route === 'GET /v2/snapshots') return send(200, { snapshots: await listSnapshots(p, u.searchParams.get('trash') === '1') });
+  if (route === 'POST /v2/snapshots') return send(200, await createSnapshot(p, dev, await readJson(req, SNAPSHOT_BODY_MAX)));
+  const sm = /^\/v2\/snapshots\/(\d{1,12})(\/restore)?$/.exec(u.pathname);
+  if (sm && req.method === 'DELETE' && !sm[2]) {
+    await trashSnapshot(p, dev, sm[1]);
+    return send(200, {});
+  }
+  if (sm && req.method === 'POST' && sm[2]) {
+    await untrashSnapshot(p, sm[1]);
+    return send(200, {});
+  }
+  if (route === 'GET /v2/usage') return send(200, await usage(p));
+  return send(404, { error: 'Bilinmeyen istek' });
+}
 
 async function handle(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
   const send = (code: number, body: unknown) => {
@@ -335,10 +432,13 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
     if (!privateAddr(req.socket.remoteAddress || '')) return send(403, { error: 'Yalnız ev ağından ya da Ev VPN\'inden' });
     const u = new URL(req.url || '/', 'http://pi');
     const route = `${req.method} ${u.pathname}`;
-    if (route === 'GET /v1/hello') return send(200, { app: 'klyrix-gate', v: 1, name: os.hostname() });
+    if (route === 'GET /v1/hello') return send(200, { app: 'klyrix-gate', v: 1, v2: true, name: os.hostname() });
     if (route === 'POST /v1/pair') return send(200, await pairDevice(await readJson(req, 4096)));
+    if (route === 'POST /v2/pair') return send(200, await pairDevice2(await readJson(req, 4096)));
     const dev = await authDevice(req);
     if (!dev) return send(401, { error: 'Cihaz tanınmadı — panelden yeniden eşleştirin' });
+    if (u.pathname.startsWith('/v2/')) return await handleV2(dev, u, req, res, send);
+    if (dev.profile_id) return send(409, { error: 'Bu telefon uygulamanın yeni sürümüyle eşleştirilmiş' });
     if (route === 'GET /v1/status') {
       const conf = await readMobileConf();
       const t = listTargets().find(x => x.key === conf.target);
@@ -372,10 +472,14 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
 // ── dinleyici + güvenlik duvarı ─────────────────────────────────────────────
 let server: http.Server | null = null;
 let listenError = '';
-function needActive(conf: MobileConf): void {
+// v2 yalnız açık olmasını ister; v1 (eski sürüm, Yedekler klasörü) Cihaz Yedekleme'yi de
+function needOn(conf: MobileConf): void {
   if (!isLinux) throw httpError(503, 'Mobil yedekleme yalnız Pi üzerinde çalışır');
-  if (!syncEnabled()) throw httpError(503, 'Önce Cihaz Yedekleme\'yi açın');
   if (!conf.enabled) throw httpError(503, 'Mobil yedekleme kapalı — panelden açın');
+}
+function needActive(conf: MobileConf): void {
+  needOn(conf);
+  if (!syncEnabled()) throw httpError(503, 'Uygulamanın eski sürümü yalnız Cihaz Yedekleme açıkken yükler — uygulamayı güncelleyin');
 }
 async function listen(on: boolean): Promise<void> {
   if (on && !server) {
@@ -395,6 +499,7 @@ async function listen(on: boolean): Promise<void> {
     const s = server;
     server = null;
     for (const a of active.values()) a.req.destroy();
+    abortStore();
     await new Promise<void>(resolve => s.close(() => resolve()));
   }
 }
@@ -433,13 +538,13 @@ export async function syncMobileFirewall(enable: boolean): Promise<void> {
     if (script) await nft(script);
   }
 }
-// Açık olmalı mı (ayar + Cihaz Yedekleme + ana cihaz) → dinleyici ve güvenlik duvarı ona göre
+// Açık olmalı mı (ayar + ana cihaz) → dinleyici ve güvenlik duvarı ona göre
 let reconcileRun: Promise<void> | null = null;
 export function reconcileMobile(): Promise<void> {
   if (reconcileRun) return reconcileRun.then(() => reconcileMobile());
   reconcileRun = (async () => {
     if (!isLinux) return;
-    const want = (await readMobileConf()).enabled && syncEnabled() && !isSatellite();
+    const want = (await readMobileConf()).enabled && !isSatellite();
     await listen(want);
     await syncMobileFirewall(want && !!server).catch(e => console.error('[mobil-yedek] güvenlik duvarı:', e?.message || e));
   })().finally(() => { reconcileRun = null; });
@@ -450,45 +555,98 @@ export function reconcileMobile(): Promise<void> {
 export async function mobileStatus(): Promise<MobileStatus> {
   const conf = await readMobileConf();
   await ensureTables().catch(() => {});
-  const devices = await dbAll('SELECT id, name, platform, created_at, last_seen, files, bytes FROM mobile_devices ORDER BY id').catch(() => []) as MobileDevice[];
+  const legacy = await dbAll("SELECT id, name, platform, created_at, last_seen, files, bytes FROM mobile_devices WHERE profile_id = '' ORDER BY id").catch(() => []) as MobileDevice[];
+  const last = await dbGet(`SELECT d.id, d.name, COALESCE(p.name, '') AS person FROM mobile_devices d
+    LEFT JOIN mobile_profiles p ON p.id = d.profile_id ORDER BY d.id DESC LIMIT 1`).catch(() => null);
   const p = liveCode();
   return {
-    supported: isLinux && syncEnabled(), enabled: conf.enabled, listening: !!server, error: listenError, port: MOBILE_PORT,
-    target: conf.target, targets: isLinux ? listTargets() : [], devices,
-    pairing: p ? { code: p.code, expires: p.expires } : null, hosts: isLinux ? await piHosts() : [],
+    supported: isLinux, enabled: conf.enabled, listening: !!server, error: listenError, port: MOBILE_PORT,
+    target: conf.target, targets: isLinux ? listTargets().map(t => ({ ...t, problem: storeProblem(t) })) : [],
+    profiles: await listProfiles().catch(() => []), legacy, syncOn: isLinux && syncEnabled(),
+    lastDevice: last ? { id: Number(last.id), name: last.name, person: last.person } : null,
+    pairing: p ? { code: p.code, expires: p.expires, person: p.person } : null, hosts: isLinux ? await piHosts() : [],
   };
 }
+// Hedef: yeni kişilerin yedeklerinin yazılacağı disk (Linux dosya sistemi; özel alanın kökü burada oluşturulur)
 export async function setMobile(body: { enabled?: unknown; target?: unknown }): Promise<void> {
   const conf = await readMobileConf();
   if (body.target !== undefined) {
     conf.target = checkTarget(body.target);
-    const t = listTargets().find(x => x.key === conf.target);
-    if (!t) throw new Error('Hedef disk bulunamadı');
-    if (!t.mounted) throw new Error(`${t.kind === 'internal' ? 'Dahili disk' : t.name} bağlı değil`);
-    await prepareTargetRoot(conf.target); // yazılabilir mi (sync.sh target denetler)
+    prepareStoreRoot(conf.target);
     rootCache = null;
   }
   if (body.enabled !== undefined) {
     if (typeof body.enabled !== 'boolean') throw new Error('Geçersiz değer');
-    if (body.enabled && !syncEnabled()) throw new Error('Önce Cihaz Yedekleme\'yi açın');
+    if (body.enabled && body.target === undefined) prepareStoreRoot(conf.target);
     conf.enabled = body.enabled;
   }
+  await ensureTables();
   await writeConf(conf);
   await reconcileMobile();
   if (conf.enabled && !server) throw new Error(`Mobil yedekleme açılamadı: ${listenError || 'dinleyici başlamadı'}`);
   if (body.enabled !== undefined) await recordEvent('sync', conf.enabled ? `Mobil yedekleme açıldı (port ${MOBILE_PORT})` : 'Mobil yedekleme kapatıldı');
 }
-export async function removeMobileDevice(raw: unknown): Promise<void> {
+// Telefonu kaldırır (anahtarı geçersiz). Kişinin telefonuysa yedekler kişide kalır. Eski sürüm telefonunda files = true
+// Yedekler klasörüne yüklediği dosyaları da siler (yalnız kayıtlı yollar, yalnız bağlı yedek köklerinin içinde).
+export async function removeMobileDevice(raw: unknown, files = false): Promise<{ removed: number; kept: number }> {
   const id = Number(raw);
   if (!Number.isInteger(id) || id <= 0) throw new Error('Geçersiz cihaz');
   await ensureTables();
-  const d = await dbGet('SELECT name FROM mobile_devices WHERE id = ?', [id]);
+  const d = await dbGet('SELECT name, dir, profile_id FROM mobile_devices WHERE id = ?', [id]) as { name: string; dir: string; profile_id: string } | undefined;
   if (!d) throw new Error('Cihaz bulunamadı');
   for (const [k, a] of active) if (k.startsWith(`${id}:`)) a.req.destroy();
+  const out = files && !d.profile_id ? await deleteLegacyFiles(id, d.dir) : { removed: 0, kept: 0 };
   await dbRun('DELETE FROM mobile_files WHERE device_id = ?', [id]);
   await dbRun('DELETE FROM mobile_devices WHERE id = ?', [id]);
   seenAt.delete(id);
-  await recordEvent('sync', `Telefon / tablet kaldırıldı: ${d.name} (yedeklenen dosyalar diskte kaldı)`);
+  const person = d.profile_id ? (await getProfile(d.profile_id))?.name : '';
+  await recordEvent('sync', person
+    ? `Telefon / tablet kaldırıldı: ${d.name} (${person} kişisinin yedekleri duruyor)`
+    : files
+      ? `Telefon / tablet kaldırıldı: ${d.name} — ${out.removed} dosyası silindi${out.kept ? `, ${out.kept} dosya silinemedi` : ''}`
+      : `Telefon / tablet kaldırıldı: ${d.name} (yedeklenen dosyalar diskte kaldı)`);
+  return out;
+}
+async function deleteLegacyFiles(id: number, dir: string): Promise<{ removed: number; kept: number }> {
+  const rows = await dbAll('SELECT path FROM mobile_files WHERE device_id = ?', [id]) as { path: string }[];
+  const roots = backupRoots();
+  if (rows.length && !roots.length) throw new Error('Dosyaların bulunduğu yedek diski bağlı değil — diski takıp yeniden deneyin');
+  let removed = 0;
+  let kept = 0;
+  const dirs = new Set<string>();
+  for (const r of rows) {
+    const root = roots.find(x => r.path.startsWith(`${x}/`));
+    if (!root) { kept++; continue; }
+    try {
+      await fs.promises.unlink(r.path);
+      removed++;
+    } catch (e: any) {
+      if (e?.code === 'ENOENT') removed++; else kept++;
+    }
+    dirs.add(path.dirname(r.path));
+  }
+  // Yarım yüklemeler ve boşalan Kamera/yıl/ay klasörleri (boş değilse durur; yedek kökünün üstüne çıkmaz)
+  for (const root of roots) {
+    if (dir && safeName(dir, '') === dir) {
+      await fs.promises.rm(path.join(root, dir, PART_DIR), { recursive: true, force: true }).catch(() => {});
+      dirs.add(path.join(root, dir, MEDIA_DIR));
+    }
+  }
+  for (const start of [...dirs].sort((a, b) => b.length - a.length)) {
+    let cur = start;
+    while (roots.some(x => cur.startsWith(`${x}/`))) {
+      try { await fs.promises.rmdir(cur); } catch { break; }
+      cur = path.dirname(cur);
+    }
+  }
+  return { removed, kept };
+}
+// Kişiyi (tüm telefonları ve şifreli yedekleriyle) kaldırır
+export async function removeMobilePerson(raw: unknown): Promise<{ name: string; filesKept: boolean }> {
+  await ensureTables();
+  const r = await removeProfile(raw);
+  seenAt.clear();
+  return r;
 }
 export function mobileBlocksSatellite(): string | null {
   return server ? 'Mobil yedekleme açık — önce kapatın (Yedekleme → Cihaz Yedekleme)' : null;
@@ -497,12 +655,17 @@ export function mobileBlocksSatellite(): string | null {
 export function startMobile(): void {
   if (!isLinux || isSatellite()) return;
   onWgRulesChanged(async () => { if (server) await syncMobileFirewall(true); });
-  // USB disk ayrılırken o diske yazan yüklemeler kesilir (umount "kullanımda" olmasın); uygulama sonra kaldığı yerden sürer
+  // USB disk ayrılırken o diske yazan / okuyan istekler kesilir (umount "kullanımda" olmasın); uygulama sonra kaldığı yerden sürer
   onUsbRemove(async name => {
     for (const a of active.values()) if (a.mount === `/mnt/klyrix-usb/${name}`) a.req.destroy();
+    abortStore({ mount: `/mnt/klyrix-usb/${name}` });
     rootCache = null;
   });
   void reconcileMobile();
-  // Cihaz Yedekleme kapatılırsa (sync.sh disable) dinleyici de kapanır
+  // Ayar başka yoldan değişirse (yedekten geri yükleme) dinleyici ona uyar
   setInterval(() => { void reconcileMobile().catch(() => {}); }, 60_000);
+  // Şifreli depo temizliği: çöpte 30 günü dolan yedekler, kullanılmayan nesneler (açılıştan 10 dk sonra, sonra 6 saatte bir)
+  const gc = () => { void ensureTables().then(() => storeGc()).catch(e => console.error('[mobil-yedek] temizlik:', e?.message || e)); };
+  setTimeout(gc, 10 * 60_000);
+  setInterval(gc, 6 * 3600_000);
 }

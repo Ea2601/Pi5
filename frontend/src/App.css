@@ -2085,25 +2085,25 @@ button.user-profile { cursor: pointer; font-family: var(--font-family); transiti
 }
 .dhcp-option-main { border-color: var(--accent-color); }
 .dhcp-option > strong { color: var(--text-primary); font-size: 12px; }
-/* Düğme rengi = ne yaptığı: açan / onaylayan yeşil, kapatan / geri alan kırmızı ("Kontrol et" gibi durum değiştirmeyen nötr).
+/* Düğme rengi = ne yaptığı (tüm sayfalar: DHCP sihirbazı, Cihaz Yedekleme …): açan / onaylayan yeşil, kapatan / geri alan kırmızı ("Kontrol et" gibi durum değiştirmeyen nötr).
    Dolu yeşilde beyaz yazı için yeşil koyulaştırılır (~5:1); kırmızı/yeşil yazı metin rengiyle karışır (iki temada da okunur). */
-.dhcp-wizard .btn-primary.btn-on { background: color-mix(in srgb, var(--success-color) 65%, #000); color: #fff; }
-.dhcp-wizard .btn-primary.btn-on:hover:not(:disabled) {
+.btn-primary.btn-on { background: color-mix(in srgb, var(--success-color) 65%, #000); color: #fff; }
+.btn-primary.btn-on:hover:not(:disabled) {
   background: color-mix(in srgb, var(--success-color) 70%, #000); box-shadow: 0 4px 12px var(--success-glow);
 }
-.dhcp-wizard .btn-outline.btn-on {
+.btn-outline.btn-on {
   border-color: var(--success-color); background: color-mix(in srgb, var(--success-color) 8%, transparent);
   color: color-mix(in srgb, var(--success-color) 70%, var(--text-primary));
 }
-.dhcp-wizard .btn-outline.btn-off {
+.btn-outline.btn-off {
   border-color: var(--danger-color); background: color-mix(in srgb, var(--danger-color) 8%, transparent);
   color: color-mix(in srgb, var(--danger-color) 75%, var(--text-primary));
 }
-.dhcp-wizard .btn-outline.btn-on:hover:not(:disabled) {
+.btn-outline.btn-on:hover:not(:disabled) {
   border-color: var(--success-color); background: color-mix(in srgb, var(--success-color) 16%, transparent);
   color: color-mix(in srgb, var(--success-color) 70%, var(--text-primary));
 }
-.dhcp-wizard .btn-outline.btn-off:hover:not(:disabled) {
+.btn-outline.btn-off:hover:not(:disabled) {
   border-color: var(--danger-color); background: color-mix(in srgb, var(--danger-color) 16%, transparent);
   color: color-mix(in srgb, var(--danger-color) 75%, var(--text-primary));
 }

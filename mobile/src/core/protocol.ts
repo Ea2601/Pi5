@@ -1,17 +1,10 @@
-// Klyrix Gate mobil yedekleme protokolü (Pi tarafı: backend/src/mobile.ts). Saf TypeScript: React Native'de ve Node
-// testlerinde (node --test, tür ayıklama) aynı kod çalışır — enum / sınıf parametre özelliği yok, yalnız silinebilir tür.
+// Klyrix Gate eşleştirme kodu (Pi tarafı: backend/src/mobile.ts startPairing) ve ortak biçimlendirme. Saf TypeScript:
+// React Native'de ve Node testlerinde (node --test, tür ayıklama) aynı kod çalışır — enum / sınıf parametre özelliği yok.
 
 export const PAYLOAD_TYPE = 'klyrix-backup';
 export const DEFAULT_PORT = 8095;
-// Pi'nin kabul ettiği dosya anahtarı (mobile.ts KEY_RE ile aynı)
-export const KEY_RE = /^[A-Za-z0-9._:/-]{1,200}$/;
-export const CHECK_BATCH = 200;
-// Bu boyuta kadar dosya tek istekte (iOS'ta arka planda da süren yükleme); büyükleri 8 MB parçalarla, kaldığı yerden
-export const WHOLE_MAX = 64 * 1024 * 1024;
-export const CHUNK = 8 * 1024 * 1024;
 
 export interface PairPayload { hosts: string[]; port: number; code: string; name: string }
-export interface Pairing { hosts: string[]; port: number; token: string; piName: string; deviceName: string; host: string }
 
 // Pi adresi: IPv4 ya da ad (yedek.lan); başka bir şey QR'dan gelmesin (ör. URL / yol)
 const HOST_RE = /^(?:\d{1,3}(?:\.\d{1,3}){3}|[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*)$/;
@@ -42,22 +35,6 @@ export function manualPayload(address: string, code: string): PairPayload | stri
   if (port === 80 || port === 443 || port === 3000) port = DEFAULT_PORT;
   if (port < 1 || port > 65535) return 'Port geçersiz';
   return { hosts: [m[1]], port, code: c, name: '' };
-}
-
-// Dosya anahtarı: cihazdaki varlık kimliği + değişme zamanı (düzenlenen fotoğraf yeni sürüm olarak yeniden yedeklenir).
-// Anahtar biçimine uymayan karakterler '-' olur; çok uzunsa sonu korunur (kimliklerin ayırt edici kısmı sondadır).
-export function assetKey(id: string, modified: number | null, created: number | null): string {
-  const t = Math.floor((modified || created || 0) / 1000);
-  let k = `${id.replace(/[^A-Za-z0-9._:/-]/g, '-').replace(/\.\.+/g, '-')}:${t}`;
-  if (k.length > 200) k = k.slice(k.length - 200);
-  return k;
-}
-
-// Parça planı: [başlangıç, uzunluk] — offset'ten sona
-export function chunkPlan(size: number, offset: number, chunk = CHUNK): [number, number][] {
-  const out: [number, number][] = [];
-  for (let o = Math.max(0, offset); o < size; o += chunk) out.push([o, Math.min(chunk, size - o)]);
-  return out;
 }
 
 export function fmtBytes(b: number): string {

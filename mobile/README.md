@@ -1,27 +1,35 @@
 # Klyrix/Gate Sync — mobil uygulama (iOS / Android)
 
-Telefonun fotoğraf ve videolarını evdeki Klyrix Gate'e (Raspberry Pi) yedekler. Pi tarafı: `backend/src/mobile.ts`
-(panelde Yedekleme → Cihaz Yedekleme → «Telefon ve tablet — Klyrix/Gate Sync»).
+Telefonun fotoğraf ve videolarını evdeki Klyrix Gate'e (Raspberry Pi) **uçtan uca şifreli** yedekler; yedekler uygulamadan
+listelenir, telefona geri yüklenir ve silinir. Pi tarafı: `backend/src/mobile.ts` (HTTP ucu, eşleştirme) ve
+`backend/src/mobileStore.ts` (şifreli depo); panelde Yedekleme → Cihaz Yedekleme → «Telefon ve tablet — Klyrix/Gate Sync».
 
-- **Eşleştirme:** panelde «Telefon ekle» → uygulamada «QR kodu okut» (ya da Pi'nin adresi + kodu elle). Kod tek kullanımlık,
-  10 dakika geçerli. Uygulama Pi'den bir cihaz anahtarı alır (telefonun anahtar zincirinde / Keystore'da saklanır).
-- **Yedekleme:** fotoğraf kitaplığı eskiden yeniye taranır, Pi'de olmayanlar yüklenir (64 MB'a kadar dosya tek istekte, büyükleri
-  8 MB parçalarla; kesilen yükleme kaldığı yerden sürer). Telefonda hiçbir şey silinmez ya da değişmez. Düzenlenen fotoğraf yeni
-  sürüm olarak yeniden yedeklenir.
+- **Kişi:** panelde kişi eklenir (ör. kendiniz, eşiniz). Aynı kişinin telefonları birbirinin yedeğini görür ve geri yükleyebilir;
+  başka kişiler göremez. Eşleştirme: kişide «Telefon ekle» → uygulamada «QR kodu okut» (ya da Pi'nin adresi + kodu elle). Kod
+  tek kullanımlık, 10 dakika geçerli; uygulama Pi'den bir cihaz anahtarı alır (anahtar zincirinde / Keystore'da).
+- **Şifreleme:** kişinin ilk telefonu 32 baytlık anahtar üretir ve **kurtarma anahtarını** gösterir (9 grup, 54 karakter; iki
+  grubu yazılarak doğrulanır). Kişinin sonraki telefonları kurtarma anahtarıyla eklenir. Dosyalar telefonda AES-256-GCM ile
+  (4 MiB parçalar, parça sırası doğrulanır) şifrelenip gönderilir; Pi yalnız opak kimlik, boyut ve zaman görür. Anahtar Pi'de
+  ve panelde yoktur: kurtarma anahtarı kaybolursa ve hiçbir telefonda anahtar kalmazsa yedekler açılamaz.
+- **Yedek (anlık görüntü):** her turda kitaplık taranır, Pi'de olmayanlar şifrelenip yüklenir (kesilen yükleme kaldığı
+  parçadan sürer), sonra o anki durumun içerik listesi (şifreli) yazılır. Telefonda değişiklik yoksa yeni yedek yazılmaz.
+  Pi eski yedekleri seyreltir (son 14 gün günlük, 8 hafta haftalık, 12 ay aylık); silinen yedek 30 gün çöpte kalır.
+- **Geri yükleme:** yedeğin içerik listesi açılır, telefonda olmayanlar indirilip çözülür ve «Klyrix Gate Sync» albümüne eklenir.
+  Telefonda hiçbir şey silinmez ya da değişmez.
 - **Arka plan:** `expo-background-task` (Android en sık 15 dakikada bir; iOS sistemin seçtiği zamanlarda, çoğunlukla gece).
   Ayarlar: kendiliğinden yedekle, yalnız Wi-Fi'da, videolar.
-- **Ağ:** Pi'ye ev ağında ya da Ev VPN'iyle HTTP (port 8095) ile bağlanılır — panelin kendisi gibi. Pi uç noktası yalnız yükleme
-  kabul eder: anahtar ele geçse bile yedekler okunamaz ya da silinemez.
+- **Ağ:** Pi'ye ev ağında ya da Ev VPN'iyle HTTP (port 8095) ile bağlanılır — panelin kendisi gibi; içerik zaten şifreli.
 
 ## Klasörler
 
 | Yol | İçerik |
 | --- | --- |
-| `src/core/` | Saf TypeScript protokol, Pi istemcisi ve yedekleme motoru (Node testleriyle aynı kod) |
-| `src/platform/` | Expo bağdaştırıcıları: ağ / dosya yükleme, medya kitaplığı, güvenli depo, arka plan görevi |
-| `src/ui/` | Eşleştirme ve ana ekran |
-| `test/core.test.ts` | Birim testleri (`npm test`) |
-| `test/pi-integration.ts` | Gerçek Pi'ye karşı uçtan uca test (`PANEL=http://<pi>:3001 node test/pi-integration.ts`, ev ağında) |
+| `src/core/` | Saf TypeScript: şifreleme biçimi ve kurtarma anahtarı (`crypto.ts`), Pi v2 istemcisi (`api.ts`), yedek (`snapshot.ts`), geri yükleme (`restore.ts`), eşleştirme kodu (`protocol.ts`) — Node testleriyle aynı kod |
+| `src/platform/` | Expo bağdaştırıcıları: AES-GCM (`expo-crypto`), ağ (`expo/fetch`), medya kitaplığı ve galeri, güvenli depo, kimlik önbelleği, arka plan görevi |
+| `src/ui/` | Kurulum (anahtar adımı dahil), Yedekleme, Yedekler (liste, ayrıntı, geri yükleme, çöp), Ayarlar |
+| `test/core.test.ts`, `test/v2.test.ts` | Birim testleri (`npm test`; şifreleme Node'un AES-GCM'iyle aynı biçimde) |
+| `test/pi-v2.ts` | Gerçek Pi'ye karşı uçtan uca test (`PANEL=http://<pi>:3001 STORE=<disk>/.klyrix-mobil node test/pi-v2.ts`, Pi'de) |
+| `preview/`, `scripts/preview.mjs` | Web önizlemesi (yalnız geliştirme, sahte Pi verisi) |
 
 ## Geliştirme
 
@@ -30,6 +38,7 @@ cd mobile
 npm install
 npm run typecheck      # tsc (strict)
 npm test               # çekirdek birim testleri (Node 22.18+ / 23.6+, tür ayıklama)
+npm run preview        # ekranlar tarayıcıda: http://127.0.0.1:8099/?paired=1&theme=dark (state.ts'te diğer durumlar)
 npx expo start         # geliştirme sunucusu — kamera, medya ve arka plan görevi için development build gerekir:
 npx expo run:android   # ya da: npx expo run:ios  (Xcode, macOS)
 ```
@@ -48,7 +57,10 @@ iOS notları: yerel ağ izni (`NSLocalNetworkUsageDescription`) ve yalnız yerel
 `yedek.lan` istisnası) `app.json`'da. İlk cihaz denemesinde Pi'ye IP adresiyle bağlanılamazsa ATS ayarını gözden geçirin.
 Android: şifresiz HTTP `expo-build-properties` ile açık (`usesCleartextTraffic`).
 
+Uygulamanın eski sürümüyle (şifresiz, kişisiz) eşleşmiş telefon güncellenince yeniden eşleştirilir; Pi eski sürümün yükleme
+ucunu yeni sürüm yayılana dek açık tutar ve panelde o telefonları ayrı listeler.
+
 ## Durum
 
-Çekirdek Node'da birim + gerçek Pi API'sine karşı entegrasyon testinden geçti; Android ve iOS JS paketleri derleniyor
-(`npx expo export`). Gerçek telefonda (kamera, medya izni, arka plan görevi) henüz denenmedi.
+Çekirdek Node'da birim testlerinden ve gerçek Pi arka ucuna karşı uçtan uca testten (test kabı) geçti; ekranlar web
+önizlemesinde denetlendi. Gerçek telefonda (expo-crypto AES-GCM, medya izni, galeriye yazma, arka plan görevi) henüz denenmedi.

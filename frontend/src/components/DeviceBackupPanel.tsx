@@ -270,6 +270,8 @@ function OffView({ st, busy, onStarted }: { st: SyncStatus; busy: boolean; onSta
       <button className="btn-primary btn-sm dv-start" disabled={busy || sending === 'enable'} onClick={start}>
         {sending === 'enable' || busy ? <Loader2 size={13} className="spin" /> : <HardDriveUpload size={13} />} Cihaz yedeklemeyi aç
       </button>
+      {/* Klyrix/Gate Sync Syncthing'e bağlı değil: cihaz yedekleme kapalıyken de açılır */}
+      <MobileBackupCard />
     </div>
   );
 }

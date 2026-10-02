@@ -97,8 +97,9 @@ share_block() { # AD YOL USB(0|1)
   printf '\n[%s]\n   path = %s\n   valid users = %s\n   force user = %s\n   force group = %s\n' "$1" "$2" "$u" "$u" "$u"
   printf '   read only = no\n   browseable = yes\n   create mask = 0664\n   directory mask = 2775\n'
   if [ "$3" = 1 ]; then
-    # USB: exFAT / FAT / NTFS genişletilmiş öznitelik tutmaz; Mac eklentileri yalnız dahili (ext4) paylaşımda
-    printf '   ea support = no\n   store dos attributes = no\n   map archive = no\n'
+    # USB: exFAT / FAT / NTFS genişletilmiş öznitelik tutmaz; Mac eklentileri yalnız dahili (ext4) paylaşımda.
+    # Paylaşım diskin kökü: telefonların şifreli özel alanı (.klyrix-mobil, backend/src/mobileStore.ts) hiç listelenmez.
+    printf '   ea support = no\n   store dos attributes = no\n   map archive = no\n   veto files = /.klyrix-mobil/\n'
   else
     printf '   vfs objects = catia fruit streams_xattr\n   fruit:metadata = stream\n'
   fi

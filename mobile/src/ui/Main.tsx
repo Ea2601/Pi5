@@ -1,11 +1,11 @@
-// Ana ekran: üstte logo + ad + Pi bağlantı durumu, altta sekmeler (Yedekleme · Ayarlar; Senkronizasyon S3'te gelir).
-// Pi'nin durumu burada tutulur (sekmeler ve başlık aynı veriyi gösterir); uygulama öne gelince yenilenir.
+// Ana ekran: üstte logo + ad + Pi bağlantı durumu, altta sekmeler (Yedekleme · Yedekler · Ayarlar; Senkronizasyon S3'te).
+// Pi'nin durumu (kişi, telefonlar, kullanım, yedek listesi) burada tutulur; sekmeler ve başlık aynı veriyi gösterir,
+// uygulama öne gelince yenilenir.
 import { useCallback, useEffect, useState } from 'react';
 import { AppState, Pressable, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { HardDriveUpload, SettingsIcon } from './icons.ts';
-import { connect, type PiStatus } from '../core/client.ts';
-import type { Pairing } from '../core/protocol.ts';
+import { Archive, HardDriveUpload, SettingsIcon } from './icons.ts';
+import { connect2, type Pairing2, type Profile, type Snapshot, type Usage } from '../core/api.ts';
 import { http } from '../platform/http.ts';
 import type { Settings } from '../platform/store.ts';
 import { setAutoBackup } from '../platform/task.ts';
@@ -13,30 +13,37 @@ import { BackupTab } from './BackupTab.tsx';
 import { Header } from './Header.tsx';
 import { Chip } from './kit.tsx';
 import { SettingsTab } from './SettingsTab.tsx';
+import { SnapshotsTab } from './SnapshotsTab.tsx';
 import { FONT } from './theme.ts';
 import { useTheme } from './ThemeContext.tsx';
 
-type Tab = 'backup' | 'settings';
-export interface PiState { status: PiStatus | null; error: string; checking: boolean; refresh: () => Promise<void> }
+type Tab = 'backup' | 'snapshots' | 'settings';
+export interface PiState {
+  profile: Profile | null; usage: Usage | null; snapshots: Snapshot[] | null;
+  error: string; checking: boolean; refresh: () => Promise<void>;
+}
 
 export function Main({ pairing, settings, onSettings, onForget }: {
-  pairing: Pairing; settings: Settings; onSettings: (patch: Partial<Settings>) => void; onForget: () => void;
+  pairing: Pairing2; settings: Settings; onSettings: (patch: Partial<Settings>) => void; onForget: () => void;
 }) {
   const { p, s } = useTheme();
   const insets = useSafeAreaInsets();
   const [tab, setTab] = useState<Tab>('backup');
-  const [status, setStatus] = useState<PiStatus | null>(null);
+  const [profile, setProfile] = useState<Profile | null>(null);
+  const [usage, setUsage] = useState<Usage | null>(null);
+  const [snapshots, setSnapshots] = useState<Snapshot[] | null>(null);
   const [error, setError] = useState('');
   const [checking, setChecking] = useState(false);
 
   const refresh = useCallback(async () => {
     setChecking(true);
     try {
-      const c = await connect(http, pairing);
-      setStatus(await c.status());
+      const api = await connect2(http, pairing);
+      const [pr, us, sn] = await Promise.all([api.profile(), api.usage(), api.snapshots()]);
+      setProfile(pr); setUsage(us); setSnapshots(sn);
       setError('');
     } catch (e) {
-      setStatus(null);
+      setProfile(null);
       setError(e instanceof Error ? e.message : String(e));
     } finally {
       setChecking(false);
@@ -50,19 +57,20 @@ export function Main({ pairing, settings, onSettings, onForget }: {
     return () => sub.remove();
   }, [refresh]);
 
-  const pi: PiState = { status, error, checking, refresh };
-  const chip = status ? <Chip text={status.ok ? 'Bağlı' : 'Kapalı'} tone={status.ok ? 'ok' : 'warn'} />
+  const pi: PiState = { profile, usage, snapshots, error, checking, refresh };
+  const chip = profile ? <Chip text={usage?.mounted === false ? 'Disk yok' : 'Bağlı'} tone={usage?.mounted === false ? 'warn' : 'ok'} />
     : checking ? <Chip text="Bağlanıyor…" /> : <Chip text="Ulaşılamıyor" tone="bad" />;
   const tabs: { id: Tab; label: string; icon: typeof HardDriveUpload }[] = [
     { id: 'backup', label: 'Yedekleme', icon: HardDriveUpload },
+    { id: 'snapshots', label: 'Yedekler', icon: Archive },
     { id: 'settings', label: 'Ayarlar', icon: SettingsIcon },
   ];
   return (
     <View style={[s.screen, { paddingTop: insets.top }]}>
-      <Header subtitle={pairing.piName || pairing.host} right={chip} />
+      <Header subtitle={pairing.profileName} right={chip} />
       <View style={{ flex: 1 }}>
-        {tab === 'backup'
-          ? <BackupTab pairing={pairing} settings={settings} pi={pi} />
+        {tab === 'backup' ? <BackupTab pairing={pairing} pi={pi} onOpenSnapshots={() => setTab('snapshots')} />
+          : tab === 'snapshots' ? <SnapshotsTab pairing={pairing} pi={pi} />
           : <SettingsTab pairing={pairing} settings={settings} onSettings={onSettings} pi={pi} onForget={onForget} />}
       </View>
       <View style={{ flexDirection: 'row', borderTopWidth: 1, borderTopColor: p.border, backgroundColor: p.card, paddingBottom: insets.bottom }}>

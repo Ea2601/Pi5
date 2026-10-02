@@ -1,24 +1,29 @@
-// Yedekleme sekmesi: Pi'deki yedeğin özeti, son tur, "Şimdi yedekle" (yeşil) / ilerleme + "Durdur" (kırmızı).
+// Yedekleme sekmesi: bu telefonun Pi'deki son yedeği, son tur, "Şimdi yedekle" (yeşil) / ilerleme + "Durdur" (kırmızı).
 import { useCallback, useEffect, useState } from 'react';
 import { Alert, AppState, ScrollView, Text, View } from 'react-native';
-import { HardDriveUpload, ImageIcon, Play, Square } from './icons.ts';
-import type { Progress } from '../core/engine.ts';
-import { fmtBytes, type Pairing } from '../core/protocol.ts';
+import { Archive, HardDriveUpload, ImageIcon, Play, Square } from './icons.ts';
+import type { Pairing2 } from '../core/api.ts';
+import type { SnapshotProgress } from '../core/snapshot.ts';
+import { fmtBytes } from '../core/protocol.ts';
 import { backupOnce, isRunning, requestStop, Skip } from '../backup.ts';
 import { mediaAccess, widenAccess, type Access } from '../platform/media.ts';
-import { loadLast, type LastRun, type Settings } from '../platform/store.ts';
+import { loadLast, type LastRun } from '../platform/store.ts';
 import { APP_NAME } from './Header.tsx';
 import { Btn, Card, KV } from './kit.tsx';
 import type { PiState } from './Main.tsx';
 import { useTheme } from './ThemeContext.tsx';
 
-const when = (ms: number) => new Date(ms).toLocaleString('tr-TR', { dateStyle: 'medium', timeStyle: 'short' });
+export const when = (t: number | string) => new Date(t).toLocaleString('tr-TR', { dateStyle: 'medium', timeStyle: 'short' });
+const phaseText = (p: SnapshotProgress | null) =>
+  !p || p.phase === 'scan' ? `Taranıyor… ${p?.scanned ?? 0}`
+    : p.phase === 'upload' ? `Şifreleniyor ve yükleniyor ${p.done + p.failed} / ${p.pending}`
+    : p.phase === 'save' ? 'Yedek kaydediliyor…' : 'Bitti';
 
-export function BackupTab({ pi }: { pairing: Pairing; settings: Settings; pi: PiState }) {
+export function BackupTab({ pairing, pi, onOpenSnapshots }: { pairing: Pairing2; pi: PiState; onOpenSnapshots: () => void }) {
   const { s, p } = useTheme();
   const [last, setLast] = useState<LastRun | null>(null);
   const [access, setAccess] = useState<Access>('all');
-  const [progress, setProgress] = useState<Progress | null>(null);
+  const [progress, setProgress] = useState<SnapshotProgress | null>(null);
   const [running, setRunning] = useState(isRunning());
 
   const reload = useCallback(async () => {
@@ -39,7 +44,7 @@ export function BackupTab({ pi }: { pairing: Pairing; settings: Settings; pi: Pi
     setRunning(true); setProgress(null);
     try {
       const r = await backupOnce({ onProgress: setProgress });
-      if (r.failed) Alert.alert('Yedekleme bitti', `${r.uploaded} dosya yüklendi, ${r.failed} dosya yüklenemedi.${r.error ? `\n${r.error}` : ''}`);
+      if (r.failed) Alert.alert('Yedekleme bitti', `${r.failed} dosya yüklenemedi; yedek yüklenebilenlerle yazıldı.${r.error ? `\n${r.error}` : ''}`);
     } catch (e) {
       Alert.alert(e instanceof Skip ? 'Yedeklenmedi' : 'Yedekleme durdu', e instanceof Error ? e.message : String(e));
     } finally {
@@ -49,19 +54,26 @@ export function BackupTab({ pi }: { pairing: Pairing; settings: Settings; pi: Pi
     }
   };
 
-  const st = pi.status;
-  const pct = progress && progress.phase === 'upload' && progress.pending ? Math.round(((progress.done + progress.failed) / progress.pending) * 100) : 0;
+  const mine = pi.snapshots?.find(x => x.deviceId === pairing.deviceId) ?? null;
+  const pct = progress?.phase === 'upload' && progress.pending ? Math.round(((progress.done + progress.failed) / progress.pending) * 100)
+    : progress?.phase === 'save' || progress?.phase === 'done' ? 100 : 0;
   return (
     <ScrollView style={s.screen} contentContainerStyle={s.scroll}>
-      <Card title="Pi'deki yedek" icon={<HardDriveUpload size={18} color={p.textSecondary} />}>
-        {st ? (
+      <Card title="Bu telefonun son yedeği" icon={<HardDriveUpload size={18} color={p.textSecondary} />}>
+        {pi.profile ? (
           <>
-            <Text style={s.big}>{st.device.files} dosya</Text>
-            <KV label="Boyut" value={fmtBytes(st.device.bytes)} />
-            {st.target ? <KV label="Hedef disk" value={st.target.name} /> : null}
-            {st.target?.free != null ? <KV label="Boş yer" value={fmtBytes(st.target.free)} /> : null}
-            {!st.ok ? <Text style={s.err}>Pi'de mobil yedekleme kapalı — panelden açın.</Text> : null}
-            {st.target && !st.target.mounted ? <Text style={s.err}>Pi'de yedek diski bağlı değil.</Text> : null}
+            {mine ? (
+              <>
+                <Text style={s.big}>{when(mine.createdAt)}</Text>
+                <KV label="Fotoğraf" value={String(mine.stats.photos)} />
+                <KV label="Video" value={String(mine.stats.videos)} />
+                <KV label="Boyut" value={fmtBytes(mine.stats.bytes)} />
+              </>
+            ) : <Text style={s.p}>Henüz yedek yok.</Text>}
+            {pi.usage ? <KV label="Pi'de kullanılan (kişi)" value={fmtBytes(pi.usage.bytes)} /> : null}
+            {pi.usage?.free != null ? <KV label="Boş yer" value={fmtBytes(pi.usage.free)} /> : null}
+            {pi.usage && !pi.usage.mounted ? <Text style={s.err}>Pi'de yedek diski bağlı değil.</Text> : null}
+            <Btn kind="neutral" icon={Archive} label="Tüm yedekler" onPress={onOpenSnapshots} />
           </>
         ) : pi.error ? <Text style={s.err}>{pi.error}</Text> : <Text style={s.p}>Pi'ye bağlanılıyor…</Text>}
       </Card>
@@ -73,12 +85,10 @@ export function BackupTab({ pi }: { pairing: Pairing; settings: Settings; pi: Pi
         </Card>
       ) : null}
 
-      <Card title={running ? undefined : 'Son yedekleme'}>
+      <Card title={running ? undefined : 'Son tur'}>
         {running ? (
           <>
-            <Text style={s.h}>
-              {progress?.phase === 'upload' ? `Yükleniyor ${progress.done + progress.failed} / ${progress.pending}` : `Taranıyor… ${progress?.scanned ?? 0}`}
-            </Text>
+            <Text style={s.h}>{phaseText(progress)}</Text>
             <View style={s.bar}><View style={[s.barFill, { width: `${pct}%` }]} /></View>
             {progress?.current ? <Text style={s.small} numberOfLines={1}>{progress.current}</Text> : null}
             <Btn kind="off" icon={Square} label="Durdur" onPress={requestStop} />
@@ -88,11 +98,15 @@ export function BackupTab({ pi }: { pairing: Pairing; settings: Settings; pi: Pi
             {last ? (
               <>
                 <KV label="Tarih" value={when(last.at)} />
-                {last.error && !last.uploaded ? <Text style={s.err}>{last.error}</Text> : (
+                {last.error && !last.uploaded && !last.snapshotId ? <Text style={s.err}>{last.error}</Text> : (
                   <>
-                    <KV label="Yeni dosya" value={String(last.uploaded)} />
-                    {last.failed ? <KV label="Hata" value={String(last.failed)} tone="bad" /> : null}
+                    {last.unchanged ? <Text style={s.p}>Değişiklik yok — son yedek güncel.</Text> : null}
+                    {last.snapshotId ? <KV label="Yeni yedek" value={`${last.items ?? 0} öğe`} tone="ok" /> : null}
+                    {last.uploaded ? <KV label="Yüklenen" value={`${last.uploaded} dosya · ${fmtBytes(last.bytes)}`} /> : null}
+                    {last.failed ? <KV label="Yüklenemeyen" value={String(last.failed)} tone="bad" /> : null}
+                    {last.failed && last.error ? <Text style={s.small}>{last.error}</Text> : null}
                     {last.stopped ? <Text style={s.small}>Yarıda kaldı; bir sonraki turda kaldığı yerden sürer.</Text> : null}
+                    {!last.snapshotId && !last.unchanged && !last.stopped && !last.error ? <Text style={s.p}>Yedeklenecek fotoğraf yok.</Text> : null}
                   </>
                 )}
               </>

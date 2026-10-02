@@ -11,8 +11,8 @@ import { Inter_500Medium } from '@expo-google-fonts/inter/500Medium';
 import { Inter_600SemiBold } from '@expo-google-fonts/inter/600SemiBold';
 import { Inter_700Bold } from '@expo-google-fonts/inter/700Bold';
 import { JetBrainsMono_500Medium } from '@expo-google-fonts/jetbrains-mono/500Medium';
-import type { Pairing } from './src/core/protocol.ts';
-import { DEFAULT_SETTINGS, loadPairing, loadSettings, saveSettings, type Settings, type ThemePref } from './src/platform/store.ts';
+import type { Pairing2 } from './src/core/api.ts';
+import { DEFAULT_SETTINGS, hasLegacyPairing, loadKey, loadPairing, loadSettings, saveSettings, type Settings, type ThemePref } from './src/platform/store.ts';
 import { Main } from './src/ui/Main.tsx';
 import { Onboarding } from './src/ui/Onboarding.tsx';
 import { ThemeProvider, useTheme } from './src/ui/ThemeContext.tsx';
@@ -22,12 +22,18 @@ SplashScreen.preventAutoHideAsync().catch(() => {});
 
 export default function App() {
   const [fontsOk, fontErr] = useFonts({ Inter_400Regular, Inter_500Medium, Inter_600SemiBold, Inter_700Bold, JetBrainsMono_500Medium });
-  const [pairing, setPairing] = useState<Pairing | null | undefined>(undefined);
+  // Eşleşme + anahtar varsa ana ekran; eşleşme var ama anahtar yoksa kurulum anahtar adımından sürer
+  const [boot, setBoot] = useState<{ pairing: Pairing2 | null; ready: boolean; legacy: boolean } | undefined>(undefined);
   const [settings, setSettings] = useState<Settings | null>(null);
   useEffect(() => {
-    void Promise.all([loadPairing(), loadSettings()]).then(([pr, st]) => { setPairing(pr); setSettings(st); });
+    void (async () => {
+      const [pr, st, legacy] = await Promise.all([loadPairing(), loadSettings(), hasLegacyPairing()]);
+      const key = pr ? await loadKey(pr.profileId) : null;
+      setBoot({ pairing: pr, ready: !!(pr && key), legacy });
+      setSettings(st);
+    })();
   }, []);
-  const ready = (fontsOk || !!fontErr) && pairing !== undefined && settings !== null;
+  const ready = (fontsOk || !!fontErr) && boot !== undefined && settings !== null;
   useEffect(() => { if (ready) void SplashScreen.hideAsync().catch(() => {}); }, [ready]);
 
   const update = useCallback((patch: Partial<Settings>) => {
@@ -39,18 +45,19 @@ export default function App() {
   }, []);
   const setPref = useCallback((theme: ThemePref) => update({ theme }), [update]);
 
-  if (!ready || !settings) return null;
+  if (!ready || !settings || !boot) return null;
   return (
     <SafeAreaProvider>
       <ThemeProvider pref={settings.theme} setPref={setPref}>
-        <Root pairing={pairing ?? null} onPaired={setPairing} settings={settings} onSettings={update} />
+        <Root boot={boot} onBoot={setBoot} settings={settings} onSettings={update} />
       </ThemeProvider>
     </SafeAreaProvider>
   );
 }
 
-function Root({ pairing, onPaired, settings, onSettings }: {
-  pairing: Pairing | null; onPaired: (p: Pairing | null) => void; settings: Settings; onSettings: (patch: Partial<Settings>) => void;
+function Root({ boot, onBoot, settings, onSettings }: {
+  boot: { pairing: Pairing2 | null; ready: boolean; legacy: boolean }; onBoot: (b: { pairing: Pairing2 | null; ready: boolean; legacy: boolean }) => void;
+  settings: Settings; onSettings: (patch: Partial<Settings>) => void;
 }) {
   const { p } = useTheme();
   // Sistem arka planı (klavye açılırken, ekran dönerken görünen kök) temayla aynı
@@ -58,9 +65,9 @@ function Root({ pairing, onPaired, settings, onSettings }: {
   return (
     <View style={{ flex: 1, backgroundColor: p.bg }}>
       <StatusBar style={p.scheme === 'dark' ? 'light' : 'dark'} />
-      {pairing
-        ? <Main pairing={pairing} settings={settings} onSettings={onSettings} onForget={() => onPaired(null)} />
-        : <Onboarding onDone={onPaired} />}
+      {boot.pairing && boot.ready
+        ? <Main pairing={boot.pairing} settings={settings} onSettings={onSettings} onForget={() => onBoot({ pairing: null, ready: false, legacy: false })} />
+        : <Onboarding initial={boot.pairing} legacy={boot.legacy} onDone={pr => onBoot({ pairing: pr, ready: true, legacy: false })} />}
     </View>
   );
 }
