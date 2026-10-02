@@ -1,7 +1,7 @@
 import { ShieldBan, Search, BarChart3, Globe, Users, Settings, List, Plus, Trash2, Check, X, Server, Lock, Gauge, Radio, RefreshCw, AlertTriangle, Loader2, Sparkles } from 'lucide-react';
 import { useApi, postApi, putApi, deleteApi } from '../hooks/useApi';
 import { useState } from 'react';
-import { Panel, StatCard, Badge } from './ui';
+import { Panel, StatCard, Badge, Modal } from './ui';
 import { ServiceSettings } from './ui/ServiceSettings';
 import type { PiholeStats, ServiceStatus, PiholeListItem } from '../types';
 import { toast } from '../toast';
@@ -17,26 +17,54 @@ export function PiholePanel() {
   }, 10000);
   const { data: svcData, refetch: refetchSvc } = useApi<{ services: ServiceStatus[] }>('/services', { services: [] });
   const piholeSvc = svcData.services.find(s => s.name === 'pihole');
-  const isEnabled = piholeSvc?.enabled === 1;
+  const isRunning = piholeSvc?.enabled === 1;
+  // Başlıktaki anahtar REKLAM ENGELLEMEYİ açar / kapatır (Pi-hole'un kendi engelleme düğmesi): DNS çalışmaya devam eder.
+  // Eskiden pihole-FTL servisini durduruyordu (tüm ağın interneti kesilir, açılışta da kapalı kalırdı); servisi durdurmak
+  // artık Ayarlar sekmesinde ayrı ve uyarılı.
+  const { data: blocking, refetch: refetchBlocking } = useApi<{ enabled: boolean; timer: number | null; error?: string }>(
+    '/pihole/blocking', { enabled: true, timer: null }, 15000);
   const [toggling, setToggling] = useState(false);
+  const [askOff, setAskOff] = useState(false);
 
-  // Anahtar kalıcıdır (açılışta da geçerli): Pi-hole kapanırsa Pi'yi DNS olarak kullanan cihazların interneti kesilir.
-  const handleToggle = async () => {
-    if (isEnabled && !confirm('Pi-hole durdurulursa Pi\'yi DNS olarak kullanan tüm cihazların interneti kesilir ve Pi yeniden başlasa da kapalı kalır. Devam edilsin mi?')) return;
+  const setBlockingTo = async (enabled: boolean, minutes?: number) => {
     setToggling(true);
     try {
-      const result = await postApi('/services/toggle', { name: 'pihole', enabled: !isEnabled });
-      if (!result.success) {
-        toast.error(result.error || 'Servis değiştirilemedi');
-      } else {
-        toast.success(isEnabled ? 'Pi-hole durduruldu' : 'Pi-hole başlatıldı');
-      }
+      await postApi('/pihole/blocking', { enabled, ...(minutes ? { minutes } : {}) });
+      toast.success(enabled ? 'Reklam engelleme açıldı' : minutes ? `Reklam engelleme ${minutes} dk kapatıldı` : 'Reklam engelleme kapatıldı');
+      setAskOff(false);
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'İstek başarısız');
+    }
+    await refetchBlocking();
+    setToggling(false);
+  };
+  const startService = async () => {
+    setToggling(true);
+    try {
+      const result = await postApi('/services/toggle', { name: 'pihole', enabled: true });
+      if (!result.success) toast.error(result.error || 'Pi-hole başlatılamadı');
+      else toast.success('Pi-hole başlatıldı');
     } catch (e) {
       toast.error(e instanceof Error ? e.message : 'İstek başarısız');
     }
     await refetchSvc();
+    await refetchBlocking();
     setToggling(false);
   };
+  const stopService = async () => {
+    if (!confirm('Pi-hole SERVİSİ durdurulursa Pi\'yi DNS olarak kullanan tüm cihazların interneti kesilir ve Pi yeniden başlasa da kapalı kalır. Yalnız reklam engellemeyi kapatmak için başlıktaki anahtarı kullanın. Yine de durdurulsun mu?')) return;
+    try {
+      const result = await postApi('/services/toggle', { name: 'pihole', enabled: false });
+      if (!result.success) toast.error(result.error || 'Pi-hole durdurulamadı');
+      else toast.success('Pi-hole servisi durduruldu');
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'İstek başarısız');
+    }
+    await refetchSvc();
+  };
+  const blockLabel = !isRunning ? 'Pi-hole durdu'
+    : blocking.enabled ? 'Engelleme açık'
+      : blocking.timer ? `Engelleme kapalı · ${Math.max(1, Math.ceil(blocking.timer / 60))} dk` : 'Engelleme kapalı';
 
   const tabs: { id: PiholeTab; label: string; icon: React.ReactNode }[] = [
     { id: 'overview', label: 'Genel Bakış', icon: <BarChart3 size={14} /> },
@@ -69,14 +97,20 @@ export function PiholePanel() {
         subtitle="Headless Pi-hole + Unbound DNS — Reklam & tracker bloklama"
         actions={
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            <Badge variant={isEnabled ? 'success' : 'neutral'}>{isEnabled ? 'Aktif' : 'Pasif'}</Badge>
-            <button
-              className={`toggle-btn ${isEnabled ? 'toggle-on' : 'toggle-off'}`}
-              onClick={handleToggle} disabled={toggling}
-              title={isEnabled ? 'Devre dışı bırak' : 'Etkinleştir'}
-            >
-              <div className="toggle-knob" />
-            </button>
+            <Badge variant={!isRunning ? 'error' : blocking.enabled ? 'success' : 'warning'}>{blockLabel}</Badge>
+            {isRunning ? (
+              <button
+                className={`toggle-btn ${blocking.enabled ? 'toggle-on' : 'toggle-off'}`}
+                onClick={() => (blocking.enabled ? setAskOff(true) : void setBlockingTo(true))} disabled={toggling}
+                title={blocking.enabled ? 'Reklam engellemeyi kapat' : 'Reklam engellemeyi aç'} aria-label={blocking.enabled ? 'Reklam engellemeyi kapat' : 'Reklam engellemeyi aç'}
+              >
+                <div className="toggle-knob" />
+              </button>
+            ) : (
+              <button className="btn-primary btn-sm" onClick={() => void startService()} disabled={toggling}>
+                {toggling ? <Loader2 size={13} className="spin" /> : <RefreshCw size={13} />} Başlat
+              </button>
+            )}
           </div>
         }>
         <div className="service-tabs">
@@ -108,7 +142,8 @@ export function PiholePanel() {
       {activeTab === 'settings' && (
         <div style={{ marginTop: 14, display: 'flex', flexDirection: 'column', gap: 14 }}>
           {/* DHCP ayarları kendi sayfasında (menü → DHCP Ayarları, adres #dhcp) */}
-          <ServiceSettings service="pihole" categoryLabels={categoryLabels} categoryIcons={categoryIcons} excludeCategories={['dhcp']} />
+          <ServiceSettings service="pihole" categoryLabels={categoryLabels} categoryIcons={categoryIcons} excludeCategories={['dhcp']}
+            extraActions={isRunning ? <button className="btn-outline btn-sm" style={{ color: 'var(--danger-color)' }} onClick={() => void stopService()}>Servisi durdur</button> : undefined} />
         </div>
       )}
 
@@ -116,6 +151,22 @@ export function PiholePanel() {
         <div style={{ marginTop: 14 }}>
           <PiholeListManager listType={activeTab === 'blocklists' ? 'adlist' : activeTab} />
         </div>
+      )}
+      {askOff && (
+        <Modal open onClose={() => setAskOff(false)} title="Reklam engellemeyi kapat" width={420}
+          actions={<button className="btn-outline btn-sm" onClick={() => setAskOff(false)}>Vazgeç</button>}>
+          <p style={{ marginTop: 0, fontSize: 13, lineHeight: 1.55, color: 'var(--text-secondary)' }}>
+            DNS ve internet çalışmaya devam eder; yalnız reklam / takip engeli durur. Süreli kapatırsanız süre dolunca kendiliğinden açılır.
+          </p>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+            {[5, 30, 60].map(m => (
+              <button key={m} className="btn-primary btn-sm" disabled={toggling} onClick={() => void setBlockingTo(false, m)}>
+                {m < 60 ? `${m} dakika` : '1 saat'}
+              </button>
+            ))}
+            <button className="btn-outline btn-sm" disabled={toggling} onClick={() => void setBlockingTo(false)}>Süresiz</button>
+          </div>
+        </Modal>
       )}
     </div>
   );

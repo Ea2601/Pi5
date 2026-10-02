@@ -13,9 +13,11 @@ interface ServiceSettingsProps {
   excludeCategories?: string[];
   // Yeniden başlatma düğmesinin adı (ör. nftables: "Kuralları yeniden uygula" — flush yapmadan yeniden yükler)
   restartLabel?: string;
+  // Araç çubuğunda ek düğmeler (ör. Pi-hole: servisi durdur)
+  extraActions?: React.ReactNode;
 }
 
-export function ServiceSettings({ service, categoryLabels = {}, categoryIcons = {}, excludeCategories = [], restartLabel }: ServiceSettingsProps) {
+export function ServiceSettings({ service, categoryLabels = {}, categoryIcons = {}, excludeCategories = [], restartLabel, extraActions }: ServiceSettingsProps) {
   const { data, refetch } = useApi<{ service: string; config: Record<string, ConfigItem[]> }>(
     `/services/${service}/config`, { service, config: {} }
   );
@@ -37,9 +39,10 @@ export function ServiceSettings({ service, categoryLabels = {}, categoryIcons = 
   const handleSave = async () => {
     setSaving(true);
     try {
-      await putApi(`/services/${service}/config`, { changes });
+      // Sunucunun sözü geçer: Pi-hole ayarları uygulanır ("uygulandı"), diğer servislerde yalnız kaydedilir
+      const r = await putApi(`/services/${service}/config`, { changes });
       setChanges({});
-      toast.success('Ayarlar kaydedildi.');
+      toast.success(typeof r?.message === 'string' && r.message ? r.message : 'Ayarlar kaydedildi.');
       await refetch();
     } catch (e: any) {
       toast.error(e.message);
@@ -109,6 +112,7 @@ export function ServiceSettings({ service, categoryLabels = {}, categoryIcons = 
       <div className="settings-toolbar">
         <div className="settings-toolbar-left" />
         <div className="settings-toolbar-right">
+          {extraActions}
           <button className="btn-outline btn-sm" onClick={handleRestart} disabled={restarting}>
             <RotateCcw size={13} className={restarting ? 'spin' : ''} />
             {restarting ? (restartLabel ? 'Uygulanıyor...' : 'Yeniden Başlatılıyor...') : (restartLabel || 'Servisi Yeniden Başlat')}

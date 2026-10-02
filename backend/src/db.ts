@@ -284,7 +284,7 @@ export const initDb = () => {
     // Pi-hole config
     const piholeConfigs: [string, string, string, string, string, string, string][] = [
       ['pihole', 'dns', 'upstream_dns_1', '127.0.0.1#5335', 'Birincil DNS', 'Unbound recursive resolver', 'text'],
-      ['pihole', 'dns', 'upstream_dns_2', '1.1.1.1', 'Ikincil DNS', 'Cloudflare yedek DNS', 'text'],
+      ['pihole', 'dns', 'upstream_dns_2', '', 'Ikincil DNS', 'Bos: yalniz Unbound (dis sunucu eklenirse sorgular Unbound atlanarak gider)', 'text'],
       ['pihole', 'dns', 'dnssec', 'true', 'DNSSEC', 'DNS guvenlik dogrulamasi', 'boolean'],
       ['pihole', 'dns', 'cache_size', '10000', 'Onbellek Boyutu', 'DNS onbellek kayit sayisi', 'number'],
       ['pihole', 'blocking', 'blocking_enabled', 'true', 'Engelleme Aktif', 'DNS reklam engelleme durumu', 'boolean'],
@@ -489,7 +489,8 @@ export const initDb = () => {
     // kullanıcının sildiği varsayılan 'cron_defaults_seeded' işareti sayesinde geri gelmez.
     const cronDefaults: [string, string, string, string][] = [
       ['OS Guncelleme', '0 3 * * *', 'apt update -qq && apt upgrade -y -qq', 'Gunluk sistem paket guncellemesi'],
-      ['Pi-hole Gravity', '0 4 * * *', 'pihole -g', 'Reklam engelleme listelerini guncelle'],
+      // Komut cronSync.ts GRAVITY_CMD ile aynı (panelin pi5-gravity birimi; eski 'pihole -g' açılışta taşınır)
+      ['Pi-hole Gravity', '0 4 * * *', 'systemctl is-active --quiet pi5-gravity || systemd-run --quiet --collect --wait --unit=pi5-gravity pihole -g', 'Reklam engelleme listelerini guncelle'],
       ['Log Temizligi', '0 2 * * 1', 'journalctl --vacuum-time=7d && find /var/log -name "*.gz" -mtime +30 -delete', 'Eski loglari temizle'],
       ['DNS Saglik Kontrolu', '*/10 * * * *', 'dig @127.0.0.1 -p 5335 google.com +short', 'DNS resolver kontrolu'],
     ];

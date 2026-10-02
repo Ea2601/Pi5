@@ -54,12 +54,15 @@ export async function refreshFtlDbPath(): Promise<void> {
   if (!isLinux) return;
   const v = (await run('pihole-FTL --config files.database', 5000)).split('\n').pop()?.trim().replace(/^"|"$/g, '') || '';
   if (v.startsWith('/') && fs.existsSync(v)) FTL_DB = v;
+  const g = (await run('pihole-FTL --config files.gravity', 5000)).split('\n').pop()?.trim().replace(/^"|"$/g, '') || '';
+  if (g.startsWith('/') && fs.existsSync(g)) GRAVITY_DB = g;
 }
 void refreshFtlDbPath();
-const GRAVITY_DB = '/etc/pihole/gravity.db';
-// FTL query status codes that mean "blocked" (gravity/blacklist/regex/upstream/special).
-const BLOCKED_STATUS = [1, 4, 5, 6, 7, 8, 9, 10, 11, 15, 16];
-const FORWARDED_STATUS = [2, 14];
+let GRAVITY_DB = '/etc/pihole/gravity.db';
+// FTL v6 sorgu durumları. Engellenen: gravity / regex / kara liste (+ CNAME), üst sunucunun engellediği (IP, NULL, NXRA,
+// EDE 15), veritabanı meşgul, özel alan adı. İletilen: yanıt bekleyen ve yeniden denenen (DNSSEC dahil) de.
+const BLOCKED_STATUS = [1, 4, 5, 6, 7, 8, 9, 10, 11, 15, 16, 18];
+const FORWARDED_STATUS = [2, 12, 13, 14];
 const CACHED_STATUS = [3, 17];
 // FTL numeric query types → labels.
 const FTL_TYPE_MAP: Record<number, string> = {
@@ -443,8 +446,8 @@ export interface PiholeStats {
   queryTypes: Record<string, number>;
 }
 
-// Primary: read the Pi-hole v6 FTL SQLite DB directly (version-proof, no webserver/auth).
-// Falls back to the legacy v5 admin/api.php only if the DB is unavailable.
+// Pi-hole v6 FTL SQLite veritabanından doğrudan (web sunucusu / oturum gerekmez). Veritabanı okunamazsa null — v5'in
+// admin/api.php'si v6'da yok (80'de panelin nginx'i yanıt verir), eski yedek yolu kaldırıldı.
 export async function getPiholeStats(): Promise<PiholeStats | null> {
   if (!isLinux) return null;
 
@@ -463,7 +466,10 @@ export async function getPiholeStats(): Promise<PiholeStats | null> {
     const total = s.total || 0;
     const blocked = s.blocked || 0;
 
-    const gravityRows = await readOnlyQuery(GRAVITY_DB, 'SELECT COUNT(*) AS c FROM gravity');
+    // Engellenen alan adı sayısı Pi-hole'unki gibi TEKİL: gravity_count (gravity çalışınca yazılır). Ham satır sayısı aynı
+    // alan adını her listede ayrı sayıyordu; yoksa (eski veritabanı) DISTINCT.
+    let gravityRows = await readOnlyQuery(GRAVITY_DB, "SELECT CAST(value AS INTEGER) AS c FROM info WHERE property = 'gravity_count'");
+    if (!gravityRows.length || !(gravityRows[0].c > 0)) gravityRows = await readOnlyQuery(GRAVITY_DB, 'SELECT COUNT(DISTINCT domain) AS c FROM gravity');
     const topRows = await readOnlyQuery(FTL_DB,
       `SELECT domain, COUNT(*) AS c FROM queries
        WHERE timestamp >= ? AND status IN (${BLOCKED_STATUS.join(',')})
@@ -486,50 +492,7 @@ export async function getPiholeStats(): Promise<PiholeStats | null> {
       queryTypes,
     };
   }
-
-  return getPiholeStatsViaLegacyApi();
-}
-
-// Legacy Pi-hole v5 API (admin/api.php). Returns null on v6/headless installs.
-async function getPiholeStatsViaLegacyApi(): Promise<PiholeStats | null> {
-  let summary: any = null;
-  try {
-    const r = await fetch('http://127.0.0.1/admin/api.php?summaryRaw');
-    if (r.ok) summary = await r.json();
-  } catch { /* */ }
-  if (!summary) return null;
-
-  let topBlockedDomains: { domain: string; count: number }[] = [];
-  try {
-    const r = await fetch('http://127.0.0.1/admin/api.php?topItems=5');
-    if (r.ok) {
-      const d = await r.json();
-      if (d.top_ads) topBlockedDomains = Object.entries(d.top_ads).map(([domain, count]) => ({ domain, count: count as number }));
-    }
-  } catch { /* */ }
-
-  // v5 API'si yüzde verir: v6 yoluyla aynı birim (adet) olsun diye bugünkü sorgu sayısıyla adete çevrilir.
-  const queryTypes: Record<string, number> = {};
-  const totalToday = Number(summary.dns_queries_today) || 0;
-  try {
-    const r = await fetch('http://127.0.0.1/admin/api.php?getQueryTypes');
-    if (r.ok) {
-      const d = await r.json();
-      if (d.querytypes) for (const [k, v] of Object.entries(d.querytypes)) queryTypes[k.replace(/\s*\(.*\)/, '')] = Math.round((Number(v) || 0) * totalToday / 100);
-    }
-  } catch { /* */ }
-
-  return {
-    domainsBlocked: summary.domains_being_blocked ?? 0,
-    dnsQueriesToday: summary.dns_queries_today ?? 0,
-    adsBlockedToday: summary.ads_blocked_today ?? 0,
-    adsPercentageToday: parseFloat(summary.ads_percentage_today ?? 0),
-    uniqueClients: summary.unique_clients ?? 0,
-    queriesForwarded: summary.queries_forwarded ?? 0,
-    queriesCached: summary.queries_cached ?? 0,
-    topBlockedDomains,
-    queryTypes,
-  };
+  return null;
 }
 
 // ─── 4. Network Devices ───
@@ -642,12 +605,19 @@ export async function getFail2banStatus() {
 export async function getDnsQueries(limit: number = 50, filters?: { device?: string; blocked?: string; domain?: string }) {
   if (!isLinux) return [];
 
-  // Primary: Pi-hole v6 FTL DB (direct read — version-proof, no webserver needed).
+  // Pi-hole v6 FTL veritabanı. Süzgeçler sorguda: önce süzülür sonra sınırlanır (eskiden son 1000 satır alınıp sonra
+  // süzülüyordu — seyrek bir cihazın ya da engellenenlerin sorguları az / hiç görünmüyordu).
+  const where: string[] = [];
+  const args: (string | number)[] = [];
+  if (filters?.device) { where.push('client = ?'); args.push(filters.device); }
+  if (filters?.blocked === 'true') where.push(`status IN (${BLOCKED_STATUS.join(',')})`);
+  else if (filters?.blocked === 'false') where.push(`status NOT IN (${BLOCKED_STATUS.join(',')})`);
+  if (filters?.domain) { where.push('instr(domain, ?) > 0'); args.push(filters.domain); }
   const dbRows = await readOnlyQuery(FTL_DB,
-    'SELECT timestamp, type, status, domain, client FROM queries ORDER BY timestamp DESC LIMIT ?',
-    [Math.min(limit * 4, 1000)]);
+    `SELECT timestamp, type, status, domain, client FROM queries${where.length ? ` WHERE ${where.join(' AND ')}` : ''} ORDER BY timestamp DESC LIMIT ?`,
+    [...args, Math.min(Math.max(1, limit), 1000)]);
   if (dbRows.length) {
-    let queries = dbRows.map((r: any, idx: number) => ({
+    const queries = dbRows.map((r: any, idx: number) => ({
       id: idx + 1,
       timestamp: new Date(r.timestamp * 1000).toISOString(),
       client_ip: r.client, domain: r.domain,
@@ -655,37 +625,8 @@ export async function getDnsQueries(limit: number = 50, filters?: { device?: str
       status: BLOCKED_STATUS.includes(r.status) ? 'blocked' : 'allowed',
       response_time_ms: 0,
     }));
-    if (filters?.device) queries = queries.filter((q: any) => q.client_ip === filters.device);
-    if (filters?.blocked === 'true') queries = queries.filter((q: any) => q.status === 'blocked');
-    else if (filters?.blocked === 'false') queries = queries.filter((q: any) => q.status === 'allowed');
-    if (filters?.domain) queries = queries.filter((q: any) => q.domain?.includes(filters.domain!));
     return queries.slice(0, limit);
   }
-
-  // Fallback: legacy Pi-hole v5 API (admin/api.php)
-  try {
-    const r = await fetch(`http://127.0.0.1/admin/api.php?getAllQueries=${Math.min(limit * 4, 500)}`);
-    if (r.ok) {
-      const d = await r.json();
-      if (d.data && Array.isArray(d.data)) {
-        let queries = d.data.map((row: any[], idx: number) => {
-          const sc = parseInt(row[4]);
-          return {
-            id: idx + 1,
-            timestamp: new Date(parseInt(row[0]) * 1000).toISOString(),
-            client_ip: row[3], domain: row[2], type: row[1],
-            status: [1, 4, 5, 9, 10, 11].includes(sc) ? 'blocked' : 'allowed',
-            response_time_ms: 0,
-          };
-        });
-        if (filters?.device) queries = queries.filter((q: any) => q.client_ip === filters.device);
-        if (filters?.blocked === 'true') queries = queries.filter((q: any) => q.status === 'blocked');
-        else if (filters?.blocked === 'false') queries = queries.filter((q: any) => q.status === 'allowed');
-        if (filters?.domain) queries = queries.filter((q: any) => q.domain.includes(filters.domain!));
-        return queries.slice(0, limit);
-      }
-    }
-  } catch { /* */ }
 
   // Fallback: pihole.log
   try {
@@ -1798,6 +1739,51 @@ export function runExclusiveDnsTask<T>(fn: () => Promise<T>): Promise<T> {
   const task = dnsJobChain.then(job, job);
   dnsJobChain = task.then(() => undefined, () => undefined);
   return task;
+}
+
+// Pi-hole ayarı (pihole.toml) okuma: `pihole-FTL --config <anahtar>` (FTL çalışmasa da). Okunamazsa null.
+export async function ftlConfigGet(key: string): Promise<string | null> {
+  if (!isLinux || !/^[a-zA-Z][a-zA-Z0-9.]*$/.test(key)) return null;
+  const r = await runResult(`pihole-FTL --config ${shq(key)}`, 10000);
+  return r.code === 0 ? r.stdout.trim() : null;
+}
+
+// Pi-hole ayarlarını (Pi-hole → Ayarlar) yazar: pi-dhcp.sh gibi FTL DURURKEN (çalışan FTL'e yazılan DNS çekirdeği ayarları
+// kendini yeniden başlatır; birkaç anahtarda üst üste başlatma olurdu). DNS birkaç saniye kesilir. Önceki değerler okunur;
+// yazma reddedilirse (pihole-FTL değeri doğrular) ya da FTL yeni değerlerle sağlıklı açılmazsa geri yazılır. Panelin DNS iş
+// kuyruğunda sırayla (routing / Pi DHCP yeniden başlatmalarıyla çakışmaz).
+export async function applyFtlConfig(pairs: [string, string][]): Promise<{ ok: boolean; error?: string }> {
+  if (!isLinux) return { ok: false, error: 'Yalnız Pi üzerinde' };
+  if (!pairs.length) return { ok: true };
+  for (const [k] of pairs) if (!/^[a-zA-Z][a-zA-Z0-9.]*$/.test(k)) return { ok: false, error: `Geçersiz ayar: ${k}` };
+  return runExclusiveDnsTask(async () => {
+    const old: [string, string][] = [];
+    for (const [k] of pairs) {
+      const v = await ftlConfigGet(k);
+      if (v === null) return { ok: false, error: `Pi-hole ayarı okunamadı: ${k} (Pi-hole kurulu mu?)` };
+      old.push([k, v]);
+    }
+    const write = async (ps: [string, string][]): Promise<string> => {
+      for (const [k, v] of ps) {
+        const r = await runResult(`umask 022; pihole-FTL --config ${shq(k)} ${shq(v)}`, 20000);
+        if (r.code !== 0) return `${k}: ${(r.stderr || r.stdout).trim().split('\n').pop() || `çıkış ${r.code}`}`.slice(0, 200);
+      }
+      return '';
+    };
+    let err = '';
+    await withFtlStopped(async () => {
+      err = await write(pairs);
+      if (err) await write(old);
+    });
+    if (err) {
+      await waitFtlHealthy((await ftlUnitState()).restarts);
+      return { ok: false, error: `Pi-hole ayarı reddetti — ${err}` };
+    }
+    if (await waitFtlHealthy((await ftlUnitState()).restarts)) return { ok: true };
+    await withFtlStopped(async () => { await write(old); });
+    await waitFtlHealthy((await ftlUnitState()).restarts);
+    return { ok: false, error: 'Pi-hole yeni ayarlarla açılmadı — önceki ayarlar geri yüklendi' };
+  });
 }
 
 // Yerel DNS (127.0.0.1:53) bir yanıt dönüyor mu? NXDOMAIN/SERVFAIL de yanıttır; yalnız bağlantı reddi /

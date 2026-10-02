@@ -59,6 +59,7 @@ import { startReachWatch, noteReachResult, reachWatchState, REACH_WATCH_INTERVAL
 import { storageStatus, storageJob, noteStorageJob, startArchive, startPrepare, startMigrate, startStorageWatch } from './storage';
 import { applyKiosk, kioskSupport } from './kiosk';
 import { shareStatus, enableShare, disableShare, setSharePassword, addUsbShare, removeUsbShare, setTimeMachine, startShareWatch } from './share';
+import { piholeConfigView, applyPiholeSettings, getBlocking, setBlocking, migratePiholeConfigRows, type ConfigRow } from './piholeConfig';
 import { syncStatus, enableSync, disableSync, acceptDevice, rejectDevice, removeDevice, acceptFolder, rejectFolder, removeFolder,
   updateFolder, setCloud, syncBlocksSatellite, startSyncWatch } from './sync';
 import { vaultStatus, vaultJob, noteVaultJob, connectVault, saveSettings, startBackup, listSnapshots, disableVault,
@@ -166,7 +167,7 @@ app.use('/api', authGate);
 // terminali çalıştıramasın). Ağ uçlarındaki (netmode, wan …) denetimin aynısı; localhost (kiosk) ve IP güvenilir.
 // netAdminGuard aşağıda tanımlı: istek anında çağrılır.
 app.use(['/api/terminal', '/api/cron', '/api/backup', '/api/system', '/api/services', '/api/storage', '/api/firewall',
-  '/api/fail2ban', '/api/unbound', '/api/bandwidth', '/api/vault', '/api/sync'], (req, res, next) => { void netAdminGuard(req, res, next); });
+  '/api/fail2ban', '/api/unbound', '/api/bandwidth', '/api/vault', '/api/sync', '/api/pihole/blocking'], (req, res, next) => { void netAdminGuard(req, res, next); });
 // Uzaktan yönetim anahtarı (VPS istemcisine panel erişimi, remoteAccess.ts): yalnız bu yol — /api/vps'in geri kalanı değil.
 app.use('/api/vps/:id/clients/:clientId/panel-access', writeLimiter, (req, res, next) => { void netAdminGuard(req, res, next); });
 registerAuthRoutes(app);
@@ -184,6 +185,8 @@ process.on('SIGINT', () => {
 initDb();
 startHealthMonitor();
 startCronJobs();
+// Pi-hole ayar satırlarının eski tohum değerleri (gizlilik seçenekleri, ikincil DNS açıklaması) — tablolar kurulduktan sonra
+setTimeout(() => { void migratePiholeConfigRows().catch(e => console.error('[pihole] ayar satırları:', e?.message || e)); }, 5000);
 
 // ─── System ───
 app.get('/api/status', (_req, res) => {
@@ -288,7 +291,10 @@ app.post('/api/services/toggle', async (req, res) => {
     // Zapret açılmadan önce listesi ve ayarları yazılır (zapret.ts); sonuç (ör. "liste boş" uyarısı) yanıtla döner.
     const zapret: ZapretApplyResult | undefined = name === 'zapret' && enabled ? await applyZapret() : undefined;
     let actionError = '';
-    try { await systemServices.toggleService(name, enabled); } catch (e: any) { actionError = e.message; }
+    try {
+      if (name === 'pihole') await runExclusiveDnsTask(() => systemServices.toggleService(name, enabled));
+      else await systemServices.toggleService(name, enabled);
+    } catch (e: any) { actionError = e.message; }
     const timeout = actionError ? 3000 : enabled ? (name === 'pihole' ? FTL_SETTLE_TIMEOUT : 15000) : 10000;
     const st = await waitServiceSettled(name, enabled ? 'running' : 'stopped', timeout);
     const ok = !actionError && (enabled ? st.status === 'running' : st.status !== 'running' && st.status !== 'restarting');
@@ -526,10 +532,12 @@ app.get('/api/cron/jobs/:id/output', (req, res) => {
 // ─── Service Config ───
 app.get('/api/services/:name/config', async (req, res) => {
   try {
-    const rows = await dbAll(
+    let rows = await dbAll(
       'SELECT category, key, value, label, description, type, options FROM service_config WHERE service = ? ORDER BY category, key',
       [req.params.name]
     );
+    // Pi-hole: değerler Pi-hole'un kendisinden (pihole.toml) — panelin veritabanı yalnız etiket / açıklama / tür kaynağı
+    if (req.params.name === 'pihole') rows = (await piholeConfigView(rows as ConfigRow[])).rows;
     const config: Record<string, any[]> = {};
     rows.forEach((r: any) => {
       if (!config[r.category]) config[r.category] = [];
@@ -546,6 +554,16 @@ app.put('/api/services/:name/config', async (req, res) => {
     const { changes } = req.body; // { key: value, ... }
     if (!changes || typeof changes !== 'object') {
       return res.status(400).json({ error: 'Missing changes object' });
+    }
+    // Pi-hole: doğrulanır ve Pi-hole'a uygulanır (FTL dururken yazılır, sağlıklı açılmazsa geri alınır); veritabanı da güncellenir
+    if (req.params.name === 'pihole') {
+      try {
+        const r = await applyPiholeSettings(changes);
+        await recordEvent('pihole', `Pi-hole ayarları uygulandı: ${r.applied.join(', ')}`);
+        return res.json({ success: true, message: r.message, applied: r.applied.length });
+      } catch (e: any) {
+        return res.status(400).json({ error: e.message });
+      }
     }
     for (const [key, value] of Object.entries(changes)) {
       await dbRun('UPDATE service_config SET value = ? WHERE service = ? AND key = ?',
@@ -836,6 +854,8 @@ app.post('/api/services/:name/restart', async (req, res) => {
           if (verdict.error) throw new Error(verdict.error);
           await applyPanelFirewall();
         }
+      } else if (name === 'pihole') {
+        await runExclusiveDnsTask(() => systemServices.restartService(name));
       } else {
         await systemServices.restartService(name);
       }
@@ -870,6 +890,29 @@ app.post('/api/services/:name/restart', async (req, res) => {
 });
 
 // ─── Pi-hole Stats ───
+// Pi-hole reklam / takip engellemesi: DNS kesilmez (eski başlık anahtarı pihole-FTL servisini durduruyordu). Kapatma isteğe
+// bağlı süreli: süre dolunca Pi-hole engellemeyi kendisi açar. Yazma isteği netAdminGuard'dan (önek listesi) geçer.
+app.get('/api/pihole/blocking', async (_req, res) => {
+  try {
+    res.json(await getBlocking());
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+app.post('/api/pihole/blocking', async (req, res) => {
+  const { enabled, minutes } = req.body ?? {};
+  if (typeof enabled !== 'boolean') return res.status(400).json({ error: 'enabled alanı true/false olmalı' });
+  const min = minutes === undefined || minutes === null || minutes === '' ? undefined : Number(minutes);
+  try {
+    const st = await setBlocking(enabled, min);
+    await dbRun("UPDATE service_config SET value = ? WHERE service = 'pihole' AND key = 'blocking_enabled'", [enabled ? 'true' : 'false']);
+    await recordEvent('pihole', enabled ? 'Reklam engelleme açıldı' : `Reklam engelleme kapatıldı${min ? ` (${min} dk sonra kendiliğinden açılır)` : ''}`);
+    res.json({ success: true, ...st });
+  } catch (e: any) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
 app.get('/api/pihole/stats', async (_req, res) => {
   try {
     const stats = await getPiholeStats();

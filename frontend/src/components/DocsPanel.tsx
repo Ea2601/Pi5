@@ -765,7 +765,7 @@ function TroubleshootingDoc({ expandedFaq, setExpandedFaq }: { expandedFaq: stri
     { id: 'homevpn-fail', q: "Ev VPN'ine dışarıdan bağlanılamıyor", a: "WireGuard → Ev VPN'i (Pi) sekmesinde Dışarıdan bağlantı → Testi başlat'a basın. Test evin dış adresini, DDNS'i, evde kaç modem/router olduğunu (arka arkaya iki cihaz = her birinde port yönlendirmesi) ve operatörün paylaşımlı IP (CGNAT) kullanıp kullanmadığını bulur; bağlı bir VPS tüneli varsa dışarıdan deneme paketi gönderip modem ayarını doğrular. Sonuca göre yapılacakları adım adım gösterir. Telefonla denerken Wi-Fi kapalı olmalı." },
     { id: 'wg-fail', q: 'WireGuard tüneli bağlanmıyor', a: 'VPS\'in erişilebilir olduğundan emin olun (ping). UDP 51820 portunun VPS firewall\'unda açık olduğunu kontrol edin. "wg show" komutuyla handshake durumunu kontrol edin.' },
     { id: 'high-cpu', q: 'CPU kullanımı çok yüksek', a: 'Zapret NFQWS modunda paket işleme CPU yoğundur. TPROXY moduna geçmeyi deneyin. Ayrıca Unbound thread sayısını CPU çekirdek sayısıyla eşleştirin.' },
-    { id: 'blocked-site', q: 'Bir site Pi-hole tarafından yanlışlıkla engelleniyor', a: 'Pi-hole → Beyaz Liste sekmesinden domaini ekleyin. Alternatif olarak "pihole -w example.com" komutuyla CLI\'dan ekleyebilirsiniz.' },
+    { id: 'blocked-site', q: 'Bir site Pi-hole tarafından yanlışlıkla engelleniyor', a: 'Pi-hole → Beyaz Liste sekmesinden domaini ekleyin. Alternatif olarak "pihole allow example.com" komutuyla CLI\'dan ekleyebilirsiniz.' },
     { id: 'ssh-locked', q: 'SSH ile bağlanamıyorum, Fail2Ban engelledi', a: 'Ev ağı varsayılan olarak muaftır. Dışarıdan (ör. Ev VPN\'i ile) yasaklandıysanız panelde Fail2Ban → Genel Bakış → "Yasağı kaldır". Panele de erişemiyorsanız Pi\'de "fail2ban-client unban <IP>" çalıştırın.' },
     { id: 'slow-dns', q: 'DNS sorguları yavaş', a: 'Unbound önbellek boyutunu artırın (msg_cache_size, rrset_cache_size). Prefetch özelliğini aktifleştirin. cache_min_ttl değerini yükseltin.' },
     { id: 'gravity-fail', q: 'Pi-hole Gravity güncellemesi başarısız', a: 'İnternet bağlantısını kontrol edin. Bloklistelerindeki URL\'lerin erişilebilir olduğunu doğrulayın. Erişilemeyen listeleri devre dışı bırakın.' },
@@ -802,8 +802,8 @@ function CliDoc() {
         <CodeBlock>{`pihole status              # Servis durumu
 pihole -g                  # Gravity güncelleme (adlist indir)
 pihole -up                 # Pi-hole güncelleme
-pihole -w example.com      # Beyaz listeye ekle
-pihole -b example.com      # Kara listeye ekle
+pihole allow example.com   # Beyaz listeye ekle
+pihole deny example.com    # Kara listeye ekle
 systemctl restart pihole-FTL  # DNS servisini yeniden başlat (v6'da 'pihole restartdns' yok)
 pihole -q example.com      # Domain sorgula (engelli mi?)`}</CodeBlock>
       </DocBlock>

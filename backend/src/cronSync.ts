@@ -21,6 +21,10 @@ const RUNNER = path.resolve(__dirname, '../../scripts/cron-run.sh');
 const LEGACY_MOVED = [/apt update -qq && apt upgrade/, /journalctl --vacuum-time/];
 const OLD_LOG_CMD = 'journalctl --vacuum-time=7d';
 export const LOG_CLEANUP_CMD = 'journalctl --vacuum-time=7d && find /var/log -name "*.gz" -mtime +30 -delete';
+// Gece gravity'si panelin liste indirme birimiyle (pi5-gravity — piholeLists.ts): panel o sırada liste indiriyorsa ikinci bir
+// 'pihole -g' aynı veritabanına yazmaz (atlanır); --wait ile görevin sonucu gravity'nin gerçek sonucudur.
+const OLD_GRAVITY_CMD = 'pihole -g';
+export const GRAVITY_CMD = 'systemctl is-active --quiet pi5-gravity || systemd-run --quiet --collect --wait --unit=pi5-gravity pihole -g';
 
 const FIELD_NAMES = ['dakika', 'saat', 'ayın günü', 'ay', 'haftanın günü'];
 const RANGES: [number, number][] = [[0, 59], [0, 23], [1, 31], [1, 12], [0, 7]];
@@ -177,6 +181,7 @@ export function readSystemCron(): SystemCronEntry[] {
 export async function syncCronOnStartup(): Promise<void> {
   if (!isLinux) return;
   await dbRun('UPDATE cron_jobs SET command = ? WHERE name = ? AND command = ?', [LOG_CLEANUP_CMD, 'Log Temizligi', OLD_LOG_CMD]);
+  await dbRun('UPDATE cron_jobs SET command = ? WHERE name = ? AND command = ?', [GRAVITY_CMD, 'Pi-hole Gravity', OLD_GRAVITY_CMD]);
   await syncCronJobs();
   let txt: string;
   try { txt = fs.readFileSync(LEGACY_FILE, 'utf8'); } catch { return; }
