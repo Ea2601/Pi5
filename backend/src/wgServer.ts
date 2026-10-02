@@ -6,7 +6,9 @@
 //    wg_server_peers — yedeklere girmez) ve /etc/wireguard/wg_pi.conf'ta (0600) durur.
 //  - İstemci yapılandırması her istendiğinde güncel uç adresiyle üretilir: paneldeki DDNS adı, yoksa dış IP. Ev IP'si
 //    değişse de (DDNS geçmişinde 2-4 haftada bir) QR geçerli kalır.
-//  - Roller: 'admin' ev ağına, panele ve SSH'a erişir; 'guest' yalnız internete çıkar ve Pi'nin DNS'ini kullanır.
+//  - Roller: 'admin' ev ağına, panele ve SSH'a erişir; 'guest' yalnız internete çıkar ve Pi'nin DNS'ini kullanır: misafirden
+//    Pi'ye giriş izin listesiyle — yalnız DNS (53) ve ping; panel, SSH, ağ paylaşımı, keşif servisleri (wsdd2, LLMNR, avahi),
+//    NTP, cihaz yedekleme ve sonradan eklenecek her servis kapalı.
 //  - Güvenlik duvarı kendi tablolarında: inet pi5_wgsrv (misafir yalıtımı), ip pi5_wgsrv_nat (maskeleme). Kurallar
 //    core/pi5-wgsrv.nft'e yazılır ve arayüzün PostUp'ı yükler → Pi açılışında arayüzle aynı anda gelir. Debian'ın
 //    inet filter tablosunda giriş/iletme politikası drop ise oraya kendi zincirleriyle izin eklenir (başka tablodaki accept
@@ -34,12 +36,9 @@ const NFT_FILE = path.resolve(__dirname, '../../core/pi5-wgsrv.nft');
 const UNIT = `wg-quick@${WG_IFACE}`;
 // Misafirin erişemeyeceği yerel ağlar (ev ağı, diğer VPN istemcileri, CGNAT, link-local)
 const PRIVATE_NETS = '10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10, 169.254.0.0/16';
-// Misafirin Pi üzerinde erişemeyeceği yönetim portları (SSH, panel, backend, Pi-hole arayüzü)
-// Misafirin Pi'de erişemeyeceği TCP portları: SSH, panel, backend; 139/445 ağ paylaşımı (Samba — share.sh / share.ts);
-// 22000 cihaz yedekleme (Syncthing — sync.sh / sync.ts)
-const ADMIN_PORTS = '22, 80, 139, 443, 445, 3001, 8080, 22000';
-// Misafirin Pi'de erişemeyeceği UDP portları: cihaz yedekleme (Syncthing QUIC 22000, yerel keşif 21027)
-const ADMIN_UDP_PORTS = '21027, 22000';
+// Misafirin Pi'de erişebildiği tek servis: DNS (Pi-hole, TCP/UDP 53 — istemci yapılandırmasındaki DNS = 10.77.77.1; ebeveyn
+// kontrolünün "tüm ağda DNS" yönlendirmesi de 53'e iner). Geri kalan her şey (yasak liste değil izin listesi) düşer.
+const GUEST_PI_PORTS = '53';
 const KEY = /^[A-Za-z0-9+/]{42}[AEIMQUYcgkosw048]=$/;
 
 export type PeerRole = 'admin' | 'guest';
@@ -186,8 +185,10 @@ export function renderNft(peers: PeerRow[]): string {
     `  set guests { type ipv4_addr;${guests.length ? ` elements = { ${guests.join(', ')} }` : ''} }`,
     '  chain input {',
     '    type filter hook input priority filter - 1; policy accept;',
-    `    iifname "${WG_IFACE}" ip saddr @guests tcp dport { ${ADMIN_PORTS} } drop`,
-    `    iifname "${WG_IFACE}" ip saddr @guests udp dport { ${ADMIN_UDP_PORTS} } drop`,
+    `    iifname "${WG_IFACE}" ip saddr @guests ct state established,related accept`,
+    `    iifname "${WG_IFACE}" ip saddr @guests meta l4proto { tcp, udp } th dport { ${GUEST_PI_PORTS} } accept`,
+    `    iifname "${WG_IFACE}" ip saddr @guests icmp type echo-request accept`,
+    `    iifname "${WG_IFACE}" ip saddr @guests drop`,
     '  }',
     '  chain forward {',
     '    type filter hook forward priority filter - 1; policy accept;',
@@ -382,6 +383,10 @@ export async function wgServerStatus() {
   }
   const legacyDrop = await execFileP('nft', ['list', 'chain', 'inet', 'filter', 'input'], { timeout: 5000 })
     .then(r => /policy drop;/.test(r.stdout), () => false);
+  // VPN istemcilerinin DNS'i 10.77.77.1'dir: Pi-hole yalnız "yerel" (LOCAL — bağlı ağlar, wg_pi dahil) ya da "tüm arayüzler"
+  // (ALL) kipinde yanıtlar; SINGLE / BIND yalnız ev ağı kartını dinler → istemciler bağlanır ama hiçbir ad çözülmez.
+  const dnsListening = await execFileP('pihole-FTL', ['--config', 'dns.listeningMode'], { timeout: 5000 })
+    .then(r => r.stdout.trim().toUpperCase(), () => '');
   return {
     supported: tools,
     qrencode: qr,
@@ -393,6 +398,8 @@ export async function wgServerStatus() {
     publicKey: s?.public_key || '',
     endpoint: await serverEndpoint(),
     legacyInputDrop: legacyDrop,
+    dnsListening,
+    dnsOk: !dnsListening || dnsListening === 'LOCAL' || dnsListening === 'ALL',
     peers: peers.map(p => ({
       id: p.id, name: p.name, ip: p.ip, role: p.role, created_at: p.created_at,
       ...(live.get(p.public_key) || { handshake: 0, rx: 0, tx: 0, endpoint: '' }),

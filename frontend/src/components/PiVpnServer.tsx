@@ -16,6 +16,7 @@ interface Peer {
 interface WgStatus {
   supported?: boolean; qrencode?: boolean; enabled?: boolean; running?: boolean; port?: number; network?: string;
   serverIp?: string; endpoint?: { host: string; source: 'ddns' | 'ip' | 'none' }; legacyInputDrop?: boolean;
+  dnsListening?: string; dnsOk?: boolean; // Pi-hole dns.listeningMode: VPN istemcileri yalnız LOCAL / ALL'da yanıt alır
   peers?: Peer[]; piLanIp?: string;
 }
 interface PeerConfig { name: string; config: string; qr: string; endpoint: string }
@@ -139,6 +140,12 @@ export function PiVpnServer() {
         )}
         {st?.qrencode === false && (
           <div className="routing-apply"><AlertTriangle size={14} /><span>qrencode kurulu değil: QR üretilemez, yapılandırma dosyası yine indirilebilir.</span></div>
+        )}
+        {st?.enabled && st.dnsOk === false && (
+          <div className="routing-apply routing-apply-err"><AlertTriangle size={14} /><span>
+            Pi-hole DNS dinleme modu ({st.dnsListening}) VPN istemcilerini yanıtlamaz: bağlanırlar ama hiçbir site açılmaz. Pi-hole → Ayarlar →
+            DNS'te «yerel» (önerilen) ya da «tüm arayüzler» seçin.
+          </span></div>
         )}
 
         <div className="pivpn-facts">
