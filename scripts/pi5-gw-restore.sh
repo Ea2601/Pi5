@@ -10,6 +10,8 @@
 #                                       kapalıyken dosya yoktur — backend/src/remoteAccess.ts)
 #   - /etc/nftables.d/pi5-wgext.conf  : hazır yapılandırmayla kurulan tünellerden gelen yeni bağlantıları düşürür (böyle
 #                                       tünel yokken dosya yoktur — backend/src/wgImport.ts)
+#   - /opt/pi5-gateway/core/pi5-geo.nft: Geo-IP / tehdit engeli (yalnız panelde "Kalıcı yap" denince yazılır; özellik
+#                                       kapalıyken ya da denemedeyken dosya yoktur — backend/src/geoBlock.ts)
 # Dosyaları backend yazar ve her açılışta yeniden yazar (pi5-ap.conf'u net-mode.sh yazar, pi5-net-guard her açılışta
 # yeniden yükler); bu betik yalnız son hallerini erkenden yükler. Hatalar günlüğe yazılır, açılışı durdurmaz.
 set -u
@@ -57,7 +59,8 @@ fi
 if [ "$(systemctl is-active fail2ban 2>/dev/null)" = active ] && command -v fail2ban-client >/dev/null 2>&1; then
   banned=$(fail2ban-client banned 2>/dev/null | grep -oE '[0-9]{1,3}(\.[0-9]{1,3}){3}' | sort -u)
   if [ -n "$banned" ]; then
-    ruleset=$(nft list ruleset 2>/dev/null)
+    # Geo-IP tablosu (pi5_geo) sayılmaz: tehdit kümesinde yasaklı bir IP bulunması "yasaklar duruyor" sanılmasın
+    ruleset=$(nft list ruleset 2>/dev/null | sed '/^table inet pi5_geo {/,/^}/d')
     lost=1
     for ip in $banned; do
       if printf '%s' "$ruleset" | grep -qwF -- "$ip"; then lost=0; break; fi  # tam adres (11.2.3.45 içindeki 1.2.3.4 sayılmaz)
@@ -72,5 +75,12 @@ z_at=$(systemctl show -p ActiveEnterTimestampMonotonic --value zapret 2>/dev/nul
 if [ "$(systemctl is-active zapret 2>/dev/null)" = active ] && [[ $nft_at =~ ^[0-9]+$ ]] && [[ $z_at =~ ^[0-9]+$ ]] \
   && [ "$z_at" -gt 0 ] && [ "$z_at" -lt "$nft_at" ]; then
   systemctl --no-block restart zapret && log "zapret yeniden başlatıldı (kuralları nftables yeniden başlatılınca silinmişti)"
+fi
+# Geo-IP / tehdit engeli: kendi tablosu (inet pi5_geo), /etc/nftables.d dışında — bozuk dosya pi5_filter'ın yüklemesini
+# bozmasın. En sonda: yukarıdaki Fail2Ban denetimi kümelerdeki (ör. AbuseIPDB) yasaklı IP'yi görüp yanılmasın, büyük
+# kümeler `nft list ruleset` dökümüne girmesin.
+GEO=/opt/pi5-gateway/core/pi5-geo.nft
+if [ -s "$GEO" ]; then
+  out=$(nft -f "$GEO" 2>&1) || log "yüklenemedi: $GEO: $out"
 fi
 exit 0

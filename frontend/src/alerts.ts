@@ -38,7 +38,7 @@ export const sourceLabel = (s: string) => SOURCE_LABEL[(s || '').split(':')[0]] 
 const SOURCE_TAB: Record<string, TabId> = {
   'netmode-bak': 'roles', 'netmode-bak-health': 'roles', 'netmode-wan': 'roles', 'netmode-rep': 'roles', 'netmode-home': 'roles',
   firewall: 'firewall', fail2ban: 'fail2ban', 'routing-list': 'routing', 'vps-tunnel': 'vps', 'device-new': 'devicecontrol',
-  pcap: 'nettools', geo: 'firewall',
+  pcap: 'nettools', geo: 'geo',
   cpu: 'dashboard', memory: 'dashboard', disk: 'dashboard', network: 'dashboard', dns: 'unbound',
   dhcp: 'dhcp', 'dhcp-rogue': 'dhcp', 'dhcp-probe': 'dhcp', unbound: 'unbound', zapret: 'zapret', pihole: 'pihole',
   vps: 'vps', vpn: 'vps', device: 'devicecontrol', update: 'maintenance', cron: 'maintenance', mesh: 'roles',

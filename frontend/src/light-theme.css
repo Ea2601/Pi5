@@ -256,3 +256,15 @@
   --agenda-calendar: 63, 98, 18;
   --agenda-blocked: 185, 28, 28;
 }
+
+/* ── 13. Geo-IP / Tehdit (GeoBlockPanel.css — G2.4) ──
+   Tembel sekme CSS'i bu katmandan sonra yüklenir: eşit özgüllükte bileşen kuralı kazanacağından tam :root.light-theme.
+   Kutular ve ülke çipleri koyu temanın yarı saydam zemini yerine açık yüzeyde hafif gri; uyarı bandı yazısı okunur koyu ton. */
+:root.light-theme .geo-box,
+:root.light-theme .geo-stat { background: rgba(15, 23, 42, 0.025); }
+:root.light-theme .geo-chip,
+:root.light-theme .geo-cc-hit { background: var(--bg-surface); }
+:root.light-theme .geo-cc-hit:hover,
+:root.light-theme .geo-cc-hit:focus-visible { background: var(--input-bg-hover); }
+:root.light-theme .geo-trial { background: rgba(217, 119, 6, 0.08); border-color: rgba(217, 119, 6, 0.45); }
+:root.light-theme .geo-trial-text strong { color: #92400e; }

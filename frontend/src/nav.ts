@@ -2,7 +2,7 @@ import {
   LayoutDashboard, Network, Route, Terminal, Server,
   ShieldBan, Zap, Flame, Globe, ShieldAlert, BookOpen,
   Activity, Search, Gauge, Bell, Wrench, Users, Sliders,
-  Database, Settings, MonitorSmartphone, TerminalSquare, Lightbulb, Monitor, Radio, Layers, HardDrive, History, CalendarDays, KeyRound, ShieldCheck, Cloud,
+  Database, Settings, MonitorSmartphone, TerminalSquare, Lightbulb, Monitor, Radio, Layers, HardDrive, History, CalendarDays, KeyRound, ShieldCheck, Cloud, GlobeLock,
   type LucideIcon,
 } from 'lucide-react';
 import type { TabId } from './types';
@@ -32,6 +32,7 @@ export const NAV_TABS: NavTab[] = [
   { id: 'dhcp', label: 'DHCP Ayarları', icon: Radio, mainOnly: true },
   { id: 'zapret', label: 'Zapret DPI', icon: Zap, mainOnly: true },
   { id: 'firewall', label: 'Firewall', icon: Flame, mainOnly: true },
+  { id: 'geo', label: 'Geo-IP / Tehdit', icon: GlobeLock, mainOnly: true },
   { id: 'unbound', label: 'Unbound DNS', icon: Globe, mainOnly: true },
   { id: 'fail2ban', label: 'Fail2Ban', icon: ShieldAlert, mainOnly: true },
   { id: 'parental', label: 'Ebeveyn Kontrol', icon: Users, mainOnly: true },

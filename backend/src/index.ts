@@ -54,6 +54,7 @@ import { registerNotifyRoutes, startNotify } from './notify';
 import { registerPcapRoutes, startPcap } from './pcap';
 import { registerLicenseRoutes, startLicense } from './licenseRoutes';
 import { registerFleetRoutes, startFleetAgent } from './fleet';
+import { registerGeoRoutes, startGeo, reapplyGeo, afterGeoRestore, restoredGeoSettingsValue, GEO_SETTINGS_KEY, geoBlocksSatellite } from './geoBlock';
 import { startDeviceWatch } from './deviceWatch';
 import { validateSchedule, validateCommand, syncCronJobs, readJobStatuses, readSystemCron, syncCronOnStartup, runningJobs, jobOutput, startJobNow } from './cronSync';
 import { validateListValue, normalizeListValue, syncPiholeLists, lastListSync, externalPiholeEntries, startSystemHostsWatch,
@@ -209,6 +210,8 @@ registerFleetRoutes(app, {
     },
   },
 });
+// Geo-IP / tehdit engeli (geoBlock.ts): /api/geo — GET dışı yazma sınırı + netAdminGuard, uyduda 409 (gövdeler modülde).
+registerGeoRoutes(app, { guard: (req, res, next) => { void netAdminGuard(req, res, next); }, writeLimiter });
 
 // Graceful shutdown. Hat Kalitesi açıksa (wanMonitor.ts) bekleyen ölçümler yazılır ve hat durumu kaydedilir (en çok 2 sn);
 // kapalıyken hemen çıkılır.
@@ -936,6 +939,8 @@ app.post('/api/services/:name/restart', async (req, res) => {
     if (name === 'nftables') await runQos({ notify: false, force: true }).catch((e: any) => console.error('Kota / hız sınırları yeniden uygulanamadı:', e.message));
     if (name === 'nftables') await reapplyWgServer();
     if (name === 'nftables') { await wanFirewallReload(); await applyPortForwards(); }
+    // Geo-IP / tehdit engeli: açıksa tablo geri kurulur (kapalıyken hiçbir şey yüklenmez)
+    if (name === 'nftables') await reapplyGeo();
     const st = await waitServiceSettled(name, 'running', actionError ? 3000 : name === 'pihole' ? FTL_SETTLE_TIMEOUT : 15000);
     await dbRun('UPDATE service_status SET enabled = ?, status = ?, last_check = CURRENT_TIMESTAMP WHERE name = ?',
       [st.status === 'running' ? 1 : 0, st.status, name]);
@@ -4450,6 +4455,9 @@ app.post('/api/system/role', netAdminGuard, async (req, res) => {
       // Cihaz yedekleme de ana cihazdadır (uyduda uçlar 409, izleme çalışmaz)
       const sb = syncBlocksSatellite() || mobileBlocksSatellite();
       if (sb) return res.status(409).json({ error: sb });
+      // Geo-IP / tehdit engeli ana cihaza özgü (uyduda uçlar 409): kalıcı kural açılışta yüklenir, uyduda yönetilemezdi
+      const gb = await geoBlocksSatellite();
+      if (gb) return res.status(409).json({ error: gb });
       const ns = readNetModeState();
       if (ns && ns.stage !== 'none') return res.status(409).json({ error: 'Önce menü → DHCP Ayarları\'ndan otomatik adrese dönün (sabit adres ana cihaz içindir)' });
       if (ns && ns.homeStage !== 'none') return res.status(409).json({ error: "Önce ev Wi-Fi'ını kapatın (Cihaz Rolleri → Ev Wi-Fi'ı)" });
@@ -4754,8 +4762,10 @@ async function restoreTable(table: string, rows: any[]): Promise<number> {
     // Hız testi aralığı PUT /api/settings'in kabul ettiği aralığa çekilir: yedekteki aralık dışı değer (5, 50000 dk)
     // Ayarlar sayfasının otomatik kaydını reddettirmesin (sayı değilse eskisi gibi olduğu gibi)
     const st = table === 'app_settings' && row.key === 'speedtest_interval_min' ? clampSpeedtestInterval(row.value) : null;
+    // Geo-IP / tehdit engeli yedekten KAPALI gelir (geoBlock.ts): beklenmedik güvenlik duvarı değişikliği olmasın
+    const geo = table === 'app_settings' && row.key === GEO_SETTINGS_KEY ? restoredGeoSettingsValue(row.value) : null;
     const sql = `INSERT OR REPLACE INTO ${table} (${cols.join(', ')}) VALUES (${cols.map(() => '?').join(', ')})`;
-    await dbRun(sql, cols.map(c => (st !== null && c === 'value' ? String(st) : row[c])));
+    await dbRun(sql, cols.map(c => (c === 'value' && st !== null ? String(st) : c === 'value' && geo !== null ? geo : row[c])));
     n++;
   }
   return n;
@@ -4871,6 +4881,8 @@ async function applyRestored(tables: Set<string>, keys: Set<string>, req: expres
     await step('Koruma şablonları', async () => unmarkedNote);
   }
   if (ENGINE_BACKUP_TABLES.some(t => tables.has(t))) await step('Takvim kuralları', () => afterEngineRestore());
+  // Geo-IP / tehdit engeli: ayar kapalı yazıldı; süren deneme, kalıcı dosya ve tablo kaldırılır
+  if (keys.has(GEO_SETTINGS_KEY)) await step('Geo-IP / tehdit engeli', () => afterGeoRestore());
   return out;
 }
 
@@ -6889,6 +6901,8 @@ const server = app.listen(Number(port), bindHost, () => {
   startLicense();
   // Filo ajanı (fleet.ts): kayıt yoksa hemen döner (dosya, zamanlayıcı, ağ isteği yok).
   void startFleetAgent().catch((e: any) => console.error('[filo]', e?.message || e));
+  // Geo-IP / tehdit engeli (geoBlock.ts): kapalıysa hiçbir şey yapmaz; açıksa tablo denetlenir, deneme sürüyorsa izlenir.
+  startGeo();
   } // !isSatellite
   // Cron: panel görevleri zamanlayıcıya yazılır, ancak bu başarılıysa eski pi5-maintenance satırları çıkarılır (önce yeni
   // dosya). Veritabanı ilk kurulum işleri bitsin diye kısa gecikmeyle.
