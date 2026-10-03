@@ -82,6 +82,8 @@ finish() {
   fi
   # Disk ayrılırken durdurulan cihaz yedekleme (iş ya da kısa komut — share.sh usb-remove — yarıda kalsa da) geri gelsin
   [ "$SYNC_WAS" = 1 ] && { systemctl start "$SYNC_UNIT" >/dev/null 2>&1 || true; }
+  # Bu işin durdurduğu uygulamalar (apps_stop) geri gelsin; veri diski bağlı değilse birim kendisi bekler (RequiresMountsFor)
+  local a; for a in "${APPS_WAS[@]}"; do systemctl start --no-block "$a" >/dev/null 2>&1 || true; done
   return 0
 }
 svc_active() { systemctl is-active --quiet "$1" 2>/dev/null; }
@@ -364,8 +366,47 @@ sync_stop() {
   log "cihaz yedekleme duraklatıldı (disk ayrılıyor)"
   svc stop "$SYNC_UNIT"
 }
+# Uygulamalar (apps.sh, G3.3): konteynerler veri diskindeki klasörleri açık tutar — ayırma / taşıma öncesi durdurulur, finish()
+# yeniden başlatır. Yalnız çalışanlar. Uygulama yoksa (özellik kapalı) hiçbir şey yapılmaz.
+APPS_WAS=()
+APPS_DATA_DIR=/mnt/klyrix-data/apps
+apps_stop() {
+  local u
+  for u in $(systemctl list-units --type=service --state=active,activating --no-legend --plain 'pi5-app-*' 2>/dev/null | awk '{print $1}'); do
+    APPS_WAS+=("$u")
+  done
+  [ ${#APPS_WAS[@]} -gt 0 ] || return 0
+  log "uygulamalar duraklatıldı (${#APPS_WAS[@]}; disk ayrılıyor / veriler taşınıyor)"
+  svc stop "${APPS_WAS[@]}"
+}
+# Diskte uygulama verisi var mı (veri bölümü bu diskteyse): <uygulama>/ klasörlerinde dosya (imaj deposu 'storage' ve
+# indirme ara klasörü 'tmp' sayılmaz). Bu diskteki klyrix-data bölümü bağlı değilse (açılışta bağlanamadı) salt okunur ve
+# günlüğü oynatmadan (noload: diske yazılmaz) geçici olarak bağlanıp bakılır; bağlanamıyorsa veri okunamaz sayılır.
+apps_has_data() { [ -d "$1" ] && [ -n "$(find "$1" -mindepth 2 -maxdepth 2 ! -path "$1/storage/*" ! -path "$1/tmp/*" -print -quit 2>/dev/null)" ]; }
+apps_data_on() { # disk
+  local name src tgt tmp rc=1
+  name=$(basename "$1")
+  if is_mountpoint "$DATA_MNT"; then
+    src=$(mounted_at "$DATA_MNT")
+    if [ "$(disk_of_part "$src")" = "$name" ]; then apps_has_data "$APPS_DATA_DIR"; return; fi
+  fi
+  for src in $(parts_of "$1"); do
+    [ "$(blkid -c /dev/null -s LABEL -o value "$src" 2>/dev/null)" = "$DATA_LABEL" ] || continue
+    tgt=$(findmnt -n -o TARGET --source "$src" 2>/dev/null | head -1)
+    if [ -n "$tgt" ]; then apps_has_data "$tgt/apps" && return 0; continue; fi
+    tmp=$(mktemp -d /run/pi5-storage-apps.XXXXXX) || continue
+    if mount -o ro,noload "$src" "$tmp" 2>/dev/null; then
+      apps_has_data "$tmp/apps" && rc=0
+      umount "$tmp" 2>/dev/null || umount -l "$tmp" 2>/dev/null || true
+    fi
+    rmdir "$tmp" 2>/dev/null || true
+    [ "$rc" = 0 ] && return 0
+  done
+  return 1
+}
 
 cmd_migrate() {
+  apps_stop
   step 50 "Panel durduruluyor"
   backend_stop
   do_migrate
@@ -403,6 +444,9 @@ cmd_prepare() {
     local expect=${model:-$size_gb}
     [ "$confirm" = "$expect" ] || die "onay eşleşmedi: diski silmek için '$expect' yazılmalı"
   fi
+  # Uygulama verileri (Home Assistant ayarları, parola kasası …) sessizce silinmez: önce Uygulamalar sayfasından
+  # uygulamalar "verileri de sil" onayıyla kaldırılır.
+  apps_data_on "$disk" && die "bu diskte uygulama verileri var ($APPS_DATA_DIR) — önce Uygulamalar sayfasından uygulamaları verileriyle kaldırın"
   local total_gib=$((size_b / 1073741824))
   if [ "$share" = 1 ]; then
     [[ "$gb" =~ ^[0-9]+$ ]] || die "sistem bölümü boyutu (GB) sayı olmalı"
@@ -417,6 +461,7 @@ cmd_prepare() {
 
   step 25 "Disk ayrılıyor"
   sync_stop
+  apps_stop
   for p in $(parts_of "$disk"); do
     for m in $(findmnt -n -o TARGET --source "$p" 2>/dev/null | sort -r); do
       umount "$m" 2>/dev/null || { die "$m ayrılamadı (kullanımda): $(fuser -vm "$m" 2>&1 | tail -n +2 | awk '{print $NF}' | sort -u | tr '\n' ' ')"; }

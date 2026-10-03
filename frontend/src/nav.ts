@@ -2,7 +2,7 @@ import {
   LayoutDashboard, Network, Route, Terminal, Server,
   ShieldBan, Zap, Flame, Globe, ShieldAlert, BookOpen,
   Activity, Search, Gauge, Bell, Wrench, Users, Sliders,
-  Database, Settings, MonitorSmartphone, TerminalSquare, Lightbulb, Monitor, Radio, Layers, HardDrive, History, CalendarDays, KeyRound, ShieldCheck, Cloud, GlobeLock, Waypoints,
+  Database, Settings, MonitorSmartphone, TerminalSquare, Lightbulb, Monitor, Radio, Layers, HardDrive, History, CalendarDays, KeyRound, ShieldCheck, Cloud, GlobeLock, Waypoints, Package,
   type LucideIcon,
 } from 'lucide-react';
 import type { TabId } from './types';
@@ -51,6 +51,7 @@ export const NAV_TABS: NavTab[] = [
   { id: 'casecontrol', label: 'Kasa LED', icon: Lightbulb },
   { id: 'kiosk', label: 'HDMI Ekran', icon: Monitor },
   { id: 'storage', label: 'Depolama', icon: HardDrive },
+  { id: 'apps', label: 'Uygulamalar', icon: Package, mainOnly: true },
   { id: 'backup', label: 'Yedekleme', icon: Database },
   { id: 'license', label: 'Lisans', icon: KeyRound },
   { id: 'settings', label: 'Ayarlar', icon: Settings },

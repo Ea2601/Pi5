@@ -56,6 +56,7 @@ import { registerLicenseRoutes, startLicense } from './licenseRoutes';
 import { registerFleetRoutes, startFleetAgent } from './fleet';
 import { registerGeoRoutes, startGeo, reapplyGeo, afterGeoRestore, restoredGeoSettingsValue, GEO_SETTINGS_KEY, geoBlocksSatellite } from './geoBlock';
 import { registerSdwanRoutes, syncSdwanChains, reapplySdwan, restoreSdwan, startSdwanWatch, sdwanBlocksSatellite } from './sdwan';
+import { registerAppsRoutes, startApps, reapplyApps, appsBlocksSatellite } from './apps';
 import { startDeviceWatch } from './deviceWatch';
 import { validateSchedule, validateCommand, syncCronJobs, readJobStatuses, readSystemCron, syncCronOnStartup, runningJobs, jobOutput, startJobNow } from './cronSync';
 import { validateListValue, normalizeListValue, syncPiholeLists, lastListSync, externalPiholeEntries, startSystemHostsWatch,
@@ -216,6 +217,8 @@ registerGeoRoutes(app, { guard: (req, res, next) => { void netAdminGuard(req, re
 // Şubeler arası SD-WAN (sdwan.ts): /api/sdwan — GET dışı yazma sınırı + netAdminGuard, uyduda 409. Merkez portu (UDP 51821)
 // açılınca / kapanınca internet kartı ve yedek hat güvenlik duvarı yeniden yüklenir (wanFirewallReload).
 registerSdwanRoutes(app, { guard: (req, res, next) => { void netAdminGuard(req, res, next); }, writeLimiter, wanFirewallReload: () => wanFirewallReload() });
+// Uygulamalar (apps.ts, G3.3): /api/apps — GET dışı yazma sınırı + netAdminGuard, uyduda 409 (gövdeler modülde).
+registerAppsRoutes(app, { guard: (req, res, next) => { void netAdminGuard(req, res, next); }, writeLimiter });
 
 // Graceful shutdown. Hat Kalitesi açıksa (wanMonitor.ts) bekleyen ölçümler yazılır ve hat durumu kaydedilir (en çok 2 sn);
 // kapalıyken hemen çıkılır.
@@ -947,6 +950,8 @@ app.post('/api/services/:name/restart', async (req, res) => {
     if (name === 'nftables') { await wanFirewallReload(); await applyPortForwards(); }
     // Geo-IP / tehdit engeli: açıksa tablo geri kurulur (kapalıyken hiçbir şey yüklenmez)
     if (name === 'nftables') await reapplyGeo();
+    // Uygulamalar (G3.3): açıksa pi5_apps ve izin zincirleri (kapalıyken hiçbir şey yapmaz)
+    if (name === 'nftables') await reapplyApps(true);
     const st = await waitServiceSettled(name, 'running', actionError ? 3000 : name === 'pihole' ? FTL_SETTLE_TIMEOUT : 15000);
     await dbRun('UPDATE service_status SET enabled = ?, status = ?, last_check = CURRENT_TIMESTAMP WHERE name = ?',
       [st.status === 'running' ? 1 : 0, st.status, name]);
@@ -4460,8 +4465,8 @@ app.post('/api/system/role', netAdminGuard, async (req, res) => {
       // Bulut yedeği uyduda yönetilemez (uçlar 409): erişim / cihaz anahtarı cihazda kalmasın, süren yedek izlenmez kalmasın
       const vb = await vaultBlocksSatellite();
       if (vb) return res.status(409).json({ error: vb });
-      // Cihaz yedekleme de ana cihazdadır (uyduda uçlar 409, izleme çalışmaz)
-      const sb = syncBlocksSatellite() || mobileBlocksSatellite() || sdwanBlocksSatellite();
+      // Cihaz yedekleme de ana cihazdadır (uyduda uçlar 409, izleme çalışmaz); uygulamalar da (G3.3: motor açıkken)
+      const sb = syncBlocksSatellite() || mobileBlocksSatellite() || sdwanBlocksSatellite() || appsBlocksSatellite();
       if (sb) return res.status(409).json({ error: sb });
       // Geo-IP / tehdit engeli ana cihaza özgü (uyduda uçlar 409): kalıcı kural açılışta yüklenir, uyduda yönetilemezdi
       const gb = await geoBlocksSatellite();
@@ -6915,6 +6920,8 @@ const server = app.listen(Number(port), bindHost, () => {
   void startFleetAgent().catch((e: any) => console.error('[filo]', e?.message || e));
   // Geo-IP / tehdit engeli (geoBlock.ts): kapalıysa hiçbir şey yapmaz; açıksa tablo denetlenir, deneme sürüyorsa izlenir.
   startGeo();
+  // Uygulamalar (apps.ts, G3.3): motor kapalıyken hiçbir şey yapmaz; açıksa güvenlik duvarı ve uygulamalar onarılır.
+  startApps();
   } // !isSatellite
   // Cron: panel görevleri zamanlayıcıya yazılır, ancak bu başarılıysa eski pi5-maintenance satırları çıkarılır (önce yeni
   // dosya). Veritabanı ilk kurulum işleri bitsin diye kısa gecikmeyle.

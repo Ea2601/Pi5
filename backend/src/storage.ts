@@ -333,16 +333,16 @@ export function startStorageWatch(): void {
   }, 8000);
 }
 
-// Depolama işi ile bulut yedeği işi (vault.ts) aynı anda başlatılmasın: iki başlatıcı da birim durumu denetiminden
+// Depolama işi, bulut yedeği işi (vault.ts) ve uygulama işi (apps.ts) aynı anda başlatılmasın: başlatıcılar birim durumu denetiminden
 // systemd-run dönene kadar bu kapıyı tutar (bulut yedeği arada ayar dökümünü hazırlar — denetim ile başlatma arasında
 // öbürü araya giremez). Değer: kapıyı tutanın adı ('' = boş).
 let jobGate = '';
-export function holdJobGate(owner: 'storage' | 'vault'): string {
+export function holdJobGate(owner: 'storage' | 'vault' | 'apps'): string {
   if (jobGate) return jobGate;
   jobGate = owner;
   return '';
 }
-export function freeJobGate(owner: 'storage' | 'vault'): void {
+export function freeJobGate(owner: 'storage' | 'vault' | 'apps'): void {
   if (jobGate === owner) jobGate = '';
 }
 // Kapıyı şu an tutan ('' = boş) — yalnız okuma (index.ts: saat dilimi değişince panel bir iş başlatılırken yeniden başlamasın)
@@ -356,13 +356,16 @@ export async function launchStorageJob(cmd: StorageCmd, args: string[], startMsg
   if (launching) throw new Error('Bir depolama işi başlatılıyor');
   launching = true;
   try {
-    if (holdJobGate('storage')) throw new Error('Bulut yedeği işi başlatılıyor — bitince yeniden deneyin');
+    const holder = holdJobGate('storage');
+    if (holder) throw new Error(holder === 'apps' ? 'Uygulama işi başlatılıyor — bitince yeniden deneyin' : 'Bulut yedeği işi başlatılıyor — bitince yeniden deneyin');
     // Bulut yedeği (vault.ts, pi5-vault) paylaşım klasörlerini okurken hazırlama / taşıma onları ayıramaz ("kullanımda")
-    const [unit, upd, vault] = await Promise.all([unitState(STORAGE_UNIT), unitState('pi5-update'), unitState('pi5-vault')]);
-    if (unit === 'unknown' || upd === 'unknown' || vault === 'unknown') throw new Error('İş durumu okunamadı (systemctl) — birazdan yeniden deneyin');
+    // Uygulama işi (apps.ts, pi5-apps: imaj indirme / kurulum veri diskine yazar) sürerken disk hazırlanmaz / taşınmaz
+    const [unit, upd, vault, apps] = await Promise.all([unitState(STORAGE_UNIT), unitState('pi5-update'), unitState('pi5-vault'), unitState('pi5-apps')]);
+    if (unit === 'unknown' || upd === 'unknown' || vault === 'unknown' || apps === 'unknown') throw new Error('İş durumu okunamadı (systemctl) — birazdan yeniden deneyin');
     if (unit === 'active') throw new Error('Bir depolama işi zaten sürüyor');
     if (upd === 'active') throw new Error('Panel güncellemesi sürüyor — bitince yeniden deneyin');
     if (vault === 'active') throw new Error('Bulut yedeği sürüyor — bitince yeniden deneyin');
+    if (apps === 'active') throw new Error('Uygulama işi sürüyor (kurulum / kaldırma) — bitince yeniden deneyin');
     // Kilit: güncelleme sonrası denetim (storage.sh ensure) ya da elle başlatılmış bir komut sürüyorsa bekle
     try {
       await execFileP('flock', ['-n', JOB_LOCK, 'true'], { timeout: 5000 });

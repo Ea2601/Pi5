@@ -346,6 +346,9 @@ bash "$BASE/scripts/share.sh" ensure >> "$LOG" 2>&1 || echo "  [paylaşım] UYAR
 #     Cihaz yedekleme (Syncthing): açıksa systemd birimini yeni betik sürümüne göre yeniden yazar ve hizmeti başlatır. Kapalıysa
 #     hiçbir şey yapmaz; paket kurmaz (kurulum yalnız panelden açılınca).
 bash "$BASE/scripts/sync.sh" ensure >> "$LOG" 2>&1 || echo "  [cihaz yedekleme] UYARI: denetlenemedi" >> "$LOG"
+#     Uygulamalar (G3.3, Podman): açıksa motor yapılandırmasını, klx-apps ağını, güvenlik duvarını (pi5_apps) ve uygulama
+#     birimlerini onarır; süresi geçen denemeyi geri alır. Kapalıysa hiçbir şey yapmaz; paket kurmaz (yalnız panelden açılınca).
+bash "$BASE/scripts/apps.sh" ensure >> "$LOG" 2>&1 || echo "  [uygulamalar] UYARI: denetlenemedi" >> "$LOG"
 
 # 8e. Gece güncellemesi panelin güncelleme işiyle (update-job.sh): durum panelde görünür, başarısızlık zile yazılır; eski
 #     `update.sh && systemctl restart` satırı (ve v2.6 öncesinin koşulsuz 04:00 yeniden başlatması) kalkar. Yalnız etkin

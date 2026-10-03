@@ -510,6 +510,8 @@ export async function getNetworkDevices(): Promise<{ ip: string; mac: string }[]
   for (const line of out.split('\n')) {
     const dev = /\bdev\s+(\S+)/.exec(line)?.[1];
     if (dev && wanIfs.includes(dev)) continue;
+    // Uygulama ağı (klx-apps, G3.3) ve konteyner uçları ev ağının cihazı değildir ("yeni cihaz" bildirimi üretmesin).
+    if (dev && /^(klx-|veth)/.test(dev)) continue;
     if (onlyDev && dev !== onlyDev) continue;
     const m = line.match(/(\d+\.\d+\.\d+\.\d+).*?([0-9a-f]{2}:[0-9a-f]{2}:[0-9a-f]{2}:[0-9a-f]{2}:[0-9a-f]{2}:[0-9a-f]{2})/i);
     if (m) devices.push({ ip: m[1], mac: m[2].toLowerCase() });
@@ -996,7 +998,7 @@ export async function getLanIdentity(): Promise<LanIdentity | null> {
   // Yedek hat LAN kimliği olamaz: yedek hatta geçilmişken (metrik 10) de ana hattın (modem) rotası seçilir.
   const bakIfs = backupIfaces(ns);
   const route = routes
-    .filter(r => r && r.dev && !/^(wg|lo|docker|veth)/.test(r.dev) && !bakIfs.includes(r.dev))
+    .filter(r => r && r.dev && !/^(wg|lo|docker|veth|klx-)/.test(r.dev) && !bakIfs.includes(r.dev))
     .sort((a, b) => (a.metric || 0) - (b.metric || 0))[0];
   if (!route) return null;
   const own = v4(route.dev);
@@ -1014,7 +1016,7 @@ export async function getLanIdentity(): Promise<LanIdentity | null> {
   const dualSubnet = client.network !== transit.network;
   const secondary: LanIdentity['secondary'] = [];
   for (const a of addrs) {
-    if (!a.ifname || a.ifname === route.dev || /^(wg|lo|docker|veth)/.test(a.ifname)) continue;
+    if (!a.ifname || a.ifname === route.dev || /^(wg|lo|docker|veth|klx-)/.test(a.ifname)) continue;
     for (const x of v4(a.ifname)) {
       const inTransit = sameSubnet(x.local, transit.ip, transit.prefix);
       const inClient = sameSubnet(x.local, client.ip, client.prefix);
@@ -1090,7 +1092,7 @@ export async function detectInterfaces(): Promise<{ wan: string; lan: string }> 
   try {
     const addrs: any[] = JSON.parse((await run('ip -j -4 addr show 2>/dev/null')) || '[]');
     for (const a of addrs) {
-      if (!a.ifname || a.ifname === wan || (apIface && a.ifname === apIface) || /^(wg|lo|docker|veth|br-)/.test(a.ifname)
+      if (!a.ifname || a.ifname === wan || (apIface && a.ifname === apIface) || /^(wg|lo|docker|veth|br-|klx-)/.test(a.ifname)
         || bakIfs.includes(a.ifname) || isVirtualIface(a.ifname)) continue;
       const ips = (a.addr_info || []).filter((x: any) => x.family === 'inet' && x.local).map((x: any) => x.local);
       const outside = (ip: string) => !!id
@@ -1103,6 +1105,7 @@ export async function detectInterfaces(): Promise<{ wan: string; lan: string }> 
   const links = (await run('ls /sys/class/net 2>/dev/null')).split(/\s+/).filter(Boolean);
   const lan = links.find(l =>
     l !== 'lo' && l !== wan && !l.startsWith('wg') && !l.startsWith('docker') && !l.startsWith('veth') && !l.startsWith('br-')
+    && !l.startsWith('klx-')
     && !isVirtualIface(l)
   ) || (wan === 'eth0' ? 'wlan0' : 'eth0');
   return { wan, lan };
@@ -1908,11 +1911,16 @@ async function detectGatewayLan(ns: NetModeState | null = readNetModeState()): P
   const selfIps = new Set<string>();
   for (const line of (await run('ip -4 -o route show proto kernel scope link 2>/dev/null')).split('\n')) {
     const m = line.match(/^(\d+\.\d+\.\d+\.\d+\/\d+)\s+dev\s+([A-Za-z0-9_.-]{1,15})\s/);
-    if (!m || /^(wg|lo)/.test(m[2]) || isApIface(m[2]) || inApNet(m[1]) || wanIfs.includes(m[2])) continue;
+    // klx-apps (uygulama ağı, G3.3) ev ağı değildir: NAT (pi5_wgnat) ve iletim izni (pi5_gw) almaz — kendi tablosu pi5_apps.
+    if (!m || /^(wg|lo|klx-)/.test(m[2]) || isApIface(m[2]) || inApNet(m[1]) || wanIfs.includes(m[2])) continue;
     nets.add(m[1]);
     ifaces.add(m[2]);
   }
-  for (const m of (await run('ip -4 -o addr show 2>/dev/null')).matchAll(/\sinet\s(\d+\.\d+\.\d+\.\d+)\//g)) selfIps.add(m[1]);
+  for (const line of (await run('ip -4 -o addr show 2>/dev/null')).split('\n')) {
+    // klx-apps'in ağ geçidi adresi (198.18.64.1) ev ağı kurallarının "Pi'nin kendisi" listesine de girmez (G3.3)
+    if (/^\d+:\s+klx-/.test(line)) continue;
+    for (const m of line.matchAll(/\sinet\s(\d+\.\d+\.\d+\.\d+)\//g)) selfIps.add(m[1]);
+  }
   if (apOn) selfIps.add(AP_ADDR);
   const sameNet = ns && sameNetActive(ns) ? { lan: ns.repLan, up: ns.repPort } : null;
   if (sameNet) ifaces.add(sameNet.lan);

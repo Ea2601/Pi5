@@ -41,7 +41,7 @@ import { Toaster } from './toast';
 import './index.css';
 import './App.css';
 
-// Büyük sayfalar (Belgeler, WireGuard, Cihaz Rolleri, Ziyaret Geçmişi, Ağ Ajandası, Lisans, Koruma Şablonları, Filo, Geo-IP / Tehdit, SD-WAN) ayrı parça olarak yalnız sekme açılınca yüklenir:
+// Büyük sayfalar (Belgeler, WireGuard, Cihaz Rolleri, Ziyaret Geçmişi, Ağ Ajandası, Lisans, Koruma Şablonları, Filo, Geo-IP / Tehdit, SD-WAN, Uygulamalar) ayrı parça olarak yalnız sekme açılınca yüklenir:
 // ana paket Vite'ın 1000 kB uyarı sınırının altında kalsın. Güncellemeden sonra açık kalmış eski sekmede eski adlı parça
 // artık yoktur: sayfa bir kez kendiliğinden yenilenir ve yeni sürümü alır (#sekme adreste kalır). React.lazy başarısız
 // yüklemeyi saklar ("Tekrar Dene" yeniden indirmez); yenilemeden sonra da yüklenemezse sekmenin hata sınırı Türkçe nedeni
@@ -68,6 +68,7 @@ const TemplatesPanel = lazyTab(() => import('./components/TemplatesPanel').then(
 const FleetPanel = lazyTab(() => import('./components/FleetPanel').then(m => m.FleetPanel), 'Filo');
 const GeoBlockPanel = lazyTab(() => import('./components/GeoBlockPanel').then(m => m.GeoBlockPanel), 'Geo-IP / Tehdit');
 const SdwanPanel = lazyTab(() => import('./components/SdwanPanel').then(m => m.SdwanPanel), 'SD-WAN');
+const AppsPanel = lazyTab(() => import('./components/AppsPanel').then(m => m.AppsPanel), 'Uygulamalar');
 const tabLoading = (
   <div style={{ textAlign: 'center', padding: 30, color: 'var(--text-muted)' }}><Loader2 size={20} className="spin" /></div>
 );
@@ -221,6 +222,7 @@ function App() {
       case 'casecontrol': return <CaseControlPanel />;
       case 'kiosk': return <KioskSettingsPanel />;
       case 'storage': return <StoragePanel />;
+      case 'apps': return <Suspense fallback={tabLoading}><AppsPanel /></Suspense>;
       case 'backup': return <BackupPanel />;
       case 'settings': return <SettingsPanel />;
       case 'terminal': return <SshTerminal />;

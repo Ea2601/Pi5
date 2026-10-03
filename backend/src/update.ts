@@ -17,6 +17,7 @@ const STATE_FILE = `${STATE_DIR}/state`;
 const OUTPUT_FILE = `${STATE_DIR}/output`;
 export const UPDATE_MAX_RUNTIME_S = 1800;
 export const STORAGE_BUSY_MSG = 'Depolama işi sürüyor (disk hazırlama / veri taşıma) — bitince yeniden deneyin; gece güncellemesi ertesi gece yeniden dener';
+export const APPS_BUSY_MSG = 'Uygulama işi sürüyor (motor kurulumu / uygulama indirme) — bitince yeniden deneyin; gece güncellemesi ertesi gece yeniden dener';
 // Backend durumu systemd-run'dan ÖNCE yazar: bu süre içinde birim henüz görünmüyorsa iş "yarıda kesildi" sayılmaz.
 const START_GRACE_S = 15;
 
@@ -118,6 +119,7 @@ export function summarizeUpdate(output: string, kv: Record<string, string>): Upd
   }
   if (kv.reason === 'start') return [{ step: 'Güncelleme başlatılamadı', output: tail, success: false }];
   if (kv.reason === 'storage') return [{ step: 'Güncelleme ertelendi', output: STORAGE_BUSY_MSG, success: false }];
+  if (kv.reason === 'apps') return [{ step: 'Güncelleme ertelendi', output: APPS_BUSY_MSG, success: false }];
   const failed = /@@STEP_FAILED=(\w+) rc=(\d+)/.exec(output);
   const order = prebuilt ? STEP_ORDER_PREBUILT : STEP_ORDER;
   if (failed && order.includes(failed[1])) {
@@ -183,6 +185,9 @@ async function launch(): Promise<UpdateStart> {
   // Depolama işi (disk hazırlama / veri taşıma) sürerken güncelleme başlamaz — bitince backend'i yeniden başlatırdı
   // (update-job.sh de denetler: gece çalıştırması için).
   if ((await unitState('pi5-storage')) === 'active') throw new Error(STORAGE_BUSY_MSG);
+  // Uygulama işi (apps.ts: motor kurulumu / imaj indirme) sürerken de: güncelleme pi5-backend'i yeniden başlatır, paket
+  // kurulumu (apt) çakışır. update-job.sh da denetler (gece çalıştırması).
+  if ((await unitState('pi5-apps')) === 'active') throw new Error(APPS_BUSY_MSG);
   const id = String(Date.now());
   const started = Math.floor(Date.now() / 1000);
   fs.mkdirSync(STATE_DIR, { recursive: true });

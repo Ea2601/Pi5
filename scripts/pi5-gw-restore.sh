@@ -15,12 +15,15 @@
 #   - /etc/nftables.d/pi5-sdwan.conf  : şubeler arası SD-WAN süzgeci (inet pi5_sdwan) + politikası drop tablolardaki izin
 #                                       zincirleri /opt/pi5-gateway/core/pi5-sdwan-<tablo>.nft (SD-WAN yokken dosyalar
 #                                       yoktur — backend/src/sdwan.ts)
+#   - /etc/nftables.d/pi5-apps.conf   : uygulama ağı (klx-apps) NAT'ı, port yayını ve yalıtımı + politikası drop tablolardaki
+#                                       izin zincirleri (scripts/apps.sh jumps). Uygulama motoru kapalıyken dosya yoktur
+#                                       (backend/src/apps.ts).
 # Dosyaları backend yazar ve her açılışta yeniden yazar (pi5-ap.conf'u net-mode.sh yazar, pi5-net-guard her açılışta
 # yeniden yükler); bu betik yalnız son hallerini erkenden yükler. Hatalar günlüğe yazılır, açılışı durdurmaz.
 set -u
 log() { logger -t pi5-gw-restore "$*" 2>/dev/null || true; }
 for f in /etc/nftables.d/pi5-wgnat.conf /etc/nftables.d/device-block.conf /etc/nftables.d/pi5-ap.conf /etc/nftables.d/pi5-relay.conf \
-  /etc/nftables.d/pi5-wgext.conf /etc/nftables.d/pi5-sdwan.conf; do
+  /etc/nftables.d/pi5-wgext.conf /etc/nftables.d/pi5-sdwan.conf /etc/nftables.d/pi5-apps.conf; do
   [ -s "$f" ] || continue
   out=$(nft -f "$f" 2>&1) || log "yüklenemedi: $f: $out"
 done
@@ -68,6 +71,12 @@ for t in filter pi5_filter; do
     nft list chain inet "$t" "$c" | grep -q "jump $j" || nft insert rule inet "$t" "$c" jump "$j" 2>/dev/null || log "$t $c → $j atlaması eklenemedi"
   done
 done
+# Uygulamalar (G3.3): tablo yüklendiyse (motor açık) inet filter / pi5_filter'daki izin zincirleri (pi5_apps_fwd / _in).
+# Kapalıyken dosya yoktur → hiçbir şey yapılmaz.
+APPS=/opt/pi5-gateway/scripts/apps.sh
+if [ -s /etc/nftables.d/pi5-apps.conf ] && [ -f "$APPS" ] && nft list table inet pi5_apps >/dev/null 2>&1; then
+  out=$(bash "$APPS" jumps 2>&1) || log "uygulama izin zincirleri eklenemedi: $out"
+fi
 # nftables yeniden başlatıldı / yüklendiyse `flush ruleset` Fail2Ban'ın ve Zapret'in kurallarını da sildi (panelinkiler
 # yukarıda geri yüklendi). Fail2Ban: yasaklı IP var ama hiçbiri kurallarda yoksa yeniden başlatılır (yasakları kendi
 # veritabanından geri yükler). Zapret: nftables'tan ÖNCE başlamış ve çalışıyorsa yeniden başlatılır. Açılışta ikisi de

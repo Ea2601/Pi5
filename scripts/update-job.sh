@@ -33,6 +33,11 @@ if systemctl is-active --quiet pi5-storage.service 2>/dev/null; then
   put_state failed rc=0 reason=storage
   exit 0
 fi
+# Uygulama işi (pi5-apps: motor kurulumu / imaj indirme — apt ve veri diski) sürerken de ertelenir.
+if systemctl is-active --quiet pi5-apps.service 2>/dev/null; then
+  put_state failed rc=0 reason=apps
+  exit 0
+fi
 
 put_state running
 bash "$BASE/scripts/update.sh" > "$DIR/output" 2>&1 < /dev/null

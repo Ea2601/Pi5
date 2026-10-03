@@ -1,0 +1,125 @@
+/* Uygulamalar (AppsPanel.tsx, G3.3). Renkler tema değişkenleri: açık temada index.css'teki :root.light-theme karşılıklarıyla
+   değişir (yalnız yeşil düğme App.css .btn-on deseniyle koyu karışım + beyaz yazı) — light-theme.css'te ayrı bölüm gerekmedi.
+   Düğme rengi = ne yaptığı: açan / kuran / başlatan yeşil, kapatan / geri alan / kaldıran kırmızı.
+   Sihirbaz: yalnız sıradaki adım parlak (is-current); tamamlananlar sakin (is-done), sonrakiler kilitli (is-locked). */
+.apx-page { display: flex; flex-direction: column; gap: 14px; }
+.apx-intro { margin: 0 0 12px; font-size: 13px; line-height: 1.55; color: var(--text-secondary); }
+.apx-muted { margin: 0; font-size: 13px; color: var(--text-secondary); }
+.apx-loading { display: flex; align-items: center; gap: 6px; }
+.apx-text { margin: 6px 0 0; font-size: 12px; line-height: 1.5; color: var(--text-secondary); overflow-wrap: anywhere; }
+.apx-inline { margin: 0; align-self: center; }
+
+.btn-primary.apx-on { background: color-mix(in srgb, var(--success-color) 65%, #000); color: #fff; }
+.btn-primary.apx-on:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--success-color) 70%, #000); box-shadow: 0 4px 12px var(--success-glow);
+}
+.btn-outline.apx-off {
+  border-color: var(--danger-color); background: color-mix(in srgb, var(--danger-color) 8%, transparent);
+  color: color-mix(in srgb, var(--danger-color) 75%, var(--text-primary));
+}
+.btn-outline.apx-off:hover:not(:disabled) {
+  border-color: var(--danger-color); background: color-mix(in srgb, var(--danger-color) 16%, transparent);
+  color: color-mix(in srgb, var(--danger-color) 75%, var(--text-primary));
+}
+.btn-outline.apx-off:disabled, .btn-primary.apx-on:disabled, .apx-link.is-disabled { opacity: 0.45; cursor: not-allowed; }
+.apx-link { display: inline-flex; align-items: center; gap: 6px; text-decoration: none; }
+
+/* Sihirbaz adımları */
+.apx-step {
+  margin-top: 12px; padding: 12px 14px; border-radius: var(--radius-sm); border: 1px solid var(--panel-border);
+  background: var(--input-bg-soft); transition: opacity 0.15s ease;
+}
+.apx-step.is-current { border-color: color-mix(in srgb, var(--accent-color) 55%, var(--panel-border)); box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent-color) 25%, transparent); }
+.apx-step.is-locked { opacity: 0.55; }
+/* Motor kapalıyken (adım kilitli) de diskte kalan veriler silinebilir: silme onayı açıkken adım soluk görünmesin */
+.apx-step.is-locked:has(.apx-remove) { opacity: 1; }
+.apx-step-title { display: flex; align-items: center; gap: 8px; margin: 0 0 8px; font-size: 14px; font-weight: 600; color: var(--text-primary); }
+.apx-num {
+  display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0; width: 22px; height: 22px; border-radius: 50%;
+  font-size: 12px; font-weight: 700; color: var(--text-secondary); background: var(--bg-surface); border: 1px solid var(--panel-border);
+}
+.apx-step.is-current .apx-num { color: #fff; background: var(--accent-color); border-color: var(--accent-color); }
+.apx-step.is-done .apx-num { color: var(--success-ink); border-color: color-mix(in srgb, var(--success-color) 45%, transparent); }
+
+.apx-checks { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.apx-checks li { display: grid; grid-template-columns: 16px minmax(110px, 160px) 1fr; gap: 8px; align-items: start; font-size: 13px; }
+.apx-checks li > svg { margin-top: 2px; }
+.apx-checks li.is-ok > svg { color: var(--success-color); }
+.apx-checks li.is-bad > svg { color: var(--danger-color); }
+.apx-check-label { color: var(--text-primary); }
+.apx-check-detail { color: var(--text-secondary); overflow-wrap: anywhere; }
+
+.apx-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 10px; }
+.apx-count { font-variant-numeric: tabular-nums; }
+
+/* Durum rozetleri */
+.apx-state {
+  display: inline-flex; align-items: center; gap: 4px; flex-shrink: 0; padding: 2px 8px; border-radius: 999px;
+  font-size: 11px; font-weight: 600; white-space: nowrap; color: var(--text-secondary); background: var(--surface-soft);
+  border: 1px solid var(--panel-border);
+}
+.apx-state.is-ok { color: var(--success-ink); background: var(--bg-surface); border-color: color-mix(in srgb, var(--success-color) 40%, transparent); }
+.apx-state.is-bad { color: var(--danger-color); background: var(--bg-surface); border-color: color-mix(in srgb, var(--danger-color) 40%, transparent); }
+.apx-state.is-run { color: var(--accent-color); background: var(--bg-surface); }
+.apx-state.is-off { color: var(--text-primary); background: var(--bg-surface); }
+
+/* Bilgi / uyarı kutuları */
+.apx-note {
+  display: flex; gap: 8px; align-items: flex-start; margin: 8px 0 0; padding: 8px 10px; border-radius: var(--radius-sm);
+  font-size: 12px; line-height: 1.5; color: var(--text-primary); background: var(--input-bg-soft); border: 1px solid var(--panel-border);
+}
+.apx-note > svg { flex-shrink: 0; margin-top: 2px; }
+.apx-note span { min-width: 0; overflow-wrap: anywhere; }
+.apx-note.is-bad { background: var(--danger-glow); border-color: transparent; }
+.apx-note.is-bad > svg { color: var(--danger-color); }
+.apx-note.is-warn { background: var(--warning-glow); border-color: transparent; }
+.apx-note.is-warn > svg { color: var(--warning-color); }
+.apx-note.is-info > svg { color: var(--accent-color); }
+
+/* İş ilerlemesi */
+.apx-job { margin-top: 10px; padding: 10px 12px; border-radius: var(--radius-sm); border: 1px solid var(--panel-border); background: var(--bg-surface); }
+.apx-job.is-bad { border-color: color-mix(in srgb, var(--danger-color) 45%, transparent); }
+.apx-job.is-bad .apx-job-head > svg { color: var(--danger-color); }
+.apx-job.is-done .apx-job-head > svg { color: var(--success-color); }
+.apx-job-head { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; font-size: 13px; color: var(--text-primary); }
+.apx-job-step { color: var(--text-secondary); overflow-wrap: anywhere; min-width: 0; }
+.apx-bar { margin-top: 8px; height: 6px; border-radius: 999px; background: var(--surface-soft); overflow: hidden; }
+.apx-bar > span { display: block; height: 100%; border-radius: inherit; background: var(--accent-color); transition: width 0.4s ease; }
+.apx-log { margin-top: 8px; font-size: 12px; color: var(--text-secondary); }
+.apx-log summary { cursor: pointer; }
+.apx-log pre {
+  margin: 6px 0 0; max-height: 220px; overflow: auto; padding: 8px; border-radius: var(--radius-sm); font-size: 11px; line-height: 1.45;
+  white-space: pre-wrap; overflow-wrap: anywhere; color: var(--text-primary); background: var(--input-bg-soft); border: 1px solid var(--panel-border);
+}
+
+/* Katalog kartları */
+.apx-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 320px), 1fr)); gap: 12px; margin-top: 4px; }
+.apx-card { min-width: 0; padding: 12px 14px; border-radius: var(--radius-sm); border: 1px solid var(--panel-border); background: var(--bg-surface); }
+.apx-card.is-installed { border-color: color-mix(in srgb, var(--success-color) 35%, var(--panel-border)); }
+.apx-card-head { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.apx-name { font-size: 15px; color: var(--text-primary); overflow-wrap: anywhere; }
+.apx-ver { font-size: 11px; color: var(--text-secondary); font-variant-numeric: tabular-nums; }
+.apx-card-head .apx-state { margin-left: auto; }
+.apx-meta { display: flex; flex-wrap: wrap; gap: 4px 14px; margin-top: 6px; font-size: 12px; color: var(--text-secondary); font-variant-numeric: tabular-nums; }
+.apx-notes { margin-top: 8px; font-size: 12px; color: var(--text-secondary); }
+.apx-notes summary { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; color: var(--text-primary); }
+.apx-notes ul { margin: 6px 0 0 18px; padding: 0; line-height: 1.5; }
+.apx-notes li { margin: 3px 0; overflow-wrap: anywhere; }
+
+/* Kurulum / kaldırma formları */
+.apx-form, .apx-remove { margin-top: 10px; padding-top: 10px; border-top: 1px dashed var(--panel-border); }
+.apx-check { display: flex; gap: 8px; align-items: flex-start; margin-top: 8px; font-size: 12px; line-height: 1.5; color: var(--text-primary); cursor: pointer; }
+.apx-check input { margin-top: 3px; flex-shrink: 0; }
+.apx-check span { min-width: 0; overflow-wrap: anywhere; }
+.apx-field { display: flex; flex-direction: column; gap: 4px; margin-top: 8px; font-size: 12px; color: var(--text-secondary); }
+.apx-select, .apx-input {
+  width: 100%; max-width: 420px; padding: 7px 10px; border-radius: var(--radius-sm); font-size: 13px;
+  color: var(--text-primary); background: var(--input-bg-soft); border: 1px solid var(--panel-border);
+}
+.apx-foot { margin-top: 14px; }
+
+@media (max-width: 600px) {
+  .apx-step { padding: 10px; }
+  .apx-checks li { grid-template-columns: 16px 1fr; }
+  .apx-check-detail { grid-column: 2; }
+}
