@@ -268,3 +268,8 @@
 :root.light-theme .geo-cc-hit:focus-visible { background: var(--input-bg-hover); }
 :root.light-theme .geo-trial { background: rgba(217, 119, 6, 0.08); border-color: rgba(217, 119, 6, 0.45); }
 :root.light-theme .geo-trial-text strong { color: #92400e; }
+
+/* ── 14. Akıllı kuyruk: tek bacak / br0 ve yedek hat (SqmTab.css; 10. bölüm Akıllı kuyruk — G1.1-B / C) ──
+   Tembel sekme CSS'i bu katmandan sonra yüklenir: eşit özgüllükte bileşen kuralı kazanacağından tam :root.light-theme.
+   Yalnız modem MAC'i etiketinin zemini değişir; durum sınıfı (.is-missing) yalnız yazı / simge rengini değiştirir. */
+:root.light-theme .sqm-mac { background: rgba(15, 23, 42, 0.06); }

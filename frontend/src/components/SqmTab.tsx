@@ -1,33 +1,50 @@
 import { useEffect, useState } from 'react';
 import type { ReactNode } from 'react';
-import { AlertTriangle, Check, Gauge, Info, Loader2, Lock, Play, Power, RotateCcw, ShieldCheck, Timer } from 'lucide-react';
-import { useApi, putApi, postApi } from '../hooks/useApi';
+import { AlertTriangle, Check, Gauge, Info, Loader2, Lock, Network, Play, Power, RotateCcw, ShieldCheck, Timer, Trash2 } from 'lucide-react';
+import { useApi, putApi, postApi, deleteApi } from '../hooks/useApi';
 import { toast } from '../toast';
 import { Badge, Panel, Select } from './ui';
 import './SqmTab.css';
 
-// Bant Genişliği → "Gecikme (Akıllı Kuyruk)" (G1.1-A, backend sqm.ts): hat düzeyi CAKE ile indirme / yükleme sırasında
+// Bant Genişliği → "Gecikme (Akıllı Kuyruk)" (G1.1, backend sqm.ts): hat düzeyi CAKE ile indirme / yükleme sırasında
 // gecikmenin fırlamasını (bufferbloat) önler. Varsayılan kapalı. Sihirbaz sıralı ve adım adım (yalnız sıradaki parlak):
 // ① hat ve ön koşullar ② bant — elle ya da "Ölç" (Ookla; hattın gerçek hızının %90'ı önerilir — paket ek yükü hesaba
 // katılır; ölçüm boyunca kuyruk geçici kalkar) + "Kaydet" ③ "Dene (5 dk)" (yeşil) ④ "Kalıcı yap" (yeşil) / "Geri al"
 // (kırmızı). Kalıcıyken "Kapat" kırmızı. Adımlar ayardan (enabled / trialUntil) türetilir, anlık durumdan değil: arayüz
-// beklenirken (PPPoE yeniden arıyor) deneme ve kalıcı kuyruk görünür kalır. Tek bacak ve ev Wi-Fi köprüsü (br0) bu
-// sürümde yok — neden ve "yakında" gösterilir (G1.1-B). Yedek hattayken "Ölç" ve "Dene" kapalı.
+// beklenirken (PPPoE yeniden arıyor) deneme ve kalıcı kuyruk görünür kalır. Yedek hattayken ana hat için "Ölç" ve "Dene"
+// kapalı.
+// Tek bacak ve ev Wi-Fi köprüsü (br0) (G1.1-B): kuyruk sınıflıdır — modemin MAC'i gösterilir, yerel trafiğin (panel, paylaşım,
+// Pi-hole, segmentler) kısıtsız bantta kaldığı notu çıkar; MAC öğrenilemezse hiçbir şey takılmaz ve neden yazılır (rozet
+// "Modem bekleniyor"; takılıyken okunamazsa kuyruk korunur, deneme sürüyorsa yalnız deneme denetimleri görünür).
+// Yedek hat (G1.1-C): ayrı bölüm — yedek hat bandı elle (Kaydet yeşil, Kaldır kırmızı); "Ölç" yalnız yedek hattayken.
 
 type Overhead = 'ethernet' | 'docsis' | 'vdsl' | 'adsl' | 'raw';
 type State = 'unsupported' | 'off' | 'mismatch' | 'calibrating' | 'trial' | 'on' | 'waiting' | 'error';
+type BackupState = 'absent' | 'unset' | 'off' | 'waiting' | 'on' | 'error';
+interface LineConfig {
+  downKbit: number; upKbit: number; overhead: Overhead; savedAt: number; overheadBytes: number | null; efficiency?: number | null;
+}
+interface SqmBackup {
+  line: { dev: string; kind: string; label: string; port: string } | null;
+  reason: string; ifb: string; state: BackupState; active: boolean; config: LineConfig | null; otherSaved: boolean;
+  lastError: string; overheadPreview: Record<Overhead, number | null> | null;
+}
 interface SqmStatus {
   supported: boolean; code: string; reason: string; satellite: boolean;
-  line: { dev: string; kind: string; label: string; nat: boolean; port: string } | null;
+  line: { dev: string; kind: string; label: string; nat: boolean; port: string; l3?: string; classed?: boolean } | null;
+  // Tek bacak / br0: modem (ağ geçidi), MAC'i ('' = öğrenilemedi), ev ağı arayüzü, kuyruğun takıldığı port
+  modem?: { ip: string; mac: string; lanDev: string; bridge: boolean; port: string } | null;
   tc: boolean; modules: Record<string, boolean>; missingModules: string[]; ready: boolean;
   configured: boolean; enabled: boolean; trialUntil: number; now: number; trialS: number; onBackup?: boolean;
-  config: {
-    downKbit: number; upKbit: number; overhead: Overhead; savedAt: number; sigMatches: boolean; overheadBytes: number | null;
-    efficiency?: number | null;
-  } | null;
+  config: (LineConfig & { sigMatches: boolean }) | null;
   state: State; calibrating: boolean; lastError: string;
+  // held: tek bacakta modem MAC'i / köprü portu şu an okunamıyor ama takılı kuyruk korunuyor; confirmable: "Kalıcı yap"
+  // yapılabilir (yedek hattayken ana hat yok / çözülemiyorsa yedek hat kuyruğuna bakılır)
+  held?: boolean; confirmable?: boolean;
   defaults: { overhead: Overhead; suggestPct: number }; limits: { minKbit: number; maxKbit: number };
-  overheadPreview: Record<Overhead, number | null> | null; efficiencyPreview?: Record<Overhead, number> | null; warnings: string[];
+  overheadPreview: Record<Overhead, number | null> | null; efficiencyPreview?: Record<Overhead, number> | null;
+  backup?: SqmBackup | null;
+  warnings: string[];
 }
 interface Measured { download_mbps: number; upload_mbps: number; ping_ms: number; loaded_ms?: number | null; server?: string }
 type Suggestion = { downKbit: number; upKbit: number; pct: number };
@@ -40,7 +57,7 @@ const INITIAL: SqmStatus = {
   lastError: '', defaults: { overhead: 'ethernet', suggestPct: 90 }, limits: { minKbit: 64, maxKbit: 10_000_000 },
   overheadPreview: null, warnings: [],
 };
-const BACKUP_TEXT = 'Şu an yedek hattasınız — ölçüm ve deneme ana hatta dönünce yapılabilir.';
+const BACKUP_TEXT = 'Şu an yedek hattasınız — ana hat için ölçüm ve deneme ana hatta dönünce yapılabilir (yedek hat aşağıdaki "Yedek hat kuyruğu" bölümünde ölçülebilir).';
 const OVERHEAD_LABEL: Record<Overhead, string> = {
   ethernet: 'Ethernet / fiber (önerilen)',
   docsis: 'Kablo internet (DOCSIS)',
@@ -58,6 +75,19 @@ const STATE_BADGE: Record<State, { v: 'success' | 'error' | 'info' | 'neutral' |
   waiting: { v: 'warning', t: 'Arayüz bekleniyor' },
   error: { v: 'error', t: 'Takılamadı' },
 };
+const BACKUP_BADGE: Record<BackupState, { v: 'success' | 'error' | 'info' | 'neutral' | 'warning'; t: string }> = {
+  absent: { v: 'neutral', t: 'Bağlı değil' },
+  unset: { v: 'neutral', t: 'Bant yok' },
+  off: { v: 'neutral', t: 'Kapalı' },
+  waiting: { v: 'warning', t: 'Arayüz bekleniyor' },
+  on: { v: 'success', t: 'Takılı' },
+  error: { v: 'error', t: 'Takılamadı' },
+};
+// Tek bacakta önce yapılacak bir adım (sabit adres yok / deneme sürüyor): bilgi notu; diğer nedenler (modem MAC'i / portu
+// öğrenilemedi, G1.1-A'nın kodları) uyarı — G1.1-A'daki görünüm aynen.
+const INFO_CODES = new Set(['setup', 'lan-trial']);
+// Kurulum destekleniyor ama modem şu an bekleniyor (MAC'i / köprü portu okunamıyor): takılı kuyruk korunur
+const HOLD_CODES = new Set(['nomac', 'noport']);
 
 // kbit/sn → "90" / "18,5" (Mbps)
 const mbpsText = (kbit: number) => String(Math.round(kbit / 100) / 10).replace('.', ',');
@@ -103,6 +133,112 @@ function Note({ kind, children }: { kind: 'warn' | 'info'; children: ReactNode }
       {kind === 'warn' ? <AlertTriangle size={14} /> : <Info size={14} />}
       <span>{children}</span>
     </div>
+  );
+}
+
+// Yedek hat kuyruğu (G1.1-C): yedek hattın kendi bandı (hat imzasıyla). Yedek profil hep bağlı olduğundan kuyruk önceden
+// takılır, geçişte değişmez. "Ölç" yalnız yedek hattayken (Ookla Pi'nin o an kullandığı hattı ölçer); değilse bant elle.
+// Kuyruk açıkken kaydetmek 5 dk'lık yeni deneme başlatır (iki hat birlikte; onaylanmazsa akıllı kuyruk kapanır).
+function BackupSection({ st, busyMain, refetch }: { st: SqmStatus; busyMain: boolean; refetch: () => Promise<void> | void }) {
+  const b = st.backup!;
+  const [draft, setDraft] = useState<Draft | null>(null);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [cal, setCal] = useState<CalResp | null>(null);
+  const saved: Draft = { down: b.config ? mbpsText(b.config.downKbit) : '', up: b.config ? mbpsText(b.config.upKbit) : '', overhead: b.config?.overhead || st.defaults.overhead };
+  const form = draft || saved;
+  const downK = toKbit(form.down), upK = toKbit(form.up);
+  const inRange = (k: number) => Number.isInteger(k) && k >= st.limits.minKbit && k <= st.limits.maxKbit;
+  const formOk = inRange(downK) && inRange(upK);
+  const dirty = !!draft && (!b.config || downK !== b.config.downKbit || upK !== b.config.upKbit || form.overhead !== b.config.overhead);
+  const lineOk = !!b.line;
+  const busyAny = busyMain || busy !== null;
+  const badge = BACKUP_BADGE[b.state] || BACKUP_BADGE.unset;
+  const oh = (o: Overhead) => (b.overheadPreview?.[o] != null ? ` · +${b.overheadPreview[o]} bayt` : '');
+  const sug = cal ? (cal.suggestions?.[form.overhead] || cal.suggestion) : null;
+  const setField = (patch: Partial<Draft>) => setDraft({ ...form, ...patch });
+
+  const act = async <T,>(key: string, fn: () => Promise<T>, ok?: (r: T) => string): Promise<T | null> => {
+    setBusy(key);
+    try {
+      const r = await fn();
+      if (ok) toast.success(ok(r));
+      return r;
+    } catch (e) {
+      toast.error(errText(e, 'İşlem başarısız'));
+      return null;
+    } finally {
+      setBusy(null);
+      await refetch();
+    }
+  };
+  const save = () => void act('bsave', () => putApi('/bandwidth/sqm/backup', { downKbit: downK, upKbit: upK, overhead: form.overhead }) as Promise<{ trialUntil: number }>,
+    r => (r.trialUntil ? 'Yedek hat bandı kaydedildi — 5 dk deneme başladı (yukarıdan "Kalıcı yap")' : 'Yedek hat bandı kaydedildi')).then(r => { if (r) setDraft(null); });
+  const remove = () => {
+    if (!window.confirm('Yedek hat kuyruğu kaldırılsın mı? Yedek hat bugünkü gibi kuyruksuz çalışır.')) return;
+    void act('bdel', () => deleteApi('/bandwidth/sqm/backup'), () => 'Yedek hat kuyruğu kaldırıldı').then(() => setDraft(null));
+  };
+  const measure = () => void act('bcal', () => postApi('/bandwidth/sqm/calibrate', { overhead: form.overhead, line: 'backup' }) as Promise<CalResp>).then(r => { if (r) setCal(r); });
+  const useSuggestion = () => sug && setDraft({ ...form, down: mbpsText(sug.downKbit), up: mbpsText(sug.upKbit) });
+
+  return (
+    <Panel title="Yedek hat kuyruğu" icon={<Network size={18} style={{ marginRight: 8 }} />}
+      subtitle="Yedek hatta geçilince de gecikme düşük kalsın: yedek hattın kendi bandı; kuyruk önceden takılır, geçişte değişmez"
+      badge={<Badge variant={badge.v}>{badge.t}</Badge>}>
+      {b.line ? <div className="sqm-line"><Gauge size={14} /><span><strong>Hat:</strong> {b.line.label}</span></div>
+        : <Note kind="info">{b.reason || 'Yedek hat şu an bağlı değil'}</Note>}
+      {b.active && <Note kind="info">Şu an yedek hattasınız{b.state === 'on' ? ' — yedek hat kuyruğu çalışıyor' : ''}.</Note>}
+      {b.otherSaved && lineOk && <Note kind="warn">Kayıtlı yedek hat bandı başka bir yedek hatta aitti (yedek hat değişti) — bu hat için bandı yeniden girin.</Note>}
+      {b.lastError && (b.state === 'error' || b.state === 'waiting') && <Note kind="warn">{b.lastError}</Note>}
+      {lineOk && (
+        <div className="sqm-backup">
+          <p className="sqm-help">Yedek hattın bandını elle girin: operatörün / modemin verdiği hızın biraz altı (4G'de kötü saatteki hızın altı). "Ölç" yalnız yedek hattayken çalışır — Ookla Pi'nin o an kullandığı hattı ölçer.</p>
+          <div className="sqm-grid">
+            <div className="form-group">
+              <label htmlFor="sqm-bdown">İndirme (Mbps)</label>
+              <input id="sqm-bdown" className="config-input" inputMode="decimal" value={form.down} placeholder="ör. 25"
+                onChange={e => setField({ down: e.target.value })} disabled={busyAny} />
+            </div>
+            <div className="form-group">
+              <label htmlFor="sqm-bup">Yükleme (Mbps)</label>
+              <input id="sqm-bup" className="config-input" inputMode="decimal" value={form.up} placeholder="ör. 8"
+                onChange={e => setField({ up: e.target.value })} disabled={busyAny} />
+            </div>
+            <div className="form-group sqm-wide">
+              <label>Bağlantı türü (paket başına ek yük)</label>
+              <Select className="config-select" value={form.overhead} onChange={e => setField({ overhead: e.target.value as Overhead })} disabled={busyAny}>
+                {(Object.keys(OVERHEAD_LABEL) as Overhead[]).map(o => <option key={o} value={o}>{OVERHEAD_LABEL[o]}{oh(o)}</option>)}
+              </Select>
+            </div>
+          </div>
+          {(form.down !== '' || form.up !== '') && !formOk && <Note kind="warn">İndirme ve yükleme 0,064 – 10000 Mbps arasında olmalı.</Note>}
+          <div className="sqm-measure">
+            <button className="btn-outline btn-sm" onClick={measure} disabled={busyAny || !b.active}>
+              {busy === 'bcal' ? <><Loader2 size={13} className="spin" /> Ölçülüyor…</> : <><Play size={13} /> Ölç (~1 dk)</>}
+            </button>
+            {b.active ? <span className="sqm-muted">Ookla hız testi yedek hattan; ölçüm boyunca kuyruk geçici kalkar.</span>
+              : <Locked text="Yedek hattayken ölçün — şimdi ölçüm ana hattı ölçerdi" />}
+          </div>
+          {cal && sug && (
+            <div className="sqm-result">
+              <span>Ölçülen (yedek hat): ↓ <strong>{cal.result.download_mbps.toFixed(1)}</strong> Mbps · ↑ <strong>{cal.result.upload_mbps.toFixed(1)}</strong> Mbps</span>
+              <button className="btn-outline btn-sm" onClick={useSuggestion} disabled={busyAny}>Hattın %{sug.pct}'ını kullan (↓ {mbpsText(sug.downKbit)} · ↑ {mbpsText(sug.upKbit)})</button>
+            </div>
+          )}
+          {st.enabled && <p className="sqm-help">Akıllı kuyruk açıkken kaydetmek iki hat için 5 dk'lık yeni deneme başlatır; yukarıdan "Kalıcı yap"a basılmazsa akıllı kuyruk kapanır.</p>}
+          <div className="sqm-actions">
+            <button className="btn-primary btn-sm btn-on" onClick={save} disabled={busyAny || !formOk || (!dirty && !!b.config)}>
+              {busy === 'bsave' ? <Loader2 size={13} className="spin" /> : <Check size={13} />} Kaydet
+            </button>
+            {b.config && (
+              <button className="btn-outline btn-sm btn-off" onClick={remove} disabled={busyAny}>
+                {busy === 'bdel' ? <Loader2 size={13} className="spin" /> : <Trash2 size={13} />} Kaldır
+              </button>
+            )}
+            {b.config && !dirty && <span className="sqm-muted">Kayıtlı: ↓ {mbpsText(b.config.downKbit)} · ↑ {mbpsText(b.config.upKbit)} Mbps{!st.enabled ? ' (akıllı kuyruk kapalı — açılınca takılır)' : ''}</span>}
+          </div>
+        </div>
+      )}
+    </Panel>
   );
 }
 
@@ -169,37 +305,104 @@ export function SqmTab() {
     </Panel></div>;
   }
 
-  const badge = STATE_BADGE[st.state] || STATE_BADGE.off;
-  const soon = st.code === 'onearm' || st.code === 'bridge';
+  const baseBadge = STATE_BADGE[st.state] || STATE_BADGE.off;
+  // Tek bacakta modem MAC'i / köprü portu şu an okunamıyor: kurulum destekleniyor, modem bekleniyor ("Bu kurulumda yok" değil)
+  const hold = HOLD_CODES.has(st.code);
+  const badge = hold ? { v: st.enabled ? 'warning' as const : 'neutral' as const, t: 'Modem bekleniyor' } : baseBadge;
+  const classed = !!st.line?.classed;
+  const modem = st.modem || null;
   const busyAny = busy !== null || st.calibrating;
   // Kalıcıyken (takılı, arayüz bekleniyor ya da takılamadı) özet + "Bandı değiştir"; sihirbaz kapalıyken, denemede ve hat
   // değişince.
   const showWizard = st.supported && (editing || !st.enabled || inTrial || st.state === 'mismatch');
+  // Deneme sürerken hat bu kipte şu an çözülemiyor (modem bekleniyor): sihirbaz yerine yalnız deneme denetimleri
+  const trialOnly = inTrial && !st.supported;
   const step1Done = st.supported && st.ready && (ack || savedOk || st.enabled);
   const step2Done = step1Done && savedOk;
   const onBackup = !!st.onBackup;
   const oh = (o: Overhead) => (st.overheadPreview?.[o] != null ? ` · +${st.overheadPreview[o]} bayt` : '');
-  // "Kuyrukla hız testi": beklenen = bant × verim (hız testi paket başlıklarını saymaz)
-  const eff = cfg?.efficiency || 1;
+  // "Kuyrukla hız testi": beklenen = bant × verim (hız testi paket başlıklarını saymaz). Yedek hattayken ölçüm yedek hattan
+  // geçer: yedek hattın bandıyla karşılaştırılır.
+  const ref = onBackup && st.backup?.config ? st.backup.config : cfg;
+  const eff = ref?.efficiency || 1;
   const ofExpected = (mbps: number, kbit: number) => Math.round((mbps * 1000 / (kbit * eff)) * 100);
+  // "Kalıcı yap": durum ucunun kararı (confirm ile aynı); eski backend'de alan yoksa takılı deneme
+  const canConfirm = st.confirmable ?? st.state === 'trial';
+  // Neden notu: hold'da takılı kuyruk korunuyorsa söylenir; son hata nedenden türemişse ikinci kez gösterilmez
+  const reasonText = hold && st.held ? `${st.reason} — takılı kuyruk korunuyor` : st.reason;
+  const showLastError = (st.state === 'error' || st.state === 'waiting') && !!st.lastError && !(hold && st.lastError.startsWith(st.reason));
+
+  const trialBody = (
+    <>
+      <p className="sqm-help sqm-countdown"><Timer size={13} /> Kalan süre: <strong>{mmss(trialLeft)}</strong> — internet ve görüntülü görüşme düzgünse kalıcı yapın.</p>
+      <div className="sqm-measure">
+        <button className="btn-outline btn-sm" onClick={shapedTest} disabled={busyAny}>
+          {busy === 'check' ? <><Loader2 size={13} className="spin" /> Ölçülüyor ({elapsed} sn)…</> : <><Gauge size={13} /> Kuyrukla hız testi</>}
+        </button>
+        <span className="sqm-muted">İsteğe bağlı: kuyruk açıkken hız ve yük altı gecikme (kayıt "kısılmış" işaretlenir){onBackup ? ' — şu an yedek hattan' : ''}.</span>
+      </div>
+      {check && ref && (
+        <div className="sqm-result">
+          <span>↓ <strong>{check.download_mbps.toFixed(1)}</strong> Mbps (beklenenin %{ofExpected(check.download_mbps, ref.downKbit)}'ı) · ↑ <strong>{check.upload_mbps.toFixed(1)}</strong> Mbps (%{ofExpected(check.upload_mbps, ref.upKbit)})
+            {check.loaded_ms != null && <> · yük altında <strong>{check.loaded_ms.toFixed(0)} ms</strong></>}</span>
+        </div>
+      )}
+      {check && ref && (ofExpected(check.download_mbps, ref.downKbit) < 85 || ofExpected(check.upload_mbps, ref.upKbit) < 85) && (
+        <Note kind="warn">Verim beklenenin %85'inin altında: Pi'nin işlemcisi bu hızda yetmiyor olabilir ya da hat şu an yavaş. Bandı düşürün ya da geri alın.</Note>
+      )}
+      {!canConfirm && (
+        <Note kind="warn">Kuyruk şu an takılı değil{st.state === 'waiting' ? (hold ? ' — modem bekleniyor' : ' — internet arayüzü bekleniyor') : ''}: takılınca onaylayın. Süre dolarsa kendiliğinden kalkar.</Note>
+      )}
+      {canConfirm && st.state !== 'trial' && (
+        <Note kind="info">{hold ? `Ana hat şu an kullanılmıyor (modem yanıt vermiyor) — deneme yedek hat kuyruğunu sınıyor${st.held ? '; ana hattın takılı kuyruğu korunuyor' : ''}.`
+          : "Ana hattın arayüzü şu an yok — deneme yedek hat kuyruğunu sınıyor; ana hattın kuyruğu arayüz gelince takılır."}</Note>
+      )}
+      <div className="sqm-actions">
+        <button className="btn-primary btn-sm btn-on" onClick={confirm} disabled={busyAny || !canConfirm}>
+          {busy === 'confirm' ? <Loader2 size={13} className="spin" /> : <ShieldCheck size={13} />} Kalıcı yap
+        </button>
+        <button className="btn-outline btn-sm btn-off" onClick={rollback} disabled={busyAny}>
+          {busy === 'rollback' ? <Loader2 size={13} className="spin" /> : <RotateCcw size={13} />} Geri al
+        </button>
+      </div>
+      <span className="sqm-muted">"Kalıcı yap" ev ağındaki bir cihazdan (PC / telefon) kabul edilir; Pi'nin kendi ekranından değil.</span>
+    </>
+  );
 
   return (
     <div className="sqm-page">
       <Panel title="Gecikme (Akıllı Kuyruk)" icon={<Timer size={18} style={{ marginRight: 8 }} />}
         subtitle="İndirme ya da yükleme hattı doldurduğunda ping'in fırlamasını önler: kuyruk Pi'de, hattın biraz altında oluşur ve cihazlar arasında adil paylaşılır"
-        badge={<Badge variant={soon ? 'info' : badge.v}>{soon ? 'Yakında' : badge.t}</Badge>}
+        badge={<Badge variant={badge.v}>{badge.t}</Badge>}
         actions={st.enabled ? <button className="btn-outline btn-sm btn-off" onClick={turnOff} disabled={busyAny}><Power size={13} /> Kapat</button> : undefined}>
         {st.line && <div className="sqm-line"><Gauge size={14} /><span><strong>Hat:</strong> {st.line.label}</span></div>}
-        {!st.supported && (
-          <Note kind={soon ? 'info' : 'warn'}>{st.reason || 'Bu kurulumda kullanılamıyor'}</Note>
+        {modem && (
+          <div className={`sqm-line sqm-modem${modem.mac ? '' : ' is-missing'}`}>
+            <Network size={14} />
+            <span>
+              <strong>Modem:</strong> {modem.ip || 'ağ geçidi bilinmiyor'} · {modem.mac ? <code className="sqm-mac">{modem.mac}</code> : <em>MAC adresi öğrenilemedi</em>}
+              {modem.mac && modem.port ? <> · {modem.bridge ? `köprü portu ${modem.port}` : modem.port}</> : null}
+            </span>
+          </div>
         )}
-        {!st.supported && st.enabled && (
+        {!st.supported && (
+          <Note kind={INFO_CODES.has(st.code) ? 'info' : 'warn'}>{reasonText || 'Bu kurulumda kullanılamıyor'}</Note>
+        )}
+        {classed && (
+          <Note kind="info">
+            {modem?.bridge ? 'Ev Wi-Fi köprüsünde' : 'Tek bacakta'} kuyruk yalnız modemle konuşan trafiğe uygulanır (modemin MAC adresine giden / ondan gelen
+            çerçeveler). Pi ile ev cihazları arasındaki trafik — panel, Samba / Time Machine, Syncthing, Pi-hole DNS, segmentler (VLAN) — kısıtsız ayrı bantta
+            kalır. Ağ geçidi olarak doğrudan modemi kullanan cihazlar ve — modem IPv6 dağıtıyorsa — cihazların IPv6 trafiği Pi'den geçmediği için kuyruğa
+            girmez. Pi üzerinden modemin kendi hizmetlerine (modeme takılı USB disk, medya sunucusu) giden trafik internet bandında sayılır.
+          </Note>
+        )}
+        {!st.supported && st.enabled && !hold && (
           <Note kind="warn">Akıllı kuyruk açık ama bu kipte takılmıyor — hat kuyruksuz çalışıyor. Kapatmak için sağ üstteki "Kapat"ı kullanın.</Note>
         )}
         {st.state === 'mismatch' && (
           <Note kind="warn">İnternet hattı bant ölçüldüğünden beri değişti: yanlış bantla hat kısılmasın diye kuyruk takılmadı. Bandı yeniden ölçüp kaydedin, sonra deneyin.</Note>
         )}
-        {(st.state === 'error' || st.state === 'waiting') && st.lastError && <Note kind="warn">{st.lastError}</Note>}
+        {showLastError && <Note kind="warn">{st.lastError}</Note>}
         {permanent && st.supported && st.state !== 'mismatch' && cfg && !editing && (
           <div className="sqm-summary">
             <span>{st.state === 'on' ? <ShieldCheck size={14} /> : <AlertTriangle size={14} />} {st.state === 'on' ? `Kuyruk takılı (${st.line?.dev})` : 'Kuyruk açık, şu an takılı değil'}: ↓ {mbpsText(cfg.downKbit)} Mbps · ↑ {mbpsText(cfg.upKbit)} Mbps · {OVERHEAD_LABEL[cfg.overhead].replace(' (önerilen)', '')}{cfg.overheadBytes != null ? ` (+${cfg.overheadBytes} bayt)` : ''}</span>
@@ -212,6 +415,13 @@ export function SqmTab() {
         )}
       </Panel>
 
+      {trialOnly && (
+        <section className="dhcp-wizard sqm-wizard" aria-labelledby="sqm-trial-title">
+          <div className="sqm-wizard-head"><div id="sqm-trial-title" className="dhcp-wizard-title">Deneme sürüyor</div></div>
+          <Step n={4} title="Kalıcı yap ya da geri al" state="active">{trialBody}</Step>
+        </section>
+      )}
+
       {showWizard && (
         <section className="dhcp-wizard sqm-wizard" aria-labelledby="sqm-wiz-title">
           <div className="sqm-wizard-head">
@@ -222,9 +432,12 @@ export function SqmTab() {
           <Step n={1} title="Hat ve ön koşullar" state={step1Done ? 'done' : 'active'}>
             <ul className="sqm-checks">
               <li className={st.tc ? 'is-ok' : 'is-bad'}>{st.tc ? <Check size={12} /> : <AlertTriangle size={12} />} tc (iproute2): {st.tc ? 'var' : 'yok'}</li>
-              <li className={st.missingModules.length ? 'is-bad' : 'is-ok'}>{st.missingModules.length ? <AlertTriangle size={12} /> : <Check size={12} />} Çekirdek modülleri: {st.missingModules.length ? `eksik — ${st.missingModules.join(', ')}` : 'hazır (sch_cake, ifb, act_mirred, cls_matchall, sch_ingress)'}</li>
+              <li className={st.missingModules.length ? 'is-bad' : 'is-ok'}>{st.missingModules.length ? <AlertTriangle size={12} /> : <Check size={12} />} Çekirdek modülleri: {st.missingModules.length ? `eksik — ${st.missingModules.join(', ')}` : `hazır (sch_cake, ifb, act_mirred, cls_matchall, sch_ingress${classed ? ', sch_prio, cls_flower, sch_fq_codel' : ''})`}</li>
+              {classed && modem && <li className={modem.mac ? 'is-ok' : 'is-bad'}>{modem.mac ? <Check size={12} /> : <AlertTriangle size={12} />} Modem MAC'i: {modem.mac || 'öğrenilemedi'}</li>}
             </ul>
-            <p className="sqm-help">Kuyruk yalnız internet arayüzüne ({st.line?.dev}) takılır; ev ağı kartına, Pi ile ev cihazları arasındaki trafiğe (panel, paylaşım, DNS) dokunmaz. Cihaz hız sınırları ve kotalar (Kota ve Hız) aynen çalışır.</p>
+            <p className="sqm-help">{classed
+              ? `Kuyruk ${modem?.bridge ? `ev Wi-Fi köprüsünün modeme bakan portuna (${st.line?.dev})` : `ev ağı kartına (${st.line?.dev})`} sınıflı takılır: yalnız modeme giden ve modemden gelen trafik banda girer; Pi ile ev cihazları arasındaki trafik kısıtsız kalır. Modem değişirse (yeni MAC) kuyruk kalkar ve bandı yeniden ölçmeniz istenir. Cihaz hız sınırları ve kotalar (Kota ve Hız) aynen çalışır.`
+              : `Kuyruk yalnız internet arayüzüne (${st.line?.dev}) takılır; ev ağı kartına, Pi ile ev cihazları arasındaki trafiğe (panel, paylaşım, DNS) dokunmaz. Cihaz hız sınırları ve kotalar (Kota ve Hız) aynen çalışır.`}</p>
             {!step1Done && (
               <div className="sqm-actions">
                 <button className="btn-primary btn-sm" onClick={() => setAck(true)} disabled={!st.ready}>Devam</button>
@@ -303,42 +516,13 @@ export function SqmTab() {
 
           {!editing && (
             <Step n={4} title="Kalıcı yap ya da geri al" state={inTrial ? 'active' : 'todo'}>
-              {!inTrial ? <Locked text="Deneme başlayınca" /> : (
-                <>
-                  <p className="sqm-help sqm-countdown"><Timer size={13} /> Kalan süre: <strong>{mmss(trialLeft)}</strong> — internet ve görüntülü görüşme düzgünse kalıcı yapın.</p>
-                  <div className="sqm-measure">
-                    <button className="btn-outline btn-sm" onClick={shapedTest} disabled={busyAny}>
-                      {busy === 'check' ? <><Loader2 size={13} className="spin" /> Ölçülüyor ({elapsed} sn)…</> : <><Gauge size={13} /> Kuyrukla hız testi</>}
-                    </button>
-                    <span className="sqm-muted">İsteğe bağlı: kuyruk açıkken hız ve yük altı gecikme (kayıt "kısılmış" işaretlenir).</span>
-                  </div>
-                  {check && cfg && (
-                    <div className="sqm-result">
-                      <span>↓ <strong>{check.download_mbps.toFixed(1)}</strong> Mbps (beklenenin %{ofExpected(check.download_mbps, cfg.downKbit)}'ı) · ↑ <strong>{check.upload_mbps.toFixed(1)}</strong> Mbps (%{ofExpected(check.upload_mbps, cfg.upKbit)})
-                        {check.loaded_ms != null && <> · yük altında <strong>{check.loaded_ms.toFixed(0)} ms</strong></>}</span>
-                    </div>
-                  )}
-                  {check && cfg && (ofExpected(check.download_mbps, cfg.downKbit) < 85 || ofExpected(check.upload_mbps, cfg.upKbit) < 85) && (
-                    <Note kind="warn">Verim beklenenin %85'inin altında: Pi'nin işlemcisi bu hızda yetmiyor olabilir ya da hat şu an yavaş. Bandı düşürün ya da geri alın.</Note>
-                  )}
-                  {st.state !== 'trial' && (
-                    <Note kind="warn">Kuyruk şu an takılı değil{st.state === 'waiting' ? ' — internet arayüzü bekleniyor' : ''}: takılınca onaylayın. Süre dolarsa kendiliğinden kalkar.</Note>
-                  )}
-                  <div className="sqm-actions">
-                    <button className="btn-primary btn-sm btn-on" onClick={confirm} disabled={busyAny || st.state !== 'trial'}>
-                      {busy === 'confirm' ? <Loader2 size={13} className="spin" /> : <ShieldCheck size={13} />} Kalıcı yap
-                    </button>
-                    <button className="btn-outline btn-sm btn-off" onClick={rollback} disabled={busyAny}>
-                      {busy === 'rollback' ? <Loader2 size={13} className="spin" /> : <RotateCcw size={13} />} Geri al
-                    </button>
-                  </div>
-                  <span className="sqm-muted">"Kalıcı yap" ev ağındaki bir cihazdan (PC / telefon) kabul edilir; Pi'nin kendi ekranından değil.</span>
-                </>
-              )}
+              {!inTrial ? <Locked text="Deneme başlayınca" /> : trialBody}
             </Step>
           )}
         </section>
       )}
+
+      {st.backup && <BackupSection st={st} busyMain={busyAny} refetch={refetch} />}
     </div>
   );
 }

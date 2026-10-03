@@ -811,11 +811,12 @@ function SqmDoc() {
 
       <DocBlock title="Nasıl açılır">
         <ol>
-          <li><strong>Hat ve ön koşullar:</strong> internet arayüzü ve çekirdek modülleri (sch_cake, ifb, act_mirred, cls_matchall, sch_ingress) denetlenir.</li>
+          <li><strong>Hat ve ön koşullar:</strong> internet arayüzü ve çekirdek modülleri (sch_cake, ifb, act_mirred, cls_matchall, sch_ingress; tek bacakta
+            ayrıca sch_prio, cls_flower, sch_fq_codel) denetlenir.</li>
           <li><strong>Bant:</strong> elle girin (hız testindeki değerin %90–95'i iyi bir başlangıçtır) ya da "Ölç" (Ookla) — hattın gerçek
             hızının %90'ı önerilir: hız testi yalnız veriyi sayar, kuyruk paket başlıklarını da sayar; öneri bunu hesaba katar, sonuçta
-            ölçülen hızın ~%90'ı kullanılır. Ölçüm boyunca kuyruk geçici kaldırılır, evde 30–60 sn gecikme artabilir; yedek hattayken
-            ölçülmez. Bağlantı türü paket başına ek yükü belirler: Ethernet / fiber (önerilen), kablo internet (DOCSIS), VDSL, ADSL; VLAN
+            ölçülen hızın ~%90'ı kullanılır. Ölçüm boyunca kuyruk geçici kaldırılır, evde 30–60 sn gecikme artabilir; ana hat yedek
+            hattayken ölçülmez (yedek hat kendi bölümünde ölçülür). Bağlantı türü paket başına ek yükü belirler: Ethernet / fiber (önerilen), kablo internet (DOCSIS), VDSL, ADSL; VLAN
             (+4 bayt) ve PPPoE (+8 bayt) hattan kendiliğinden eklenir (tek portta VLAN payı ihtiyatlıdır: etiket çoğu zaman yalnız Pi ile
             anahtar arasındadır — ~%0,3 fazla sayar, zararsız).</li>
           <li><strong>Dene (5 dk):</strong> kuyruk takılır; 5 dk içinde "Kalıcı yap"a basılmazsa Pi'deki zamanlayıcı kuyruğu kendiliğinden
@@ -840,18 +841,63 @@ function SqmDoc() {
         <ul>
           <li>Ayrı internet kartı (WAN router: DHCP, sabit, PPPoE, VLAN), tek port VLAN (kuyruk yalnız VLAN / PPPoE arayüzüne, ev ağı kartına asla),
             Wi-Fi ile internet (repeater A) ve Wi-Fi köprüsü (aynı ağ, repeater C).</li>
-          <li><strong>Yakında:</strong> tek bacaklı kurulum (modem ile ev ağı aynı kartta) ve ev Wi-Fi köprüsü (br0); yedek hat kuyruğu (yedek hatta
-            geçilince kuyruk devre dışıdır).</li>
-          <li>İnternet hattı değişirse (başka kart, PPPoE / VLAN değişti) kuyruk takılmaz ve uyarı çıkar: bandı yeniden ölçün.</li>
+          <li>Tek bacaklı kurulum (modem ile ev ağı aynı kartta; Pi'nin sabit adresi kalıcı olmalı) ve ev Wi-Fi köprüsü (br0) — aşağıda.</li>
+          <li>Yedek hat: kendi bandıyla (aşağıda).</li>
+          <li>İnternet hattı değişirse (başka kart, PPPoE / VLAN değişti, modem değişti) kuyruk takılmaz ve uyarı çıkar: bandı yeniden ölçün.</li>
         </ul>
+      </DocBlock>
+
+      <DocBlock title="Tek bacak ve ev Wi-Fi köprüsü (br0)">
+        <ul>
+          <li>Modem ile ev cihazları aynı kartta olduğu için kuyruk <strong>sınıflıdır</strong>: yalnız modemin MAC adresine giden (yükleme) ve ondan gelen
+            (indirme) çerçeveler bant sınırına girer. Pi ile ev cihazları arasındaki trafik — panel, Samba / Time Machine, Syncthing, Pi-hole DNS,
+            segmentler (VLAN etiketli) — kısıtsız ayrı bantta kalır; hızı değişmez.</li>
+          <li>Ev Wi-Fi köprüsünde (br0) kuyruk köprünün modeme bakan portuna (modemin MAC'inin öğrenildiği kart, ör. eth0) takılır; br0'a ve Wi-Fi
+            portuna takılmaz.</li>
+          <li>Modemin MAC adresi Pi'nin komşu tablosundan okunur ve sayfada gösterilir. <strong>Öğrenilemezse hiçbir şey takılmaz</strong> (hat bugünkü
+            gibi çalışır). Kuyruk takılıyken modem bir süre yanıt vermezse (ör. yedek hatta geçildi) takılı kuyruk korunur. Modem değişirse (yeni
+            MAC) kuyruk kaldırılır, uyarı çıkar: bandı yeniden ölçüp kaydedin.</li>
+          <li>Ağ geçidi olarak doğrudan modemi kullanan cihazlar (ör. modemin Wi-Fi'ına bağlı olanlar) Pi'den geçmediği için kuyruğa girmez.</li>
+          <li><strong>IPv6:</strong> modem ev ağına IPv6 dağıtıyorsa (RA / SLAAC) cihazlar IPv6 trafiğini Pi'ye uğramadan doğrudan modeme gönderir — bu
+            trafik kuyruğa girmez ve büyük bir IPv6 indirmesi gecikmeyi yine artırır (ev Wi-Fi köprüsünde yalnız modemle aynı anahtardaki kablolu
+            cihazlar için). Sayfa bunu yoklar ve uyarır: modemde ev ağı IPv6'sını kapatın.</li>
+          <li>Pi üzerinden modemin kendi hizmetlerine (modeme takılı USB disk, medya sunucusu) giden trafik internet bandında sayılır.</li>
+        </ul>
+      </DocBlock>
+
+      <DocBlock title="Yedek hat">
+        <ul>
+          <li>Yedek hat (USB modem / telefon, ikinci kart, hotspot) kendi bandıyla kuyruklanır: Bant Genişliği → Gecikme → "Yedek hat kuyruğu". Yedek
+            profil hep bağlı olduğundan kuyruk önceden takılır; geçişte kuyruklara dokunulmaz, yalnız rota değişir.</li>
+          <li>Bandı elle girin (4G'de kötü saatteki hızın biraz altı). "Ölç" yalnız yedek hattayken çalışır: Ookla Pi'nin o an kullandığı hattı ölçer.</li>
+          <li>USB modemin adı her takışta değişebilir: kuyruk aynı modeme (sürücü ve USB kimliği: üretici / model / seri no) göre yeni arayüze
+            kendiliğinden yeniden takılır. Başka bir yedek hat kurulursa — başka bir USB modem / telefon, başka bir hotspot (ağ adı) ya da kart — eski
+            bant kullanılmaz, uyarı çıkar: bandı yeniden girin.</li>
+          <li>Yedek hattayken ana hattın modemi yanıt vermese de (tek bacak) yedek hat bandı kaydedilip denenebilir: deneme yedek hat kuyruğunu sınar,
+            ana hattın takılı kuyruğuna dokunulmaz.</li>
+          <li>Akıllı kuyruk açıkken yedek hat bandını kaydetmek iki hat için 5 dk'lık yeni deneme başlatır. "Kaldır" yalnız yedek hat kuyruğunu kaldırır
+            (deneme gerekmez).</li>
+        </ul>
+      </DocBlock>
+
+      <DocBlock title="Canlı Pi'de ilk deneme (önerilen sıra)">
+        <ol>
+          <li>Sayfada hattı ve (tek bacakta) modemin MAC adresini doğrulayın; 1. adımda modüller "hazır" olmalı. Tek bacakta "Modem ev ağına
+            IPv6 dağıtıyor" uyarısı varsa önce modemde ev ağı IPv6'sını kapatın (yoklama sayfa açıkken 10 dk'da bir yenilenir).</li>
+          <li>"Ölç" ile bant önerisini alın, "Kaydet", sonra "Dene (5 dk)".</li>
+          <li>Deneme sürerken: "Kuyrukla hız testi" (beklenenin %85'i üstü), bir cihazda büyük indirme + ping (artış birkaç ms olmalı; tek bacakta
+            ping'i IPv4 ile atın — <code>ping -4</code> — ve cihazın IPv4 ile Pi üzerinden çıktığından emin olun), Pi'den bir dosyayı Samba ile
+            kopyalayın ve panelin hızına bakın (kuyruktan önceki hızla aynı olmalı).</li>
+          <li>Hepsi düzgünse ev ağındaki bir cihazdan "Kalıcı yap"; değilse "Geri al" ya da 5 dk bekleyin (Pi kendiliğinden geri alır).</li>
+        </ol>
       </DocBlock>
 
       <DocTip type="info">
         Kapatma: panelde "Kapat" ya da SSH'tan <code>sudo bash /opt/pi5-gateway/scripts/sqm.sh off</code> — kuyruğu hemen kaldırır ve panel
         ayarını da kapatır (backend durmuşsa açılışta). (<code>sqm.sh clear</code> yalnız kuyruğu kaldırır: ayar açıksa 15 sn içinde geri
-        takılır.) Yalnız akıllı kuyruğun kendi kuyrukları (ca1e:, ca1f:, ifb-klx0, giriş süzgeci 4910; giriş kuyruğu yalnız onu
-        kendisi eklediyse) kaldırılır; cihaz hız sınırları ve kotalar etkilenmez. Ayar yedekten geri yüklenmez (hatta özgüdür): yeni
-        cihazda bant yeniden ölçülür.
+        takılır.) Yalnız akıllı kuyruğun kendi kuyrukları (kök ca1e: — tek bacakta altındaki ca11: / ca12: ile —, ca1f:, ifb-klx0 / ifb-klx1…,
+        süzgeç 4910; giriş kuyruğu yalnız onu kendisi eklediyse) kaldırılır; cihaz hız sınırları ve kotalar etkilenmez. Ayar yedekten geri
+        yüklenmez (hatta özgüdür): yeni cihazda bant yeniden ölçülür.
       </DocTip>
     </div>
   );

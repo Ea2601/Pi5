@@ -6,6 +6,15 @@
 .sqm-line { display: flex; align-items: center; gap: 8px; margin-top: 10px; font-size: 13px; color: var(--text-secondary); overflow-wrap: anywhere; }
 .sqm-line svg { flex-shrink: 0; color: var(--accent-color); }
 .sqm-line strong { color: var(--text-primary); }
+/* Tek bacak / br0: modem göstergesi (MAC öğrenilemediyse uyarı rengi); yedek hat bölümü */
+.sqm-modem.is-missing svg, .sqm-modem.is-missing em { color: var(--warning-color); }
+.sqm-modem em { font-style: normal; }
+.sqm-mac {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; color: var(--text-primary);
+  padding: 1px 6px; border-radius: 6px; background: rgba(255, 255, 255, 0.05); white-space: nowrap;
+}
+.sqm-backup { display: flex; flex-direction: column; gap: 10px; margin-top: 10px; }
+.sqm-backup .dhcp-step-lock { font-size: 12px; line-height: 1.45; } /* adım kartı dışında: sihirbazdaki kilit yazısıyla aynı boy */
 .sqm-summary {
   display: flex; align-items: center; justify-content: space-between; gap: 8px 12px; flex-wrap: wrap; margin-top: 10px;
   padding: 9px 12px; border-radius: 10px; border: 1px solid var(--panel-border); background: rgba(255, 255, 255, 0.015);
