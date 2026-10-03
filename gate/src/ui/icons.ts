@@ -1,0 +1,24 @@
+// Panelle aynı ikon seti (lucide). Tek tek içe aktarılır: paketin kökünden alınınca Metro ~1900 ikonun hepsini uygulama
+// paketine koyar. Yeni ikon gerekirse buraya ekleyin.
+export { default as Check } from 'lucide-react-native/icons/check';
+export { default as ChevronLeft } from 'lucide-react-native/icons/chevron-left';
+export { default as ExternalLink } from 'lucide-react-native/icons/external-link';
+export { default as Globe } from 'lucide-react-native/icons/globe';
+export { default as House } from 'lucide-react-native/icons/house';
+export { default as Info } from 'lucide-react-native/icons/info';
+export { default as Keyboard } from 'lucide-react-native/icons/keyboard';
+export { default as KeyRound } from 'lucide-react-native/icons/key-round';
+export { default as Lock } from 'lucide-react-native/icons/lock';
+export { default as Monitor } from 'lucide-react-native/icons/monitor';
+export { default as Moon } from 'lucide-react-native/icons/moon';
+export { default as Palette } from 'lucide-react-native/icons/palette';
+export { default as Plus } from 'lucide-react-native/icons/plus';
+export { default as QrCode } from 'lucide-react-native/icons/qr-code';
+export { default as Radar } from 'lucide-react-native/icons/radar';
+export { default as RefreshCw } from 'lucide-react-native/icons/refresh-cw';
+export { default as Router } from 'lucide-react-native/icons/router';
+export { default as ShieldCheck } from 'lucide-react-native/icons/shield-check';
+export { default as Square } from 'lucide-react-native/icons/square';
+export { default as Sun } from 'lucide-react-native/icons/sun';
+export { default as Trash } from 'lucide-react-native/icons/trash';
+export { default as Unplug } from 'lucide-react-native/icons/unplug';

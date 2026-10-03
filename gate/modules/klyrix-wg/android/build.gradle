@@ -1,0 +1,21 @@
+plugins {
+  id 'com.android.library'
+  id 'expo-module-gradle-plugin'
+}
+
+group = 'expo.modules.klyrixwg'
+version = '1.0.0'
+
+android {
+  namespace "expo.modules.klyrixwg"
+  defaultConfig {
+    versionCode 1
+    versionName '1.0.0'
+  }
+}
+
+dependencies {
+  // gate/wg (Go: wireguard-go + netstack) → gomobile bind; bash gate/wg/build-android.sh üretir. Yerel kütüphane
+  // (libgojni.so) src/main/jniLibs'te.
+  implementation files('libs/klyrixwg.jar')
+}

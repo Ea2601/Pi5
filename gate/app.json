@@ -1,0 +1,67 @@
+{
+  "expo": {
+    "name": "Klyrix/Gate",
+    "slug": "klyrix-gate",
+    "owner": "mentoforce",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "automatic",
+    "backgroundColor": "#0a0e14",
+    "icon": "./assets/icon.png",
+    "ios": {
+      "supportsTablet": true,
+      "infoPlist": {
+        "NSLocalNetworkUsageDescription": "Evinizdeki Klyrix Gate cihazını bulmak ve ona bağlanmak için yerel ağa erişilir.",
+        "NSBonjourServices": [
+          "_klyrix-gate._tcp"
+        ],
+        "NSAppTransportSecurity": {
+          "NSAllowsLocalNetworking": true
+        }
+      }
+    },
+    "android": {
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-foreground.png",
+        "backgroundImage": "./assets/adaptive-background.png",
+        "monochromeImage": "./assets/adaptive-monochrome.png"
+      }
+    },
+    "plugins": [
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "Pi panelindeki eşleştirme QR kodunu okumak için kamera kullanılır.",
+          "microphonePermission": false,
+          "recordAudioAndroid": false,
+          "barcodeScannerEnabled": true
+        }
+      ],
+      [
+        "expo-build-properties",
+        {
+          "android": {
+            "usesCleartextTraffic": true,
+            "buildArchs": [
+              "arm64-v8a"
+            ]
+          }
+        }
+      ],
+      "expo-secure-store",
+      [
+        "expo-splash-screen",
+        {
+          "image": "./assets/splash-icon.png",
+          "imageWidth": 140,
+          "resizeMode": "contain",
+          "backgroundColor": "#eef2f6",
+          "dark": {
+            "image": "./assets/splash-icon.png",
+            "backgroundColor": "#0a0e14"
+          }
+        }
+      ]
+    ]
+  }
+}
