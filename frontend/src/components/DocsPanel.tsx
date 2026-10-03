@@ -681,6 +681,11 @@ function LicenseDoc() {
       <DocTip type="info">
         Dürüst sınır: Klyrix Gate'in kaynağı açıktır ve cihazda yönetici (root) sizsiniz. Lisans denetimi kırılmaz bir koruma değildir;
         kod değiştirilerek atlanabilir. Amacı dürüst kullanıcıyı doğru katmana yönlendirmektir.
+      </DocTip>
+    </div>
+  );
+}
+
 function TemplatesDoc() {
   return (
     <div className="doc-page">
