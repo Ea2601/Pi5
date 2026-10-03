@@ -241,6 +241,28 @@ body.nav-open { overflow: hidden; }
 
 .topbar-menu { flex-shrink: 0; }
 
+/* Klyrix/Gate uygulamasının içinde (gateApp.ts): uygulamaya dönüş + bağlantı durumu tek düğmede — simgeli, renkli, kısa
+   (ev = evden, küre = dışarıdan, gecikme ms). Üst çubuk yüksekliği değişmez. */
+.topbar-app-back {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  flex-shrink: 0;
+  height: 40px;
+  padding: 0 10px 0 4px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--panel-border);
+  background: transparent;
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  cursor: pointer;
+}
+.topbar-app-back > svg:first-child { color: var(--text-primary); }
+.topbar-app-ok { color: var(--success-color); background: var(--success-glow); }
+.topbar-app-warn { color: var(--warning-color); background: var(--warning-glow); }
+.topbar-app-bad { color: var(--danger-color); background: var(--danger-glow); }
+
 .topbar-heading {
   display: flex;
   flex-direction: column;
