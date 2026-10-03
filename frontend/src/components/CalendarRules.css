@@ -30,6 +30,8 @@ p.cr-muted { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 .cr-note.is-warn { background: var(--warning-glow); border-color: transparent; }
 .cr-note.is-warn > svg { color: var(--warning-color); }
 .cr-note.is-info > svg { color: var(--accent-color); }
+/* Sayfa içi bağlantı (ör. "Yeni cihaz bildirimi kapalı" → Bildirimler): metin renginde, altı çizili — iki temada da okunur */
+.cr-note a { color: inherit; font-weight: 600; text-decoration: underline; text-underline-offset: 2px; }
 
 .cr-sec { margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--panel-border); }
 .cr-sec h4 { display: flex; align-items: center; gap: 6px; margin: 0; font-size: 14px; color: var(--text-primary); }
@@ -72,6 +74,8 @@ p.cr-muted { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 /* Formlar */
 .cr-form { margin-top: 10px; padding: 12px; border-radius: var(--radius-sm); border: 1px solid var(--accent-ring); background: var(--input-bg-soft); }
 .cr-grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px 12px; }
+/* Etiket uzunlukları farklı alanlar (yeni cihaz alarmı: grup + dakika): kontroller alt kenarda hizalanır */
+.cr-grid.cr-grid-end { align-items: end; }
 .cr-form label, .cr-wide { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--text-secondary); min-width: 0; }
 .cr-form input.config-input, .cr-form .config-input { min-width: 0; }
 .cr-checks { display: flex; flex-wrap: wrap; gap: 6px 16px; margin-top: 8px; }

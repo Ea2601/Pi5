@@ -23,6 +23,11 @@
 //  - Olaylar 'calendar' kaynağıyla, oluşum başına bir kez: onay bekliyor (uyarı), yakında başlıyor, başladı, bitti,
 //    uygulanamadı (uyarı). Profilin kural / grup referansları her turda doğrulanır (sarkan referans uyarısı).
 //  - Yalnız ana cihazda; HA (G4.3) geldiğinde yalnız MASTER'da: tek kapı engineAllowed().
+//  - G5.6 Tatil alarm kipi — profil eylemi newDevice (alarm.newDevice; seçilmedikçe hiçbir şey değişmez): etkin pencere boyunca
+//    yeni cihaz algılayıcısının (deviceWatch.ts, setAlarmProvider) olayı 'warning' olur. Birden çok etkin profil: birleşim
+//    ("sessiz saatleri yok say" herhangi biri). Her girişin bitişi kesin (until; motor tur atmasa da kendiliğinden düşer); motor
+//    kapalı / kill-switch / uzun hata → alarm yok. Varlık koşulu (cihaz grubu) isteğe bağlı, varsayılan yok. Alarm "Yeni cihaz
+//    bildirimi"ni kendiliğinden AÇMAZ. Kaplama imzasına girmez (ebeveyn / hız motorları uyandırılmaz). HA: yalnız MASTER.
 import crypto from 'crypto';
 import fs from 'fs';
 import type express from 'express';
@@ -34,6 +39,10 @@ import { normTag } from './calendarIcs';
 import { INTERVAL_MIN, INTERVAL_MAX } from './calendarSync';
 import { listRules, setCalendarOverlay, applyCalendarOverlay, type CalendarOverlay, type CalendarEffect, type ParentalRule } from './parental';
 import { setCalendarCaps, runQos, isMac, normMac, type CalendarCap } from './qos';
+import { setAlarmProvider, type AlarmState } from './deviceWatch';
+import { readNeighbors, type Neighbor } from './topology';
+import { notifyConfig } from './notifyStore';
+import { kickNotify } from './notify';
 
 const SETTINGS_KEY = 'calendar_settings';
 const TICK_MS = 60_000;
@@ -53,6 +62,9 @@ const SOURCE_RE = /^([0-9a-f]{12}|local)$/;
 const WEEKLY_MAX_MIN = 6 * 1440;          // haftalık tekrarda en uzun süre: her hafta en az 1 gün boşluk (ardışık oluşumlar kalıcı engel olmasın)
 const RETRY_MS = 5_000;                   // başarısız turdan sonra yeniden deneme (5, 10, 20, 40 sn, sonra 60 sn)
 const FAIL_DROP_MS = 3 * TICK_MS;         // bu kadar süre tur başarısızsa kaplama boşa döner (taban davranış)
+const PRESENCE_MIN = 15;                  // G5.6 varlık koşulu: varsayılan / en az / en çok dakika
+const PRESENCE_MIN_LO = 5;
+const PRESENCE_MIN_HI = 240;
 
 // Tek "etkin mi" kapısı: ana cihazda (uydu ağ geçidi işi yapmaz). G4.3 (HA) yedek düğümü burada da false döner.
 export const engineAllowed = (): boolean => !isSatellite();
@@ -112,7 +124,10 @@ const tableExists = async (name: string) => !!(await dbGet("SELECT 1 AS x FROM s
 
 // ── Tipler ───────────────────────────────────────────────────────────────────
 export interface CapsAction { devices: string[]; groups: number[]; down_kbps: number; up_kbps: number; exempt: string[] }
-export interface ProfileActions { suspend: number[]; activate: number[]; caps: CapsAction | null }
+// G5.6 yeni cihaz alarmı. presence_group: isteğe bağlı cihaz grubu (null = koşul yok); presence_min: "son N dakikada görülmediyse"
+export interface NewDeviceAlarm { ignore_quiet: boolean; presence_group: number | null; presence_min: number }
+// newDevice yalnız seçilince bulunur (seçilmeyen profilin JSON'u ve yanıtları eskisiyle aynı)
+export interface ProfileActions { suspend: number[]; activate: number[]; caps: CapsAction | null; newDevice?: NewDeviceAlarm }
 export interface Profile { id: number; name: string; actions: ProfileActions }
 export interface Binding { id: number; tag: string; profile_id: number; priority: number; sources: string[] | null; enabled: boolean }
 export interface LocalEvent { id: number; title: string; tag: string; start: string; duration_min: number; weekly: boolean; until: string | null }
@@ -131,11 +146,14 @@ const macs = (v: unknown) => (Array.isArray(v) ? [...new Set(v.map(m => normMac(
 function rowToProfile(r: any): Profile {
   const a = parseJson<any>(r.actions, {});
   const c = a?.caps && typeof a.caps === 'object' ? a.caps : null;
+  const n = a?.newDevice && typeof a.newDevice === 'object' && !Array.isArray(a.newDevice) ? a.newDevice : null;
   return {
     id: Number(r.id), name: String(r.name || ''),
     actions: {
       suspend: ints(a?.suspend), activate: ints(a?.activate),
       caps: c ? { devices: macs(c.devices), groups: ints(c.groups), down_kbps: Number(c.down_kbps) || 0, up_kbps: Number(c.up_kbps) || 0, exempt: macs(c.exempt) } : null,
+      ...(n ? { newDevice: { ignore_quiet: n.ignore_quiet === true, presence_group: ints([n.presence_group])[0] ?? null,
+        presence_min: clampInt(n.presence_min, PRESENCE_MIN_LO, PRESENCE_MIN_HI, PRESENCE_MIN) } } : {}),
     },
   };
 }
@@ -187,6 +205,8 @@ export interface OverlayInput {
 }
 export interface Entry { occ: Occurrence; binding: Binding; profile: Profile; start: number; end: number; label: string }
 export interface PendingItem { occ: Occurrence; bindings: Binding[]; end: number }
+// G5.6: etkin girişin yeni cihaz alarmı (bitişi girişin bitişi)
+export interface AlarmEntry { until: number; label: string; ignoreQuiet: boolean; presence: { group: number; min: number } | null }
 export interface OverlayResult {
   active: Entry[];                         // şu an uygulanan
   upcoming: Entry[];                       // onaylı, henüz başlamamış (önümüzdeki 7 gün)
@@ -194,6 +214,7 @@ export interface OverlayResult {
   pending: PendingItem[];
   parental: CalendarOverlay;
   caps: { action: CapsAction; until: number; label: string }[];
+  alarms: AlarmEntry[];                    // G5.6 yeni cihaz alarmı (etkin girişlerden)
   conflicts: string[];
   warnings: string[];                      // sarkan referanslar vb.
   nextBoundary: number | null;
@@ -220,6 +241,8 @@ export function profileProblems(p: Profile, rules: Map<number, RuleInfo>, groups
     else if (r.all) out.push(`«${p.name}»: ${ALL_TARGET({ ...r, name: r.name || `#${id}` })}`);
   }
   if (groups && p.actions.caps) for (const g of p.actions.caps.groups) if (!groups.has(g)) out.push(`«${p.name}»: hız kısıtı grubu #${g} artık yok`);
+  const pg = p.actions.newDevice?.presence_group;
+  if (groups && pg && !groups.has(pg)) out.push(`«${p.name}»: yeni cihaz alarmının varlık grubu #${pg} artık yok — varlık koşulu uygulanamaz, her yeni cihaz uyarı olur`);
   return out;
 }
 // Etiket bağlamasının kaynak referansları: silinmiş takvim (bağlama o kaynaktan artık tetiklenmez)
@@ -232,7 +255,7 @@ export function bindingProblems(bindings: Binding[], sourceIds: Set<string>): st
 export function computeOverlay(inp: OverlayInput): OverlayResult {
   const { now, settings } = inp;
   const res: OverlayResult = {
-    active: [], upcoming: [], blocked: [], pending: [], parental: { suspend: new Map(), activate: new Map() }, caps: [], conflicts: [], warnings: [], nextBoundary: null,
+    active: [], upcoming: [], blocked: [], pending: [], parental: { suspend: new Map(), activate: new Map() }, caps: [], alarms: [], conflicts: [], warnings: [], nextBoundary: null,
   };
   const bound = (t: number) => { if (t > now && (res.nextBoundary === null || t < res.nextBoundary)) res.nextBoundary = t; };
   for (const p of inp.profiles.values()) res.warnings.push(...profileProblems(p, inp.rules, inp.groups));
@@ -295,7 +318,38 @@ export function computeOverlay(inp: OverlayInput): OverlayResult {
     }
   }
   for (const e of res.active) if (e.profile.actions.caps) res.caps.push({ action: e.profile.actions.caps, until: e.end, label: e.label });
+  for (const e of res.active) {
+    const n = e.profile.actions.newDevice;
+    if (n) res.alarms.push({ until: e.end, label: e.label, ignoreQuiet: n.ignore_quiet, presence: n.presence_group ? { group: n.presence_group, min: n.presence_min } : null });
+  }
   return res;
+}
+
+// ── G5.6 Tatil alarmı: varlık koşulu ve karar (saf) ─────────────────────────
+// Varlık: grubun cihazlarından biri son N dk'da komşu tablosunda REACHABLE / STALE görüldüyse "evde biri var". Görülme anı =
+// okuma anı − son doğrulamadan bu yana geçen süre (STALE kayıt kapanmış cihazda saatlerce kalır; topology.ts isOnline ile aynı
+// gerekçe). DELAY / PROBE, STALE kayda trafik gidince geçilen ara durumlardır (çekirdek: STALE → DELAY → PROBE → REACHABLE ya
+// da FAILED): onlar da son doğrulama yaşıyla sayılır — anlık görüntü o saniyeye denk gelince evdeki cihaz "yok" sanılmasın.
+// FAILED / INCOMPLETE sayılmaz. seen: MAC → son görülme (bellekte; motor turunda ve alarm sorulunca güncellenir; 4 saatten
+// eskisi atılır).
+const PRESENT_STATES = new Set(['REACHABLE', 'STALE', 'DELAY', 'PROBE']);
+const PRESENCE_KEEP_MS = PRESENCE_MIN_HI * MIN_MS;
+export function notePresence(seen: Map<string, number>, neigh: Map<string, Neighbor>, now: number): void {
+  for (const n of neigh.values()) {
+    const m = normMac(n.mac);
+    if (!PRESENT_STATES.has(n.state) || !isMac(m)) continue;
+    const at = now - (n.confirmed !== null && n.confirmed > 0 ? n.confirmed * 1000 : 0);
+    if (at > (seen.get(m) ?? -Infinity)) seen.set(m, at);
+  }
+  for (const [m, t] of seen) if (now - t > PRESENCE_KEEP_MS) seen.delete(m);
+}
+// Alarm verilir mi: koşulsuz giriş ya da grubundan kimse son N dk'da görülmemiş koşullu giriş varsa (grubu yok / boş → kimse
+// yok sayılır). Döner: deviceWatch'ın alarm durumu ya da null (olay bugünkü gibi).
+export function alarmVerdict(live: AlarmEntry[], members: Map<number, string[]>, seen: Map<string, number>, now: number): AlarmState | null {
+  const firing = live.filter(a => !a.presence || !(members.get(a.presence.group) || [])
+    .some(m => (seen.get(normMac(m)) ?? -Infinity) >= now - a.presence!.min * MIN_MS));
+  if (!firing.length) return null;
+  return { label: 'Tatil kipi', until: Math.max(...firing.map(a => a.until)), ignoreQuiet: firing.some(a => a.ignoreQuiet) };
 }
 
 // Birleşik etkinin geçerlik sınırı: girdiler bittikçe sonucun (value) ilk değiştiği an. Sonucu değiştirmeyen bitişte etki
@@ -429,6 +483,29 @@ let endPending = false;          // kapatmada "bitti" işaretleri yazılamadıys
 const EMPTY_OVERLAY = (): CalendarOverlay => ({ suspend: new Map(), activate: new Map() });
 // Sağlayıcılar (parental.ts / qos.ts): motor kapalıyken null / boş — iki motor eskisi gibi
 const overlayProvider = (): CalendarOverlay | null => (enabledNow ? snapshot?.parental ?? EMPTY_OVERLAY() : null);
+
+// G5.6 Tatil alarmı: şu an etkin alarm girişleri ya da null (motor kapalı / kill-switch / HA yedek / uzun hata ya da hepsinin
+// bitişi geçti — motor tur atmasa da).
+export function alarmActive(now = Date.now()): AlarmEntry[] | null {
+  if (!enabledNow || !snapshot) return null;
+  const live = snapshot.result.alarms.filter(a => now < a.until);
+  return live.length ? live : null;
+}
+const presenceSeen = new Map<string, number>();
+// deviceWatch.ts sağlayıcısı (yalnız bekleyen yeni cihaz varken sorulur): varlık koşullu giriş varsa komşu tablosu o an da okunur.
+// Grup üyeleri okunamazsa grup boş sayılır (alarm verilir — koşul alarmı yalnız azaltır). Alarm olayı yazılınca dış bildirim
+// göndericisi uyandırılır (öncelikli gönderim: gecikme ≈ tarama aralığı + gönderim, 10 sn'lik tur beklenmez).
+const withKick = (v: AlarmState | null): AlarmState | null => (v ? { ...v, written: kickNotify } : null);
+async function deviceAlarm(): Promise<AlarmState | null> {
+  const now = Date.now();
+  const live = alarmActive(now);
+  if (!live) return null;
+  const gids = [...new Set(live.flatMap(a => (a.presence ? [a.presence.group] : [])))];
+  if (!gids.length) return withKick(alarmVerdict(live, new Map(), presenceSeen, now));
+  notePresence(presenceSeen, await readNeighbors(), now);
+  const members = await groupMembers(gids).catch(() => new Map<number, string[]>());
+  return withKick(alarmVerdict(live, members, presenceSeen, now));
+}
 const capsProvider = (): Map<string, CalendarCap> => {
   const out = new Map<string, CalendarCap>();
   if (!enabledNow || !snapshot) return out;
@@ -527,6 +604,7 @@ async function tick(): Promise<void> {
     const was = enabledNow || snapshot !== null;
     enabledNow = false;
     snapshot = null;
+    presenceSeen.clear();
     let err: string | null = null;
     if (was) { err = await wakeEngines(); endPending = true; }
     if (endPending) { await endAllStarted('takvim etkileri durduruldu'); endPending = false; }
@@ -546,6 +624,9 @@ async function tick(): Promise<void> {
   });
   const gids = [...new Set(result.caps.flatMap(c => c.action.groups))];
   const caps = resolveCaps(result.caps, await groupMembers(gids), await protectedSet());
+  // G5.6 varlık geçmişi: yalnız varlık koşullu yeni cihaz alarmı olan profil varken (komşu tablosu okuması fırlatmaz)
+  if (profiles.some(p => p.actions.newDevice?.presence_group)) notePresence(presenceSeen, await readNeighbors(), now);
+  else presenceSeen.clear();
   const sig = sigOf(result.parental, caps);
   const changed = !snapshot || snapshot.sig !== sig || !enabledNow;
   enabledNow = true;
@@ -619,6 +700,7 @@ export function startCalendarEngine(opts: { protectedMacs: () => Promise<Set<str
   protectedProvider = opts.protectedMacs;
   setCalendarOverlay(overlayProvider);
   setCalendarCaps(capsProvider);
+  setAlarmProvider(deviceAlarm);
   void runTick();
 }
 
@@ -667,8 +749,24 @@ export function validateActions(raw: any, rules: Map<number, RuleInfo>, groupIds
     if (!down && !up) return { error: 'Hız kısıtında indirme ya da yükleme hızı girin' };
     caps = { devices: [...new Set<string>(devices)], groups: [...new Set<number>(groups)], down_kbps: down, up_kbps: up, exempt: [...new Set<string>(exempt)] };
   }
-  if (!suspend.length && !activate.length && !caps) return { error: 'En az bir eylem seçin: kural askıya al, takvim kuralını etkinleştir ya da hız kısıtı' };
-  return { actions: { suspend, activate, caps } };
+  // G5.6 yeni cihaz alarmı (null / yok = seçilmedi)
+  let newDevice: NewDeviceAlarm | null = null;
+  if (a.newDevice !== undefined && a.newDevice !== null) {
+    const n = a.newDevice;
+    if (typeof n !== 'object' || Array.isArray(n)) return { error: 'Yeni cihaz alarmı geçersiz' };
+    if (n.ignore_quiet !== undefined && typeof n.ignore_quiet !== 'boolean') return { error: 'Yeni cihaz alarmı: "Sessiz saatleri yok say" true ya da false olmalı' };
+    let group: number | null = null;
+    if (n.presence_group !== undefined && n.presence_group !== null) {
+      group = Number(n.presence_group);
+      if (!Number.isInteger(group) || group <= 0) return { error: 'Yeni cihaz alarmı: varlık grubu geçersiz' };
+      if (groupIds && !groupIds.has(group)) return { error: `Yeni cihaz alarmı: cihaz grubu #${group} bulunamadı` };
+    }
+    const min = n.presence_min === undefined || n.presence_min === null ? PRESENCE_MIN : Number(n.presence_min);
+    if (!Number.isInteger(min) || min < PRESENCE_MIN_LO || min > PRESENCE_MIN_HI) return { error: `Yeni cihaz alarmı: varlık süresi ${PRESENCE_MIN_LO}–${PRESENCE_MIN_HI} dakika olmalı` };
+    newDevice = { ignore_quiet: n.ignore_quiet === true, presence_group: group, presence_min: min };
+  }
+  if (!suspend.length && !activate.length && !caps && !newDevice) return { error: 'En az bir eylem seçin: kural askıya al, takvim kuralını etkinleştir, hız kısıtı ya da yeni cihaz alarmı' };
+  return { actions: { suspend, activate, caps, ...(newDevice ? { newDevice } : {}) } };
 }
 function validateBinding(b: any, profiles: Profile[], sourceIds: Set<string>): { binding: Omit<Binding, 'id'> } | { error: string } {
   const tag = cleanTag(b?.tag);
@@ -711,6 +809,8 @@ export interface Preview {
   devices: { mac: string; name: string; effects: string[] }[];
   caps: { down_kbps: number; up_kbps: number; devices: number; protected_skipped: number; exempt: number } | null;
   conflicts: string[]; warnings: string[];
+  // G5.6 (yalnız eylem seçiliyse): device_watch = "Yeni cihaz bildirimi" açık mı (kapalıyken alarm çalışmaz)
+  alarm?: { ignore_quiet: boolean; presence_group: number | null; presence_group_name: string; presence_min: number; device_watch: boolean };
 }
 const fmtMbps = (k: number) => (k ? `${(k / 1000).toLocaleString('tr-TR', { maximumFractionDigits: 3 })} Mbps` : 'sınırsız');
 export async function buildPreview(actions: ProfileActions, win: { start: number; end: number } | null, priority: number, selfProfile: number | null): Promise<Preview> {
@@ -750,6 +850,13 @@ export async function buildPreview(actions: ProfileActions, win: { start: number
     }
     p.caps = { down_kbps: c.down_kbps, up_kbps: c.up_kbps, devices: n, protected_skipped: protN, exempt: exN };
     if (!n) p.warnings.push('Hız kısıtına giren cihaz yok (seçilen gruplar boş ya da hepsi muaf / korunan)');
+  }
+  if (actions.newDevice) {
+    const nd = actions.newDevice;
+    const g = nd.presence_group && (await tableExists('device_groups'))
+      ? await dbGet('SELECT name FROM device_groups WHERE id = ?', [nd.presence_group]) as { name?: string } | undefined : undefined;
+    p.alarm = { ignore_quiet: nd.ignore_quiet, presence_group: nd.presence_group, presence_group_name: String(g?.name || ''), presence_min: nd.presence_min,
+      device_watch: notifyConfig().deviceWatch.enabled };
   }
   p.devices = [...eff].map(([mac, effects]) => ({ mac, name: devNames.get(mac) || '', effects })).sort((a, b) => (a.name || a.mac).localeCompare(b.name || b.mac, 'tr'));
   p.warnings.push(...profileProblems({ id: 0, name: 'Bu profil', actions }, rules, await loadGroupIds()));

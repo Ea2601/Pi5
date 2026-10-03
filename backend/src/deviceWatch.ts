@@ -16,7 +16,12 @@
 //    Wi-Fi'ı (192.168.50.0/24) istemcisi etiketlenir. Pi'nin kendi kartları ve ağ geçidi (modem) atlanır.
 //  - Otomatik engel YOK: yalnız farkındalık. Ev VPN istemcileri (wg_pi, L3) komşu tablosunda görünmez — kapsam dışı.
 //  - Uyduda başlatılmaz (index.ts '!isSatellite'); HA'da yalnız MASTER (notifyStore notifyMayRun).
-//  - G5.6 kancası: alarmProvider (şimdi verilmez) etkinse olay 'warning' önemde ve etiket önekiyle yazılır.
+//  - G5.6 Tatil alarm kipi — tek kanca setAlarmProvider (takvim motoru verir). Sağlayıcı yokken ya da null / false dönerken
+//    olay (tür, önem, metin, kaynak, birleştirme) yukarıdaki gibi. Alarm etkinken: bekleme yok (gecikme ≤ tarama aralığı +
+//    gönderim), olay 'warning' (okunmamış: zil, OLED, kiosk), metin "Tatil kipi: tanınmayan cihaz bağlandı — <ad|MAC>",
+//    kaynak 'device-new:alarm' ("sessiz saatleri yok say" seçiliyse 'device-new:alarm-urgent' — notify.ts sessiz saatte
+//    yalnız bunu geçirir). Kaynağın başı 'device-new': dış kanal süzgeçleri, etiket ve "git" bağlantısı aynı. Aynı MAC pencere
+//    başına bir kez. Rastgele MAC bastırması, taban çizgisi, korunan cihazlar ve Kurulum Wi-Fi'ı etiketi aynen.
 import fs from 'fs';
 import { dbAll, dbRun } from './db';
 import { getNetworkDevices, protectedMacs as baseProtectedMacs, AP_NET } from './system';
@@ -33,11 +38,21 @@ const HOLD_SLACK_MS = 5000;
 const SUMMARY_AT = 10;
 const MAC_RE = /^([0-9a-f]{2}:){5}[0-9a-f]{2}$/;
 
-export type AlarmProvider = () => { active: boolean; label: string } | null;
+// G5.6: etkin alarm — label: metin öneki ('Tatil kipi'); until: pencerenin sonu (aynı MAC o ana dek bir kez); ignoreQuiet:
+// dış kanalın sessiz saatlerinde de gönder; written: alarm olayı yazılınca çağrılır (takvim motoru göndericiyi uyandırır —
+// dış kanal 10 sn'lik turu beklemez).
+export type AlarmState = { label: string; until: number; ignoreQuiet: boolean; written?: () => void };
+export type AlarmProvider = () => AlarmState | null | false | Promise<AlarmState | null | false>;
+export const ALARM_SOURCE = 'device-new:alarm';
+export const ALARM_URGENT_SOURCE = 'device-new:alarm-urgent';
+let alarmProvider: AlarmProvider | null = null;
+export function setAlarmProvider(fn: AlarmProvider | null): void { alarmProvider = fn; }
+// Alarmla bildirilen MAC → pencerenin sonu (aç / kapat dönemlerinden bağımsız; pencere bitince düşer).
+const alarmed = new Map<string, number>();
 type Live = { ip: string; mac: string };
 // intervalMs / holdMs / devices / leasesFile yalnız test içindir.
 export type DeviceWatchOpts = {
-  protectedMacs?: () => Promise<Set<string>>; alarmProvider?: AlarmProvider | null;
+  protectedMacs?: () => Promise<Set<string>>;
   intervalMs?: number; holdMs?: number; devices?: () => Promise<Live[]>; leasesFile?: string;
 };
 let opts: DeviceWatchOpts = {};
@@ -101,6 +116,11 @@ export function summaryMessage(list: NewDevice[]): string {
   const rnd = list.filter(d => d.random).length;
   return `${list.length} yeni cihaz bağlandı: ${shown}${list.length > 5 ? ' …' : ''}${rnd ? ` (${rnd} tanesi gizli Wi-Fi adresi olabilir)` : ''}`;
 }
+// G5.6 alarm metni: ad (DHCP'den, düz metin) yoksa MAC; ayrıntıda IP (ve adı varsa MAC).
+export function alarmMessage(d: NewDevice, label = 'Tatil kipi'): string {
+  return `${label}: tanınmayan cihaz bağlandı — ${d.name || d.mac} (${d.name ? `${d.ip}, ${d.mac}` : d.ip})`
+    + `${d.random ? ' — gizli Wi-Fi adresi olabilir (rastgele MAC)' : ''}${d.setup ? " — Kurulum Wi-Fi'ı" : ''}`;
+}
 
 async function saveKnown(mac: string): Promise<void> {
   try {
@@ -113,15 +133,65 @@ async function saveKnown(mac: string): Promise<void> {
 }
 // Olay satırı (events.ts recordEvent ile aynı biçim; bilgi olayı okunmuş). recordEvent hatayı yutar: burada yazılamazsa cihaz
 // bekleyende kalır, sonraki turda yeniden denenir.
-const writeEvent = (message: string, sev: 'info' | 'warning') =>
+const writeEvent = (message: string, sev: 'info' | 'warning', source = 'device-new') =>
   dbRun('INSERT INTO alerts (type, severity, message, source, acknowledged) VALUES (?, ?, ?, ?, ?)',
-    ['event', sev, String(message).slice(0, 500), 'device-new', sev === 'info' ? 1 : 0]);
+    ['event', sev, String(message).slice(0, 500), source, sev === 'info' ? 1 : 0]);
+
+// G5.6: sağlayıcının yanıtı (hata ya da süresi geçmiş pencere = alarm yok: olay bugünkü gibi yazılır).
+async function alarmNow(): Promise<AlarmState | null> {
+  if (!alarmProvider) return null;
+  try {
+    const a = await alarmProvider();
+    return a && Number.isFinite(a.until) && a.until > Date.now() ? a : null;
+  } catch (e: any) {
+    console.error('[yeni cihaz] alarm durumu okunamadı (olay uyarısız yazılır):', e?.message || e);
+    return null;
+  }
+}
+type Done = (d: NewDevice) => Promise<void>;
+// Tatil kipi: bu pencerede alarmı verilmiş MAC yeniden bildirilmez (bilinen olur); kalanlar 'warning' (10'dan fazlası tek özet).
+async function writeAlarm(list: NewDevice[], a: AlarmState, done: Done): Promise<void> {
+  const now = Date.now();
+  for (const [m, u] of alarmed) if (u <= now) alarmed.delete(m);
+  if (alarmed.size > 5000) alarmed.clear(); // üst sınır (cihaz zaten bilinen olur, yineleme yine olmaz)
+  const fresh: NewDevice[] = [];
+  for (const d of list) {
+    if (alarmed.has(d.mac)) await done(d);
+    else fresh.push(d);
+  }
+  const src = a.ignoreQuiet ? ALARM_URGENT_SOURCE : ALARM_SOURCE;
+  const label = a.label || 'Tatil kipi';
+  let wrote = 0;
+  try {
+    if (fresh.length > SUMMARY_AT) {
+      await writeEvent(`${label}: ${summaryMessage(fresh)}`, 'warning', src);
+      wrote++;
+      for (const d of fresh) { alarmed.set(d.mac, a.until); await done(d); }
+    } else {
+      for (const d of fresh) {
+        await writeEvent(alarmMessage(d, label), 'warning', src);
+        wrote++;
+        alarmed.set(d.mac, a.until);
+        await done(d);
+      }
+    }
+  } finally {
+    // Öncelikli gönderim: yazılan alarm dış kanala göndericinin sıradaki turunu beklemeden gider (hata yalnız günlüğe)
+    if (wrote && a.written) {
+      try { a.written(); } catch (e: any) { console.error('[yeni cihaz] gönderici uyandırılamadı:', e?.message || e); }
+    }
+  }
+}
 
 // Bekleme süresi dolan yeni cihazlar olay olarak yazılır (tur başına 10'dan fazlası tek özet). Cihaz ancak olayı yazılınca
 // known_devices'a girer: bekleme sırasında panel yeniden başlarsa cihaz açılışta yine yeni görünür ve bildirilir.
 async function flush(now: number, my: number): Promise<void> {
   const holdMs = opts.holdMs ?? HOLD_MS;
-  const due = [...pending].filter(([, p]) => now - p.at >= holdMs - (holdMs > HOLD_SLACK_MS ? HOLD_SLACK_MS : 0));
+  let due = [...pending].filter(([, p]) => now - p.at >= holdMs - (holdMs > HOLD_SLACK_MS ? HOLD_SLACK_MS : 0));
+  // G5.6: sağlayıcı yalnız bekleyen cihaz varken sorulur; Tatil kipinde bekleme yok (öncelikli bildirim)
+  const alarm = alarmProvider && pending.size ? await alarmNow() : null;
+  if (my !== gen) return;
+  if (alarm) due = [...pending];
   if (!due.length) return;
   const names = await leaseNames(opts.leasesFile || LEASES);
   if (my !== gen) return;
@@ -134,16 +204,15 @@ async function flush(now: number, my: number): Promise<void> {
     else list.push(d);
   }
   if (!list.length || my !== gen) return;
-  const alarm = opts.alarmProvider?.() || null;
-  const sev = alarm?.active ? 'warning' : 'info';
-  const pre = alarm?.active && alarm.label ? `${alarm.label}: ` : '';
   try {
-    if (list.length > SUMMARY_AT) {
-      await writeEvent(`${pre}${summaryMessage(list)}`, sev);
+    if (alarm) {
+      await writeAlarm(list, alarm, done);
+    } else if (list.length > SUMMARY_AT) {
+      await writeEvent(summaryMessage(list), 'info');
       for (const d of list) await done(d);
     } else {
       for (const d of list) {
-        await writeEvent(`${pre}${deviceMessage(d)}`, sev);
+        await writeEvent(deviceMessage(d), 'info');
         await done(d);
       }
     }

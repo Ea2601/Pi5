@@ -6,12 +6,14 @@
 //  - Gönderici alerts tablosunu id imleciyle okur (10 sn): sağlık denetimi ve VPS tüneli uyarıları recordEvent'i atlayıp
 //    doğrudan yazdığı için kanca events.ts'e değil buraya. Kanal başına imleç state.json'da; kanal açılınca MAX(id) — geçmiş
 //    gönderilmez. İmleç yalnız başarılı gönderimden sonra ilerler (en az bir kez; yeniden başlatmada en çok bir yineleme).
+//    G5.6 Tatil kipi alarmı yazılınca 10 sn'lik tur beklenmez (kickNotify: öncelikli gönderim).
 //  - Süzgeç: önem eşiği (varsayılan 'warning') + kaynak kuralları. Varsayılanda önemden bağımsız gidenler: yeni cihaz,
 //    hat kalitesi (kesildi / geri geldi), yedek hat geçişi, yeni takılan ağ kartı; 5 dk'lık tek ping 'network' süzülür;
 //    'notify' (bu modülün kendi olayları) asla gönderilmez — döngü olmaz.
 //  - Aynı kaynak + önem 10 dk'da bir (arada gelenler birleştirilip pencere dolunca tek satır); birikim 20'yi aşarsa tek özet;
 //    hat kesintisi ('wan-monitor' uyarısı) 2 dk içinde iletilemezse atlanır (dönüş olayı gider); isteğe bağlı sessiz saatler
-//    (yalnız kritik geçer, biten pencerede tek özet). Aynı ana hat olayı iki kaynaktan ('netmode-bak' + 'wan-monitor') 2 dk
+//    (yalnız kritik geçer — ve G5.6 Tatil kipinde "sessiz saatleri yok say" seçilmiş yeni cihaz alarmı, 'device-new:alarm-urgent';
+//    biten pencerede tek özet). Aynı ana hat olayı iki kaynaktan ('netmode-bak' + 'wan-monitor') 2 dk
 //    içinde gelirse Telegram / Discord'a tek bildirim gider (webhook her kaydı alır).
 //  - Webhook'ta her kayıt ayrı POST: gönderilecekler önce durum dosyasına yazılır, her başarılı gönderimde biri düşer
 //    (yarıda kalan tur başarılı olanları yinelemez); 4xx (408 / 429 dışı) ya da yönlendirme o kayıt için kalıcı ret sayılır —
@@ -35,7 +37,7 @@ import { isSatellite } from './role';
 import { isLinux } from './system';
 import { notifyConfig, saveNotifyConfig, notifyState, saveNotifyState, notifyMayRun, testEnv,
   type ChState, type Held, type OutItem, type Severity } from './notifyStore';
-import { setDeviceWatch, deviceWatchRunning } from './deviceWatch';
+import { setDeviceWatch, deviceWatchRunning, ALARM_SOURCE, ALARM_URGENT_SOURCE } from './deviceWatch';
 
 export type ChannelKind = 'telegram' | 'discord' | 'webhook';
 export type SourceRule = 'always' | 'never';
@@ -521,6 +523,8 @@ export function shortPhrase(source: string, sev: Severity, message: string): str
   switch (h) {
     case 'device-new': {
       const n = /^(?:[^:]*: )?(\d+) yeni cihaz bağlandı/.exec(m);
+      // G5.6 Tatil kipi alarmı: ad / IP / MAC yine yok
+      if (source === ALARM_SOURCE || source === ALARM_URGENT_SOURCE) return n ? `Tatil kipi: ağa ${n[1]} tanınmayan cihaz bağlandı` : 'Tatil kipi: ağa tanınmayan bir cihaz bağlandı';
       return n ? `Ağa ${n[1]} yeni cihaz bağlandı` : 'Ağa yeni bir cihaz bağlandı';
     }
     case 'wan-monitor': { // G2.3 wanMonitor.ts lineEventMessage: "Ana hat …" / "Yedek hat …"
@@ -613,6 +617,8 @@ export const MERGE_MS = 10 * 60 * 1000;
 export const DIGEST_AT = 20;
 export const OUTAGE_TTL_MS = 2 * 60 * 1000;
 const keyOf = (source: string, sev: Severity) => `${source}|${sev}`;
+// Sessiz saatte de geçen: kritik ve G5.6 "sessiz saatleri yok say" seçilmiş Tatil kipi alarmı (yalnız deviceWatch yazar).
+const passesQuiet = (source: string, sev: Severity) => sev === 'critical' || source === ALARM_URGENT_SOURCE;
 // Hat kesintisi (G2.3): 2 dk içinde iletilemezse eskimiş sayılır, dönüş olayı gider.
 const expiring = (source: string, sev: Severity) => head(source) === 'wan-monitor' && sev !== 'info';
 const cloneHeld = (m: Record<string, Held>) => Object.fromEntries(Object.entries(m).map(([k, h]) => [k, { ...h }]));
@@ -666,7 +672,7 @@ export function planChannel(ch: Channel, st: ChState, rows: AlertRow[], now: num
     delete next.held[k];
     if (expiring(h.source, h.severity) && now - h.lastAt > OUTAGE_TTL_MS) { skipped += h.n; continue; }
     // Pencere sessiz saatte doldu: kritik değilse sessiz saat özetine (yalnız kritik geçer)
-    if (quietNow && h.severity !== 'critical') { moveHeld(next.quiet, k, h); continue; }
+    if (quietNow && !passesQuiet(h.source, h.severity)) { moveHeld(next.quiet, k, h); continue; }
     merged.push({ kind: 'merged', source: h.source, severity: h.severity, count: h.n, message: h.lastMsg, alertId: h.lastId, createdAt: h.lastAt });
   }
   // 2) Sessiz saat bitti: biriken tek özet
@@ -691,7 +697,7 @@ export function planChannel(ch: Channel, st: ChState, rows: AlertRow[], now: num
       if (pairAt && Math.abs(at - pairAt) <= PAIR_MS) { skipped++; continue; }
     }
     const k = keyOf(r.source, sev);
-    if (quietNow && sev !== 'critical') {
+    if (quietNow && !passesQuiet(r.source, sev)) {
       addHeld(next.quiet, k, r, sev, at);
       if (dir) next.sentAt[`line:${dir}:${head(r.source)}`] = at;
       continue;
@@ -906,6 +912,7 @@ async function runChannel(ch: Channel, maxId: number): Promise<boolean> {
 
 let timer: ReturnType<typeof setInterval> | null = null;
 let ticking = false;
+let kickAgain = false;
 let lastCleanup = 0;
 async function tick(): Promise<void> {
   if (ticking) return;
@@ -928,7 +935,17 @@ async function tick(): Promise<void> {
     }
   } finally {
     ticking = false;
+    if (kickAgain) { kickAgain = false; kickNotify(); }
   }
+}
+
+// G5.6 öncelikli gönderim (yalnız deviceWatch'ın Tatil kipi alarmı yazılınca çağrılır): 10 sn'lik turu beklemeden bir tur.
+// Süren tur varsa o bitince bir tur daha (imleci yeni kayıttan önce okumuş olabilir). Zamanlayıcı yoksa (açık kanal yok / uydu /
+// HA yedek) hiçbir şey yapmaz. Süzgeç, sessiz saat, birleştirme ve hız sınırı aynen turun kendisinde.
+export function kickNotify(): void {
+  if (!timer) return;
+  if (ticking) { kickAgain = true; return; }
+  setImmediate(() => { void tick(); });
 }
 
 export const notifyRunning = () => timer !== null;

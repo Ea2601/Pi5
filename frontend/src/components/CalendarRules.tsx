@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import type { FormEvent } from 'react';
-import { CalendarCheck, Plus, Trash2, Pencil, Loader2, AlertTriangle, Info, Eye, Check, X, Square, Hash, Gauge, ShieldOff, ShieldCheck, Users, Smartphone } from 'lucide-react';
+import { CalendarCheck, Plus, Trash2, Pencil, Loader2, AlertTriangle, Info, Eye, Check, X, Square, Hash, Gauge, ShieldOff, ShieldCheck, Users, Smartphone, BellRing } from 'lucide-react';
 import { useApi, getApi, postApi, putApi, deleteApi } from '../hooks/useApi';
 import { Panel, Select, SelectOption } from './ui';
 import { parseDbTime } from '../time';
@@ -13,6 +13,8 @@ import './CalendarRules.css';
 // "Yalnız takvimle çalışır" işaretli kuralı açar ya da seçilen cihazların hızını kısar. Dış takvimin her etkinliği önce onay
 // ister (otomatik mod yok); paneldeki yerel etkinlik onaylı sayılır. Her etkinleşmenin bitişi kesin (en çok 14 gün).
 // Takvim cihazın hız sınırını ve kotasını kaldıramaz. Düğmeler: açan / onaylayan yeşil, kapatan / reddeden kırmızı.
+// G5.6 Tatil alarm kipi: "Yeni cihaz alarmı" eylemi pencere boyunca yeni cihaz bildirimini uyarı yapar (sessiz saatleri yok
+// sayma ve varlık grubu isteğe bağlı, varsayılan kapalı); Bildirimler'deki "Yeni cihaz bildirimi" kapalıysa çalışmaz.
 interface Settings { enabled: boolean; stale_hours: number; default_lead_min: number; max_days: number }
 interface EntryRow {
   key: string; title: string; tags: string[]; source_name: string; local: boolean; start: string; end: string; clipped: boolean;
@@ -23,7 +25,8 @@ interface EngineResp {
   active: EntryRow[]; upcoming: EntryRow[]; blocked: EntryRow[]; pending: number; conflicts: string[]; warnings: string[];
 }
 interface CapsAction { devices: string[]; groups: number[]; down_kbps: number; up_kbps: number; exempt: string[] }
-interface Actions { suspend: number[]; activate: number[]; caps: CapsAction | null }
+interface NewDeviceAlarm { ignore_quiet: boolean; presence_group: number | null; presence_min: number }
+interface Actions { suspend: number[]; activate: number[]; caps: CapsAction | null; newDevice?: NewDeviceAlarm | null }
 interface Profile { id: number; name: string; actions: Actions; problems: string[] }
 interface Binding { id: number; tag: string; profile_id: number; priority: number; sources: string[] | null; enabled: boolean }
 interface LocalEv { id: number; title: string; tag: string; start: string; duration_min: number; weekly: boolean; until: string | null; next_start: string | null; next_end: string | null }
@@ -36,6 +39,7 @@ interface Preview {
   devices: { mac: string; name: string; effects: string[] }[];
   caps: { down_kbps: number; up_kbps: number; devices: number; protected_skipped: number; exempt: number } | null;
   conflicts: string[]; warnings: string[];
+  alarm?: { ignore_quiet: boolean; presence_group: number | null; presence_group_name: string; presence_min: number; device_watch: boolean };
 }
 
 const ENGINE0: EngineResp = { settings: { enabled: false, stale_hours: 6, default_lead_min: 15, max_days: 14 }, allowed: true, running: false, clock_synced: null,
@@ -46,6 +50,7 @@ const toKbps = (s: string) => { const n = Number(String(s).replace(',', '.')); r
 const STATUS_TEXT: Record<string, string> = { approved: 'onaylandı', declined: 'reddedildi', ended: 'erken bitirildi' };
 const WEEKLY_MAX_MIN = 6 * 1440;   // haftalık tekrarda en uzun süre (backend ile aynı: her hafta en az bir gün boşluk)
 const durText = (m: number) => (m < 60 ? `${m} dk` : `${(m / 60).toLocaleString('tr-TR', { maximumFractionDigits: 1 })} sa`);
+const PRESENCE_LIMIT = "Telefonlar uykuda Wi-Fi'ı bırakır ve gizli adres kullanır — yanlış alarm ya da kaçırma olabilir.";
 
 function useFmt(tz?: string) {
   return useMemo(() => {
@@ -72,11 +77,17 @@ function actionsText(a: Actions, rules: PRule[], groups: Group[]): string[] {
     const t = [...a.caps.groups.map(g => groups.find(x => x.id === g)?.name || `grup #${g}`), ...(a.caps.devices.length ? [`${a.caps.devices.length} cihaz`] : [])].join(', ');
     out.push(`Hız ↓${mbps(a.caps.down_kbps)} ↑${mbps(a.caps.up_kbps)}: ${t}${a.caps.exempt.length ? ` (${a.caps.exempt.length} muaf)` : ''}`);
   }
+  const n = a.newDevice;
+  if (n) {
+    const g = n.presence_group ? groups.find(x => x.id === n.presence_group)?.name || `grup #${n.presence_group}` : '';
+    out.push(`Yeni cihaz alarmı${n.ignore_quiet ? ' (sessiz saatlerde de)' : ''}${g ? ` · ${g} ${n.presence_min} dk görülmezse` : ''}`);
+  }
   return out;
 }
 
 // Yan etkisiz önizleme: etkilenen cihazlar, askıya alınan / açılan kurallar, çakışmalar
-function PreviewBox({ query }: { query: string }) {
+// dwNote: "Yeni cihaz bildirimi kapalı" uyarısı (profil düzenleyici kendi bağlantılı uyarısını gösterir)
+function PreviewBox({ query, dwNote = true }: { query: string; dwNote?: boolean }) {
   // Yanıt sorgusuyla birlikte tutulur: sorgu değişince eski önizleme gösterilmez (yeni yanıt gelene dek "hazırlanıyor")
   const [res, setRes] = useState<{ q: string; p?: Preview; err?: string } | null>(null);
   useEffect(() => {
@@ -96,7 +107,12 @@ function PreviewBox({ query }: { query: string }) {
       {p.rules.activate.map(r => <div key={`a${r.id}`} className="cr-pv-row"><ShieldCheck size={13} /> Açılır: «{r.name}»{r.problem ? <em> — {r.problem}</em> : null}</div>)}
       {p.rules.suspend.map(r => <div key={`s${r.id}`} className="cr-pv-row"><ShieldOff size={13} /> Askıya alınır: «{r.name}»{r.problem ? <em> — {r.problem}</em> : null}</div>)}
       {p.caps && <div className="cr-pv-row"><Gauge size={13} /> Hız ↓{mbps(p.caps.down_kbps)} ↑{mbps(p.caps.up_kbps)}: {p.caps.devices} cihaz{p.caps.exempt ? `, ${p.caps.exempt} muaf` : ''}{p.caps.protected_skipped ? `, ${p.caps.protected_skipped} korunan (modem / Pi) dışarıda` : ''}</div>}
-      {p.devices.length > 0 ? (
+      {p.alarm && (
+        <div className="cr-pv-row"><BellRing size={13} /><span>Bu süre boyunca yeni cihazlar uyarı olarak bildirilir{p.alarm.ignore_quiet ? ' (dış kanalın sessiz saatlerinde de)' : ''}
+          {p.alarm.presence_group ? ` — yalnız «${p.alarm.presence_group_name || `grup #${p.alarm.presence_group}`}» cihazlarından hiçbiri son ${p.alarm.presence_min} dk'da ağda görülmediyse` : ''}</span></div>
+      )}
+      {p.alarm && !p.alarm.device_watch && dwNote && <div className="cr-note is-warn"><AlertTriangle size={13} /><span>Yeni cihaz bildirimi kapalı — alarm çalışmaz (Bildirimler → Dış kanallar).</span></div>}
+      {p.alarm && !p.caps && !p.rules.suspend.length && !p.rules.activate.length ? null : p.devices.length > 0 ? (
         <ul className="cr-pv-devs">
           {p.devices.slice(0, 12).map(d => <li key={d.mac}><b>{d.name || d.mac}</b> — {d.effects.join(', ')}</li>)}
           {p.devices.length > 12 && <li>ve {p.devices.length - 12} cihaz daha</li>}
@@ -117,7 +133,7 @@ export function CalendarRules({ tz }: { tz?: string }) {
   const { data: loc, refetch: refLoc } = useApi<{ events: LocalEv[] }>('/calendar/local-events', { events: [] });
   const { data: pr } = useApi<{ rules: PRule[] }>('/parental/rules', { rules: [] });
   const { data: dv } = useApi<{ devices: Device[] }>('/devices', { devices: [] });
-  const { data: gr } = useApi<{ groups: Group[] }>('/devices/groups', { groups: [] });
+  const { data: gr, loading: grLoading, error: grErr } = useApi<{ groups: Group[] }>('/devices/groups', { groups: [] });
   const { data: tg } = useApi<{ tags: { tag: string; count: number }[] }>('/calendar/tags', { tags: [] }, 120000);
   const { data: src } = useApi<{ sources: { id: string; name: string }[] }>('/calendar/sources', { sources: [] });
   const [busy, setBusy] = useState<string | null>(null);
@@ -127,6 +143,7 @@ export function CalendarRules({ tz }: { tz?: string }) {
   const [editL, setEditL] = useState<{ id: number | null; title: string; tag: string; date: string; time: string; dur: string; weekly: boolean; until: string } | null>(null);
   const rules = pr.rules || [];
   const groups = gr.groups || [];
+  const groupsReady = !grLoading && !grErr;   // grup listesi yüklendi (listede olmayan grup gerçekten silinmiş)
   const devices = dv.devices || [];
   const profiles = prof.profiles || [];
   const bindings = bind.bindings || [];
@@ -163,7 +180,7 @@ export function CalendarRules({ tz }: { tz?: string }) {
 
   return (
     <Panel title="Takvim kuralları" icon={<CalendarCheck size={20} style={{ marginRight: 8 }} />} className="cr-panel"
-      subtitle="Takvimdeki #etiketi bir profile bağlayın: etkinlik süresince ebeveyn kuralını askıya alır, takvim kuralını açar ya da seçtiğiniz cihazların hızını kısar. Dış takvimin her etkinliği önce onayınızı ister."
+      subtitle="Takvimdeki #etiketi bir profile bağlayın: etkinlik süresince ebeveyn kuralını askıya alır, takvim kuralını açar, seçtiğiniz cihazların hızını kısar ya da (ör. #Tatil) ağa ilk kez bağlanan cihazı uyarı olarak bildirir. Dış takvimin her etkinliği önce onayınızı ister."
       actions={on ? (
         <button className="btn-outline btn-sm cr-off" onClick={() => setEngine(false)} disabled={!!busy}><Square size={13} /> Takvim etkilerini durdur</button>
       ) : (
@@ -236,7 +253,7 @@ Bu oluşumda takvim kuralı uygulanmaz.`)}><Square size={13} /> {kind === 'activ
         </section>
       )}
 
-      <ProfilesSection profiles={profiles} rules={rules} groups={groups} devices={devices} busy={busy} edit={editP} setEdit={setEditP}
+      <ProfilesSection profiles={profiles} rules={rules} groups={groups} groupsReady={groupsReady} devices={devices} busy={busy} edit={editP} setEdit={setEditP}
         onSave={(p) => run('p', () => (p.id ? putApi(`/calendar/profiles/${p.id}`, { name: p.name, actions: p.actions as unknown as Record<string, unknown> }) : postApi('/calendar/profiles', { name: p.name, actions: p.actions as unknown as Record<string, unknown> })), 'Profil kaydedildi').then(saved => { if (saved) setEditP(null); })}
         onDelete={(p) => { if (window.confirm(`«${p.name}» profili silinsin mi?`)) void run(`pd:${p.id}`, () => deleteApi(`/calendar/profiles/${p.id}`), 'Profil silindi'); }} />
 
@@ -350,8 +367,8 @@ Bu oluşumda takvim kuralı uygulanmaz.`)}><Square size={13} /> {kind === 'activ
 }
 
 type ProfileDraft = { id: number | null; name: string; actions: Actions };
-function ProfilesSection({ profiles, rules, groups, devices, busy, edit, setEdit, onSave, onDelete }: {
-  profiles: Profile[]; rules: PRule[]; groups: Group[]; devices: Device[]; busy: string | null;
+function ProfilesSection({ profiles, rules, groups, groupsReady, devices, busy, edit, setEdit, onSave, onDelete }: {
+  profiles: Profile[]; rules: PRule[]; groups: Group[]; groupsReady: boolean; devices: Device[]; busy: string | null;
   edit: ProfileDraft | null; setEdit: (e: ProfileDraft | null) => void; onSave: (p: ProfileDraft) => Promise<void>; onDelete: (p: Profile) => void;
 }) {
   return (
@@ -372,28 +389,44 @@ function ProfilesSection({ profiles, rules, groups, devices, busy, edit, setEdit
           {p.problems.map((x, i) => <div key={i} className="cr-note is-warn"><AlertTriangle size={13} /><span>{x}</span></div>)}
         </div>
       ))}
-      {edit && <ProfileEditor key={edit.id ?? 'yeni'} initial={edit} rules={rules} groups={groups} devices={devices} busy={busy} onCancel={() => setEdit(null)} onSave={onSave} />}
+      {edit && <ProfileEditor key={edit.id ?? 'yeni'} initial={edit} rules={rules} groups={groups} groupsReady={groupsReady} devices={devices} busy={busy} onCancel={() => setEdit(null)} onSave={onSave} />}
     </section>
   );
 }
 
-function ProfileEditor({ initial, rules, groups, devices, busy, onCancel, onSave }: {
-  initial: ProfileDraft; rules: PRule[]; groups: Group[]; devices: Device[]; busy: string | null; onCancel: () => void; onSave: (p: ProfileDraft) => Promise<void>;
+function ProfileEditor({ initial, rules, groups, groupsReady, devices, busy, onCancel, onSave }: {
+  initial: ProfileDraft; rules: PRule[]; groups: Group[]; groupsReady: boolean; devices: Device[]; busy: string | null; onCancel: () => void; onSave: (p: ProfileDraft) => Promise<void>;
 }) {
   const [name, setName] = useState(initial.name);
   const [a, setAct] = useState<Actions>(initial.actions);
   const [down, setDown] = useState(initial.actions.caps?.down_kbps ? String(initial.actions.caps.down_kbps / 1000).replace('.', ',') : '');
   const [up, setUp] = useState(initial.actions.caps?.up_kbps ? String(initial.actions.caps.up_kbps / 1000).replace('.', ',') : '');
+  const [pmin, setPmin] = useState(String(initial.actions.newDevice?.presence_min ?? 15));
+  // "Yeni cihaz bildirimi" (Bildirimler → Dış kanallar) açık mı: kapalıyken alarm çalışmaz (alarm onu kendiliğinden açmaz)
+  const { data: nt } = useApi<{ deviceWatch?: { enabled: boolean } }>('/notify', {});
   const calRules = rules.filter(r => r.calendarOnly);
   const normal = rules.filter(r => !r.calendarOnly);
   const caps = a.caps;
+  const nd = a.newDevice ?? null;
+  const setNd = (p: Partial<NewDeviceAlarm>) => { if (nd) setA({ newDevice: { ...nd, ...p } }); };
   const setA = (p: Partial<Actions>) => setAct(prev => ({ ...prev, ...p }));
   const setCaps = (p: Partial<CapsAction>) => { if (caps) setA({ caps: { ...caps, ...p } }); };
   const toggleId = (list: number[], id: number) => (list.includes(id) ? list.filter(x => x !== id) : [...list, id]);
   const devName = (m: string) => { const d = devices.find(x => x.mac_address.toLowerCase() === m); return d?.hostname || d?.ip_address || m; };
-  const out: Actions = { ...a, caps: caps ? { ...caps, down_kbps: toKbps(down), up_kbps: toKbps(up) } : null };
-  const valid = !!name.trim() && (out.suspend.length > 0 || out.activate.length > 0 || !!out.caps)
-    && (!out.caps || ((out.caps.groups.length > 0 || out.caps.devices.length > 0) && (out.caps.down_kbps > 0 || out.caps.up_kbps > 0)));
+  const pm = Math.round(Number(pmin));
+  const pmOk = Number.isInteger(pm) && pm >= 5 && pm <= 240;
+  // Varlık grubu listede yok: liste yüklendiyse grup silinmiş (sunucu böyle kaydı reddeder), yüklenmediyse yalnız numarasıyla
+  const pg = nd?.presence_group ?? null;
+  const pgListed = !pg || groups.some(g => g.id === pg);
+  const pgGone = !pgListed && groupsReady;
+  const out: Actions = { ...a, caps: caps ? { ...caps, down_kbps: toKbps(down), up_kbps: toKbps(up) } : null,
+    newDevice: nd ? { ...nd, presence_min: nd.presence_group ? pm : 15 } : null };
+  const valid = !!name.trim() && (out.suspend.length > 0 || out.activate.length > 0 || !!out.caps || !!out.newDevice)
+    && (!out.caps || ((out.caps.groups.length > 0 || out.caps.devices.length > 0) && (out.caps.down_kbps > 0 || out.caps.up_kbps > 0)))
+    && (!pg || pmOk) && !pgGone;
+  // Kaydedilmemiş değişiklik var mı: Bildirimler bağlantısı sekmeyi değiştirince düzenleyici kapanır (varsa önce sorulur)
+  const snap = (n: string, x: Actions) => JSON.stringify([n.trim(), x.suspend, x.activate, x.caps, x.newDevice ?? null]);
+  const dirty = snap(name, out) !== snap(initial.name, initial.actions);
   return (
     <form className="cr-form" onSubmit={(e: FormEvent) => { e.preventDefault(); void onSave({ id: initial.id, name: name.trim(), actions: out }); }}>
       <label className="cr-wide">Profil adı<input className="config-input" value={name} maxLength={40} placeholder="ör. Sınav" onChange={e => setName(e.target.value)} /></label>
@@ -442,7 +475,42 @@ function ProfileEditor({ initial, rules, groups, devices, busy, onCancel, onSave
           </>
         )}
       </fieldset>
-      {valid && <PreviewBox query={`actions=${encodeURIComponent(JSON.stringify(out))}${initial.id ? `&self=${initial.id}` : ''}`} />}
+      <fieldset className="cr-fs">
+        <legend><BellRing size={13} /> Yeni cihaz alarmı</legend>
+        <label><input type="checkbox" checked={!!nd} onChange={e => setA({ newDevice: e.target.checked ? { ignore_quiet: false, presence_group: null, presence_min: 15 } : null })} /> Bu süre boyunca ağa ilk kez bağlanan cihazı uyarı olarak bildir (ör. tatildeyken)</label>
+        {nd && (
+          <>
+            <label><input type="checkbox" checked={nd.ignore_quiet} onChange={e => setNd({ ignore_quiet: e.target.checked })} /> Sessiz saatleri yok say (dış kanalın sessiz saatlerinde de hemen gönderilir)</label>
+            <div className="cr-grid cr-grid-end">
+              <label>Yalnız evde kimse yokken — ev sakinlerinin cihaz grubu (isteğe bağlı)
+                <Select className="config-input" value={pg ? String(pg) : ''} columns={['text', 'muted']}
+                  onChange={e => setNd({ presence_group: e.target.value ? Number(e.target.value) : null })}>
+                  <SelectOption value="" cols={['Koşul yok — her yeni cihazda', '']} />
+                  {groups.map(g => <SelectOption key={g.id} value={String(g.id)} cols={[g.name, `${g.members?.length ?? 0} cihaz`]} />)}
+                  {!pgListed && <SelectOption value={String(pg)} cols={[`grup #${pg}${pgGone ? ' (silinmiş)' : ''}`, '']} />}
+                </Select>
+              </label>
+              {!!pg && (
+                <label>Son kaç dakikada görülmediyse (5–240)
+                  <input className="config-input" type="number" min={5} max={240} value={pmin} onChange={e => setPmin(e.target.value)} />
+                </label>
+              )}
+            </div>
+            {!!pg && !pmOk && <div className="cr-note is-warn"><AlertTriangle size={13} /><span>5–240 dakika arasında bir süre girin.</span></div>}
+            {pgGone ? (
+              <div className="cr-note is-warn"><AlertTriangle size={13} /><span>Varlık grubu #{pg} silinmiş — başka bir grup ya da «Koşul yok» seçin (böyle kaydedilemez).</span></div>
+            ) : !!pg && (
+              <div className="cr-note is-warn"><AlertTriangle size={13} /><span>Alarm yalnız bu gruptaki cihazlardan hiçbiri son {pmOk ? pm : 'N'} dakikada ağda görülmediyse verilir; görülen varsa yeni cihaz bilgi olarak yazılır. {PRESENCE_LIMIT}</span></div>
+            )}
+            {nt.deviceWatch && !nt.deviceWatch.enabled && (
+              <div className="cr-note is-warn"><AlertTriangle size={13} /><span>Yeni cihaz bildirimi kapalı — alarm çalışmaz. <a href="#alerts" onClick={e => {
+                if (dirty && !window.confirm("Bildirimler sayfasına geçilsin mi?\n\nKaydedilmemiş profil değişiklikleri kaybolur. Önce Kaydet'e basabilirsiniz: alarm saklanır, yeni cihaz bildirimi açılınca çalışır.")) e.preventDefault();
+              }}>Bildirimler</a> sayfasında "Dış kanallar" → "Yeni cihaz bildirimi"nden açın.</span></div>
+            )}
+          </>
+        )}
+      </fieldset>
+      {valid && <PreviewBox dwNote={false} query={`actions=${encodeURIComponent(JSON.stringify(out))}${initial.id ? `&self=${initial.id}` : ''}`} />}
       <div className="cr-actions">
         <button type="button" className="btn-outline btn-sm" onClick={onCancel}>Vazgeç</button>
         <button type="submit" className="btn-primary btn-sm cr-on" disabled={!!busy || !valid}>Kaydet</button>
