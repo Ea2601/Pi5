@@ -795,15 +795,13 @@ function withCalendarFlags(rule: ParentalRule, row: any): ParentalRule {
   return { ...rule, enabled: false, calendarOnly: true, ...(Number(row.cal_armed) ? { calArmed: true as const } : {}) };
 }
 // Yeni kural takvim kuralıysa işaretlenir (INSERT eskisiyle aynı; kural enabled = 0 eklendiği için arada etkisizdir). createRule
-// son satırı okur, eşzamanlı başka bir ekleme olabilir: işaret, eklenen kuralın kendisine (aynı ad, hedef ve içerik; kapalı,
-// henüz takvim kuralı değil; en yenisi) yazılır — başka bir kural kapatılmaz ya da takvim kuralına çevrilmez.
+// satırı INSERT'ün kendi id'siyle okur: işaret yalnız eklenen kurala (kapalı, henüz takvim kuralı değil) yazılır — eşzamanlı
+// eklenen başka bir kural kapatılmaz ya da takvim kuralına çevrilmez.
 async function markCalendarRule(rule: ParentalRule, body: any): Promise<ParentalRule> {
   if (body?.calendarOnly !== true) return rule;
   const v = validateRule(body);
   if ('error' in v) return rule;
-  const [name, targets, blockAll, categories, sites] = ruleParams(v.rule);
-  const row = await dbGet(`SELECT * FROM parental_rules WHERE name = ? AND targets = ? AND block_all = ? AND categories = ? AND sites = ?
-    AND enabled = 0 AND calendar_only = 0 ORDER BY id DESC LIMIT 1`, [name, targets, blockAll, categories, sites]);
+  const row = await dbGet('SELECT * FROM parental_rules WHERE id = ? AND enabled = 0 AND calendar_only = 0', [rule.id]);
   if (!row) return rule;
   await dbRun('UPDATE parental_rules SET calendar_only = 1, cal_armed = 1, enabled = 0 WHERE id = ?', [row.id]);
   requestApply('takvim kuralı eklendi');
