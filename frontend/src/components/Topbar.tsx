@@ -1,4 +1,4 @@
-import { User, ShieldCheck, ShieldAlert, Download, Loader2, Clock, Sun, Moon, Menu, LogOut, ChevronLeft, Home, Globe, AlertTriangle } from 'lucide-react';
+import { User, ShieldCheck, ShieldAlert, Download, Loader2, Clock, Sun, Moon, Menu, LogOut } from 'lucide-react';
 import { useState, useEffect } from 'react';
 import type { HealthStatus } from '../types';
 import { useApi } from '../hooks/useApi';
@@ -7,17 +7,7 @@ import { NotificationBell } from './NotificationBell';
 import { setTheme, getCurrentTheme, type Theme } from '../theme';
 import { toast } from '../toast';
 import { startSystemUpdate } from '../systemUpdate';
-import { gateAppBack, useGateApp, type GateAppInfo } from '../gateApp';
-
-// Klyrix/Gate uygulamasında dönüş düğmesinin bağlantı özeti (renk + simge + kısa metin; tam metin title'da)
-function appConn(a: GateAppInfo): { tone: string; label: string; title: string } {
-  if (a.status === 'connected') {
-    const where = a.via === 'remote' ? 'dışarıdan' : 'evden';
-    return { tone: 'ok', label: a.ms ? `${a.ms} ms` : '', title: `Cihazlara dön — bağlı (${where}${a.ms ? `, ${a.ms} ms` : ''})` };
-  }
-  if (a.status === 'connecting') return { tone: 'warn', label: '…', title: 'Cihazlara dön — bağlanıyor' };
-  return { tone: 'bad', label: '', title: "Cihazlara dön — Pi'ye bağlantı yok" };
-}
+import { gateAppStatus, useGateApp } from '../gateApp';
 
 // Son bildirilen güncellemenin (en yeni commit) kısaltması — aynı güncelleme için bildirim bir kez çıksın
 const UPDATE_SEEN_KEY = 'updateNotifiedHash';
@@ -120,30 +110,25 @@ export function Topbar({ onShowAlerts, onMenu, menuOpen = false, title = '', onL
 
   const connected = data.lastCheckResult !== 'failed';
   const hasUpdate = updateInfo?.available ?? false;
-  // Klyrix/Gate uygulamasının içinde: uygulamaya dönüş + telefon–Pi bağlantısı (uygulamanın ayrı başlık çubuğu yok)
+  // Klyrix/Gate uygulamasının içinde: dönüş ve bağlantı durumu menünün en üstünde (Sidebar); bağlantı sorunluyken menü
+  // düğmesinde küçük işaret
   const app = useGateApp();
-  const ac = app ? appConn(app) : null;
+  const appTone = app ? gateAppStatus(app).tone : 'ok';
 
   return (
     <>
       <header className="glass-panel topbar">
         <div className="topbar-start">
-          {app && ac && (
-            <button className={`topbar-app-back topbar-app-${ac.tone}`} onClick={gateAppBack} title={ac.title} aria-label={ac.title}>
-              <ChevronLeft size={18} />
-              {ac.tone === 'bad' ? <AlertTriangle size={14} /> : app.via === 'remote' ? <Globe size={14} /> : <Home size={14} />}
-              {ac.label && <span>{ac.label}</span>}
-            </button>
-          )}
           <button
             className="icon-btn topbar-menu"
             onClick={onMenu}
-            aria-label="Menüyü aç"
+            aria-label={appTone === 'ok' ? 'Menüyü aç' : `Menüyü aç — ${gateAppStatus(app!).text}`}
             title="Menü"
             aria-expanded={menuOpen}
             aria-controls="app-nav"
           >
             <Menu size={20} />
+            {appTone !== 'ok' && <span className={`topbar-menu-alert topbar-menu-alert-${appTone}`} aria-hidden="true" />}
           </button>
           <div className="topbar-heading">
             {title && <span className="topbar-page">{title}</span>}

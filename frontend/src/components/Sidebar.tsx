@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useRef } from 'react';
-import { X, LogOut } from 'lucide-react';
+import { X, LogOut, ChevronLeft, Home, Globe, AlertTriangle } from 'lucide-react';
 import type { TabId } from '../types';
 import { BRAND } from '../brand';
 import { NAV_TABS, type NavTab } from '../nav';
+import { gateAppBack, gateAppStatus, useGateApp } from '../gateApp';
 
 // Derlenen version.json sürümü (vite.config.ts define)
 declare const __APP_VERSION__: string;
@@ -41,6 +42,9 @@ export function Sidebar({ activeTab, onTabChange, open, onClose, onLogout, tabs 
   const starts = useMemo(() => groupStarts(tabs), [tabs]);
   const closeRef = useRef<HTMLButtonElement>(null);
   const returnFocus = useRef<HTMLElement | null>(null);
+  // Klyrix/Gate uygulamasının içinde: en üstte cihaz listesine dönüş + bağlantı durumu (gateApp.ts)
+  const app = useGateApp();
+  const appSt = app ? gateAppStatus(app) : null;
 
   // Çekmece açılınca odak kapat düğmesine gelir (klavye/ekran okuyucu menünün içinden başlar); kapanınca açan düğmeye döner.
   useEffect(() => {
@@ -77,6 +81,18 @@ export function Sidebar({ activeTab, onTabChange, open, onClose, onLogout, tabs 
           </button>
         </div>
         <ul className="nav-links">
+          {app && appSt && (
+            <li>
+              <button className={`nav-item nav-app-back nav-app-${appSt.tone}`} onClick={() => { onClose(); gateAppBack(); }}>
+                <ChevronLeft size={17} />
+                <span className="nav-app-text">
+                  <span>Cihazlar</span>
+                  <small>{appSt.text}</small>
+                </span>
+                {appSt.tone === 'bad' ? <AlertTriangle size={15} /> : app.via === 'remote' ? <Globe size={15} /> : <Home size={15} />}
+              </button>
+            </li>
+          )}
           {tabs.map((tab, i) => {
             const showGroup = starts[i];
             const active = activeTab === tab.id;

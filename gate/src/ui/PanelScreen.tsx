@@ -1,7 +1,7 @@
 // Panel: Pi'nin panelinin kendisi, uygulama içinde (WebView) — yerel vekilden (127.0.0.1) tünelle; panel şifresi sorulmaz
-// (kimlik eşli telefonun tüneli). Uygulamanın ayrı başlık çubuğu yok: dönüş düğmesi ve bağlantı durumu panelin kendi üst
-// çubuğunda (frontend/src/gateApp.ts — durum window.__klyrixGateApp ile gider, dönüş ReactNativeWebView.postMessage ile
-// gelir). Panel bunu bilmiyorsa (eski sürüm) altta küçük bir dönüş düğmesi kalır. Panel dışı bağlantılar telefonun
+// (kimlik eşli telefonun tüneli). Uygulamanın ayrı başlık çubuğu yok: dönüş ve bağlantı durumu panelin menüsünün en üstünde,
+// sorun varsa menü düğmesinde işaret (frontend/src/gateApp.ts — durum window.__klyrixGateApp ile gider, dönüş
+// ReactNativeWebView.postMessage ile gelir). Panel bunu bilmiyorsa (eski sürüm) altta küçük bir dönüş düğmesi kalır. Panel dışı bağlantılar telefonun
 // tarayıcısında açılır; Android geri hareketi önce panelde geri gider. Dosya indirme (yedek dışa aktarma vb.) henüz yok.
 import { useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, BackHandler, Pressable, Text, View } from 'react-native';
