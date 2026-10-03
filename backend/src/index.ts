@@ -57,6 +57,7 @@ import { registerFleetRoutes, startFleetAgent } from './fleet';
 import { registerGeoRoutes, startGeo, reapplyGeo, afterGeoRestore, restoredGeoSettingsValue, GEO_SETTINGS_KEY, geoBlocksSatellite } from './geoBlock';
 import { registerSdwanRoutes, syncSdwanChains, reapplySdwan, restoreSdwan, startSdwanWatch, sdwanBlocksSatellite } from './sdwan';
 import { registerAppsRoutes, startApps, reapplyApps, appsBlocksSatellite } from './apps';
+import { registerZtpRoutes, ztpCheck } from './ztp';
 import { startDeviceWatch } from './deviceWatch';
 import { validateSchedule, validateCommand, syncCronJobs, readJobStatuses, readSystemCron, syncCronOnStartup, runningJobs, jobOutput, startJobNow } from './cronSync';
 import { validateListValue, normalizeListValue, syncPiholeLists, lastListSync, externalPiholeEntries, startSystemHostsWatch,
@@ -219,6 +220,9 @@ registerGeoRoutes(app, { guard: (req, res, next) => { void netAdminGuard(req, re
 registerSdwanRoutes(app, { guard: (req, res, next) => { void netAdminGuard(req, res, next); }, writeLimiter, wanFirewallReload: () => wanFirewallReload() });
 // Uygulamalar (apps.ts, G3.3): /api/apps — GET dışı yazma sınırı + netAdminGuard, uyduda 409 (gövdeler modülde).
 registerAppsRoutes(app, { guard: (req, res, next) => { void netAdminGuard(req, res, next); }, writeLimiter });
+// ZTP (ztp.ts, G4.2): /api/fleet/ztp, /api/fleet/claim, /api/fleet/suggestion — yukarıdaki /api/fleet ara katmanından SONRA (yazma
+// sınırı + netAdminGuard, uyduda 409).
+registerZtpRoutes(app);
 
 // Graceful shutdown. Hat Kalitesi açıksa (wanMonitor.ts) bekleyen ölçümler yazılır ve hat durumu kaydedilir (en çok 2 sn);
 // kapalıyken hemen çıkılır.
@@ -6783,6 +6787,9 @@ const server = app.listen(Number(port), bindHost, () => {
       await applyPortForwards(); // internet kartı açıksa port yönlendirmeleri (nft tablosu açılışta yoktur)
       // Şubeler arası SD-WAN (sdwan.ts): yapılandırma yoksa hemen döner; deneme sürerken yeniden başladıysa geri alınır.
       await restoreSdwan().catch((e: any) => console.error('[sdwan] açılışta uygulanamadı:', e?.message || e));
+      // ZTP (ztp.ts, G4.2): ensure'lardan sonra, yalnız ana cihazda ve filo kaydı yokken SD karttaki klyrix-ztp.json; dosya yoksa
+      // yalnız varlığına bakıp döner (dosya, zamanlayıcı, ağ isteği yok).
+      void ztpCheck().catch((e: any) => console.error('[ztp]', e?.message || e));
     }
   })();
   // Uydu (R2): ağ geçidi işleri (yönlendirme kuralları, tüneller, cihaz engelleri, AS aralıkları, ağ haritası ölçümü,

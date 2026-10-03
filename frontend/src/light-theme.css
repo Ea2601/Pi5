@@ -273,3 +273,9 @@
    Tembel sekme CSS'i bu katmandan sonra yüklenir: eşit özgüllükte bileşen kuralı kazanacağından tam :root.light-theme.
    Yalnız modem MAC'i etiketinin zemini değişir; durum sınıfı (.is-missing) yalnız yazı / simge rengini değiştirir. */
 :root.light-theme .sqm-mac { background: rgba(15, 23, 42, 0.06); }
+
+/* ── 15. Filo — ZTP (kodla kayıt ve ağ önerisi, FleetPanel.css — G4.2; 11. bölüm Filo — G4.1) ──
+   Tembel sekme CSS'i bu katmandan sonra yüklenir: eşit özgüllükte bileşen kuralı kazanacağından tam :root.light-theme.
+   Yalnız zemin değişir (durum kartlarıyla aynı ton); kod kutusu ve süre çubuğu değişkenden. */
+:root.light-theme .flt-claim,
+:root.light-theme .flt-suggest-text { background: rgba(15, 23, 42, 0.025); }

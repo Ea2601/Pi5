@@ -6,6 +6,9 @@
 //  - Komutlar kiracı anahtarıyla imzalı zarftır (fleetProto.ts): imza, sıra (seq), süre penceresi, KODDA SABİT izin listesi
 //    (report.inventory, update.start, policy.apply). Güvenlik duvarı, yönlendirme, rol, ağ ayarı, terminal, panel koruması
 //    buluttan ASLA değişmez. Yerelde tür başına "onay iste" (varsayılan: policy.apply onay ister).
+//  - G4.2 (ZTP, ztp.ts): kayıt SD karttaki dosyayla ya da kayıt koduyla da yapılabilir (adoptEnrollment / claimStatusRequest;
+//    enroll.json'da source). 'ztp.profile' policy.apply'ın takma adıdır — aynı izin listesi, yürütme yolu ve onay ayarı; ek
+//    net_suggestion YALNIZ panelde kart (durum dosyasında), hiçbir ağ ayarı uygulanmaz.
 //  - policy.apply yalnız: Pi-hole liste kayıtları (blokliste / beyaz / kara; yerel DNS yok) ekler, yalnız filonun eklediğini
 //    çıkarır (kullanıcının hazır liste seçimi ve kendi kayıtları değişmez); Fail2Ban süre / deneme ayarları (ev ağı muafiyeti
 //    ve muaf adresler değişmez); index.ts UI_SETTING_KEYS ile sınırlı arayüz ayarları. Filonun beyaz listesi ebeveyn
@@ -46,6 +49,7 @@ import {
   FLEET_PROTO, COMMAND_TYPES, isCommandType, MAX_RESPONSE_BYTES, MAX_COMMANDS_PER_POLL, POLL_DEFAULT_S, POLL_MIN_S, POLL_MAX_S,
   canonicalJson, generateDeviceKey, privateKeyFromPem, publicKeyFromRaw, publicRawOf, signRequest, fingerprint, checkBaseUrl,
   clampPoll, nextDelayS, verifyEnvelope, describeCommand, policyLines, type CommandType, type FleetCommand, type PolicyParams,
+  isWireType, baseType, NET_SUGGESTION_TABS, suggestionTextOk, type NetSuggestion,
 } from './fleetProto';
 
 type Mw = (req: express.Request, res: express.Response, next: express.NextFunction) => void;
@@ -69,18 +73,24 @@ const FLEET_MARK = 'Filo:';   // filonun eklediği Pi-hole kaydının açıklama
 export type Consent = 'minimal' | 'standard' | 'detailed';
 const CONSENTS: Consent[] = ['minimal', 'standard', 'detailed'];
 type ResultStatus = 'ok' | 'failed' | 'rejected' | 'expired' | 'awaiting_approval' | 'applied' | 'rolled_back';
+// Kayıt yolu (G4.2): yazılmazsa panel (G4.1); 'ztp-file' = SD karttaki ZTP dosyası, 'code' = paneldeki kayıt kodu (ztp.ts).
+export type EnrollSource = 'ztp-file' | 'code';
 interface Enroll {
   v: 1; base: string; allow_private: boolean; device_id: string; tenant_id: string; tenant_name: string; tenant_pub: string;
-  poll_s: number; site: string; enrolled_at: number;
+  poll_s: number; site: string; enrolled_at: number; source?: EnrollSource;
 }
 interface Envelope { cmd: FleetCommand; sig: string }
 interface HistItem { id: string; seq: number; type: string; summary: string; status: ResultStatus; detail: string; at: number }
 interface Awaiting { env: Envelope; summary: string; received_at: number }
-interface PendingPolicy { id: string; seq: number; applied_at: number; deadline: number; ok_poll: boolean; ok_dns: boolean; summary: string }
+// type: ztp.profile ise sonuç o türle gider (yoksa policy.apply)
+interface PendingPolicy { id: string; seq: number; applied_at: number; deadline: number; ok_poll: boolean; ok_dns: boolean; summary: string; type?: 'ztp.profile' }
+// ztp.profile'ın ağ önerisi: YALNIZ panelde kart (hiçbir ağ ayarı uygulanmaz)
+interface StoredSuggestion extends NetSuggestion { at: number; cmd: string }
 interface FleetState {
   v: 1; enabled: boolean; last_seq: number; consent: Consent; approve: Record<CommandType, boolean>; poll_s: number | null;
   last_poll_at: number; last_ok_at: number; last_error: string; failures: number; revoked: boolean;
   awaiting: Awaiting[]; history: HistItem[]; pending_policy: PendingPolicy | null; outbox: Record<string, unknown>[];
+  net_suggestion?: StoredSuggestion;
 }
 const DEFAULT_APPROVE: Record<CommandType, boolean> = { 'report.inventory': false, 'update.start': false, 'policy.apply': true };
 const TYPE_LABEL: Record<CommandType, string> = {
@@ -133,6 +143,10 @@ function readState(): FleetState {
     if (Array.isArray(raw.history)) s.history = raw.history.slice(0, HISTORY_MAX);
     if (raw.pending_policy && typeof raw.pending_policy.id === 'string') s.pending_policy = raw.pending_policy;
     if (Array.isArray(raw.outbox)) s.outbox = raw.outbox.slice(-OUTBOX_MAX);
+    const ns = raw.net_suggestion;
+    if (ns && suggestionTextOk(ns.text) && (ns.tab === undefined || (NET_SUGGESTION_TABS as readonly unknown[]).includes(ns.tab))) {
+      s.net_suggestion = { text: ns.text.slice(0, 300), ...(ns.tab ? { tab: ns.tab } : {}), at: Number(ns.at) || 0, cmd: String(ns.cmd || '').slice(0, 64) };
+    }
   }
   stateCache = s;
   return s;
@@ -172,7 +186,7 @@ let uiDeps: FleetUiDeps = { keys: () => new Set(), check: () => '', changed: () 
 const UI_DENY = new Set(['dhcp_client_test']);
 
 // ─── HTTPS istemcisi: mutlak 15 sn, yönlendirme izlenmez, yanıt ≤ 256 KiB, bağlanırken adres denetimi ───
-interface HttpResult { status: number; json: any; retryAfterS: number; error: string }
+export interface HttpResult { status: number; json: any; retryAfterS: number; error: string }
 const redact = (s: string, secrets: string[]) => secrets.reduce((t, x) => (x ? t.split(x).join('••••') : t), s);
 const clean = (s: unknown, n = 200) => String(s ?? '').replace(/[\x00-\x1f\x7f]/g, ' ').trim().slice(0, n);
 function errText(e: any): string {
@@ -228,8 +242,9 @@ function fleetPost(base: string, allowPrivate: boolean, p: string, payload: Reco
           if (!json || typeof json !== 'object') return finish({ status, json: null, retryAfterS, error: 'Sunucu yanıtı JSON değil' });
           return finish({ status, json, retryAfterS, error: '' });
         }
-        const code = clean(json?.error?.code, 40);
-        finish({ status, json, retryAfterS, error: `HTTP ${status}${code ? ` (${code})` : ''}${json?.error?.message ? `: ${clean(json.error.message, 160)}` : ''}` });
+        // Gizli değer KESMEDEN önce maskelenir (sunucu yankıladıysa kesilen yarım parça maskeden kaçmasın)
+        const code = clean(redact(String(json?.error?.code ?? ''), secrets), 40);
+        finish({ status, json, retryAfterS, error: `HTTP ${status}${code ? ` (${code})` : ''}${json?.error?.message ? `: ${clean(redact(String(json.error.message), secrets), 160)}` : ''}` });
       });
     });
     const timer = setTimeout(() => req.destroy(Object.assign(new Error('zaman aşımı'), { code: 'EKLXTIMEOUT' })), REQUEST_TIMEOUT_MS);
@@ -252,8 +267,14 @@ function versionInfo(): { version: string; build: number } {
   }
 }
 let enrolling = false;
-export async function enrollFleet(body: { server?: unknown; enroll_key?: unknown; allow_private?: unknown; site?: unknown }): Promise<{ tenant: string; device_id: string }> {
-  if (fleetEnrolled()) throw Object.assign(new Error('Cihaz zaten bir filoya kayıtlı — önce "Filodan ayrıl"'), { status: 409 });
+export const fleetEnrollBusy = (): boolean => enrolling;
+// Hata türü (G4.2 ZTP dosyası kesin / geçici ayrımı için; panel yolu yalnız status + message kullanır):
+// kind 'enrolled' | 'busy' | 'clock' | 'http' (httpStatus + sunucunun hata kodu) | 'response' | 'local' (kayıt dosyaları
+// yazılamadı; cleaned = yazılanlar silindi mi); kindsiz = girdi hatası.
+const enrollError = (msg: string, status: number, extra: Record<string, unknown> = {}) => Object.assign(new Error(msg), { status, ...extra });
+// source: yazılmazsa panel (G4.1, istek gövdesi ve kayıt dosyası G4.1 ile bayt bayt aynı); 'ztp-file' = SD karttaki ZTP dosyası.
+export async function enrollFleet(body: { server?: unknown; enroll_key?: unknown; allow_private?: unknown; site?: unknown }, source?: 'ztp-file'): Promise<{ tenant: string; device_id: string }> {
+  if (fleetEnrolled()) throw enrollError('Cihaz zaten bir filoya kayıtlı — önce "Filodan ayrıl"', 409, { kind: 'enrolled' });
   const b = checkBaseUrl(body.server);
   if ('error' in b) throw Object.assign(new Error(b.error), { status: 400 });
   const key = typeof body.enroll_key === 'string' ? body.enroll_key.trim() : '';
@@ -261,10 +282,10 @@ export async function enrollFleet(body: { server?: unknown; enroll_key?: unknown
   if (body.allow_private !== undefined && typeof body.allow_private !== 'boolean') throw Object.assign(new Error("'allow_private' true ya da false olmalı"), { status: 400 });
   const site = typeof body.site === 'string' ? body.site.trim() : '';
   if ([...site].length > 40 || /[\x00-\x1f\x7f<>]/.test(site)) throw Object.assign(new Error('Konum etiketi en çok 40 karakter olmalı (< > olmadan)'), { status: 400 });
-  if (enrolling) throw Object.assign(new Error('Kayıt sürüyor — birazdan yeniden deneyin'), { status: 409 });
+  if (enrolling) throw enrollError('Kayıt sürüyor — birazdan yeniden deneyin', 409, { kind: 'busy' });
   enrolling = true;
   try {
-    if (!(await clockSynced())) throw Object.assign(new Error("Pi'nin saati henüz internetle eşitlenmedi (RTC yok) — imzalı istek gönderilmez; birkaç dakika sonra yeniden deneyin"), { status: 409 });
+    if (!(await clockSynced())) throw enrollError("Pi'nin saati henüz internetle eşitlenmedi (RTC yok) — imzalı istek gönderilmez; birkaç dakika sonra yeniden deneyin", 409, { kind: 'clock' });
     const allowPrivate = body.allow_private === true;
     const pair = generateDeviceKey();
     const priv = privateKeyFromPem(pair.privatePem);
@@ -273,35 +294,68 @@ export async function enrollFleet(body: { server?: unknown; enroll_key?: unknown
     const platform = await readPlatform().catch(() => null);
     const r = await fleetPost(b.base, allowPrivate, '/v1/enroll', {
       enroll_key: key, device_pub: pair.publicRaw, hw_tag: hw, version, build, profile: platform?.profile || null, site,
+      ...(source ? { source } : {}),
     }, priv, 'enroll', [key]);
     if (r.error) {
-      const code = clean(r.json?.error?.code, 40);
+      const code = clean(redact(String(r.json?.error?.code ?? ''), [key]), 40);   // önce maske, sonra kesme
       const msg = /^enroll_key_/.test(code) ? 'Kayıt anahtarı geçersiz, süresi dolmuş ya da kullanılmış — denetleyiciden yeni anahtar alın' : `Kayıt başarısız: ${r.error}`;
-      throw Object.assign(new Error(redact(msg, [key])), { status: r.status >= 400 && r.status < 500 ? 400 : 502 });
+      throw enrollError(redact(msg, [key]), r.status >= 400 && r.status < 500 ? 400 : 502, { kind: 'http', httpStatus: r.status, code });
     }
-    const j = r.json;
-    const tenantPub = publicKeyFromRaw(j.tenant_pub);
-    if (typeof j.device_id !== 'string' || !ID_RE.test(j.device_id) || typeof j.tenant_id !== 'string' || !ID_RE.test(j.tenant_id) || !tenantPub) {
-      throw Object.assign(new Error('Sunucunun kayıt yanıtı geçersiz (device_id / tenant_id / tenant_pub)'), { status: 502 });
-    }
-    const e: Enroll = {
-      v: 1, base: b.base, allow_private: allowPrivate, device_id: j.device_id, tenant_id: j.tenant_id,
-      tenant_name: clean(j.tenant_name, 60).replace(/[<>]/g, '') || j.tenant_id, tenant_pub: j.tenant_pub,
-      poll_s: clampPoll(j.poll_s ?? POLL_DEFAULT_S), site, enrolled_at: nowS(),
-    };
-    fs.mkdirSync(FLEET_DIR, { recursive: true, mode: 0o700 });
-    writeFile0600(KEY_FILE, pair.privatePem);
-    writeFile0600(HW_FILE, `${hw}\n`);
-    writeFile0600(STATE_FILE, JSON.stringify(emptyState()));
-    writeFile0600(ENROLL_FILE, JSON.stringify(e));   // son: kayıt dosyası varsa diğerleri de var
-    stateCache = null;
-    await recordEvent('fleet', `Filoya kaydolundu: ${new URL(b.base).host} — kiracı «${e.tenant_name}», cihaz ${e.device_id}. Rapor düzeyi: en az (IP / MAC / cihaz listesi gönderilmez)`);
-    agentGen++;
-    schedule(3000);
-    return { tenant: e.tenant_name, device_id: e.device_id };
+    return await adoptEnrollment({ base: b.base, allowPrivate, site, privatePem: pair.privatePem, hw, source }, r.json);
   } finally {
     enrolling = false;
   }
+}
+// Kayıt tamamlanınca (her yolda) çağrılır — ztp.ts: başka yolla kayıtta SD karttaki ZTP dosyasını artık geçersiz sayar (G4.2).
+let enrolledHook: ((source?: EnrollSource) => void) | null = null;
+export function onFleetEnrolled(fn: (source?: EnrollSource) => void): void { enrolledHook = fn; }
+// Sunucunun kayıt yanıtını doğrular ve kayıt dosyalarını yazar: /v1/enroll yanıtı (panel, ZTP dosyası) ya da /v1/claim-status
+// 'claimed' yanıtı (kodla kayıt, ztp.ts). Doğrulama + yazma tek eşzamanlı adımdır (araya başka kayıt giremez; ilk yazan kazanır).
+export async function adoptEnrollment(o: { base: string; allowPrivate: boolean; site: string; privatePem: string; hw: string; source?: EnrollSource },
+  j: any): Promise<{ tenant: string; device_id: string }> {
+  const tenantPub = publicKeyFromRaw(j?.tenant_pub);
+  if (typeof j?.device_id !== 'string' || !ID_RE.test(j.device_id) || typeof j.tenant_id !== 'string' || !ID_RE.test(j.tenant_id) || !tenantPub) {
+    throw enrollError('Sunucunun kayıt yanıtı geçersiz (device_id / tenant_id / tenant_pub)', 502, { kind: 'response' });
+  }
+  if (fleetEnrolled()) throw enrollError('Cihaz bu arada başka bir yolla filoya kaydoldu', 409, { kind: 'enrolled' });
+  const e: Enroll = {
+    v: 1, base: o.base, allow_private: o.allowPrivate, device_id: j.device_id, tenant_id: j.tenant_id,
+    tenant_name: clean(j.tenant_name, 60).replace(/[<>]/g, '') || j.tenant_id, tenant_pub: j.tenant_pub,
+    poll_s: clampPoll(j.poll_s ?? POLL_DEFAULT_S), site: o.site, enrolled_at: nowS(),
+  };
+  if (o.source) e.source = o.source;
+  // Yarım kayıt kalmaz: yazımlardan biri başarısız olursa (dolu disk, salt okunur /etc) bu çağrının yazdığı dosyalar silinir
+  // (ztp.done'a dokunulmaz); cleaned = silme başarılı mı.
+  const written: string[] = [];
+  const put = (f: string, t: string) => { writeFile0600(f, t); written.push(f); };
+  try {
+    fs.mkdirSync(FLEET_DIR, { recursive: true, mode: 0o700 });
+    put(KEY_FILE, o.privatePem);
+    put(HW_FILE, `${o.hw}\n`);
+    put(STATE_FILE, JSON.stringify(emptyState()));
+    put(ENROLL_FILE, JSON.stringify(e));   // son: kayıt dosyası varsa diğerleri de var
+  } catch (x: any) {
+    let cleaned = true;
+    for (const f of written.reverse()) { try { fs.rmSync(f, { force: true }); } catch { cleaned = false; } }
+    stateCache = null;
+    throw enrollError(`Kayıt dosyaları yazılamadı: ${clean(x?.message || x)}`, 500, { kind: 'local', cleaned });
+  }
+  stateCache = null;
+  const via = o.source === 'ztp-file' ? ' (SD karttaki ZTP dosyasıyla)' : o.source === 'code' ? ' (kayıt koduyla)' : '';
+  await recordEvent('fleet', `Filoya kaydolundu${via}: ${new URL(o.base).host} — kiracı «${e.tenant_name}», cihaz ${e.device_id}. Rapor düzeyi: en az (IP / MAC / cihaz listesi gönderilmez)`);
+  try { enrolledHook?.(o.source); } catch { /* ZTP kancası kaydı etkilemez */ }
+  agentGen++;
+  schedule(3000);
+  return { tenant: e.tenant_name, device_id: e.device_id };
+}
+// Kodla kayıt (G4.2, ztp.ts): henüz kayıtsız cihazın /v1/claim-status isteği — bekleyen kodun anahtarıyla imzalı
+// (X-Klx-Device: claim; sunucu imzayı gövdedeki device_pub ile doğrular). Gövde /v1/enroll'unkiyle aynı tanıtım alanları.
+export async function claimStatusRequest(c: { base: string; allowPrivate: boolean; privatePem: string; pub: string; hw: string; site: string }): Promise<HttpResult> {
+  const { version, build } = versionInfo();
+  const platform = await readPlatform().catch(() => null);
+  return fleetPost(c.base, c.allowPrivate, '/v1/claim-status', {
+    device_pub: c.pub, hw_tag: c.hw, version, build, profile: platform?.profile || null, site: c.site,
+  }, privateKeyFromPem(c.privatePem), 'claim');
 }
 
 // ─── Ayrılma: uçuştaki yoklama / komut beklenir, bekleyen politika geri yüklenir, sunucuya bildirilir (başarısız olsa da),
@@ -551,7 +605,7 @@ async function handleEnvelope(e: Enroll, env: unknown): Promise<void> {
     const type = (env as any)?.cmd?.type;
     await recordEvent('fleet', `Filo komutu reddedildi${v.signed ? '' : ' (imzasız / imzası bozuk)'}: ${v.error}`, v.signed && v.code !== 'type_not_allowed' ? 'info' : 'warning');
     if (v.id && v.seq && v.signed) {
-      await sendResult(e, { id: v.id, seq: v.seq, type: isCommandType(type) ? type : 'report.inventory' }, v.code === 'expired' ? 'expired' : 'rejected', v.error);
+      await sendResult(e, { id: v.id, seq: v.seq, type: isWireType(type) ? type : 'report.inventory' }, v.code === 'expired' ? 'expired' : 'rejected', v.error);
       setSummary(v.id, `Reddedildi: ${clean(type, 40) || 'bilinmeyen tür'}`);
     }
     return;
@@ -562,7 +616,7 @@ async function handleEnvelope(e: Enroll, env: unknown): Promise<void> {
   cur.last_seq = cmd.seq;
   saveState(cur);
   const summary = describeCommand(cmd);
-  if (cur.approve[cmd.type]) {
+  if (cur.approve[baseType(cmd.type)]) {   // ztp.profile: policy.apply'ın onay ayarı
     const s2 = readState();
     s2.awaiting = [...s2.awaiting.filter(a => a.env.cmd.id !== cmd.id), { env: env as Envelope, summary, received_at: nowS() }].slice(-AWAITING_MAX);
     saveState(s2);
@@ -769,7 +823,15 @@ async function applyPolicy(e: Enroll, cmd: FleetCommand): Promise<{ status: Resu
       uiSnap[k] = { prev: row ? String(row.value) : null, applied: String(v).slice(0, 500) };
     }
   }
-  if (!listAdd.length && !listRemove.length && !f2bNext && !uiSnap) return { status: 'ok', detail: 'Değişiklik yok (kayıtlar zaten istenen durumda)' };
+  // ztp.profile'ın ağ önerisi yalnız panel kartı olarak saklanır: hiçbir ağ betiği / komutu çağrılmaz (G4.2)
+  const suggestion = cmd.type === 'ztp.profile' && p.net_suggestion ? p.net_suggestion : null;
+  if (!listAdd.length && !listRemove.length && !f2bNext && !uiSnap) {
+    if (suggestion) {
+      saveSuggestion(cmd.id, suggestion);
+      return { status: 'ok', detail: 'Ağ önerisi panelde kart olarak gösterildi — uygulanmadı' };
+    }
+    return { status: 'ok', detail: 'Değişiklik yok (kayıtlar zaten istenen durumda)' };
+  }
   // 2) Anlık görüntü (uygulamadan ÖNCE diske)
   const summary = describeCommand(cmd);
   const snap: Snapshot = {
@@ -780,6 +842,7 @@ async function applyPolicy(e: Enroll, cmd: FleetCommand): Promise<{ status: Resu
   writeFile0600(snapFile(cmd.id), JSON.stringify(snap));
   const cur = readState();
   cur.pending_policy = { id: cmd.id, seq: cmd.seq, applied_at: nowS(), deadline: nowS() + CONFIRM_S, ok_poll: false, ok_dns: false, summary };
+  if (cmd.type === 'ztp.profile') cur.pending_policy.type = 'ztp.profile';
   saveState(cur);
   // 3) Uygula
   const notes: string[] = [];
@@ -802,9 +865,28 @@ async function applyPolicy(e: Enroll, cmd: FleetCommand): Promise<{ status: Resu
     try { uiDeps.changed(Object.keys(uiSnap)); } catch { /* zamanlayıcı yeniden planlanamadı: günlükte */ }
     notes.push(`arayüz ayarları (${Object.keys(uiSnap).join(', ')})`);
   }
+  if (suggestion) {
+    saveSuggestion(cmd.id, suggestion);
+    notes.push('ağ önerisi (yalnız panelde kart, uygulanmadı)');
+  }
   scheduleConfirm(5000);
   schedule(5000);   // sağlık penceresinin ilk yoklaması hemen (yoklamanın içinde uygulandıysa tick sonu da ≤ 15 sn planlar)
   return { status: 'applied', detail: `${notes.join('; ')} — ${Math.round(CONFIRM_S / 60)} dk içinde yoklama + DNS yanıtı gelmezse otomatik geri alınır` };
+}
+
+// Ağ önerisi kartı (G4.2): düz metin + sabit sekme listesinden bağlantı; yalnız durum dosyasına yazılır.
+function saveSuggestion(cmdId: string, n: NetSuggestion): void {
+  const s = readState();
+  s.net_suggestion = { text: n.text.trim().slice(0, 300), ...(n.tab ? { tab: n.tab } : {}), at: nowS(), cmd: cmdId };
+  saveState(s);
+}
+export function clearNetSuggestion(): boolean {
+  if (!fleetEnrolled()) return false;
+  const s = readState();
+  if (!s.net_suggestion) return false;
+  delete s.net_suggestion;
+  saveState(s);
+  return true;
 }
 
 async function dnsHealthy(): Promise<boolean> {
@@ -841,7 +923,7 @@ async function confirmTick(): Promise<void> {
     saveState(done);
     await recordEvent('fleet', `Filo politikası kalıcı oldu: ${pp.summary} (yoklama ve DNS sağlıklı)`);
     const e = readEnroll();
-    if (e) await sendResult(e, { id: pp.id, seq: pp.seq, type: 'policy.apply' }, 'ok', 'Sağlık denetimi geçti — politika kalıcı');
+    if (e) await sendResult(e, { id: pp.id, seq: pp.seq, type: pp.type || 'policy.apply' }, 'ok', 'Sağlık denetimi geçti — politika kalıcı');
     setSummary(pp.id, pp.summary);
     return;
   }
@@ -914,7 +996,7 @@ async function rollbackPolicy(reason: string, quiet = false): Promise<void> {
   if (quiet) return;
   const e = readEnroll();
   if (e && fleetEnrolled()) {
-    await sendResult(e, { id: pp.id, seq: pp.seq, type: 'policy.apply' }, 'rolled_back', `${reason}${note}`);
+    await sendResult(e, { id: pp.id, seq: pp.seq, type: pp.type || 'policy.apply' }, 'rolled_back', `${reason}${note}`);
     setSummary(pp.id, pp.summary);
   }
 }
@@ -982,7 +1064,7 @@ export async function fleetStatus(): Promise<Record<string, unknown>> {
   const st = !e ? 'error' : hwMismatch() ? 'rebind' : s.revoked ? 'revoked' : !s.enabled ? 'paused' : status === 'off' ? 'starting' : status;
   // Onay kartı ayrıntısı: politikanın her kaydı ve ayarın şimdiki → yeni değeri (yönetici neyi onayladığını görür)
   const live = s.awaiting.filter(a => nowS() <= a.env.cmd.not_after);
-  const policies = live.filter(a => a.env.cmd.type === 'policy.apply').map(a => a.env.cmd.params as PolicyParams);
+  const policies = live.filter(a => baseType(a.env.cmd.type) === 'policy.apply').map(a => a.env.cmd.params as PolicyParams);
   const f2bNow = policies.some(p => p.fail2ban) ? await readFail2banSettings().catch(() => null) : null;
   const uiNow: Record<string, string | null> = {};
   for (const k of new Set(policies.flatMap(p => Object.keys(p.ui_settings || {})))) {
@@ -999,10 +1081,15 @@ export async function fleetStatus(): Promise<Record<string, unknown>> {
     lastPollAt: s.last_poll_at || null, lastOkAt: s.last_ok_at || null, lastError: s.last_error || null, failures: s.failures,
     awaiting: live.map(a => ({
       id: a.env.cmd.id, seq: a.env.cmd.seq, type: a.env.cmd.type, summary: a.summary, receivedAt: a.received_at, notAfter: a.env.cmd.not_after,
-      details: a.env.cmd.type === 'policy.apply' ? policyLines(a.env.cmd.params as PolicyParams, { f2b: f2bNow as unknown as Record<string, unknown> | null, ui: uiNow }) : [],
+      details: baseType(a.env.cmd.type) === 'policy.apply' ? policyLines(a.env.cmd.params as PolicyParams, { f2b: f2bNow as unknown as Record<string, unknown> | null, ui: uiNow }) : [],
+      // G4.2: yalnız ağ önerisi içeren ztp.profile — onaylanınca hiçbir ayar değişmez (anlık görüntü / sağlık penceresi yok)
+      ...(a.env.cmd.type === 'ztp.profile' && Object.keys(a.env.cmd.params).join() === 'net_suggestion' ? { suggestionOnly: true } : {}),
     })),
     history: s.history,
     pendingPolicy: s.pending_policy ? { ...s.pending_policy } : null, outbox: s.outbox.length,
+    // G4.2: yalnız ZTP / kodla kayıtta ve ağ önerisi varken (panelden kayıtlı cihazın yanıtı G4.1 ile aynı)
+    ...(e?.source ? { source: e.source } : {}),
+    ...(s.net_suggestion ? { netSuggestion: { text: s.net_suggestion.text, tab: s.net_suggestion.tab || null, at: s.net_suggestion.at } } : {}),
   };
 }
 

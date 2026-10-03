@@ -1,5 +1,5 @@
 /* Filo — bulut denetleyici (FleetPanel.tsx, tembel sekme). Yalnız tema değişkenleri; açık temanın kalan karşılıkları
-   light-theme.css'in 10. bölümünde. Düğme rengi = ne yaptığı (App.css ortak .btn-on / .btn-off): açan / kaydolan / onaylayan
+   light-theme.css'in 11. (G4.1) ve 15. (G4.2 ZTP) bölümlerinde. Düğme rengi = ne yaptığı (App.css ortak .btn-on / .btn-off): açan / kaydolan / onaylayan
    yeşil, duraklatan / ayrılan / reddeden kırmızı. */
 .flt-page { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
 .flt-panel { min-width: 0; }
@@ -86,7 +86,45 @@
 .flt-radio small { font-size: 12px; line-height: 1.45; color: var(--text-secondary); overflow-wrap: anywhere; }
 .flt-poll { max-width: 320px; margin-bottom: 0; }
 
+/* G4.2 ZTP: kayıt yöntemi seçimi, kodla kayıt sihirbazı (adres → kod + geri sayım → bağlandı), ağ önerisi kartı */
+.flt-method { margin: 14px 0 0; }
+.flt-steps { display: flex; flex-wrap: wrap; gap: 4px 14px; list-style: none; margin: 8px 0 4px; padding: 0; font-size: 12px; color: var(--text-muted); }
+.flt-steps li { display: inline-flex; align-items: center; gap: 6px; }
+.flt-step-num {
+  display: inline-flex; align-items: center; justify-content: center; width: 18px; height: 18px; border-radius: 50%; flex-shrink: 0;
+  font-size: 11px; font-weight: 700; border: 1px solid var(--panel-border); color: var(--text-secondary);
+}
+.flt-steps li.is-on { color: var(--text-primary); font-weight: 600; }
+.flt-steps li.is-on .flt-step-num { border-color: var(--accent-color); color: var(--accent-color); box-shadow: 0 0 0 2px var(--accent-ring); }
+.flt-steps li.is-done { color: var(--success-ink); }
+.flt-steps li.is-done .flt-step-num { border-color: color-mix(in srgb, var(--success-color) 45%, transparent); color: var(--success-ink); }
+.flt-claim { margin-top: 14px; padding: 14px; border-radius: var(--radius-sm); border: 1px solid var(--accent-ring); background: var(--input-bg-soft); min-width: 0; }
+.flt-claim h4 { margin: 8px 0 0; font-size: 14px; color: var(--text-primary); }
+.flt-code-row { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-top: 10px; }
+.flt-code {
+  font-family: var(--font-mono); font-size: 32px; font-weight: 700; letter-spacing: 4px; line-height: 1.2; color: var(--text-primary);
+  padding: 6px 14px; border-radius: var(--radius-sm); background: var(--bg-surface); border: 1px solid var(--panel-border);
+  user-select: all; white-space: nowrap;
+}
+.flt-code-row .btn-sm { display: inline-flex; align-items: center; gap: 5px; min-height: 34px; }
+.flt-timer { height: 4px; margin-top: 10px; border-radius: 999px; background: var(--surface-soft); overflow: hidden; }
+.flt-timer span { display: block; height: 100%; background: var(--accent-color); transition: width 1s linear; }
+.flt-claim .flt-hint > svg { vertical-align: -2px; }
+/* Yalnız ekran okuyucu (kod kartının durum duyurusu) */
+.flt-sr { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
+.flt-suggest { border-color: color-mix(in srgb, var(--warning-color) 45%, var(--panel-border)); }
+.flt-suggest-text {
+  margin: 10px 0 0; padding: 10px 12px; border-radius: var(--radius-sm); border: 1px solid var(--panel-border); background: var(--input-bg-soft);
+  font-size: 13px; line-height: 1.55; color: var(--text-primary); white-space: pre-wrap; overflow-wrap: anywhere;
+}
+.flt-link { display: inline-flex; align-items: center; min-height: 34px; text-decoration: none; }
+
+@media (max-width: 420px) {
+  .flt-code { font-size: 26px; letter-spacing: 3px; padding: 6px 10px; }
+}
+
 @media (min-width: 760px) {
   .flt-meta { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .flt-radios { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .flt-radios.is-two { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }

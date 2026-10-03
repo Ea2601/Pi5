@@ -4,14 +4,26 @@
 //  - İmza: Ed25519 (Node yerleşik crypto, sign(null) — yeni paket yok). Açık anahtar = ham 32 bayt, base64url.
 //  - Cihaz → sunucu isteği: X-Klx-Sig = imza("METHOD|yol|ts|sha256hex(gövde)") cihaz anahtarıyla.
 //  - Sunucu → cihaz komutu: { cmd, sig } zarfı; sig = imza(kanonik(cmd)) kiracı anahtarıyla (kayıtta sabitlenir).
-//  - İzin listesi KODDA SABİTTİR: report.inventory, update.start, policy.apply. Güvenlik duvarı, yönlendirme, rol, ağ ayarı,
-//    terminal, panel koruması, kasa, mesh komutu YOKTUR — sunucu ne gönderirse göndersin cihaz reddeder.
+//  - İzin listesi KODDA SABİTTİR: report.inventory, update.start, policy.apply (+ takma adı ztp.profile, G4.2). Güvenlik duvarı,
+//    yönlendirme, rol, ağ ayarı, terminal, panel koruması, kasa, mesh komutu YOKTUR — sunucu ne gönderirse göndersin cihaz reddeder.
 import crypto from 'crypto';
 
 export const FLEET_PROTO = 'klx-fleet/1';
 export const COMMAND_TYPES = ['report.inventory', 'update.start', 'policy.apply'] as const;
 export type CommandType = typeof COMMAND_TYPES[number];
 export const isCommandType = (v: unknown): v is CommandType => (COMMAND_TYPES as readonly unknown[]).includes(v);
+// Takma adlar (G4.2 ZTP): 'ztp.profile' = policy.apply — aynı izin listesi ve şema, aynı yürütme yolu (anlık görüntü + 10 dk
+// otomatik geri alma), aynı yerel onay ayarı. Tek ek: isteğe bağlı net_suggestion (YALNIZ panelde kart; cihaz hiçbir ağ ayarını
+// uygulamaz). Onay ayarları ve arayüz listesi yalnız temel türleri (COMMAND_TYPES) bilir.
+export const COMMAND_ALIASES = { 'ztp.profile': 'policy.apply' } as const satisfies Record<string, CommandType>;
+export type AliasType = keyof typeof COMMAND_ALIASES;
+export type WireType = CommandType | AliasType;
+export const isWireType = (v: unknown): v is WireType =>
+  isCommandType(v) || (typeof v === 'string' && Object.prototype.hasOwnProperty.call(COMMAND_ALIASES, v));
+export const baseType = (t: WireType): CommandType => (isCommandType(t) ? t : COMMAND_ALIASES[t]);
+// Ağ önerisi kartının bağlanabileceği sekmeler (sabit liste; sunucu başka bir yer gösteremez).
+export const NET_SUGGESTION_TABS = ['dhcp', 'roles'] as const;
+export const NET_SUGGESTION_MAX = 300;
 export const MAX_RESPONSE_BYTES = 256 * 1024;   // sunucu yanıtı en çok 256 KiB
 export const MAX_COMMANDS_PER_POLL = 20;
 export const MAX_CMD_LIFETIME_S = 7 * 86400;    // not_after en çok 7 gün ileride
@@ -90,6 +102,21 @@ export function signRequest(key: crypto.KeyObject, deviceId: string, method: str
   };
 }
 export const fingerprint = (publicRaw: string) => sha256hex(Buffer.from(publicRaw, 'base64url')).slice(0, 16).replace(/(.{4})(?=.)/g, '$1:');
+// Kodla kayıt (G4.2): kayıt kodu = base32(sha256(ham 32 bayt açık anahtar)) ilk 8 karakter (RFC 4648 alfabesi A–Z 2–7, 40 bit),
+// 4-4 gruplu "ABCD-EFGH". Sunucu kodu cihazın /v1/claim-status isteğindeki device_pub'dan aynı yolla hesaplar.
+const B32 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
+export function claimCode(publicRaw: string): string {
+  const h = crypto.createHash('sha256').update(Buffer.from(publicRaw, 'base64url')).digest();
+  let bits = 0, acc = 0, out = '';
+  for (const byte of h) {
+    acc = (acc << 8) | byte;
+    bits += 8;
+    while (bits >= 5 && out.length < 8) { out += B32[(acc >>> (bits - 5)) & 31]; bits -= 5; }
+    acc &= (1 << bits) - 1;
+    if (out.length >= 8) break;
+  }
+  return `${out.slice(0, 4)}-${out.slice(4, 8)}`;
+}
 
 // ─── Sunucu adresi ───
 // Yalnız https; kullanıcı:parola, sorgu, parça, localhost yok. Adres denetimi (loopback / Pi'nin kendisi / ev ağı) bağlanırken
@@ -121,13 +148,15 @@ export function nextDelayS(pollS: number, failures: number, rand: number): numbe
 
 // ─── Komut zarfı ───
 export interface FleetCommand {
-  v: 1; id: string; seq: number; type: CommandType; tenant_id: string; device_id: string;
+  v: 1; id: string; seq: number; type: WireType; tenant_id: string; device_id: string;
   issued_at: number; not_before?: number; not_after: number; params: Record<string, unknown>;
 }
+export interface NetSuggestion { text: string; tab?: typeof NET_SUGGESTION_TABS[number] }
 export interface PolicyParams {
   pihole_lists?: { add?: { list_type: string; value: string; comment?: string }[]; remove?: { list_type: string; value: string }[] };
   fail2ban?: Partial<Record<typeof F2B_POLICY_KEYS[number], number | boolean>>;
   ui_settings?: Record<string, string>;
+  net_suggestion?: NetSuggestion;   // yalnız ztp.profile
 }
 export type RejectCode = 'malformed' | 'bad_sig' | 'wrong_target' | 'type_not_allowed' | 'seq_replay' | 'not_yet_valid' | 'expired' | 'bad_params';
 // signed: ret imza doğrulandıktan SONRA (komut gerçekten kiracıdan) — cihaz seq'i ilerletir, sonuç bildirir.
@@ -137,6 +166,11 @@ export interface VerifyCtx { tenantPub: crypto.KeyObject; tenantId: string; devi
 const isObj = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v);
 const isInt = (v: unknown): v is number => typeof v === 'number' && Number.isSafeInteger(v);
 const BAD_TEXT = /[\x00-\x1f\x7f]/;
+// Ağ önerisi metni (G4.2) ekranda düz metin: denetim karakterlerine ek olarak C1 denetimleri ve yön değiştiren Unicode
+// karakterleri (LRM / RLM, LRE…RLO, LRI…PDI) de yok — gösterilen metin saklanandan farklı okunamaz (ör. ters çevrilmiş adres).
+const BAD_DISPLAY = /[\u0080-\u009f‎‏‪-‮⁦-⁩]/;
+export const suggestionTextOk = (t: unknown): t is string =>
+  typeof t === 'string' && !!t.trim() && [...t].length <= NET_SUGGESTION_MAX && !BAD_TEXT.test(t) && !BAD_DISPLAY.test(t);
 
 // Sıra: biçim → İMZA (imzasız alana güvenilmez) → hedef (kiracı + cihaz) → tür izin listesi → seq → süre → parametreler.
 export function verifyEnvelope(env: unknown, ctx: VerifyCtx): VerifyResult {
@@ -152,7 +186,7 @@ export function verifyEnvelope(env: unknown, ctx: VerifyCtx): VerifyResult {
     return { ok: false, code: 'malformed', error: 'Komut alanları eksik ya da geçersiz', id, seq, signed: true };
   }
   if (c.tenant_id !== ctx.tenantId || c.device_id !== ctx.deviceId) return { ok: false, code: 'wrong_target', error: 'Komut bu cihaz / kiracı için değil', id, seq, signed: true };
-  if (!isCommandType(c.type)) return { ok: false, code: 'type_not_allowed', error: `İzin verilmeyen komut türü: ${String(c.type).slice(0, 40)}`, id, seq, signed: true };
+  if (!isWireType(c.type)) return { ok: false, code: 'type_not_allowed', error: `İzin verilmeyen komut türü: ${String(c.type).slice(0, 40)}`, id, seq, signed: true };
   if (seq <= ctx.lastSeq) return { ok: false, code: 'seq_replay', error: `Sıra numarası geri gitti / yinelendi (${seq} ≤ ${ctx.lastSeq})`, id, seq, signed: true };
   const nb = (c.not_before as number | undefined) ?? (c.issued_at as number);
   if (nb - CLOCK_SKEW_S > ctx.nowS) return { ok: false, code: 'not_yet_valid', error: 'Komutun geçerlilik süresi henüz başlamadı', id, seq, signed: true };
@@ -166,13 +200,20 @@ export function verifyEnvelope(env: unknown, ctx: VerifyCtx): VerifyResult {
 }
 
 // Tür başına parametre şeması (yalnız yapı ve sınırlar; anlamsal denetim fleet.ts'te — liste değeri, Fail2Ban aralıkları,
-// arayüz ayar anahtarları index.ts UI_SETTING_KEYS ile).
-export function checkParams(type: CommandType, p: Record<string, unknown>): string {
-  if (type !== 'policy.apply') return Object.keys(p).length ? 'Bu komut parametre almaz' : '';
+// arayüz ayar anahtarları index.ts UI_SETTING_KEYS ile). ztp.profile policy.apply'ın şemasını kullanır; yalnız net_suggestion ekler.
+export function checkParams(type: WireType, p: Record<string, unknown>): string {
+  if (baseType(type) !== 'policy.apply') return Object.keys(p).length ? 'Bu komut parametre almaz' : '';
   const keys = Object.keys(p);
-  const extra = keys.filter(k => !['pihole_lists', 'fail2ban', 'ui_settings'].includes(k));
+  const sections = type === 'ztp.profile' ? ['pihole_lists', 'fail2ban', 'ui_settings', 'net_suggestion'] : ['pihole_lists', 'fail2ban', 'ui_settings'];
+  const extra = keys.filter(k => !sections.includes(k));
   if (extra.length) return `İzin verilmeyen politika bölümü: ${extra.slice(0, 3).join(', ').slice(0, 80)}`;
   if (!keys.length) return 'Politika boş';
+  if (p.net_suggestion !== undefined) {
+    const n = p.net_suggestion;
+    if (!isObj(n) || Object.keys(n).some(k => k !== 'text' && k !== 'tab')) return 'net_suggestion yalnız text / tab içerir';
+    if (!suggestionTextOk(n.text)) return `Ağ önerisi metni geçersiz (1–${NET_SUGGESTION_MAX} karakter düz metin)`;
+    if (n.tab !== undefined && !(NET_SUGGESTION_TABS as readonly unknown[]).includes(n.tab)) return `Ağ önerisi bağlantısı yalnız şu sayfalara olabilir: ${NET_SUGGESTION_TABS.join(', ')}`;
+  }
   if (p.pihole_lists !== undefined) {
     const l = p.pihole_lists;
     if (!isObj(l) || Object.keys(l).some(k => k !== 'add' && k !== 'remove')) return 'pihole_lists yalnız add / remove içerir';
@@ -217,6 +258,10 @@ export function describeCommand(c: Pick<FleetCommand, 'type' | 'params'>): strin
   if (p.pihole_lists) parts.push(`DNS listeleri (+${p.pihole_lists.add?.length || 0} / −${p.pihole_lists.remove?.length || 0})`);
   if (p.fail2ban) parts.push(`Fail2Ban (${Object.keys(p.fail2ban).join(', ')})`);
   if (p.ui_settings) parts.push(`arayüz ayarları (${Object.keys(p.ui_settings).join(', ')})`);
+  if (c.type === 'ztp.profile') {
+    if (p.net_suggestion) parts.push('ağ önerisi (yalnız kart, uygulanmaz)');
+    return `ZTP profili: ${parts.join('; ')}`.slice(0, 300);
+  }
   return `Politika uygula: ${parts.join('; ')}`.slice(0, 300);
 }
 
@@ -237,5 +282,6 @@ export function policyLines(p: PolicyParams, cur: { f2b?: Record<string, unknown
   for (const [k, v] of Object.entries(p.ui_settings || {})) {
     out.push(`Arayüz ayarı ${k}: ${cur.ui && k in cur.ui ? `${cur.ui[k] === null ? '(ayarsız)' : cut(cur.ui[k])} → ` : ''}${cut(v)}`);
   }
+  if (p.net_suggestion) out.push(`Ağ önerisi (UYGULANMAZ, yalnız kart): ${cut(p.net_suggestion.text)}`);
   return out.length > max ? [...out.slice(0, max - 1), `…ve ${out.length - max + 1} satır daha`] : out;
 }
