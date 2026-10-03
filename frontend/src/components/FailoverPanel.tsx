@@ -14,6 +14,13 @@ import { Panel, Badge, Select, SelectOption } from './ui';
 type Kind = 'eth' | 'usb' | 'wifi';
 type BakType = 'dhcp' | 'static' | 'pppoe';
 interface Uplink { via: 'primary' | 'backup'; dev: string; ip: string; gateway: string; public: boolean }
+// Geçiş hızı profili (G2.5; net-mode.sh backup tune show): standart = bugünkü yol, hızlı = ana hat saniyede bir + bağlantı
+// kopması olayı. sw_probe / sw_link: hızlı profil süresince yoklama / bağlantı kopması kaynaklı yedek hatta geçiş.
+interface Tuning {
+  mode: 'standard' | 'fast'; state: 'none' | 'fast' | 'standard' | 'expired' | 'invalid'; probe_s: number; fail_n: number;
+  trial_until: number; timer: boolean; single: boolean; wifi: boolean; sqm: boolean; running: boolean; events: boolean; suppressed: boolean;
+  load_at: number; since: number; sw_probe: number; sw_link: number; stale: boolean; now: number;
+}
 interface FailoverState {
   supported: boolean; error?: string; satellite?: boolean; now?: number;
   stage?: string; pi_dhcp?: boolean; iface?: string; wan_stage?: string; wan_port?: string; wan_dev?: string;
@@ -23,7 +30,7 @@ interface FailoverState {
   bak_up?: boolean; bak_fw?: boolean; bak_watch?: boolean; bak_active?: 'primary' | 'backup'; bak_since?: number; bak_switches?: number;
   bak_reason?: string; bak_primary_ok?: boolean; bak_backup_ok?: boolean; bak_checked?: number; bak_force_until?: number;
   bak_rx?: number; bak_tx?: number; bak_conntrack?: boolean; bak_usb_candidates?: string; uplink?: Uplink | null;
-  wifi_roles?: string;
+  wifi_roles?: string; tuning?: Tuning | null;
 }
 export interface FailoverEthPort { name: string; driver: string; bus: 'usb' | 'onboard'; carrier: boolean | null }
 
@@ -42,6 +49,93 @@ function Alert({ kind, children }: { kind: 'ok' | 'err' | 'info'; children: Reac
     <div className={`routing-apply routing-apply-${kind === 'info' ? 'ok' : kind} hw-alert-${kind}`}>
       {kind === 'err' ? <AlertTriangle size={14} /> : kind === 'ok' ? <CheckCircle size={14} /> : <Info size={14} />}
       <span>{children}</span>
+    </div>
+  );
+}
+
+// Geçiş hızı profili kartı (yedek hat açıkken). Hızlı profil hep 30 dk denemeyle açılır: süre dolunca Pi kendisi standarda
+// döner (zamanlayıcı net-mode.sh'te); "Kalıcı yap" yeşil, "Standarda dön" kırmızı. Ölçülen süreler (Docker, gerçek NM, kesintiden
+// geçiş rotasına): standart ≈18,3 sn; hızlı operatör kesintisinde 3,1-4,1 sn (3 tur × 1 sn; kesinti turun rastgele anında,
+// ortanca ≈3,6-3,9), ayrı kablolu internet kartında kablo / taşıyıcı / PPPoE / VLAN / rota kopmasında 0,3-0,6 sn (0,3 sn yeniden
+// denetim dahil; yedek hat 1,5 sn gecikmeli olsa da). Tek bacakta ve Wi-Fi internet bağlantısında kopma yoklamayla ≈3-4 sn.
+const TUNE_TRIAL_MIN = 30;
+// Üç hedefe ICMP (84 bayt gidiş + 84 dönüş) saniyede bir ≈43 MB/gün; 5 sn'de bir ≈9 MB/gün.
+const fastData = (probeS: number) => Math.round(43 / Math.max(1, probeS));
+// Operatör tarafı kesintide geçiş: aralık × tur (son yanıttan sonraki ilk turun gecikmesiyle +1 sn).
+const fastSwitchText = (probeS: number, failN: number) => `≈${probeS * failN}-${probeS * failN + 1} sn`;
+const probeEvery = (s: number) => (s === 1 ? 'saniyede bir' : `${s} sn'de bir`);
+// watch: yedek hat izleyicisi çalışıyor (çalışmıyorsa panelin kendi hatası gösterilir, burada "geçiyor" denmez).
+function TuneCard({ t, busy, act, watch }: { t: Tuning; busy: string | null; act: (key: string, fn: () => Promise<void>) => Promise<void>; watch: boolean }) {
+  const fast = t.mode === 'fast';
+  const trial = fast && t.trial_until > 0;
+  const left = trial ? Math.max(0, t.trial_until - t.now) : 0;
+  // Kopmada anında geçiş yalnız ayrı, kablolu internet kartında: tek bacakta kopma ev ağını da keser; Wi-Fi internet
+  // bağlantısında kısa kopmalar (dolaşma) olağandır — orada kopma yoklamayla algılanır (net-mode.sh bak_fast_slow).
+  const localCut = !t.single && !t.wifi ? ', kablo / bağlantı kopmasında ≤1 sn' : '';
+  const start = () => {
+    if (!window.confirm(
+      `Hızlı geçiş profili ${TUNE_TRIAL_MIN} dk denenecek:\n\n` +
+      `• Ana hat saniyede bir yoklanır (≈${fastData(1)} MB/gün); yedek hat yine 5 sn'de bir\n` +
+      `• Operatör tarafı kesintide ${fastSwitchText(1, 3)}${localCut} içinde yedek hatta geçilir\n` +
+      (t.single ? '• Ana hat ev ağı kartında: kablo koparsa ev ağı da gider — hızlı profil yalnız operatör tarafı kesintiyi hızlandırır\n' : '') +
+      (t.wifi ? '• İnternet Wi-Fi ile geliyor: kısa Wi-Fi kopmaları (dolaşma) geçiş sayılmaz, kopma yoklamayla algılanır\n' : '') +
+      (t.sqm ? '' : '• Akıllı kuyruk (SQM) bu hatta açık değil: yoğun indirmede gecikme artarsa Pi geçişi bekletir; hızlı profil akıllı kuyruk açık hatlarda önerilir\n') +
+      '• Geçiş kesintisiz değildir: açık bağlantılar (görüntülü arama, oyun, indirme) yeni hatta yeniden kurulur\n' +
+      '• Dönüş kuralı aynı: ana hat 60 sn sağlam kalınca (son geçişten en az 2 dk sonra)\n' +
+      `• ${TUNE_TRIAL_MIN} dk içinde "Kalıcı yap" denmezse Pi standart profile kendisi döner\n\nDevam edilsin mi?`,
+    )) return;
+    void act('tune-fast', async () => {
+      await postApi('/failover/tuning', { mode: 'fast' });
+      toast.success(`Hızlı profil ${TUNE_TRIAL_MIN} dk deneniyor — izleyici birkaç saniye içinde geçer`);
+    });
+  };
+  const confirm = () => act('tune-confirm', async () => {
+    await postApi('/failover/tuning/confirm', {});
+    toast.success('Hızlı profil kalıcı yapıldı');
+  });
+  const standard = () => act('tune-std', async () => {
+    await postApi('/failover/tuning', { mode: 'standard' });
+    toast.info('Standart profile dönüldü (5 sn\'de bir yoklama)');
+  });
+  const profile = fast
+    ? `Hızlı${trial ? ` — deneme, ${fmtAgo(left)} kaldı` : ''}`
+    : t.state === 'invalid' ? 'Standart (ayar dosyası geçersiz)' : t.state === 'expired' ? 'Standart (deneme süresi doldu)' : 'Standart';
+  const timing = fast
+    ? `Operatör tarafı kesintide ${fastSwitchText(t.probe_s, t.fail_n)}${localCut} (${probeEvery(t.probe_s)} yoklama, ${t.fail_n} tur${t.sqm ? '' : '; hat doluyken geçiş bekletilir'}).${t.wifi ? ' Wi-Fi kopması da yoklamayla algılanır; kısa kopmalar (dolaşma) geçiş sayılmaz.' : ''} Açık bağlantılar yeni hatta yeniden kurulur.`
+    : 'Ana hat yanıt vermezse 15-30 sn içinde (5 sn\'de bir yoklama, 3 tur). Açık bağlantılar yeni hatta yeniden kurulur.';
+  return (
+    <div className="wn-fwd">
+      <h4 className="rl-sub">Geçiş hızı</h4>
+      <dl className="hw-facts">
+        <div><dt>Profil</dt><dd>{profile}</dd></div>
+        <div><dt>Ana hat düşerse</dt><dd>{timing}</dd></div>
+        <div><dt>Yoklama verisi</dt><dd>{fast ? `Ana hat ${t.probe_s} sn'de bir (≈${fastData(t.probe_s)} MB/gün), yedek hat 5 sn'de bir (≈9 MB/gün)` : "Ana hat ve yedek hat 5 sn'de bir (her biri ≈9 MB/gün)"}</dd></div>
+        {fast && <div><dt>{trial ? 'Deneme süresince' : 'Hızlı profilde'} yedek hatta geçiş</dt><dd>{t.sw_probe + t.sw_link ? `yoklama ile ${t.sw_probe}, bağlantı kopmasıyla ${t.sw_link}` : 'yok'}</dd></div>}
+      </dl>
+      {fast && t.sw_probe > 0 && <Alert kind="info">Bu sürede ana hatta gerçek bir kesinti olmadıysa yoklama ile yapılan geçişler yanlış geçiştir (her biri açık bağlantıları koparır) — standart profile dönün.</Alert>}
+      {fast && t.stale && !t.running && <Alert kind="err">İzleyici eski betik sürümüyle çalışıyor: hızlı profil henüz uygulanmıyor (5 sn'de bir yoklama sürüyor). "Standarda dön" deyip hızlı profili yeniden deneyin — izleyici yeniden başlatılır.</Alert>}
+      {fast && !t.running && !t.stale && watch && <Alert kind="info">İzleyici hızlı profile geçiyor (birkaç saniye) — sayfa kendiliğinden yenilenir.</Alert>}
+      {fast && t.suppressed && <Alert kind="info">Hız testi sürüyor (akıllı kuyruk ölçümü de bu testi kullanır): bu sırada yoklama kaynaklı geçiş ≈15 sn'ye çekildi (yanlış geçiş olmasın). Bağlantı kopması yine hemen geçer.</Alert>}
+      {fast && !t.sqm && (
+        <Alert kind="info">
+          Akıllı kuyruk (SQM) bu hatta açık değil: yoğun indirme / yüklemede gecikme 1 sn'yi aşabilir. Pi geç gelen yanıtları
+          {t.single ? '' : ' ve karta gelmeye devam eden trafiği'} hattın dolu olduğu şeklinde yorumlayıp geçişi bekletir
+          {t.single
+            ? "; tek bacakta gecikme 3 sn'yi aşarsa yanlış geçiş olabilir — deneme süresince geçiş sayacını izleyin."
+            : '. Hızlı profil akıllı kuyruk açık hatlarda önerilir (Bant Genişliği → Gecikme).'}
+        </Alert>
+      )}
+      {fast && t.single && <Alert kind="info">Ana hat ev ağı kartında (modem ve ev ağı aynı kabloda): kablo koparsa ev ağı da gider — hızlı profil yalnız operatör tarafı kesintiyi ({fastSwitchText(t.probe_s, t.fail_n)}) hızlandırır.</Alert>}
+      {t.state === 'invalid' && <Alert kind="err">Profil dosyası geçersiz — standart profil kullanılıyor. "Standarda dön" dosyayı temizler.</Alert>}
+      <div className="panel-auth-actions">
+        {!fast && t.state !== 'invalid' && (
+          <button className="btn-primary btn-sm btn-on" onClick={start} disabled={!!busy}>{busy === 'tune-fast' ? 'Açılıyor…' : `Hızlı profili dene (${TUNE_TRIAL_MIN} dk)`}</button>
+        )}
+        {trial && <button className="btn-primary btn-sm btn-on" onClick={() => { void confirm(); }} disabled={!!busy}>{busy === 'tune-confirm' ? 'Kaydediliyor…' : 'Kalıcı yap'}</button>}
+        {(fast || t.state === 'invalid') && (
+          <button className="btn-outline btn-sm btn-off" onClick={() => { void standard(); }} disabled={!!busy}>{busy === 'tune-std' ? 'Dönülüyor…' : 'Standarda dön'}</button>
+        )}
+      </div>
     </div>
   );
 }
@@ -69,11 +163,13 @@ export function FailoverPanel({ ports, onChange, initialKind = 'eth', initialPor
   }, []);
   const onBackup = st?.bak_active === 'backup';
   const testing = !!st?.bak_force_until && !!st?.now && st.bak_force_until > st.now;
+  // Hızlı profil seçildi ama izleyici henüz geçmedi: kısa aralıkla yenilenir (izleyici çalışmıyorsa ya da eski sürümse beklenmez).
+  const tuneWait = st?.tuning?.mode === 'fast' && !st.tuning.running && !st.tuning.stale && !!st.bak_watch && st.bak_stage === 'on';
   useEffect(() => {
     const first = setTimeout(() => { void load(); }, 0);
-    const id = setInterval(() => { void load(); }, onBackup || testing ? 5000 : 15000);
+    const id = setInterval(() => { void load(); }, onBackup || testing || tuneWait ? 5000 : 15000);
     return () => { clearTimeout(first); clearInterval(id); };
-  }, [load, onBackup, testing]);
+  }, [load, onBackup, testing, tuneWait]);
 
   const title = 'Yedek hat';
   const icon = <LifeBuoy size={18} style={{ marginRight: 8 }} />;
@@ -81,6 +177,8 @@ export function FailoverPanel({ ports, onChange, initialKind = 'eth', initialPor
   if (!st.supported || st.satellite) return null;
 
   const isStatic = st.stage === 'static';
+  // Geçiş süresi metni profile göre (ayar dosyası yedek hat kapalıyken de kalabilir: açılınca o profille başlar).
+  const switchIn = st.tuning?.mode === 'fast' ? fastSwitchText(st.tuning.probe_s, st.tuning.fail_n) : '15-30 sn';
   const wanOn = !!st.wan_stage && st.wan_stage !== 'none';
   const lanPort = st.iface || '';
   // Hotspot radyosu: başka işte olmayan ilk Wi-Fi kartı (net-mode.sh wifi_roles "kart=rol"; iki radyoda ev Wi-Fi'ı yayını
@@ -137,7 +235,7 @@ export function FailoverPanel({ ports, onChange, initialKind = 'eth', initialPor
     if (!window.confirm(
       `Yedek hat kurulacak: ${KIND_TEXT[kind]} — ${where}.\n\n` +
       '• Ana hat ve ev ağı değişmez; yedek hat hemen sınanır, internet gelmezse kurulum geri alınır\n' +
-      '• Ana hat çalışmazsa Pi 15-30 sn içinde yedek hatta geçer, ana hat 60 sn sağlam kalınca geri döner\n' +
+      `• Ana hat çalışmazsa Pi ${switchIn} içinde yedek hatta geçer, ana hat 60 sn sağlam kalınca geri döner\n` +
       '• Yedek hattan gelen bağlantılar engellenir\n\nDevam edilsin mi?',
     )) return;
     void act('on', async () => {
@@ -184,7 +282,7 @@ export function FailoverPanel({ ports, onChange, initialKind = 'eth', initialPor
             {!isStatic && <Alert kind="info">Önce menü → DHCP Ayarları sihirbazında Pi'ye sabit adres verip kalıcı yapın.</Alert>}
             {isStatic && !st.pi_dhcp && <Alert kind="info">Önce DHCP Ayarları'ndan Pi DHCP sunucusunu açın: yedek hat, ev ağındaki cihazlar Pi'yi ağ geçidi kullanırken çalışır.</Alert>}
             <dl className="hw-facts">
-              <div><dt>Ne olur</dt><dd>Ana hat {wanOn ? `(internet kartı ${st.wan_dev || st.wan_port})` : '(modem)'} yanıt vermezse Pi 15-30 sn içinde yedek hatta geçer; açık bağlantılar yeni hatta yeniden kurulur. Ana hat 60 sn sağlam kalınca dönülür.</dd></div>
+              <div><dt>Ne olur</dt><dd>Ana hat {wanOn ? `(internet kartı ${st.wan_dev || st.wan_port})` : '(modem)'} yanıt vermezse Pi {switchIn} içinde yedek hatta geçer; açık bağlantılar yeni hatta yeniden kurulur. Ana hat 60 sn sağlam kalınca dönülür.</dd></div>
               <div><dt>Güvenlik</dt><dd>Yedek hattan gelen bağlantılar engellenir; ev ağı ve panel değişmez. <EN>IPv6</EN> kapalı.</dd></div>
               <div><dt>Kota</dt><dd>4G / telefon hattı kotalıysa yedek hattayken büyük indirmelerden kaçının; panel geçişi zile yazar.</dd></div>
             </dl>
@@ -312,6 +410,7 @@ export function FailoverPanel({ ports, onChange, initialKind = 'eth', initialPor
                   </button>}
               <button className="btn-outline btn-sm" onClick={off} disabled={!!busy}>{busy === 'off' ? 'Kapatılıyor…' : 'Yedek hattı kapat'}</button>
             </div>
+            {st.tuning && <TuneCard t={st.tuning} busy={busy} act={act} watch={!!st.bak_watch} />}
           </>
         )}
       </div>

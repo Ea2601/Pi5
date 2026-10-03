@@ -51,6 +51,10 @@
 #                                        yedek hatta geçer, ana hat 60 sn sağlam kalınca döner
 #   backup off | fw                      yedek hattı kapatır | güvenlik duvarını yeniden yükler
 #   backup test [SN]                     geçiş denemesi: SN (varsayılan 60, 0 = bitir) saniye yedek hatta kalınır
+#   backup tune show | standard | fast [--probe-s 1-5] [--fail-n 2-3] [--trial SN] | confirm | rollback
+#                                        geçiş hızı profili (kilitsiz; /etc/pi5-gateway/net/bak-tuning): standart (dosya
+#                                        yok = bugünkü yol) | hızlı (ana hat saniyede bir; --trial: SN sn sonra standarda
+#                                        döner) | denemeyi kalıcı yapar | (zamanlayıcı) deneme sürüyorsa standarda döner
 #   backup watch                         izleyici (pi5-wan-failover.service)
 #   rep on --trial SN --ssid AD [--port KART] [--lan KART] [--dhcp relay|pi [--range A-B]]
 #                                        Wi-Fi köprüsü (aynı ağ, R4 C): Pi üst Wi-Fi'a istemci olarak bağlanır (adres
@@ -165,6 +169,14 @@ BAK_GROUP=77
 # USB 4G modem (HiLink: cdc_ether / cdc_ncm) ve telefon USB paylaşımı (Android: rndis_host / cdc_ncm, iPhone: ipheth).
 BAK_USB_DRIVERS="rndis_host cdc_ether cdc_ncm ipheth"
 BAK_TARGETS="1.1.1.1 8.8.8.8 9.9.9.9"
+# Geçiş hızı profili (G2.5): ayar dosyası (durum dosyasından ayrı, STATE_KEYS'e girmez), hızlı profilde izleyicinin sayaç
+# dosyası ve olay FIFO'su, deneme zamanlayıcısı; hız testi sürerken (backend/src/speedtest.ts yazar; akıllı kuyruk
+# kalibrasyonu da ölçümünü bu hız testiyle yapar) yanlış geçiş bastırılır.
+BAK_TUNE=$DIR/bak-tuning
+BAK_TUNE_RUN=$BAK_RUN/failover.tune
+BAK_TUNE_FIFO=$BAK_RUN/bak-mon.fifo
+BAK_TUNE_UNIT=pi5-bak-tune-rollback
+BAK_TUNE_SPEEDTEST=/run/pi5-speedtest/state
 # Wi-Fi köprüsü (aynı ağ, R4 C): Pi üst Wi-Fi'a istemci (adres modemden), ev tarafı kartındaki (eth0) cihazlar üst
 # ağla AYNI ağda — ARP vekili (parprouted) + DHCP aktarma (dhcp-helper; modem dağıtır) ya da Pi'nin modem ağında ayrı
 # bir aralıktan dağıtması (dnsmasq). NAT yok; cihazların DNS'i Pi-hole'a çekilir. Ev tarafı kartı NetworkManager dışında.
@@ -2624,12 +2636,12 @@ wait_bak_ip() {
 bak_primary_dev() { if [ "$S_wan_stage" != none ] && [ -n "$S_wan_dev" ]; then echo "$S_wan_dev"; else lan_dev; fi; }
 bak_primary_ip() { if [ "$S_wan_stage" != none ] && [ -n "$S_wan_dev" ]; then wan_ip; else echo "$S_transit"; fi; }
 # Arayüze bağlı sınama (SO_BINDTODEVICE: metrik ve VPS yönlendirme kuralları araya girmez). Rota yoksa hemen başarısız.
-# Üç hedef aynı anda denenir (en çok 2 sn): biri yanıt verirse sağlam.
+# Üç hedef aynı anda denenir (en çok $2 sn, varsayılan 2): biri yanıt verirse sağlam.
 bak_probe() {
   local t p rc=1 pids=()
   [ -n "$1" ] && [ -e "/sys/class/net/$1" ] || return 1
   ip -4 route show default dev "$1" 2>/dev/null | grep -q . || return 1
-  for t in $BAK_TARGETS; do ping -n -c1 -W2 -I "$1" "$t" >/dev/null 2>&1 & pids+=("$!"); done
+  for t in $BAK_TARGETS; do ping -n -c1 -W"${2:-2}" -I "$1" "$t" >/dev/null 2>&1 & pids+=("$!"); done
   for p in "${pids[@]}"; do wait "$p" && rc=0; done
   return "$rc"
 }
@@ -2724,9 +2736,516 @@ bak_guard_routine() {
   fi
   nm_running && bak_restore_backups
   if [ ! -e "/etc/systemd/system/$BAK_WATCH_UNIT.service" ]; then bak_watch_install || true
-  elif ! systemctl is-active --quiet "$BAK_WATCH_UNIT.service" 2>/dev/null; then systemctl --no-block start "$BAK_WATCH_UNIT.service" >/dev/null 2>&1 || true; fi
+  elif ! systemctl is-active --quiet "$BAK_WATCH_UNIT.service" 2>/dev/null; then systemctl --no-block start "$BAK_WATCH_UNIT.service" >/dev/null 2>&1 || true
+  # Hızlı profil açıkken izleyici güncellemeden önceki kodla çalışıyorsa yeniden başlatılır (dosya yokken eski kod aynı yoldur).
+  elif [ -e "$BAK_TUNE" ] && bak_tune_stale; then bak_tune_restart; fi
   echo "bak_guard_result=ok"
   return 0
+}
+
+# --- Yedek hat geçiş hızı profili (G2.5) ---
+# Ayar: /etc/pi5-gateway/net/bak-tuning (KEY=VALUE, 0600; mode=standard|fast, primary_probe_s=1..5, fail_n=2..3, deneme
+# sürüyorsa trial_until=<epoch>). Durum dosyasından ayrıdır (STATE_KEYS'e girmez: read_state, yedek ve geri yükleme
+# değişmez). Dosya yoksa, geçersizse ya da denemesi bittiyse izleyici bugünkü yolu izler (standart: 5 sn tur, ping -W2, 3 tur
+# ≈15 sn). Karar yine tek yerde, cmd_backup_watch'tadır (ikinci izleyici yok); hızlı profilde yalnız bekleme ve ana hat
+# yoklaması değişir:
+#  - Ana hat primary_probe_s sn'de bir üç hedefe yoklanır: hedef başına uzun ömürlü `ping -O` (her tur yeni süreç açılmaz).
+#    1 sn içinde yanıt gelen tur sağlam, üç hedeften de "no answer yet" gelen tur yanıtsızdır; fail_n tur üst üste yanıtsızsa
+#    geçilir (operatör tarafı kesinti ≈3-4 sn). Süreçler 10 dk'da bir yenilenir (hedefler arası zaman kayması birikmesin).
+#  - `ip -o monitor link route` olayları ve ping satırları aynı FIFO'dan (bak-mon.fifo) read -t ile okunur. Ana hattın
+#    arayüzü / kartı taşıyıcıyı kaybedince ya da silinince (kablo, PPPoE düştü, USB çekildi) tur beklenmeden geçilir (≤1 sn).
+#    Çekirdek taşıyıcı kaybında rotayı silmez ("linkdown"): kopma /sys/class/net/<ad>/carrier'dan okunur. Tek bacakta (ana
+#    hat = ev ağı kartı) kopma ev ağını da keser: bu düzende taşıyıcı tetiği yoktur, yalnız yoklama hızlanır. Varsayılan rota
+#    silinirse eski kural (yanıtsız tur + rota yok → hemen) olayla beklemeden çalışır. Kısa titremede (NM rotayı silip
+#    yeniden ekler, taşıyıcı bir an düşer) geçilmesin diye kopma 0,3 sn sonra yeniden denetlenir. Wi-Fi internet
+#    bağlantısında (R4 A) da taşıyıcı tetiği yoktur: dolaşma / bant yönlendirme / yeniden ilişkilenme kartı bir an
+#    "dormant" yapar, taşıyıcı düşer (olağan titreme) — kopma yalnız yoklamayla (≈3-4 sn) algılanır.
+#  - Rota yokken tur yanıtsız sayılır (bak_probe ile aynı kural): arayüze bağlı ping rotasız da yanıt alabilir (çekirdek
+#    hedefi bağlı ağda sanar); rota durumu olaylardan ve 5 sn'lik sayaçtan izlenir.
+#  - bak_tag_usb, bak_evict_foreign (nmcli), durum dosyası okuma ve yedek hat yoklaması 5 sn'lik ayrı sayaçta kalır (kotalı
+#    yedek hatta veri artmaz; saniyede nmcli çağrılmaz). Yedek hat yoklaması arka planda çalışır, sonucu FIFO'dan gelir
+#    (yedek hattın gecikmesi ana hattın kopma algısını bekletmez); FIFO yoksa ilk yanıtta döner. Ana hatta yoklama 1 sn'de
+#    ≈43 MB/gün.
+#  - Akıllı kuyruk (CAKE) ana hatta takılı değilse yükte gecikme 1 sn'yi aşabilir: 1 sn'den geç gelen yanıt hattın canlı
+#    olduğunu gösterir (yanıtsız tur sayacı sıfırlanır) ve 60 sn boyunca geçiş için bir tur fazlası beklenir. Gecikme 3 sn'yi
+#    aşarsa geç yanıt üçüncü turdan sonra gelir: ayrı internet kartında yoklama yanıtsızken karta tek yönlü (unicast)
+#    trafik gelmeye devam ediyorsa (≥10 paket/sn; operatör tarafı kesintide gelmez) hat dolu sayılır, yoklama kaynaklı geçiş
+#    ≈15 sn'ye çekilir. Yayın / çoklu yayın gürültüsü (ARP, mDNS, SSDP) sayılmasın diye kartın multicast sayacı düşülür
+#    (sürücü bu sayacı tutmuyorsa tüm paketler sayılır). Tek bacakta kart ev ağını da taşır: bu sayaç kullanılmaz (yalnız
+#    geç yanıt). Akıllı kuyruk takılıyken ikisi de yoktur (yük altında gecikme düşük kalır).
+#  - Hız testi (/run/pi5-speedtest/state; akıllı kuyruk kalibrasyonu da bu ölçümü kullanır) sürerken yoklama kaynaklı geçiş
+#    standart profilin süresine (≈15 sn) çekilir; bağlantı kopması yine hemen geçer.
+#  - Dönüş kuralı (60 sn sağlam + son geçişten ≥2 dk), conntrack temizliği ve geçiş kilidi (flock -n 9) aynıdır.
+#  - FIFO kurulamazsa uyku yedeği: her tur eşzamanlı yoklanır (ping -W1), tur arası sleep ile beklenir. ip monitor ölürse
+#    olaysız (zaman aşımıyla) beklenir ve 5 sn'lik sayaçta yeniden başlatılır. Yedek hat açık değilken (yeniden kurulum)
+#    ping / ip monitor durdurulur ve FIFO boşaltılır (dolup yazanları bekletmesin).
+# Profil izleyicide en geç bir standart turda (5 sn) etkinleşir, hızlı profilde ayar her turda okunur: dosya silinince /
+# deneme bitince ≤1 sn'de standarda dönülür (yeniden başlatma gerekmez). Hızlı profilin sayaçları
+# /run/pi5-gateway/failover.tune'dadır (yalnız hızlı profilde; failover.status biçimi değişmez).
+
+# Ayar dosyasını sıkı biçimde okur → T_mode T_probe_s T_fail_n T_trial_until T_sig; T_state = none | fast | standard |
+# expired | invalid. 0 = geçerli, süresi geçmemiş hızlı profil. Yalnız kabuk içi komutlar (her turda çağrılabilir).
+bak_tune_read() {
+  local line k v n=0 seen=" "
+  T_mode=standard; T_probe_s=1; T_fail_n=3; T_trial_until=""; T_sig=""; T_state=none
+  [ -e "$BAK_TUNE" ] || return 1
+  T_state=invalid
+  { [ -f "$BAK_TUNE" ] && [ ! -L "$BAK_TUNE" ] && [ -O "$BAK_TUNE" ]; } || return 1
+  while IFS= read -r line || [ -n "$line" ]; do
+    n=$((n + 1))
+    [ "$n" -le 8 ] || return 1
+    [[ $line =~ ^([a-z_]{1,16})=([a-z0-9]{1,12})$ ]] || return 1
+    k=${BASH_REMATCH[1]}; v=${BASH_REMATCH[2]}
+    case "$seen" in *" $k "*) return 1 ;; esac
+    seen="$seen$k "
+    case "$k" in
+      mode) case "$v" in standard|fast) T_mode=$v ;; *) return 1 ;; esac ;;
+      primary_probe_s) [[ $v =~ ^[1-5]$ ]] || return 1; T_probe_s=$v ;;
+      fail_n) [[ $v =~ ^[23]$ ]] || return 1; T_fail_n=$v ;;
+      trial_until) [[ $v =~ ^[1-9][0-9]{8,10}$ ]] || return 1; T_trial_until=$v ;;
+      *) return 1 ;;
+    esac
+  done < "$BAK_TUNE"
+  case "$seen" in *" mode "*) ;; *) return 1 ;; esac
+  T_sig="$T_mode:$T_probe_s:$T_fail_n:$T_trial_until"
+  if [ "$T_mode" != fast ]; then T_state=standard; return 1; fi
+  if [ -n "$T_trial_until" ] && [ "$T_trial_until" -le "$EPOCHSECONDS" ]; then T_state=expired; return 1; fi
+  T_state=fast
+}
+# Hızlı profil dosyası (atomik: tmp + mv, 0600). $1 yoklama aralığı, $2 tur sayısı, $3 deneme bitişi (boş = kalıcı).
+bak_tune_write() {
+  if ! mkdir -p "$DIR" || ! chmod 700 "$DIR"; then return 1; fi
+  if ! { printf 'mode=fast\nprimary_probe_s=%s\nfail_n=%s\n' "$1" "$2"; if [ -n "$3" ]; then printf 'trial_until=%s\n' "$3"; fi; } \
+       > "$BAK_TUNE.tmp" || ! chmod 600 "$BAK_TUNE.tmp" || ! mv -f "$BAK_TUNE.tmp" "$BAK_TUNE"; then
+    rm -f "$BAK_TUNE.tmp"; return 1
+  fi
+}
+# Deneme zamanlayıcısı (pi5-bak-tune-rollback). "backup tune rollback" bunu ÇAĞIRMAZ (kendi servisini durdururdu; yalnız
+# kendi .timer'ını durdurur).
+bak_tune_timer_stop() {
+  systemctl stop "$BAK_TUNE_UNIT.timer" "$BAK_TUNE_UNIT.service" >/dev/null 2>&1 || true
+  systemctl reset-failed "$BAK_TUNE_UNIT.timer" "$BAK_TUNE_UNIT.service" >/dev/null 2>&1 || true
+}
+# İzleyici bu betiğin eski bir sürümüyle mi çalışıyor (betik izleyici başladıktan sonra değişti: güncelleme)? Uzun ömürlü
+# bash süreci betiği başlarken okur: yeni kod ancak yeniden başlatılınca devreye girer. Başlama anı ana sürecin
+# /proc/<pid>/stat'ından (22. alan, açılıştan beri 1/100 sn) — systemd'nin tarih metni bölgeye / dile göre değişir.
+bak_tune_stale() {
+  local pid st up r m
+  pid=$(systemctl show -p MainPID --value "$BAK_WATCH_UNIT.service" 2>/dev/null)
+  [[ $pid =~ ^[1-9][0-9]{0,9}$ ]] || return 1
+  read -r st 2>/dev/null < "/proc/$pid/stat" || return 1
+  # shellcheck disable=SC2086 # alanlar boşlukla ayrılır (komut adından sonrası)
+  set -- ${st##*) }
+  [ $# -ge 20 ] && [[ ${20} =~ ^[0-9]{1,15}$ ]] || return 1
+  read -r up r < /proc/uptime || return 1
+  m=$(stat -c %Y "$SELF" 2>/dev/null) || return 1
+  [ $((EPOCHSECONDS - (10#${up/./} - ${20}) / 100)) -lt "$m" ]
+}
+# Beklemesiz (açılış korumasından çağrılabilir: bkz. bak_watch_install). Durum dosyası /run'da kalır: geçiş sürer.
+bak_tune_restart() {
+  systemctl --no-block restart "$BAK_WATCH_UNIT.service" >/dev/null 2>&1 || return 0
+  log "yedek hat: izleyici yeni betik sürümüyle yeniden başlatıldı (hızlı profil)"
+  echo "bak_watch_restarted=1"
+}
+# Hızlı profilde izleyicinin sayaçları (arayüz: deneme süresince geçişler).
+bak_tune_runfile() {
+  printf 'mode=fast\nsig=%s\nsince=%s\nprobe_s=%s\nfail_n=%s\nsqm=%s\nsingle=%s\nevents=%s\nsuppressed=%s\nload_at=%s\nsw_probe=%s\nsw_link=%s\nchecked=%s\n' \
+    "$F_sig" "$F_since" "$iv" "$F_fail_n" "$F_sqm" "$F_single" "$F_evt" "$((EPOCHSECONDS < F_supp_until))" "$F_load_at" \
+    "$F_sw_probe" "$F_sw_link" "$EPOCHSECONDS" > "$BAK_TUNE_RUN.tmp" && mv -f "$BAK_TUNE_RUN.tmp" "$BAK_TUNE_RUN"
+}
+
+# İzleyicinin her turunun başında (cmd_backup_watch'ın yerelleriyle, dinamik kapsam): dosya varsa profil uygulanır; yoksa
+# (hızlı profilden dönüldüyse) standart yola geçilir. Dosya yokken yalnız varlık sınaması yapılır (dış komut çalışmaz).
+bak_tune_check() {
+  if [ -e "$BAK_TUNE" ]; then bak_tune_apply; elif [ "$tmode" = fast ]; then bak_fast_stop; fi
+}
+# Ayar her turda yeniden okunur (yalnız kabuk içi komutlar): deneme bitişi, kalıcı yapma ve bozulma ≤1 sn'de görülür.
+bak_tune_apply() {
+  if bak_tune_read; then
+    F_bad=0
+    if [ "$tmode" != fast ]; then bak_fast_start
+    elif [ "$T_sig" != "$F_sig" ]; then
+      # Kalıcı yapıldı / ayar değişti: sayaçlar yeniden; aralık değiştiyse ping süreçleri hemen (5 sn'lik sayaç beklenmeden)
+      # yeni aralıkla yenilenir.
+      if [ "$T_probe_s" != "$iv" ]; then F_pdev=""; F_slow=0; fi
+      iv=$T_probe_s; F_fail_n=$T_fail_n; F_sig=$T_sig; F_since=$EPOCHSECONDS; F_sw_probe=0; F_sw_link=0
+    fi
+    return 0
+  fi
+  if [ "$T_state" = expired ]; then
+    rm -f "$BAK_TUNE"
+    log "yedek hat: hızlı profil denemesi bitti — standart profile dönüldü"
+  elif [ "$T_state" = invalid ] && [ "$F_bad" != 1 ]; then
+    F_bad=1
+    log "yedek hat: $BAK_TUNE geçersiz — standart profil kullanılıyor"
+  fi
+  if [ "$tmode" = fast ]; then bak_fast_stop; fi
+}
+# Monoton saat (µs, /proc/uptime; duvar saati NTP ile sıçrasa da turlar kaymaz) → F_t.
+bak_fast_clock() {
+  local u r
+  read -r u r < /proc/uptime
+  F_t=$((10#${u/./} * 10000))
+}
+bak_fast_start() {
+  local k v rs="" rsi="" rp="" rl=""
+  tmode=fast; iv=$T_probe_s; need=$T_fail_n; F_fail_n=$T_fail_n; F_sig=$T_sig; F_bad=0
+  F_slow=0; F_pt=0; F_load_at=0; F_supp_until=0; F_sw_seen=$sw; F_since=$EPOCHSECONDS; F_sw_probe=0; F_sw_link=0
+  F_rxp=""; F_rxm=0; F_rxbusy=0; F_rxload_until=0; F_rxlog_at=0; F_bpid=""; F_bdev=${bdev:-}; bok=${bok:-0}
+  # Servis yeniden başladıysa aynı profilin sayaçları sürer.
+  if [ -f "$BAK_TUNE_RUN" ]; then
+    while IFS='=' read -r k v; do
+      case "$k" in sig) rs=$v ;; since) rsi=$v ;; sw_probe) rp=$v ;; sw_link) rl=$v ;; esac
+    done < "$BAK_TUNE_RUN"
+    if [ "$rs" = "$F_sig" ] && [[ $rsi =~ ^[0-9]{1,12}$ ]] && [[ $rp =~ ^[0-9]{1,6}$ ]] && [[ $rl =~ ^[0-9]{1,6}$ ]]; then
+      F_since=$rsi; F_sw_probe=$rp; F_sw_link=$rl
+    fi
+  fi
+  F_fd=""
+  rm -f "$BAK_TUNE_FIFO" 2>/dev/null
+  if ! mkfifo -m 600 "$BAK_TUNE_FIFO" 2>/dev/null || ! exec {F_fd}<>"$BAK_TUNE_FIFO"; then
+    F_fd=""
+    log "yedek hat: olay FIFO'su ($BAK_TUNE_FIFO) kurulamadı — uyku yedeği (eşzamanlı yoklama)"
+  fi
+  trap 'set +u; bak_fast_stop exit' EXIT
+  trap 'exit 0' TERM INT HUP
+  log "yedek hat: hızlı profil — ana hat ${iv} sn'de bir yoklanır, ${F_fail_n} tur yanıtsızsa yedek hatta geçilir"
+}
+# $1 = exit: servis duruyor (sayaç dosyası kalır: yeniden başlayınca aynı profilin sayaçları sürer).
+bak_fast_stop() {
+  local p
+  for p in ${F_mon:+"$F_mon"} ${F_bpid:+"$F_bpid"} "${F_pp[@]}"; do kill "$p" 2>/dev/null; wait "$p" 2>/dev/null; done
+  F_mon=""; F_bpid=""; F_pp=(); F_np=0
+  if [ -n "$F_fd" ]; then exec {F_fd}>&-; fi
+  F_fd=""
+  rm -f "$BAK_TUNE_FIFO" "$BAK_TUNE_RUN.tmp"
+  trap - EXIT TERM INT HUP
+  [ "${1:-}" = exit ] && return 0
+  rm -f "$BAK_TUNE_RUN"
+  tmode=standard; iv=5; need=3; F_sig=""
+  log "yedek hat: standart profil (5 sn tur)"
+}
+# Ana hatta sürekli yoklama: hedef başına bir `ping -O` (satırlar FIFO'ya). Tur numarası = icmp_seq (hepsi 1'den başlar).
+bak_fast_pings() {
+  local p t
+  for p in "${F_pp[@]}"; do kill "$p" 2>/dev/null; wait "$p" 2>/dev/null; done
+  F_pp=(); F_np=0; F_ok=(); F_na=(); F_nat=(); F_k=1; F_kt=$F_t; F_pt=$F_t; F_pdev=$pdev; F_pidx=""
+  if [ -z "$pdev" ] || [ ! -e "/sys/class/net/$pdev/ifindex" ]; then return 0; fi
+  read -r F_pidx < "/sys/class/net/$pdev/ifindex"
+  for t in $BAK_TARGETS; do
+    ping -n -O -i "$iv" -I "$pdev" "$t" >&"$F_fd" 2>/dev/null 9>&- &
+    F_pp+=("$!")
+  done
+  F_np=${#F_pp[@]}
+}
+# Yaşayan ping süreçleri → F_np.
+bak_fast_alive() {
+  local p
+  F_np=0
+  for p in "${F_pp[@]}"; do if kill -0 "$p" 2>/dev/null; then F_np=$((F_np + 1)); fi; done
+}
+# Ana hattın kartı / arayüzü koptu mu (yok, yönetimsel kapalı, taşıyıcı yok ya da işletim durumu kapalı / alt katman
+# kapalı / Wi-Fi'da kimlik doğrulanmamış)? PPP'nin olağan durumu "unknown"dır. Tek bacakta F_links boş: hep 1.
+bak_fast_cut() {
+  local d c o
+  for d in $F_links; do
+    [ -e "/sys/class/net/$d" ] || return 0
+    c=""; o=""
+    read -r c 2>/dev/null < "/sys/class/net/$d/carrier"
+    [ "$c" = 1 ] || return 0
+    read -r o 2>/dev/null < "/sys/class/net/$d/operstate"
+    case "$o" in down|lowerlayerdown|dormant|notpresent) return 0 ;; esac
+  done
+  return 1
+}
+# Ana hattın varsayılan rotası var mı → F_noroute (rota yokken tur yanıtsızdır: bak_probe ile aynı kural).
+bak_fast_route() {
+  F_noroute=1
+  if [ -n "$pdev" ] && ip -4 route show default dev "$pdev" 2>/dev/null | grep -q .; then F_noroute=0; fi
+}
+# 5 sn'lik sayacın yedek hat yoklaması: bak_probe'un aynısı (rota yoksa hemen başarısız; üç hedefe ping -c1 -W2, aynı veri),
+# ama ilk yanıtta döner — yanıtsız ya da geç yanıt veren bir hedef ana hattın turlarını 2 sn bekletmesin (kalan pingler en
+# geç 2 sn'de kendiliğinden biter). Olay FIFO'su varken arka planda çalışır (bak_fast_bstart).
+bak_fast_bprobe() {
+  local t v pids=()
+  [ -n "$1" ] && [ -e "/sys/class/net/$1" ] || return 1
+  ip -4 route show default dev "$1" 2>/dev/null | grep -q . || return 1
+  for t in $BAK_TARGETS; do ping -n -c1 -W2 -I "$1" "$t" >/dev/null 2>&1 9>&- & pids+=("$!"); done
+  while [ "${#pids[@]}" -gt 0 ]; do
+    v=""
+    if wait -n -p v "${pids[@]}"; then return 0; fi
+    [ -n "$v" ] || return 1
+    for t in "${!pids[@]}"; do [ "${pids[$t]}" != "$v" ] || unset "pids[$t]"; done
+  done
+  return 1
+}
+# Olay FIFO'su varken yedek hat yoklaması arka planda: sonuç FIFO'ya "bak-probe <no> <0|1>" satırıyla gelir, bak_fast_line
+# bok'a yazar. Beklenirken ana hattın olayları işlenir (yedek hattın gecikmesi — 4G'de 1-2 sn — kopma algısını bekletmesin).
+# Önceki yoklama sürüyorsa yenisi açılmaz; yedek hat kartı değiştiyse eskisi durdurulur ve yeni kart doğrulanana dek bok=0.
+bak_fast_bstart() {
+  if [ -n "$F_bpid" ]; then
+    if kill -0 "$F_bpid" 2>/dev/null; then
+      [ "$bdev" != "$F_bdev" ] || return 0
+      kill "$F_bpid" 2>/dev/null
+    fi
+    wait "$F_bpid" 2>/dev/null
+  fi
+  if [ "$bdev" != "$F_bdev" ]; then bok=0; fi
+  F_bgen=$((F_bgen + 1)); F_bdev=$bdev
+  ( if bak_fast_bprobe "$bdev"; then echo "bak-probe $F_bgen 1"; else echo "bak-probe $F_bgen 0"; fi ) >&"$F_fd" 2>/dev/null 9>&- &
+  F_bpid=$!
+}
+# Yedek hat açık değil (kapatılıyor / yeniden kuruluyor): ping, ip monitor ve yedek hat yoklaması durur, FIFO boşaltılır
+# (okunmayan satırlar dolup yazanları bekletmesin, açılınca eski turlar karışmasın). Açılınca 5 sn'lik sayaç süreçleri yeniden
+# başlatır; yedek hat yeniden doğrulanana dek bok=0.
+bak_fast_pause() {
+  local p line
+  for p in ${F_mon:+"$F_mon"} ${F_bpid:+"$F_bpid"} "${F_pp[@]}"; do kill "$p" 2>/dev/null; wait "$p" 2>/dev/null; done
+  F_mon=""; F_bpid=""; F_bdev=""; F_pp=(); F_np=0; F_pdev=""; bok=0; F_bgen=$((F_bgen + 1))
+  if [ -n "$F_fd" ]; then while read -r -t 0.001 -u "$F_fd" line; do :; done; fi
+}
+# 5 sn'lik sayaç: standart turdaki komutlar (durum dosyası, USB işaretleme, yabancı profil, yedek hat yoklaması), tek bacak ve
+# akıllı kuyruk tespiti, ana hat rotası, olay süreçlerinin sağlığı. 1 = yedek hat açık değil.
+bak_fast_slow() {
+  local d x idx=""
+  F_slow=$((F_t + 5000000))
+  read_state
+  if [ "$S_bak_stage" != on ]; then bak_fast_pause; return 1; fi
+  if [ "$S_bak_kind" = usb ]; then bak_tag_usb >/dev/null; fi
+  bak_evict_foreign
+  pdev=$(bak_primary_dev); bdev=$(bak_cur_dev)
+  if [ -n "$F_fd" ]; then bak_fast_bstart; else bok=0; bak_fast_bprobe "$bdev" && bok=1; fi
+  bak_fast_route
+  # Ayrı internet kartı (WAN router): kart ve katman-3 arayüzü (PPPoE / VLAN) taşıyıcı için izlenir; değilse tek bacak.
+  # Wi-Fi internet bağlantısında taşıyıcı / "dormant" titremesi olağandır (dolaşma): tetik yok, yalnız yoklama.
+  F_single=1; F_links=""
+  if [ "$S_wan_stage" != none ] && [ -n "$S_wan_dev" ] && ! wan_single; then
+    F_single=0; F_links=$pdev
+    if [ -n "$S_wan_port" ] && [ "$S_wan_port" != "$pdev" ]; then F_links="$F_links $S_wan_port"; fi
+    if wan_wifi; then F_links=""; fi
+  fi
+  F_sqm=0; x=$pdev
+  [ "$F_single" = 0 ] || x="$x $S_iface"
+  for d in $x; do
+    if tc qdisc show dev "$d" 2>/dev/null | grep -q 'qdisc cake '; then F_sqm=1; break; fi
+  done
+  F_evt=0
+  if [ -n "$F_fd" ]; then
+    if [ -z "$F_mon" ] || ! kill -0 "$F_mon" 2>/dev/null; then
+      [ -z "$F_mon" ] || log "yedek hat: ip monitor durdu — yeniden başlatılıyor (arada zaman aşımıyla beklenir)"
+      ip -o monitor link route >&"$F_fd" 2>/dev/null 9>&- &
+      F_mon=$!
+    fi
+    kill -0 "$F_mon" 2>/dev/null && F_evt=1
+    if [ -n "$pdev" ] && [ -e "/sys/class/net/$pdev/ifindex" ]; then read -r idx < "/sys/class/net/$pdev/ifindex"; fi
+    bak_fast_alive
+    # Arayüz değişti / yeniden kuruldu (PPPoE yeniden arandı), bir süreç öldü ya da 10 dk doldu (sağlamken ya da yedek
+    # hattayken: ana hattaki yanıtsız tur sayımı kesilmez). 16 sa'te bir koşulsuz: icmp_seq 65535'ten sonra 0'a döner (1 sn
+    # aralıkta ≈18,2 sa) — uzun kesintide (yedek hat da yokken) süreçler yenilenmezse düzelen hattın yanıtları eski tur sayılırdı.
+    if [ "$pdev" != "$F_pdev" ] || [ "$idx" != "$F_pidx" ] || [ "$F_np" -lt "${#F_pp[@]}" ] || [ "${#F_pp[@]}" = 0 ] \
+       || { [ $((F_t - F_pt)) -ge 600000000 ] && { [ "$F_last" = 1 ] || [ "$active" = backup ] || [ $((F_t - F_pt)) -ge 57600000000 ]; } \
+            && [ "${F_nat[$F_k]:-0}" = 0 ]; }; then
+      bak_fast_pings
+    fi
+  fi
+  bak_tune_runfile
+  # Sıradaki sayaç işten 5 sn sonra (standart turdaki "iş + sleep 5" aralığı: yedek hat yoklaması ve nmcli yine ≈5 sn'de bir;
+  # arka plandaki yoklamanın beklemesi aralığa eklenmez).
+  bak_fast_clock
+  F_slow=$((F_t + 5000000))
+  return 0
+}
+# Tur F_k çözüldü mü (0: pok ayarlı)? Herhangi bir hedeften 1 sn içinde yanıt → sağlam; yaşayan tüm pinglerden "yanıt yok"
+# → yanıtsız; bir hedef geride kaldıysa ilk "yanıt yok"tan 1,5 sn sonra, hiç satır gelmezse aralık + 2 sn sonra yanıtsız
+# (süreç kalmadıysa bu tur eşzamanlı yoklanır).
+bak_fast_resolve() {
+  local s=$F_k
+  if [ "${F_ok[$s]:-0}" = 1 ]; then pok=1; [ "$F_noroute" = 0 ] || pok=0
+  elif [ "$F_np" -gt 0 ] && [ "${F_na[$s]:-0}" -ge "$F_np" ]; then pok=0
+  elif [ "${F_nat[$s]:-0}" -gt 0 ] && [ "$F_t" -ge $((F_nat[s] + 1500000)) ]; then pok=0
+  elif [ "$F_t" -ge $((F_kt + iv * 1000000 + 2000000)) ]; then
+    pok=0
+    bak_fast_alive
+    if [ "$F_np" = 0 ]; then
+      if bak_probe "$pdev" 1; then pok=1; fi
+      [ -z "$F_fd" ] || bak_fast_pings
+      F_last=$pok
+      return 0
+    fi
+  else
+    return 1
+  fi
+  unset "F_ok[$s]" "F_na[$s]" "F_nat[$s]"
+  F_k=$((s + 1)); F_kt=$F_t; F_last=$pok
+  return 0
+}
+# FIFO satırı. 0 = hemen karar (ana hattın kartı koptu / varsayılan rotası silindi), 1 = beklemeye devam.
+bak_fast_line() {
+  local l=$1 s ms d smax
+  case "$l" in
+    "64 bytes from "*" icmp_seq="*" time="*)
+      s=${l#*icmp_seq=}; s=${s%% *}; ms=${l##*time=}; ms=${ms%% *}; ms=${ms%%.*}
+      if ! [[ $s =~ ^[0-9]{1,9}$ ]] || ! [[ $ms =~ ^[0-9]{1,7}$ ]]; then return 1; fi
+      # Öldürülen eski süreçlerin satırları (yüksek tur numarası) yeni turlara karışmasın.
+      smax=$(( (F_t - F_pt) / (iv * 1000000) + 2 ))
+      [ "$s" -le "$smax" ] || return 1
+      if [ "$s" -ge "$F_k" ] && [ "$ms" -le 1000 ]; then F_ok[s]=1; return 1; fi
+      # Geç yanıt (1 sn'den sonra ya da tur kapandıktan sonra): hat canlı. Akıllı kuyruk açıkken 1 sn'den geçi sayılmaz.
+      if [ "$F_noroute" = 0 ] && { [ "$ms" -le 1000 ] || [ "$F_sqm" != 1 ]; }; then
+        if [ "$active" = primary ]; then pfail=0; pfail_since=0; fi
+        if [ "$ms" -gt 1000 ]; then F_load_at=$EPOCHSECONDS; fi
+      fi
+      return 1 ;;
+    "no answer yet for icmp_seq="*)
+      s=${l##*=}
+      [[ $s =~ ^[0-9]{1,9}$ ]] || return 1
+      smax=$(( (F_t - F_pt) / (iv * 1000000) + 2 ))
+      if [ "$s" -ge "$F_k" ] && [ "$s" -le "$smax" ]; then
+        F_na[s]=$(( ${F_na[s]:-0} + 1 ))
+        [ "${F_nat[s]:-0}" -gt 0 ] || F_nat[s]=$F_t
+      fi
+      return 1 ;;
+    "bak-probe "*)
+      # Arka plandaki yedek hat yoklamasının sonucu (bak_fast_bstart); eski yoklamanınki sayılmaz.
+      s=${l#bak-probe }; ms=${s#* }; s=${s%% *}
+      if [ "$s" = "$F_bgen" ] && [[ $ms =~ ^[01]$ ]]; then bok=$ms; fi
+      return 1 ;;
+    "PING "*|"From "*|"--- "*|*" packets transmitted"*|"rtt "*) return 1 ;;
+  esac
+  # ip monitor: ana hattın kartı / arayüzü (taşıyıcı, silinme) ya da varsayılan rotası. Kopma 0,3 sn sonra yeniden
+  # denetlenir (NM rotayı silip hemen yeniden ekler, taşıyıcı bir an düşer: geçilmez).
+  for d in $F_links; do
+    case "$l" in
+      *": $d: "*|*": $d@"*)
+        if bak_fast_cut; then
+          sleep 0.3
+          if bak_fast_cut; then F_linkdown=1; pok=0; return 0; fi
+        fi ;;
+    esac
+  done
+  if [ -n "$pdev" ]; then
+    case "$l" in
+      *" dev $pdev "*|*" dev $pdev")
+        bak_fast_route
+        if [ "$F_noroute" = 1 ]; then
+          sleep 0.3
+          bak_fast_route
+          if [ "$F_noroute" = 1 ]; then pok=0; return 0; fi
+        fi ;;
+    esac
+  fi
+  return 1
+}
+# Hız testi sürüyor mu (yalnız kabuk içi okuma)? backend/src/speedtest.ts ölçüme başlarken running=1 / started=<epoch>
+# yazar, bitince siler; akıllı kuyruk kalibrasyonu da ölçümünü bu hız testiyle yapar (kuyruk o sırada kalkar, hat doyar).
+# Ölçüm en çok 150 sn sürer: backend ölçüm ortasında çöküp dosya kaldıysa 200 sn sonra sayılmaz.
+bak_fast_supp() {
+  local k v r="" s=""
+  [ -f "$BAK_TUNE_SPEEDTEST" ] || return 1
+  while IFS='=' read -r k v; do
+    case "$k" in running) r=$v ;; started) s=$v ;; esac
+  done 2>/dev/null < "$BAK_TUNE_SPEEDTEST"
+  [ "$r" = 1 ] && [[ $s =~ ^[0-9]{1,12}$ ]] && [ "$s" -le $((now + 5)) ] && [ $((now - s)) -le 200 ]
+}
+# Ayrı internet kartında, akıllı kuyruk yokken (tek bacakta kart ev ağını da taşır; kuyruk takılıyken yükte gecikme düşük
+# kalır: kullanılmaz): kart son turdan beri saniyede en az 10 tek yönlü (unicast) paket aldı mı (/sys, kabuk içi okuma)?
+# Yoklama yanıtsızken trafik gelmeye devam ediyorsa hat ölü değil, doludur (şişkin kuyruk: yanıtlar 1 sn'den geç gelir;
+# operatör tarafı kesintide karta yanıt / veri gelmez). Modemin ağındaki yayın / çoklu yayın gürültüsü (ARP, mDNS, SSDP)
+# kesintide de sürer: kartın multicast sayacı düşülür (sürücü tutmuyorsa 0 kalır, tüm paketler sayılır). Oran en az 0,8
+# sn'lik aralıkta ölçülür: olayla (taşıyıcı / rota) hemen ardından gelen kararda birkaç paket kısa aralıkta oranı
+# şişirmesin — o kararda bir önceki aralığın sonucu kullanılır.
+bak_fast_rx() {
+  local p="" m=""
+  if [ "$F_single" != 0 ] || [ "$F_sqm" = 1 ] || [ -z "$pdev" ]; then F_rxp=""; F_rxbusy=0; return 1; fi
+  read -r p 2>/dev/null < "/sys/class/net/$pdev/statistics/rx_packets"
+  read -r m 2>/dev/null < "/sys/class/net/$pdev/statistics/multicast"
+  if ! [[ $p =~ ^[0-9]{1,18}$ ]]; then F_rxp=""; F_rxbusy=0; return 1; fi
+  [[ $m =~ ^[0-9]{1,18}$ ]] || m=0
+  if [ -z "$F_rxp" ] || [ "$p" -lt "$F_rxp" ] || [ "$m" -lt "$F_rxm" ] || [ "$F_t" -lt "$F_rxt" ]; then
+    F_rxp=$p; F_rxm=$m; F_rxt=$F_t; F_rxbusy=0; return 1
+  fi
+  if [ $((F_t - F_rxt)) -ge 800000 ]; then
+    F_rxbusy=0
+    if [ $(( ((p - F_rxp) - (m - F_rxm)) * 1000000 / (F_t - F_rxt) )) -ge 10 ]; then F_rxbusy=1; fi
+    F_rxp=$p; F_rxm=$m; F_rxt=$F_t
+  fi
+  [ "$F_rxbusy" = 1 ]
+}
+# Karar öncesi: now ve geçiş eşiği (need). Akıllı kuyruk yokken son 60 sn'de geç yanıt görüldüyse bir tur fazla; hız testi
+# sürerken (ve bittikten 5 sn sonrasına dek) ya da yoklama yanıtsızken ana hat kartına trafik gelmeye devam ediyorsa (hat
+# dolu: geç yanıtlar sayacı sıfırlar; trafik kesilince 2 sn sonra eşik kalkar) en az ≈15 sn. "Hat dolu" günlüğe en çok
+# dakikada bir yazılır (uzun indirmede yanıtsız turlar aralıklı gelir: her biri yeni satır olmasın).
+bak_fast_need() {
+  local n
+  now=$EPOCHSECONDS
+  need=$F_fail_n
+  if [ "$F_sqm" != 1 ] && [ "$F_load_at" -gt 0 ] && [ $((now - F_load_at)) -le 60 ]; then need=$((need + 1)); fi
+  if bak_fast_supp; then
+    [ "$now" -lt "$F_supp_until" ] || log "yedek hat: hız testi sürüyor — yoklama kaynaklı geçiş ≈15 sn'ye çekildi"
+    F_supp_until=$((now + 5))
+  fi
+  if bak_fast_rx && [ "$pok" = 0 ]; then
+    if [ "$now" -ge "$F_rxload_until" ] && [ $((now - F_rxlog_at)) -ge 60 ]; then
+      log "yedek hat: ana hat yoklamaya yanıt vermiyor ama karta trafik geliyor (hat dolu) — geçiş ≈15 sn'ye çekildi"
+      F_rxlog_at=$now
+    fi
+    F_rxload_until=$((now + 2)); F_load_at=$now
+  fi
+  n=$(( (15 + iv - 1) / iv ))
+  if { [ "$now" -lt "$F_supp_until" ] || [ "$now" -lt "$F_rxload_until" ]; } && [ "$need" -lt "$n" ]; then need=$n; fi
+}
+# Bir önceki kararda yedek hatta geçildiyse nedeniyle sayılır (deneme süresince yoklama / bağlantı kopması kaynaklı).
+bak_fast_count() {
+  if [ "$sw" -gt "$F_sw_seen" ] && [ "$active" = backup ]; then
+    case "$reason" in
+      "ana hat bağlantısı"*) F_sw_link=$((F_sw_link + 1)) ;;
+      *"yanıt vermiyor"*) F_sw_probe=$((F_sw_probe + 1)) ;;
+    esac
+    bak_tune_runfile
+  fi
+  F_sw_seen=$sw
+}
+# Hızlı profilde bir karar için bekler. Döndüğünde pdev / bdev / pok / bok / now / need hazırdır. 1 = yedek hat açık değil.
+bak_fast_round() {
+  local line w
+  F_linkdown=0
+  bak_fast_count
+  while :; do
+    bak_fast_clock
+    if [ "$F_t" -ge "$F_slow" ]; then bak_fast_slow || return 1; continue; fi
+    if [ -z "$F_fd" ]; then
+      # Uyku yedeği: tur başında eşzamanlı yoklama, tur arası sleep.
+      if [ "$F_t" -lt "$F_due" ]; then
+        w=$((F_due - F_t))
+        [ "$w" -le $((F_slow - F_t)) ] || w=$((F_slow - F_t))
+        printf -v w '%d.%06d' $((w / 1000000)) $((w % 1000000))
+        sleep "$w"
+        continue
+      fi
+      F_due=$((F_t + iv * 1000000)); pok=0
+      if bak_fast_cut; then F_linkdown=1; elif bak_probe "$pdev" 1; then pok=1; fi
+      bak_fast_need
+      return 0
+    fi
+    # Bekleyen satırlar önce okunur: geç işlenen yanıt, turun zaman aşımında yanıtsız sayılmasın.
+    if read -r -t 0.001 -u "$F_fd" line; then
+      if bak_fast_line "$line"; then bak_fast_need; return 0; fi
+      continue
+    fi
+    if bak_fast_resolve; then
+      if [ "$pok" = 0 ] && bak_fast_cut; then F_linkdown=1; fi
+      bak_fast_need
+      return 0
+    fi
+    # Sıradaki an: turun zaman aşımı ya da 5 sn'lik sayaç (satır gelirse hemen uyanılır).
+    w=$((F_kt + iv * 1000000 + 2000000))
+    if [ "${F_nat[$F_k]:-0}" -gt 0 ] && [ $((F_nat[F_k] + 1500000)) -lt "$w" ]; then w=$((F_nat[F_k] + 1500000)); fi
+    [ "$w" -le "$F_slow" ] || w=$F_slow
+    w=$((w - F_t))
+    [ "$w" -ge 10000 ] || w=10000
+    printf -v w '%d.%06d' $((w / 1000000)) $((w % 1000000))
+    if read -r -t "$w" -u "$F_fd" line && bak_fast_line "$line"; then bak_fast_need; return 0; fi
+  done
 }
 
 # --- Wi-Fi köprüsü (aynı ağ, R4 C) ---
@@ -4796,10 +5315,128 @@ cmd_backup_test() {
   echo "force_until=$( [ "$s" = 0 ] && echo 0 || echo $((now + s)) )"
 }
 
+# Geçiş hızı profili (kilitsiz, 'backup test' deseni: yalnız ayar dosyasını atomik yazar / siler; izleyici dosyayı kendisi
+# okur, yeniden başlatma gerekmez). Deneme: geri alma zamanlayıcısı dosyadan ÖNCE kurulur (panel kapalı olsa da süre dolunca
+# standarda dönülür); izleyici de süresi geçmiş denemeyi standart sayar ve dosyayı siler (açılışta zamanlayıcı yoktur).
+cmd_backup_tune() {
+  local sub=${1:-show} probe=1 failn=3 trial="" until=""
+  shift || true
+  case "$sub" in
+    show) bak_tune_show ;;
+    standard)
+      bak_tune_timer_stop
+      rm -f "$BAK_TUNE" "$BAK_TUNE.tmp" || die "$BAK_TUNE silinemedi"
+      log "yedek hat: standart profil seçildi"
+      echo "ok=1"
+      echo "mode=standard" ;;
+    fast)
+      while [ $# -gt 0 ]; do
+        case "$1" in
+          --probe-s) probe=${2:-}; shift ;;
+          --fail-n) failn=${2:-}; shift ;;
+          --trial) trial=${2:-}; shift ;;
+          *) die "bilinmeyen seçenek: $1" ;;
+        esac
+        shift
+      done
+      [[ $probe =~ ^[1-5]$ ]] || die "geçersiz yoklama aralığı: $probe (1-5 sn)"
+      [[ $failn =~ ^[23]$ ]] || die "geçersiz tur sayısı: $failn (2-3)"
+      if [ -n "$trial" ]; then
+        { [[ $trial =~ ^[0-9]{2,4}$ ]] && [ "$((10#$trial))" -ge 30 ] && [ "$((10#$trial))" -le 7200 ]; } \
+          || die "geçersiz deneme süresi: $trial (30-7200 sn)"
+        trial=$((10#$trial))
+      fi
+      read_state
+      [ "$S_bak_stage" = on ] || die "yedek hat açık değil"
+      bak_tune_timer_stop
+      if [ -n "$trial" ]; then
+        until=$((EPOCHSECONDS + trial))
+        systemd-run --quiet --collect --unit="$BAK_TUNE_UNIT" --on-active="$trial" --timer-property=AccuracySec=1s \
+          /bin/bash "$SELF" backup tune rollback >/dev/null 2>&1 9>&- || die "deneme zamanlayıcısı kurulamadı ($BAK_TUNE_UNIT)"
+      fi
+      if ! bak_tune_write "$probe" "$failn" "$until"; then bak_tune_timer_stop; die "$BAK_TUNE yazılamadı"; fi
+      if systemctl is-active --quiet "$BAK_WATCH_UNIT.service" 2>/dev/null && bak_tune_stale; then bak_tune_restart; fi
+      log "yedek hat: hızlı profil seçildi (ana hat ${probe} sn, ${failn} tur${trial:+, deneme $trial sn})"
+      echo "ok=1"
+      echo "mode=fast"
+      echo "trial_until=${until:-0}" ;;
+    confirm)
+      bak_tune_read || die "hızlı profil açık değil"
+      [ -n "$T_trial_until" ] || die "hızlı profil zaten kalıcı"
+      bak_tune_write "$T_probe_s" "$T_fail_n" "" || die "$BAK_TUNE yazılamadı"
+      bak_tune_timer_stop
+      log "yedek hat: hızlı profil kalıcı yapıldı"
+      echo "ok=1" ;;
+    rollback)
+      # Zamanlayıcıdan (pi5-bak-tune-rollback; çoğunlukla deneme bitişinde ya da hemen sonrasında çalışır): yalnız deneme
+      # sürüyorsa / süresi geçtiyse (kalıcı yapılmadıysa) standarda dönülür. Yalnız .timer durdurulur (çalışan servise
+      # dokunulmaz, bkz. rollback_trial): süresi dolan zamanlayıcı "etkin (elapsed)" kalıp durumda "deneme sürüyor" görünmesin.
+      systemctl stop "$BAK_TUNE_UNIT.timer" >/dev/null 2>&1 || true
+      bak_tune_read
+      if [ -n "$T_trial_until" ] && { [ "$T_state" = fast ] || [ "$T_state" = expired ]; }; then
+        rm -f "$BAK_TUNE"; log "yedek hat: hızlı profil denemesi bitti — standart profile dönüldü"; echo "rolled_back=1"
+      fi
+      echo "ok=1" ;;
+    *) die "kullanım: backup tune show | standard | fast [--probe-s 1-5] [--fail-n 2-3] [--trial SN] | confirm | rollback" ;;
+  esac
+}
+# Profil durumu (salt okunur): ayar, deneme, tek bacak, akıllı kuyruk ve (hızlı profil çalışıyorsa) izleyicinin sayaçları.
+bak_tune_show() {
+  local k v d x pdev single=1 wifi=0 sqm=0 rsig="" rsince=0 revt=0 rsupp=0 rload=0 rsp=0 rsl=0 rck=0 running=0 timer=0 stale=0 mode=standard
+  bak_tune_read
+  read_state
+  if [ "$T_state" = fast ]; then mode=fast; fi
+  pdev=$(bak_primary_dev)
+  # wifi=1: ayrı internet kartı Wi-Fi (R4 A) — hızlı profilde bağlantı kopması tetiği yok (bkz. bak_fast_slow).
+  if [ "$S_wan_stage" != none ] && [ -n "$S_wan_dev" ] && ! wan_single; then single=0; if wan_wifi; then wifi=1; fi; fi
+  x=$pdev
+  [ "$single" = 0 ] || x="$x $S_iface"
+  for d in $x; do
+    if tc qdisc show dev "$d" 2>/dev/null | grep -q 'qdisc cake '; then sqm=1; break; fi
+  done
+  if [ -f "$BAK_TUNE_RUN" ]; then
+    while IFS='=' read -r k v; do
+      [[ $v =~ ^[a-z0-9:]{0,40}$ ]] || continue
+      case "$k" in
+        sig) rsig=$v ;; since) rsince=$v ;; events) revt=$v ;; suppressed) rsupp=$v ;; load_at) rload=$v ;;
+        sw_probe) rsp=$v ;; sw_link) rsl=$v ;; checked) rck=$v ;;
+      esac
+    done < "$BAK_TUNE_RUN"
+    if [ "$mode" = fast ] && [ "$rsig" = "$T_sig" ] && [ -n "$rck" ] && [ $((EPOCHSECONDS - rck)) -le 15 ]; then running=1; fi
+  fi
+  if systemctl is-active --quiet "$BAK_TUNE_UNIT.timer" 2>/dev/null; then timer=1; fi
+  if [ "$mode" = fast ] && systemctl is-active --quiet "$BAK_WATCH_UNIT.service" 2>/dev/null && bak_tune_stale; then stale=1; fi
+  echo "bak_tune_mode=$mode"
+  echo "bak_tune_state=$T_state"
+  echo "bak_tune_probe_s=$T_probe_s"
+  echo "bak_tune_fail_n=$T_fail_n"
+  echo "bak_tune_trial_until=${T_trial_until:-0}"
+  echo "bak_tune_timer=$timer"
+  echo "bak_tune_single=$single"
+  echo "bak_tune_wifi=$wifi"
+  echo "bak_tune_sqm=$sqm"
+  echo "bak_tune_running=$running"
+  echo "bak_tune_events=$revt"
+  echo "bak_tune_suppressed=$rsupp"
+  echo "bak_tune_load_at=$rload"
+  echo "bak_tune_since=$rsince"
+  echo "bak_tune_sw_probe=$rsp"
+  echo "bak_tune_sw_link=$rsl"
+  echo "bak_tune_stale=$stale"
+  echo "now=$EPOCHSECONDS"
+}
+
 # İzleyici (pi5-wan-failover.service; kilitsiz döngü, kilidi yalnız geçiş anında dener: ağ işlemi sürerken beklenir).
+# Geçiş hızı profili (G2.5): bak-tuning yoksa tmode=standard, iv=5, need=3 kalır ve döngü bugünkü komutları çalıştırır.
 cmd_backup_watch() {
   local active=primary since sw=0 reason="" pfail=0 pfail_since=0 pok_since=0 last=0 forced=0 now pdev bdev pok bok force want
   local k v oldip why
+  local tmode=standard iv=5 need=3 F_t=0 F_slow=0 F_due=0 F_fd="" F_mon="" F_sig="" F_bad=0 F_fail_n=3 F_since=0 F_sqm=0
+  local F_single=1 F_links="" F_evt=0 F_linkdown=0 F_load_at=0 F_supp_until=0 F_sw_seen=0 F_sw_probe=0 F_sw_link=0
+  local F_pdev="" F_pidx="" F_pt=0 F_k=1 F_kt=0 F_np=0 F_last=1 F_noroute=0 F_rxp="" F_rxt=0 F_rxbusy=0 F_rxload_until=0
+  local F_rxm=0 F_rxlog_at=0 F_bpid="" F_bdev="" F_bgen=0
+  local T_mode T_probe_s T_fail_n T_trial_until T_sig T_state
+  local -a F_pp=() F_ok=() F_na=() F_nat=()
   mkdir -p "$BAK_RUN" 2>/dev/null
   since=$(date +%s)
   # Servis yeniden başladıysa (açılış değil: /run korunur) önceki durum sürer.
@@ -4816,16 +5453,22 @@ cmd_backup_watch() {
   last=$since
   exec 9>"$LOCK"
   while :; do
-    read_state
-    now=$(date +%s)
-    if [ "$S_bak_stage" != on ]; then
-      bak_route_off; rm -f "$BAK_STATUS"; active=primary; sleep 10; continue
+    bak_tune_check
+    if [ "$tmode" = fast ]; then
+      # Hızlı profil: bir sonraki karar anına dek bekler (pdev / bdev / pok / bok / now / need hazır gelir).
+      if ! bak_fast_round; then bak_route_off; rm -f "$BAK_STATUS"; active=primary; sleep 10; continue; fi
+    else
+      read_state
+      now=$(date +%s)
+      if [ "$S_bak_stage" != on ]; then
+        bak_route_off; rm -f "$BAK_STATUS"; active=primary; sleep 10; continue
+      fi
+      if [ "$S_bak_kind" = usb ]; then bak_tag_usb >/dev/null; fi
+      bak_evict_foreign
+      pdev=$(bak_primary_dev); bdev=$(bak_cur_dev)
+      pok=0; bak_probe "$pdev" && pok=1
+      bok=0; bak_probe "$bdev" && bok=1
     fi
-    if [ "$S_bak_kind" = usb ]; then bak_tag_usb >/dev/null; fi
-    bak_evict_foreign
-    pdev=$(bak_primary_dev); bdev=$(bak_cur_dev)
-    pok=0; bak_probe "$pdev" && pok=1
-    bok=0; bak_probe "$bdev" && bok=1
     force=$(cat "$BAK_FORCE" 2>/dev/null); [[ $force =~ ^[0-9]+$ ]] || force=0
     [ "$force" -gt "$now" ] || force=0
     if [ "$pok" = 1 ]; then pfail=0; pfail_since=0; [ "$pok_since" -gt 0 ] || pok_since=$now
@@ -4834,9 +5477,11 @@ cmd_backup_watch() {
     if [ "$active" = primary ]; then
       if [ "$bok" = 1 ]; then
         if [ "$force" -gt 0 ]; then want=backup; why="geçiş denemesi (panelden)"
+        elif [ "$tmode" = fast ] && [ "$F_linkdown" = 1 ]; then
+          want=backup; why="ana hat bağlantısı koptu (${pdev:-arayüz yok}: kablo / taşıyıcı yok)"
         elif [ "$pfail" -ge 1 ] && ! ip -4 route show default dev "$pdev" 2>/dev/null | grep -q .; then
           want=backup; why="ana hat bağlantısı yok (${pdev:-arayüz yok})"
-        elif [ "$pfail" -ge 3 ]; then want=backup; why="ana hat $((now - pfail_since + 5)) sn'dir yanıt vermiyor ($pdev)"; fi
+        elif [ "$pfail" -ge "$need" ]; then want=backup; why="ana hat $((now - pfail_since + iv)) sn'dir yanıt vermiyor ($pdev)"; fi
       fi
     else
       if [ "$pok" = 1 ] && [ "$bok" != 1 ]; then want=primary; why="yedek hat yanıt vermiyor, ana hat sağlam"
@@ -4861,7 +5506,7 @@ cmd_backup_watch() {
       bak_route_off
     fi
     bak_status_write "$active" "$since" "$sw" "$reason" "$pdev" "$pok" "$bdev" "$bok" "$force"
-    sleep 5
+    if [ "$tmode" = fast ]; then :; else sleep 5; fi
   done
 }
 
@@ -4872,7 +5517,7 @@ cmd_backup() {
     on) cmd_backup_on "$@" ;;
     off) cmd_backup_off ;;
     fw) cmd_backup_fw ;;
-    *) die "kullanım: backup on --kind eth|usb|wifi [--type dhcp|static|pppoe] [--port KART] [...] | backup off | backup fw | backup test [SN] | backup watch" ;;
+    *) die "kullanım: backup on --kind eth|usb|wifi [--type dhcp|static|pppoe] [--port KART] [...] | backup off | backup fw | backup test [SN] | backup tune [...] | backup watch" ;;
   esac
 }
 
@@ -5197,6 +5842,8 @@ if [ "$cmd" = home ] && [ "${1:-}" = secret ]; then cmd_home_secret; exit 0; fi
 # Yedek hat izleyicisi (servis; kilidi yalnız geçiş anında dener) ve geçiş denemesi (yalnız izleyiciye dosya bırakır).
 if [ "$cmd" = backup ] && [ "${1:-}" = watch ]; then cmd_backup_watch; exit 0; fi
 if [ "$cmd" = backup ] && [ "${1:-}" = test ]; then shift; cmd_backup_test "$@"; exit 0; fi
+# Geçiş hızı profili (yalnız ayar dosyası; izleyici onu kendisi okur).
+if [ "$cmd" = backup ] && [ "${1:-}" = tune ]; then shift; cmd_backup_tune "$@"; exit 0; fi
 # Wi-Fi köprüsü izleyicisi ve DHCP birimi (servisler; kendi kartları ve birimleri dışında bir şeye dokunmaz).
 if [ "$cmd" = rep ] && [ "${1:-}" = watch ]; then cmd_rep_watch; exit 0; fi
 if [ "$cmd" = rep ] && [ "${1:-}" = dhcpd ]; then cmd_rep_dhcpd; exit 0; fi

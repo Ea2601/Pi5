@@ -4164,6 +4164,25 @@ app.post('/api/wan/off', async (_req, res) => {
 const BAK_NUMS = ['bak_since', 'bak_switches', 'bak_checked', 'bak_force_until', 'bak_rx', 'bak_tx', 'now'];
 const BAK_BOOLS = ['bak_up', 'bak_fw', 'bak_watch', 'bak_primary_ok', 'bak_backup_ok', 'bak_conntrack', 'pi_dhcp', 'wan_lan'];
 const BAK_KIND_TEXT: Record<string, string> = { eth: 'Ethernet', usb: 'USB modem / telefon', wifi: 'telefon hotspot\'u' };
+// Geçiş hızı profili (G2.5; net-mode.sh backup tune): standart = bugünkü yol (ayar dosyası yok), hızlı = ana hat saniyede bir
+// + bağlantı kopması olayı. Hızlı profil hep 30 dk denemeyle açılır (zamanlayıcı net-mode.sh'te: pi5-bak-tune-rollback,
+// süre dolunca standarda döner), "Kalıcı yap" ile kalır. sw_probe / sw_link: hızlı profil süresince yoklama / bağlantı
+// kopması kaynaklı yedek hatta geçiş sayısı (denemede yanlış geçiş göstergesi).
+const BAK_TUNE_TRIAL_S = 1800;
+const bakTuneView = (kv: Record<string, string>) => {
+  const n = (k: string) => Number(kv[`bak_tune_${k}`]) || 0;
+  const b = (k: string) => kv[`bak_tune_${k}`] === '1';
+  const state = kv.bak_tune_state;
+  return {
+    mode: kv.bak_tune_mode === 'fast' ? 'fast' : 'standard',
+    state: ['none', 'fast', 'standard', 'expired', 'invalid'].includes(state) ? state : 'none',
+    probe_s: n('probe_s') || 1, fail_n: n('fail_n') || 3, trial_until: n('trial_until'), timer: b('timer'),
+    single: b('single'), wifi: b('wifi'), sqm: b('sqm'), running: b('running'), events: b('events'), suppressed: b('suppressed'),
+    load_at: n('load_at'), since: n('since'), sw_probe: n('sw_probe'), sw_link: n('sw_link'), stale: b('stale'),
+    now: Number(kv.now) || Math.floor(Date.now() / 1000),
+  };
+};
+let bakTuneBusy = false;
 app.use('/api/failover', netAdminGuard);
 // Yedek hat açılınca / kapanınca: port yönlendirme ve panel güvenlik duvarı arayüz kümeleri, Ev VPN'i ve SD-WAN MTU'su.
 const backupAfterChange = async () => {
@@ -4175,13 +4194,13 @@ const backupAfterChange = async () => {
 
 app.get('/api/failover', async (_req, res) => {
   if (!isLinux || !require('fs').existsSync(NET_MODE_SCRIPT)) return res.json({ supported: false });
-  const r = await runKvScript(NET_MODE_SCRIPT, ['status'], 30000);
+  const [r, t] = await Promise.all([runKvScript(NET_MODE_SCRIPT, ['status'], 30000), runKvScript(NET_MODE_SCRIPT, ['backup', 'tune', 'show'], 15000)]);
   if (r.code !== 0) return res.json({ supported: true, error: kvError(r, 'yedek hat durumu okunamadı') });
   const keep = Object.fromEntries(Object.entries(r.kv).filter(([k]) => k.startsWith('bak_')
     || ['now', 'stage', 'home_stage', 'sat_stage', 'ap_stage', 'wan_stage', 'wan_dev', 'wan_port', 'wan_ip', 'pi_dhcp', 'iface', 'lan_if',
       'client', 'wan_lan', 'ap_iface', 'home_iface', 'wifi_roles'].includes(k)));
   const uplink = await activeUplink().catch(() => null);
-  res.json({ ...kvTyped(keep, BAK_NUMS, BAK_BOOLS), supported: true, satellite: isSatellite(), uplink });
+  res.json({ ...kvTyped(keep, BAK_NUMS, BAK_BOOLS), supported: true, satellite: isSatellite(), uplink, tuning: t.code === 0 ? bakTuneView(t.kv) : null });
 });
 
 app.post('/api/failover', async (req, res) => {
@@ -4257,6 +4276,47 @@ app.post('/api/failover/test', async (req, res) => {
   if (r.code !== 0) return res.status(409).json({ error: kvError(r, 'geçiş denemesi başlatılamadı') });
   if (s > 0) await recordEvent('netmode-bak', `Yedek hat geçiş denemesi: ${s} sn yedek hattan çıkılıyor`);
   res.json({ success: true, force_until: Number(r.kv.force_until) || 0 });
+});
+
+// Geçiş hızı profili: { mode: 'standard' } ayar dosyasını siler (hemen bugünkü yol); { mode: 'fast' [, probe_s 1-5, fail_n 2-3] }
+// 30 dk deneme başlatır. İzleyici yeniden başlatılmaz: en geç 5 sn içinde yeni profile geçer. Uyduda 409.
+const bakTuneRun = async (res: express.Response, args: string[], ok: (r: KvResult) => Promise<void>) => {
+  if (bakTuneBusy) return res.status(409).json({ error: 'Profil değişikliği sürüyor — birkaç saniye sonra yeniden deneyin' });
+  bakTuneBusy = true;
+  try {
+    const r = await runKvScript(NET_MODE_SCRIPT, args, 30000);
+    if (r.code !== 0) return res.status(409).json({ error: kvError(r, 'geçiş profili değiştirilemedi') });
+    await ok(r);
+  } finally {
+    bakTuneBusy = false;
+  }
+};
+app.post('/api/failover/tuning', writeLimiter, async (req, res) => {
+  if (scriptMissing(NET_MODE_SCRIPT, res)) return;
+  if (isSatellite()) return res.status(409).json({ error: 'Bu cihaz uydu — yedek hat ana cihaz içindir' });
+  const b = req.body || {};
+  if (b.mode === 'standard') {
+    return bakTuneRun(res, ['backup', 'tune', 'standard'], async () => {
+      await recordEvent('netmode-bak', 'Yedek hat: standart geçiş profiline dönüldü');
+      res.json({ success: true, mode: 'standard' });
+    });
+  }
+  if (b.mode !== 'fast') return res.status(400).json({ error: 'Profil standart ya da hızlı olmalı' });
+  const probe = Number(b.probe_s ?? 1), failN = Number(b.fail_n ?? 3);
+  if (!Number.isInteger(probe) || probe < 1 || probe > 5) return res.status(400).json({ error: 'Yoklama aralığı 1-5 sn olmalı' });
+  if (!Number.isInteger(failN) || failN < 2 || failN > 3) return res.status(400).json({ error: 'Geçiş için yanıtsız tur sayısı 2 ya da 3 olmalı' });
+  return bakTuneRun(res, ['backup', 'tune', 'fast', '--probe-s', String(probe), '--fail-n', String(failN), '--trial', String(BAK_TUNE_TRIAL_S)], async r => {
+    await recordEvent('netmode-bak', `Yedek hat: hızlı geçiş profili deneniyor (${BAK_TUNE_TRIAL_S / 60} dk; "Kalıcı yap" denmezse standart profile dönülür)`);
+    res.json({ success: true, mode: 'fast', trial_until: Number(r.kv.trial_until) || 0 });
+  });
+});
+app.post('/api/failover/tuning/confirm', writeLimiter, async (_req, res) => {
+  if (scriptMissing(NET_MODE_SCRIPT, res)) return;
+  if (isSatellite()) return res.status(409).json({ error: 'Bu cihaz uydu — yedek hat ana cihaz içindir' });
+  return bakTuneRun(res, ['backup', 'tune', 'confirm'], async () => {
+    await recordEvent('netmode-bak', 'Yedek hat: hızlı geçiş profili kalıcı yapıldı');
+    res.json({ success: true });
+  });
 });
 
 // Tak-çalıştır ağ kartı algılama (G1.4-A, portWatch.ts): yeni takılan kart bildirilir, sihirbaz rol önerir. Rol HİÇBİR
