@@ -639,7 +639,7 @@ export function hwSerial(): string {
   }
   return serialCache;
 }
-function hwTag(): string {
+export function hwTag(): string {
   if (hwCache !== null) return hwCache;
   const v = hwSerial();
   hwCache = v ? sha256(`klyrix-hw|${v}`).slice(0, 32) : '';

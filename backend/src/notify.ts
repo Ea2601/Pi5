@@ -61,7 +61,7 @@ export const SOURCE_LABEL: Record<string, string> = {
   'netmode-bak': 'Yedek hat', 'netmode-bak-health': 'Yedek hat', 'netmode-wan': 'İnternet kartı', 'netmode-rep': 'Wi-Fi köprüsü',
   'netmode-home': "Ev Wi-Fi'ı", firewall: 'Güvenlik duvarı', fail2ban: 'Fail2Ban', 'routing-list': 'Yönlendirme listesi',
   'vps-tunnel': 'VPS tüneli', 'device-new': 'Yeni cihaz', 'wan-monitor': 'Hat kalitesi', notify: 'Dış bildirim',
-  pcap: 'Paket kaydı', geo: 'Geo-IP', license: 'Lisans', templates: 'Koruma şablonları',
+  pcap: 'Paket kaydı', geo: 'Geo-IP', license: 'Lisans', templates: 'Koruma şablonları', fleet: 'Filo',
 };
 const head = (source: string) => String(source || '').split(':')[0];
 export const sourceLabel = (s: string) => SOURCE_LABEL[head(s)] || s || 'Sistem';
@@ -224,7 +224,7 @@ export function addrVerdict(ip: string, allowPrivate: boolean, own: Set<string>,
   }
 }
 // Bağlantı anındaki ad çözümü: çözülen adreslerden biri bile yasaksa bağlanılmaz (DNS rebinding dahil).
-function guardedLookup(allowPrivate: boolean, own: Set<string>, needPrivate: boolean): net.LookupFunction {
+export function guardedLookup(allowPrivate: boolean, own: Set<string>, needPrivate: boolean): net.LookupFunction {
   return ((hostname: string, options: any, callback: any) => {
     if (typeof options === 'function') { callback = options; options = {}; }
     dns.lookup(hostname, { all: true, verbatim: true, family: options?.family || 0, hints: options?.hints }, (err, addrs) => {

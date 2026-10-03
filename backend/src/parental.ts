@@ -99,7 +99,7 @@ export const CATEGORIES: Record<CategoryId, { label: string; desc: string; domai
 const CATEGORY_IDS = Object.keys(CATEGORIES) as CategoryId[];
 
 // DNS atlatma: Firefox'un DoH'u kapatma işareti, iCloud Özel Geçiş (Private Relay) ve yaygın DoH / DoT adları.
-const DOH_DOMAINS = ['use-application-dns.net', 'mask.icloud.com', 'mask-h2.icloud.com', 'mask-api.icloud.com', 'dns.google',
+export const DOH_DOMAINS = ['use-application-dns.net', 'mask.icloud.com', 'mask-h2.icloud.com', 'mask-api.icloud.com', 'dns.google',
   'dns64.dns.google', 'cloudflare-dns.com', 'one.one.one.one', 'dns.quad9.net', 'doh.opendns.com', 'dns.adguard.com',
   'dns.adguard-dns.com', 'doh.cleanbrowsing.org', 'dns.nextdns.io', 'doh.mullvad.net', 'dns.controld.com', 'doh.dns.sb'];
 const DOH_V4 = ['1.1.1.1', '1.0.0.1', '8.8.8.8', '8.8.4.4', '9.9.9.9', '149.112.112.112', '94.140.14.14', '94.140.15.15',

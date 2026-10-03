@@ -53,6 +53,7 @@ import { authGate, registerAuthRoutes } from './auth';
 import { registerNotifyRoutes, startNotify } from './notify';
 import { registerPcapRoutes, startPcap } from './pcap';
 import { registerLicenseRoutes, startLicense } from './licenseRoutes';
+import { registerFleetRoutes, startFleetAgent } from './fleet';
 import { startDeviceWatch } from './deviceWatch';
 import { validateSchedule, validateCommand, syncCronJobs, readJobStatuses, readSystemCron, syncCronOnStartup, runningJobs, jobOutput, startJobNow } from './cronSync';
 import { validateListValue, normalizeListValue, syncPiholeLists, lastListSync, externalPiholeEntries, startSystemHostsWatch,
@@ -194,6 +195,19 @@ registerLicenseRoutes(app, { guard: (req, res, next) => { void netAdminGuard(req
 // Koruma Şablonları + güvenli arama (templates.ts, safeSearch.ts): /api/templates, /api/safesearch — GET dışı yazma sınırı +
 // netAdminGuard, uyduda 409 (gövdeler modülde).
 registerTemplateRoutes(app, { guard: (req, res, next) => { void netAdminGuard(req, res, next); }, writeLimiter });
+// Filo ajanı (fleet.ts, G4.1): /api/fleet — GET dışı yazma sınırı + netAdminGuard, uyduda 409. Arayüz ayarları PUT /api/settings'in
+// listesiyle (UI_SETTING_KEYS) ve aynı hız testi denetimiyle sınırlı (istek anında okunur).
+registerFleetRoutes(app, {
+  guard: (req, res, next) => { void netAdminGuard(req, res, next); }, writeLimiter,
+  ui: {
+    keys: () => UI_SETTING_KEYS,
+    check: (key, value) => (key === 'speedtest_interval_min' && !validSpeedtestInterval(value)
+      ? `Hız testi aralığı 0 (kapalı) ya da ${SPEEDTEST_MIN_INTERVAL}–${SPEEDTEST_MAX_INTERVAL} dakika (en çok 7 gün) olmalı` : ''),
+    changed: keys => {
+      if (keys.includes('speedtest_interval_min')) rescheduleSpeedtest().catch((e: any) => console.error('[hız testi] yeniden planlanamadı:', e?.message || e));
+    },
+  },
+});
 
 // Graceful shutdown. Hat Kalitesi açıksa (wanMonitor.ts) bekleyen ölçümler yazılır ve hat durumu kaydedilir (en çok 2 sn);
 // kapalıyken hemen çıkılır.
@@ -6857,6 +6871,8 @@ const server = app.listen(Number(port), bindHost, () => {
   startPcap();
   // Lisans süre denetimi (licenseRoutes.ts): yalnız token varsa kurulur.
   startLicense();
+  // Filo ajanı (fleet.ts): kayıt yoksa hemen döner (dosya, zamanlayıcı, ağ isteği yok).
+  void startFleetAgent().catch((e: any) => console.error('[filo]', e?.message || e));
   } // !isSatellite
   // Cron: panel görevleri zamanlayıcıya yazılır, ancak bu başarılıysa eski pi5-maintenance satırları çıkarılır (önce yeni
   // dosya). Veritabanı ilk kurulum işleri bitsin diye kısa gecikmeyle.

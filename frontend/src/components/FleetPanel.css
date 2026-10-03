@@ -1,0 +1,92 @@
+/* Filo — bulut denetleyici (FleetPanel.tsx, tembel sekme). Yalnız tema değişkenleri; açık temanın kalan karşılıkları
+   light-theme.css'in 10. bölümünde. Düğme rengi = ne yaptığı (App.css ortak .btn-on / .btn-off): açan / kaydolan / onaylayan
+   yeşil, duraklatan / ayrılan / reddeden kırmızı. */
+.flt-page { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+.flt-panel { min-width: 0; }
+.flt-actions .btn-on:disabled, .flt-actions .btn-off:disabled { opacity: 0.45; cursor: not-allowed; }
+
+.flt-empty { display: flex; align-items: center; gap: 6px; margin: 4px 0 6px; font-size: 13px; line-height: 1.55; color: var(--text-secondary); }
+.flt-hint { margin: 6px 0 0; font-size: 12px; line-height: 1.5; color: var(--text-secondary); overflow-wrap: anywhere; }
+.flt-hint.is-bad { color: var(--danger-color); }
+
+.flt-note {
+  display: flex; gap: 8px; align-items: flex-start; margin-top: 10px; padding: 9px 11px; border-radius: var(--radius-sm);
+  font-size: 12px; line-height: 1.55; color: var(--text-primary); background: var(--input-bg-soft); border: 1px solid var(--panel-border);
+}
+.flt-note > svg { flex-shrink: 0; margin-top: 2px; }
+.flt-note span { min-width: 0; overflow-wrap: anywhere; }
+.flt-note.is-info > svg { color: var(--accent-color); }
+.flt-note.is-bad { background: var(--danger-glow); border-color: transparent; }
+.flt-note.is-bad > svg { color: var(--danger-color); }
+.flt-note.is-warn { background: var(--warning-glow); border-color: transparent; }
+.flt-note.is-warn > svg { color: var(--warning-color); }
+
+/* Kayıt formu */
+.flt-form { margin-top: 14px; padding: 14px; border-radius: var(--radius-sm); border: 1px solid var(--accent-ring); background: var(--input-bg-soft); }
+.flt-form h4 { margin: 0; font-size: 14px; color: var(--text-primary); }
+.flt-form > .flt-hint { margin-bottom: 12px; }
+.flt-form .form-group input:not([type='checkbox']) { min-width: 0; }
+.flt-form .form-group input[aria-invalid] { border-color: var(--danger-color); }
+.flt-form .form-group label { display: inline-flex; align-items: center; gap: 5px; }
+.flt-inline { display: flex; gap: 8px; align-items: center; min-width: 0; }
+.flt-inline input { flex: 1; min-width: 0; }
+.flt-inline .btn-sm { flex-shrink: 0; min-height: 36px; }
+.flt-check { display: flex; align-items: flex-start; gap: 8px; margin: 8px 0 0; font-size: 13px; line-height: 1.5; color: var(--text-primary); cursor: pointer; }
+.flt-check input { flex-shrink: 0; width: 16px; height: 16px; margin-top: 2px; accent-color: var(--accent-color); }
+.flt-check span { min-width: 0; overflow-wrap: anywhere; }
+.flt-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 12px; }
+.flt-actions .btn-sm { display: inline-flex; align-items: center; gap: 5px; min-height: 34px; }
+
+/* Durum */
+.flt-status, .flt-item { margin-top: 14px; padding: 12px 14px; border-radius: var(--radius-sm); background: var(--input-bg-soft); border: 1px solid var(--panel-border); }
+.flt-head { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.flt-name { min-width: 0; font-size: 14px; color: var(--text-primary); overflow-wrap: anywhere; }
+.flt-state {
+  display: inline-flex; align-items: center; gap: 4px; margin-left: auto; flex-shrink: 0; padding: 2px 8px; border-radius: 999px;
+  font-size: 11px; font-weight: 600; white-space: nowrap; color: var(--text-secondary); background: var(--surface-soft);
+  border: 1px solid var(--panel-border);
+}
+.flt-state.is-ok { color: var(--success-ink); background: var(--bg-surface); border-color: color-mix(in srgb, var(--success-color) 40%, transparent); }
+.flt-state.is-bad { color: var(--danger-color); background: var(--bg-surface); border-color: color-mix(in srgb, var(--danger-color) 40%, transparent); }
+.flt-state.is-warn { color: var(--warning-ink); background: var(--bg-surface); border-color: color-mix(in srgb, var(--warning-color) 45%, transparent); }
+.flt-state.is-run { color: var(--accent-color); background: var(--bg-surface); }
+.flt-state.is-off { color: var(--text-primary); background: var(--bg-surface); }
+.flt-meta { display: grid; grid-template-columns: minmax(0, 1fr); gap: 6px 18px; margin: 10px 0 0; }
+.flt-meta > div { display: flex; flex-direction: column; min-width: 0; }
+.flt-meta dt { font-size: 11px; color: var(--text-muted); }
+.flt-meta dd { margin: 1px 0 0; font-size: 13px; color: var(--text-primary); overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
+.flt-mono { font-family: var(--font-mono); font-size: 12px !important; }
+
+/* Onay bekleyenler ve geçmiş */
+.flt-list { display: flex; flex-direction: column; gap: 10px; }
+.flt-list .flt-item { margin-top: 0; }
+.flt-await { border-color: color-mix(in srgb, var(--warning-color) 45%, var(--panel-border)); }
+.flt-await .flt-lock { margin: 0 0 10px; }
+/* Onay kartında politikanın ayrıntısı: her kayıt / ayar bir satır (sunucu metni; uzun adres sarılır) */
+.flt-detail {
+  list-style: none; margin: 8px 0 0; padding: 8px 10px; border-radius: var(--radius-sm); border: 1px solid var(--panel-border);
+  font-family: var(--font-mono); font-size: 12px; line-height: 1.55; color: var(--text-primary); max-height: 260px; overflow-y: auto;
+}
+.flt-detail li { overflow-wrap: anywhere; }
+.flt-hist { list-style: none; margin: 0; padding: 0; }
+.flt-hist li { padding: 10px 0; border-top: 1px solid var(--panel-border); }
+.flt-hist li:first-child { border-top: 0; padding-top: 2px; }
+
+/* Ayarlar */
+.flt-field { margin: 0 0 14px; padding: 0; border: 0; min-width: 0; }
+.flt-field legend { margin-bottom: 6px; padding: 0; font-size: 13px; font-weight: 600; color: var(--text-primary); }
+.flt-radios { display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; }
+.flt-radio {
+  display: flex; gap: 8px; align-items: flex-start; padding: 10px 12px; border-radius: var(--radius-sm); cursor: pointer;
+  background: var(--input-bg-soft); border: 1px solid var(--panel-border);
+}
+.flt-radio.is-on { border-color: var(--accent-color); box-shadow: 0 0 0 2px var(--accent-ring); }
+.flt-radio input { flex-shrink: 0; margin-top: 3px; accent-color: var(--accent-color); }
+.flt-radio span { display: flex; flex-direction: column; gap: 2px; min-width: 0; font-size: 13px; color: var(--text-primary); }
+.flt-radio small { font-size: 12px; line-height: 1.45; color: var(--text-secondary); overflow-wrap: anywhere; }
+.flt-poll { max-width: 320px; margin-bottom: 0; }
+
+@media (min-width: 760px) {
+  .flt-meta { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .flt-radios { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}

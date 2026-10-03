@@ -28,6 +28,7 @@ const SOURCE_LABEL: Record<string, string> = {
   sync: 'Cihaz yedekleme', visits: 'Ziyaret Geçmişi', hotplug: 'Ağ kartı', 'wan-monitor': 'Hat kalitesi', calendar: 'Takvim',
   license: 'Lisans',
   templates: 'Koruma şablonları',
+  fleet: 'Filo',
 };
 export const sourceLabel = (s: string) => SOURCE_LABEL[(s || '').split(':')[0]] || s || 'Sistem';
 
@@ -47,6 +48,7 @@ const SOURCE_TAB: Record<string, TabId> = {
   calendar: 'agenda',
   license: 'license',
   templates: 'templates',
+  fleet: 'fleet',
 };
 const SERVICE_TAB: Record<string, TabId> = {
   pihole: 'pihole', unbound: 'unbound', zapret: 'zapret', fail2ban: 'fail2ban', nftables: 'firewall', wireguard: 'vps',
