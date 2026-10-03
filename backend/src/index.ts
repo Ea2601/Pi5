@@ -55,6 +55,7 @@ import { registerPcapRoutes, startPcap } from './pcap';
 import { registerLicenseRoutes, startLicense } from './licenseRoutes';
 import { registerFleetRoutes, startFleetAgent } from './fleet';
 import { registerGeoRoutes, startGeo, reapplyGeo, afterGeoRestore, restoredGeoSettingsValue, GEO_SETTINGS_KEY, geoBlocksSatellite } from './geoBlock';
+import { registerSdwanRoutes, syncSdwanChains, reapplySdwan, restoreSdwan, startSdwanWatch, sdwanBlocksSatellite } from './sdwan';
 import { startDeviceWatch } from './deviceWatch';
 import { validateSchedule, validateCommand, syncCronJobs, readJobStatuses, readSystemCron, syncCronOnStartup, runningJobs, jobOutput, startJobNow } from './cronSync';
 import { validateListValue, normalizeListValue, syncPiholeLists, lastListSync, externalPiholeEntries, startSystemHostsWatch,
@@ -212,6 +213,9 @@ registerFleetRoutes(app, {
 });
 // Geo-IP / tehdit engeli (geoBlock.ts): /api/geo — GET dışı yazma sınırı + netAdminGuard, uyduda 409 (gövdeler modülde).
 registerGeoRoutes(app, { guard: (req, res, next) => { void netAdminGuard(req, res, next); }, writeLimiter });
+// Şubeler arası SD-WAN (sdwan.ts): /api/sdwan — GET dışı yazma sınırı + netAdminGuard, uyduda 409. Merkez portu (UDP 51821)
+// açılınca / kapanınca internet kartı ve yedek hat güvenlik duvarı yeniden yüklenir (wanFirewallReload).
+registerSdwanRoutes(app, { guard: (req, res, next) => { void netAdminGuard(req, res, next); }, writeLimiter, wanFirewallReload: () => wanFirewallReload() });
 
 // Graceful shutdown. Hat Kalitesi açıksa (wanMonitor.ts) bekleyen ölçümler yazılır ve hat durumu kaydedilir (en çok 2 sn);
 // kapalıyken hemen çıkılır.
@@ -402,6 +406,7 @@ async function applyPanelFirewallNow() {
   const lan = await lanNetworks();
   const result = await systemServices.configureNftables({ lan: m.lan_iface, wan: m.wan_iface }, buildCustomFwRules(await dbAll(FW_RULES_SQL), lan));
   await reapplyWgServer(); // pi5_filter yeniden kuruldu: Ev VPN'i izin zincirleri (politika drop) geri eklensin
+  await syncSdwanChains().catch((e: any) => console.error('[sdwan] izin zincirleri yeniden eklenemedi:', e?.message || e)); // SD-WAN yokken komut yok
   return result;
 }
 const applyPanelFirewall = () => withFwLock(applyPanelFirewallNow);
@@ -938,6 +943,7 @@ app.post('/api/services/:name/restart', async (req, res) => {
     if (name === 'nftables') await reapplyBlockedDevices();
     if (name === 'nftables') await runQos({ notify: false, force: true }).catch((e: any) => console.error('Kota / hız sınırları yeniden uygulanamadı:', e.message));
     if (name === 'nftables') await reapplyWgServer();
+    if (name === 'nftables') await reapplySdwan().catch((e: any) => console.error('[sdwan] yeniden uygulanamadı:', e?.message || e));
     if (name === 'nftables') { await wanFirewallReload(); await applyPortForwards(); }
     // Geo-IP / tehdit engeli: açıksa tablo geri kurulur (kapalıyken hiçbir şey yüklenmez)
     if (name === 'nftables') await reapplyGeo();
@@ -4013,6 +4019,7 @@ const wanAfterChange = async (r: KvResult) => {
     await applyPortForwards();
     await firewallFollowsWan();
     await reapplyWgServer(); // Ev VPN'i açıksa: PPPoE'ye geçişte / çıkışta tünel MTU'su (wgServer.ts)
+    await reapplySdwan().catch((e: any) => console.error('[sdwan] yeniden uygulanamadı:', e?.message || e)); // SD-WAN tünelinin MTU'su da (yokken komut yok)
   };
   if (r.code === null && r.exited) { void r.exited.then(apply); return; }
   await apply();
@@ -4149,11 +4156,12 @@ const BAK_NUMS = ['bak_since', 'bak_switches', 'bak_checked', 'bak_force_until',
 const BAK_BOOLS = ['bak_up', 'bak_fw', 'bak_watch', 'bak_primary_ok', 'bak_backup_ok', 'bak_conntrack', 'pi_dhcp', 'wan_lan'];
 const BAK_KIND_TEXT: Record<string, string> = { eth: 'Ethernet', usb: 'USB modem / telefon', wifi: 'telefon hotspot\'u' };
 app.use('/api/failover', netAdminGuard);
-// Yedek hat açılınca / kapanınca: port yönlendirme ve panel güvenlik duvarı arayüz kümeleri, Ev VPN'i MTU'su.
+// Yedek hat açılınca / kapanınca: port yönlendirme ve panel güvenlik duvarı arayüz kümeleri, Ev VPN'i ve SD-WAN MTU'su.
 const backupAfterChange = async () => {
   await applyPortForwards();
   await firewallFollowsWan();
   await reapplyWgServer();
+  await reapplySdwan().catch((e: any) => console.error('[sdwan] yeniden uygulanamadı:', e?.message || e));
 };
 
 app.get('/api/failover', async (_req, res) => {
@@ -4453,7 +4461,7 @@ app.post('/api/system/role', netAdminGuard, async (req, res) => {
       const vb = await vaultBlocksSatellite();
       if (vb) return res.status(409).json({ error: vb });
       // Cihaz yedekleme de ana cihazdadır (uyduda uçlar 409, izleme çalışmaz)
-      const sb = syncBlocksSatellite() || mobileBlocksSatellite();
+      const sb = syncBlocksSatellite() || mobileBlocksSatellite() || sdwanBlocksSatellite();
       if (sb) return res.status(409).json({ error: sb });
       // Geo-IP / tehdit engeli ana cihaza özgü (uyduda uçlar 409): kalıcı kural açılışta yüklenir, uyduda yönetilemezdi
       const gb = await geoBlocksSatellite();
@@ -6768,6 +6776,8 @@ const server = app.listen(Number(port), bindHost, () => {
       await syncImportGuard().catch((e: any) => console.error('[wg-import] koruma tablosu yazılamadı:', e?.message || e));
       await restoreTunnelsAndRouting();
       await applyPortForwards(); // internet kartı açıksa port yönlendirmeleri (nft tablosu açılışta yoktur)
+      // Şubeler arası SD-WAN (sdwan.ts): yapılandırma yoksa hemen döner; deneme sürerken yeniden başladıysa geri alınır.
+      await restoreSdwan().catch((e: any) => console.error('[sdwan] açılışta uygulanamadı:', e?.message || e));
     }
   })();
   // Uydu (R2): ağ geçidi işleri (yönlendirme kuralları, tüneller, cihaz engelleri, AS aralıkları, ağ haritası ölçümü,
@@ -6850,6 +6860,8 @@ const server = app.listen(Number(port), bindHost, () => {
   void reapplyBlockedDevices();
   // Hazır yapılandırmayla kurulan tünellerin koruma tablosu (wgImport.ts): kaybolursa dakikada bir yeniden yüklenir.
   startImportGuardWatch();
+  // Şubeler arası SD-WAN: el sıkışma / ping sağlığı ve kendini onarma (30 sn); yapılandırma yokken hiçbir komut çalışmaz.
+  startSdwanWatch();
   // Dış bildirim (notify.ts): yalnız açık kanal varsa (varsayılan yok) 10 sn'de bir olay geçmişi okunur.
   startNotify();
   // Güvenli arama (safeSearch.ts): kapalıyken yalnız 30 dk'da bir ayar okunur; açıkken adresler 6 saatte bir, değişen adres

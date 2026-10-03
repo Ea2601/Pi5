@@ -1628,13 +1628,18 @@ wan_ifset() {
   if [ "$S_wan_type" = pppoe ]; then s="$s, \"$WAN_PPP_IF\""; fi
   echo "{ $s }"
 }
-# Ev VPN'inin (wg_pi) dinleme portu; yapılandırma yoksa ya da Ev VPN'i kapalıysa (birim etkin değil, arayüz yok) boş —
-# panel Ev VPN'ini kapatınca yapılandırma dosyası kalır.
+# Klyrix'in WireGuard dinleme portları: Ev VPN'i (wg_pi) ve şubeler arası SD-WAN merkezi (wg_s2s0; ListenPort yalnız merkez
+# Klyrix'te). Arayüz ayaktaysa ya da birimi etkinse yapılandırmadaki port; hiçbiri yoksa boş (1) — panel kapatınca
+# yapılandırma dosyası kalabilir. Tek port "51820" (eskisiyle aynı), iki port "{ 51820, 51821 }": nft kuralına olduğu gibi girer.
 wg_listen_port() {
-  local p
-  [ -e /sys/class/net/wg_pi ] || systemctl is-enabled --quiet wg-quick@wg_pi.service 2>/dev/null || return 1
-  p=$(sed -n 's/^[[:space:]]*ListenPort[[:space:]]*=[[:space:]]*\([0-9]\{1,5\}\).*/\1/p' /etc/wireguard/wg_pi.conf 2>/dev/null | head -1)
-  [[ $p =~ ^[0-9]{1,5}$ ]] && [ "$p" -ge 1 ] && [ "$p" -le 65535 ] && echo "$p"
+  local i p s="" n=0
+  for i in wg_pi wg_s2s0; do
+    [ -e "/sys/class/net/$i" ] || systemctl is-enabled --quiet "wg-quick@$i.service" 2>/dev/null || continue
+    p=$(sed -n 's/^[[:space:]]*ListenPort[[:space:]]*=[[:space:]]*\([0-9]\{1,5\}\).*/\1/p' "/etc/wireguard/$i.conf" 2>/dev/null | head -1)
+    if [[ $p =~ ^[0-9]{1,5}$ ]] && [ "$p" -ge 1 ] && [ "$p" -le 65535 ]; then s="${s:+$s, }$p"; n=$((n + 1)); fi
+  done
+  [ "$n" -gt 0 ] || return 1
+  if [ "$n" = 1 ]; then echo "$s"; else echo "{ $s }"; fi
 }
 # [ipv4] bölümü. $1 = 1: bu profil adresi taşır (katman 3); değilse adressiz. $2 = ppp: PPPoE profili (adres operatörden).
 wan_ipv4_section() {

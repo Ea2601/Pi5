@@ -149,7 +149,7 @@ export async function serverEndpoint(): Promise<{ host: string; source: 'ddns' |
 // İnternet kartı PPPoE ise tünel MTU'su PPPoE MTU'su − 80 (WireGuard başlığı): 1492'de 1412, RFC 4638 ile 1500'de 1420.
 // wg-quick'in kendi hesabı açılışta PPPoE henüz bağlanmamışsa 1420 bulurdu. PPPoE değilse 0.
 const DEFAULT_WG_MTU = 1420;
-function pppoeWgMtu(): number {
+export function pppoeWgMtu(): number {
   const ns = readNetModeState();
   // Ana hat ya da yedek hat PPPoE ise küçüğü: yedek hatta geçildiğinde de tünel paketleri parçalanmasın.
   const mtus = [

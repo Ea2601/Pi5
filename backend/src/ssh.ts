@@ -664,6 +664,140 @@ PEEREOF`);
   }
 }
 
+// ─── Şubeler arası SD-WAN: VPS merkezi (sdwan.ts) ───
+// Kullanıcının VPS'inde wg0'dan AYRI ikinci WireGuard arayüzü: wg_s2s, UDP 51821, /etc/wireguard/wg_s2s.conf. wg0, wg0.conf
+// ve 10.66.66.0/24'e dokunulmaz: her komut wg0'ın `wg show wg0 dump` + wg0.conf özetini önce / sonra yazar, panel eşitliği
+// denetler. Dump'tan yalnız yapılandırma alanları özetlenir (açık anahtar, port, fwmark; eşlerin anahtarı, izinli adresleri,
+// keepalive): el sıkışma zamanı, uç adres ve sayaçlar trafikle değişir, karşılaştırmaya girmez.
+// İletim yalnız wg_s2s ↔ wg_s2s (şubeden şubeye); wg_s2s → internet ve wg0 / internet → wg_s2s düşer.
+// Eşler panelden gelir (açık anahtar + adresler; gizli değer yok); VPS'in özel anahtarı VPS'te üretilir ve orada kalır.
+// Sahiplik: wg_s2s.conf'a yöneten Pi'nin kimliği ('# klyrix-owner=…', makine kimliğinin özeti; gizli değer değil) yazılır.
+// sync / remove başka bir Pi'nin merkezine dokunmaz; probe var olan merkezi ve sahibini bildirir (aynı VPS'i iki Klyrix
+// yönetemez — biri ötekinin eşlerini sessizce silerdi).
+// Komutlar (bash -s -- KOMUT …): probe | sync <adres> <eşler-base64> <sahip> | remove <sahip>. Çıktı KEY=VALUE.
+export const S2S_VPS_SH = String.raw`set -u
+export PATH="$PATH:/usr/sbin:/sbin"
+[ $# -ge 1 ] || { echo "result=failed"; echo "detail=komut yok"; exit 0; }
+CMD=$1
+IF=wg_s2s
+F=/etc/wireguard/$IF.conf
+PORT=51821
+w0() { printf '%s|%s' "$(wg show wg0 dump 2>/dev/null | awk -F'\t' 'NR == 1 {print $2, $3, $4; next} {print $1, $4, $8}' | sha256sum | cut -c1-16)" "$( (cat /etc/wireguard/wg0.conf 2>/dev/null || true) | sha256sum | cut -c1-16)"; }
+fail() { echo "result=failed"; echo "detail=$1"; exit 0; }
+owner_of() { sed -n 's/^# klyrix-owner=\([0-9a-f]\{16\}\)$/\1/p' "$F" 2>/dev/null | head -1; }
+# Var olan merkez başka bir Pi'ninse (ya da elle kurulmuş, sahipsizse) dokunulmaz.
+own_check() {
+  local cur
+  [ -e "$F" ] || return 0
+  cur=$(owner_of)
+  [ "$cur" = "$1" ] || fail "VPS'teki SD-WAN merkezi (wg_s2s) başka bir Klyrix'e ait — dokunulmadı"
+}
+if ! command -v wg >/dev/null 2>&1 || ! command -v wg-quick >/dev/null 2>&1; then fail "WireGuard (wg, wg-quick) kurulu değil — önce VPS kurulumunu tamamlayın"; fi
+case "$CMD" in
+  probe)
+    echo "nets=$(ip -4 -o addr show 2>/dev/null | awk '$2 != "lo" && $2 != "'"$IF"'" {print $4}' | tr '\n' ' ')"
+    if ss -Hlun "sport = :$PORT" 2>/dev/null | grep -q . && ! ip link show "$IF" >/dev/null 2>&1; then echo "busy=1"; else echo "busy=0"; fi
+    if [ -e "$F" ] || ip link show "$IF" >/dev/null 2>&1; then echo "exists=1"; else echo "exists=0"; fi
+    echo "owner=$(owner_of)"
+    echo "wg0=$(w0)"
+    echo "result=ok"
+    ;;
+  sync)
+    [ $# -ge 4 ] || fail "eksik argüman"
+    ADDR=$2; PEERS=$(printf '%s' "$3" | base64 -d 2>/dev/null) || fail "eş listesi çözülemedi"; OWNER=$4
+    [[ $ADDR =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}/24$ ]] || fail "adres geçersiz"
+    [[ $OWNER =~ ^[0-9a-f]{16}$ ]] || fail "sahip kimliği geçersiz"
+    own_check "$OWNER"
+    B=$(w0)
+    umask 077; mkdir -p /etc/wireguard
+    KEY=$(sed -n 's/^[[:space:]]*PrivateKey[[:space:]]*=[[:space:]]*//p' "$F" 2>/dev/null | head -1)
+    [ -n "$KEY" ] || KEY=$(wg genkey)
+    PUB=$(printf '%s\n' "$KEY" | wg pubkey 2>/dev/null) || fail "anahtar üretilemedi"
+    [ -n "$PUB" ] || fail "anahtar üretilemedi"
+    {
+      echo "# Klyrix Gate: subeler arasi SD-WAN merkezi (wg_s2s). Pi paneli yazar; wg0'dan ayridir."
+      echo "# klyrix-owner=$OWNER"
+      echo "[Interface]"
+      echo "Address = $ADDR"
+      echo "ListenPort = $PORT"
+      echo "PrivateKey = $KEY"
+      echo "PostUp = sysctl -q -w net.ipv4.ip_forward=1; iptables -I FORWARD -i %i ! -o %i -j DROP; iptables -I FORWARD -o %i ! -i %i -j DROP; iptables -I FORWARD -i %i -o %i -j ACCEPT"
+      echo "PostDown = iptables -D FORWARD -i %i -o %i -j ACCEPT; iptables -D FORWARD -o %i ! -i %i -j DROP; iptables -D FORWARD -i %i ! -o %i -j DROP"
+      echo
+      printf '%s\n' "$PEERS"
+    } > "$F.tmp" || fail "wg_s2s.conf yazılamadı"
+    if ! { chmod 600 "$F.tmp" && mv -f "$F.tmp" "$F"; }; then fail "wg_s2s.conf yazılamadı"; fi
+    if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q '^Status: active'; then ufw allow "$PORT/udp" >/dev/null 2>&1 || true; fi
+    systemctl enable "wg-quick@$IF" >/dev/null 2>&1 || true
+    if ip link show "$IF" >/dev/null 2>&1; then
+      wg syncconf "$IF" <(wg-quick strip "$IF") || fail "wg syncconf başarısız"
+      # wg-quick şube ağlarının rotalarını yalnız açılışta ekler: eklenen / kaldırılan eşlerinkiler burada eşitlenir.
+      want=$(wg show "$IF" allowed-ips | cut -f2 | tr ' ' '\n' | grep -E '^[0-9.]+/[0-9]+$' | sort -u)
+      for n in $want; do
+        [ -n "$(ip -4 route show dev "$IF" match "$n" 2>/dev/null)" ] || ip -4 route add "$n" dev "$IF" || fail "rota eklenemedi: $n"
+      done
+      ip -4 route show dev "$IF" 2>/dev/null | grep -v 'proto kernel' | awk '{print $1}' | while read -r n; do
+        printf '%s\n' "$want" | grep -qxF "$n" || ip -4 route del "$n" dev "$IF" 2>/dev/null || true
+      done
+    else
+      systemctl restart "wg-quick@$IF" >/dev/null 2>&1 || fail "wg-quick@$IF başlatılamadı: $(journalctl -u "wg-quick@$IF" -n 3 --no-pager 2>/dev/null | tr '\n' ' ' | cut -c1-200)"
+    fi
+    A=$(w0)
+    echo "pub=$PUB"
+    echo "wg0_before=$B"
+    echo "wg0_after=$A"
+    echo "result=ok"
+    ;;
+  remove)
+    [ $# -ge 2 ] || fail "eksik argüman"
+    [[ $2 =~ ^[0-9a-f]{16}$ ]] || fail "sahip kimliği geçersiz"
+    own_check "$2"
+    B=$(w0)
+    systemctl disable --now "wg-quick@$IF" >/dev/null 2>&1 || true
+    ip link del "$IF" >/dev/null 2>&1 || true
+    rm -f "$F" "$F.tmp"
+    if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q '^Status: active'; then ufw delete allow "$PORT/udp" >/dev/null 2>&1 || true; fi
+    A=$(w0)
+    echo "wg0_before=$B"
+    echo "wg0_after=$A"
+    if ip link show "$IF" >/dev/null 2>&1; then fail "wg_s2s arayüzü kaldırılamadı"; fi
+    echo "result=ok"
+    ;;
+  *) fail "bilinmeyen komut" ;;
+esac
+`;
+export interface S2sHubResult { result: 'ok' | 'failed'; detail: string; kv: Record<string, string> }
+// Komut süresi sınırı: node-ssh execOptions.timeout'u ssh2'ye geçirir ama ssh2 exec onu okumaz — yanıtsız kalan VPS (yarı
+// açık TCP, donma) sözü hiç çözmez ve SD-WAN'ın sıralı kuyruğunu süresiz kilitlerdi. Süre dolunca bağlantı kapatılır.
+const S2S_EXEC_MS = 90000;
+async function runS2sHub(opts: VpsConnectOptions, args: string[], patient = false): Promise<S2sHubResult> {
+  const ssh = await connectSSH(opts, patient);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const timedOut = new Promise<null>(resolve => { timer = setTimeout(() => resolve(null), S2S_EXEC_MS); });
+    const r = await Promise.race([ssh.execCommand(`bash -s -- ${args.map(a => shq(a)).join(' ')}`, { stdin: S2S_VPS_SH }), timedOut]);
+    if (!r) return { result: 'failed', detail: `VPS ${S2S_EXEC_MS / 1000} sn içinde yanıt vermedi (zaman aşımı)`, kv: {} };
+    const kv: Record<string, string> = {};
+    for (const line of String(r.stdout || '').split('\n')) {
+      const i = line.indexOf('=');
+      if (i > 0) kv[line.slice(0, i).trim()] = line.slice(i + 1).trim();
+    }
+    const result = kv.result === 'ok' ? 'ok' : 'failed';
+    const detail = kv.detail || (result === 'ok' ? '' : String(r.stderr || '').trim().split('\n').pop()?.slice(0, 200) || 'VPS yanıt vermedi');
+    return { result, detail, kv };
+  } finally {
+    if (timer) clearTimeout(timer);
+    try { ssh.dispose(); } catch { /* */ }
+  }
+}
+// VPS'in ağları (çakışma denetimi), 51821'in başka bir programda olup olmadığı, var olan merkez ve sahibi, wg0 özeti.
+export const probeS2sHub = (opts: VpsConnectOptions) => runS2sHub(opts, ['probe'], true);
+// wg_s2s'i kurar / eşleri eşitler (idempotent). address: "10.88.0.1/24"; peers: [Peer] bölümleri (gizli değer yok);
+// owner: yöneten Pi'nin kimliği (16 onaltılık).
+export const syncS2sHub = (opts: VpsConnectOptions, address: string, peers: string, owner: string) =>
+  runS2sHub(opts, ['sync', address, Buffer.from(peers, 'utf8').toString('base64'), owner]);
+export const removeS2sHub = (opts: VpsConnectOptions, owner: string) => runS2sHub(opts, ['remove', owner]);
+
 /**
  * Disconnect Pi5 from a VPS (bring down wg interface)
  */

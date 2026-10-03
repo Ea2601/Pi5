@@ -61,7 +61,7 @@ export const SOURCE_LABEL: Record<string, string> = {
   'netmode-bak': 'Yedek hat', 'netmode-bak-health': 'Yedek hat', 'netmode-wan': 'İnternet kartı', 'netmode-rep': 'Wi-Fi köprüsü',
   'netmode-home': "Ev Wi-Fi'ı", firewall: 'Güvenlik duvarı', fail2ban: 'Fail2Ban', 'routing-list': 'Yönlendirme listesi',
   'vps-tunnel': 'VPS tüneli', 'device-new': 'Yeni cihaz', 'wan-monitor': 'Hat kalitesi', notify: 'Dış bildirim',
-  pcap: 'Paket kaydı', geo: 'Geo-IP', license: 'Lisans', templates: 'Koruma şablonları', fleet: 'Filo',
+  pcap: 'Paket kaydı', geo: 'Geo-IP', license: 'Lisans', templates: 'Koruma şablonları', fleet: 'Filo', sdwan: 'SD-WAN',
 };
 const head = (source: string) => String(source || '').split(':')[0];
 export const sourceLabel = (s: string) => SOURCE_LABEL[head(s)] || s || 'Sistem';
@@ -77,6 +77,7 @@ export const FILTER_SOURCES: [string, string][] = [
   ['fail2ban', 'Fail2Ban'], ['firewall', 'Güvenlik duvarı'], ['pihole', 'Pi-hole'], ['unbound', 'Unbound'], ['zapret', 'Zapret'],
   ['storage', 'Depolama'], ['vault', 'Bulut yedeği'], ['sync', 'Cihaz yedekleme'], ['backup', 'Yedekleme'], ['device', 'Cihaz'],
   ['cron', 'Cron görevleri'], ['routing-list', 'Yönlendirme listesi'], ['visits', 'Ziyaret Geçmişi'], ['pcap', 'Paket kaydı'], ['geo', 'Geo-IP'],
+  ['sdwan', 'SD-WAN şube bağlantısı'],
 ];
 const FILTER_IDS = new Set(FILTER_SOURCES.map(([id]) => id));
 export const DEFAULT_SOURCES: Record<string, SourceRule> = {

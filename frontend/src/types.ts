@@ -5,7 +5,7 @@ export type TabId =
   | 'unbound' | 'fail2ban' | 'maintenance' | 'docs'
   | 'bandwidth' | 'dnslog' | 'visits' | 'speedtest' | 'ddns' | 'alerts' | 'nettools'
   | 'parental' | 'devicecontrol' | 'trafficcontrol' | 'backup' | 'settings' | 'terminal'
-  | 'casecontrol' | 'kiosk' | 'roles' | 'storage' | 'agenda' | 'license' | 'templates' | 'fleet' | 'geo';
+  | 'casecontrol' | 'kiosk' | 'roles' | 'storage' | 'agenda' | 'license' | 'templates' | 'fleet' | 'geo' | 'sdwan';
 
 export interface ServiceStatus {
   name: string;

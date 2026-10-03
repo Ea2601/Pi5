@@ -6,7 +6,8 @@
 //    pi5_wan tablosunda (ct status dnat). WAN kapalıyken tablo kaldırılır, kayıtlar durur.
 //  - Hedef yalnız ev ağındaki (client ağı) bir cihaz adresi; dış port tek ya da aralık. İç port yalnız tek portta
 //    verilebilir (verilmezse dış portla aynı); aralıkta portlar olduğu gibi iletilir.
-//  - UPnP yok (kullanıcı kararı): portlar yalnız panelden açılır. UDP 51820 Ev VPN'ine (Pi) ayrılmıştır.
+//  - UPnP yok (kullanıcı kararı): portlar yalnız panelden açılır. UDP 51820 Ev VPN'ine, UDP 51821 şubeler arası SD-WAN
+//    merkezine (Pi, sdwan.ts) ayrılmıştır.
 import fs from 'fs';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
@@ -15,8 +16,9 @@ import { isLinux, readNetModeState, wanActive, uplinkIfaces } from './system';
 
 const execFileP = promisify(execFile);
 export const FWD_NFT = '/etc/nftables.d/pi5-wan-fwd.conf';
-// Ev VPN'inin (wg_pi) portu: yönlendirilemez (Pi'nin kendisi dinler).
-const RESERVED_UDP = [51820];
+// Pi'nin kendi dinlediği WireGuard portları: Ev VPN'i (wg_pi) ve SD-WAN merkezi (wg_s2s0) — yönlendirilemez.
+const RESERVED_UDP = [51820, 51821];
+const RESERVED_LABEL: Record<number, string> = { 51820: "Ev VPN'ine", 51821: 'şubeler arası SD-WAN merkezine' };
 const MAX_RANGE = 1000;
 
 export type FwdProto = 'tcp' | 'udp' | 'both';
@@ -70,8 +72,9 @@ export function validateForward(input: any, client: string, existing: PortForwar
   if (Math.floor(n / div) * div !== net) return { ok: false, error: `Hedef ev ağında (${client}) olmalı` };
   if (n === net || n === net + div - 1) return { ok: false, error: 'Hedef ağ ya da yayın adresi olamaz' };
   if (dest_ip === m[1]) return { ok: false, error: "Hedef Pi'nin kendisi olamaz" };
-  if (proto !== 'tcp' && RESERVED_UDP.some(p => p >= ext_from && p <= ext_to)) {
-    return { ok: false, error: "UDP 51820 Ev VPN'ine (Pi) ayrılmıştır" };
+  const reserved = proto !== 'tcp' ? RESERVED_UDP.find(p => p >= ext_from && p <= ext_to) : undefined;
+  if (reserved !== undefined) {
+    return { ok: false, error: `UDP ${reserved} ${RESERVED_LABEL[reserved]} (Pi) ayrılmıştır` };
   }
   for (const e of existing) {
     if (e.id === exceptId) continue;

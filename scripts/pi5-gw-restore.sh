@@ -12,12 +12,15 @@
 #                                       tünel yokken dosya yoktur — backend/src/wgImport.ts)
 #   - /opt/pi5-gateway/core/pi5-geo.nft: Geo-IP / tehdit engeli (yalnız panelde "Kalıcı yap" denince yazılır; özellik
 #                                       kapalıyken ya da denemedeyken dosya yoktur — backend/src/geoBlock.ts)
+#   - /etc/nftables.d/pi5-sdwan.conf  : şubeler arası SD-WAN süzgeci (inet pi5_sdwan) + politikası drop tablolardaki izin
+#                                       zincirleri /opt/pi5-gateway/core/pi5-sdwan-<tablo>.nft (SD-WAN yokken dosyalar
+#                                       yoktur — backend/src/sdwan.ts)
 # Dosyaları backend yazar ve her açılışta yeniden yazar (pi5-ap.conf'u net-mode.sh yazar, pi5-net-guard her açılışta
 # yeniden yükler); bu betik yalnız son hallerini erkenden yükler. Hatalar günlüğe yazılır, açılışı durdurmaz.
 set -u
 log() { logger -t pi5-gw-restore "$*" 2>/dev/null || true; }
 for f in /etc/nftables.d/pi5-wgnat.conf /etc/nftables.d/device-block.conf /etc/nftables.d/pi5-ap.conf /etc/nftables.d/pi5-relay.conf \
-  /etc/nftables.d/pi5-wgext.conf; do
+  /etc/nftables.d/pi5-wgext.conf /etc/nftables.d/pi5-sdwan.conf; do
   [ -s "$f" ] || continue
   out=$(nft -f "$f" 2>&1) || log "yüklenemedi: $f: $out"
 done
@@ -52,6 +55,19 @@ if [ -s "$IN" ] && nft list chain inet filter input >/dev/null 2>&1; then
     nft insert rule inet filter input jump pi5_in 2>/dev/null || log "input → pi5_in atlaması eklenemedi"
   fi
 fi
+# SD-WAN izin zincirleri (pi5_sdwan_in / pi5_sdwan_fwd): pi5_gw ile aynı — zincirler dosyadan, atlama yalnız politikası drop
+# olan ve atlaması eksik zincire eklenir. Tablo (Debian inet filter / panelin pi5_filter) yoksa atlanır.
+for t in filter pi5_filter; do
+  f=/opt/pi5-gateway/core/pi5-sdwan-$t.nft
+  if [ ! -s "$f" ] || ! nft list table inet "$t" >/dev/null 2>&1; then continue; fi
+  out=$(nft -f "$f" 2>&1) || { log "pi5_sdwan ($t) yüklenemedi: $out"; continue; }
+  for pair in input:pi5_sdwan_in forward:pi5_sdwan_fwd; do
+    c=${pair%%:*}; j=${pair#*:}
+    nft list chain inet "$t" "$j" >/dev/null 2>&1 || continue
+    nft list chain inet "$t" "$c" 2>/dev/null | grep -q 'policy drop' || continue
+    nft list chain inet "$t" "$c" | grep -q "jump $j" || nft insert rule inet "$t" "$c" jump "$j" 2>/dev/null || log "$t $c → $j atlaması eklenemedi"
+  done
+done
 # nftables yeniden başlatıldı / yüklendiyse `flush ruleset` Fail2Ban'ın ve Zapret'in kurallarını da sildi (panelinkiler
 # yukarıda geri yüklendi). Fail2Ban: yasaklı IP var ama hiçbiri kurallarda yoksa yeniden başlatılır (yasakları kendi
 # veritabanından geri yükler). Zapret: nftables'tan ÖNCE başlamış ve çalışıyorsa yeniden başlatılır. Açılışta ikisi de
