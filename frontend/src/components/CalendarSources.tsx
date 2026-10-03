@@ -68,8 +68,8 @@ function CalendarTags({ tz }: { tz?: string }) {
       <h4><Hash size={14} /> Takvimde görülen etiketler</h4>
       <p className="cal-hint">
         Etkinlik başlığındaki tam <b>#etiket</b> sözcükleri ve takvimdeki kategori adları (açıklama metni okunmaz; büyük / küçük harf
-        fark etmez, ama "#Sınav" ile "#Sinav" ayrıdır). Bunlar sonraki bir sürümde kurallara bağlanabilecek — şimdilik yalnız
-        görünür, hiçbir ayarı değiştirmez.
+        fark etmez, ama "#Sınav" ile "#Sinav" ayrıdır). Etiket ancak aşağıdaki Takvim kuralları'nda bir profile elle bağlanırsa
+        bir şey yapar (dış takvimin her etkinliği önce onayınızı ister); bağlanmamış etiket hiçbir ayarı değiştirmez.
       </p>
       {error ? <p className="cal-empty">Etiketler alınamadı ({error}).</p>
         : data.tags.length ? (

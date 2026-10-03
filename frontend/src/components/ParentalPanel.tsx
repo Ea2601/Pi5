@@ -21,8 +21,11 @@ interface TimeWindow { days: Day[]; start: string; end: string }
 interface RuleBody {
   name: string; enabled: boolean; targets: { devices: string[]; groups: number[]; all?: boolean };
   blockAll: boolean; categories: string[]; sites: string[]; mode: Mode; windows: TimeWindow[];
+  calendarOnly?: boolean;   // takvim kuralı (G5.3): yalnız takvim etkinliği sırasında; elle açılamaz
 }
-interface Rule extends RuleBody { id: number; legacy: boolean; templateId?: number; status: { active: boolean; nextChange: string | null; devices: number } }
+// calendar: takvim kuralının ya da takvimin askıya aldığı kuralın durumu (Ağ Ajandası → Takvim kuralları)
+type CalStatus = { state: 'active' | 'waiting' | 'suspended'; until: string | null; label: string | null };
+interface Rule extends RuleBody { id: number; legacy: boolean; templateId?: number; status: { active: boolean; nextChange: string | null; devices: number; calendar?: CalStatus } }
 interface Category { id: string; label: string; desc: string; list: boolean }
 interface Health { nft: boolean; pihole: boolean | null; error: string | null; at: number; gravityPending: boolean }
 interface Group { id: number; name: string; color?: string; members?: { device_mac: string }[] }
@@ -73,6 +76,10 @@ function nextText(iso: string | null, active: boolean): string {
   const when = sameDay ? hm : d.toDateString() === tomorrow.toDateString() ? `yarın ${hm}` : `${d.toLocaleDateString('tr-TR', { weekday: 'short' })} ${hm}`;
   return active ? `${when}'de biter` : `${when}'de başlar`;
 }
+// Takvim etkisinin bitişi: "18:30", "yarın 18:30", "Cum 18:30"; 6 günden uzaksa gün ve ay ("13 Eki 18:30" — etki 14 güne dek sürer)
+const untilText = (iso: string) => (Date.parse(iso) - Date.now() < 6 * 864e5 ? nextText(iso, true).replace(/'de biter$/, '')
+  : new Date(iso).toLocaleString('tr-TR', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }));
+const CAL_LOCK = 'Takvim kuralı — elle açılamaz';
 // Kullanıcının yazdığı site → alan adı (backend normalizeSite ile aynı; kesin doğrulama backend'de)
 const cleanSite = (s: string) => s.trim().toLowerCase().replace(/^[a-z]+:\/\//, '').replace(/[/?#:].*$/, '').replace(/^\*\./, '').replace(/^www\./, '').replace(/\.$/, '');
 const SITE_RE = /^(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9-]{2,63}$/;
@@ -146,19 +153,22 @@ export function ParentalPanel() {
           <div className="glass-panel pc-empty">Henüz kural yok. Yukarıdaki hazır şablonlardan biriyle ya da <strong>Kural ekle</strong> ile başlayın.</div>
         )}
         {data.rules.map(r => {
-          const state = !r.enabled ? (r.legacy ? 'legacy' : 'off') : r.status?.active ? 'on' : 'wait';
+          const cal = r.status?.calendar;
+          const state = r.calendarOnly ? (r.status?.active ? 'on' : 'wait') : cal?.state === 'suspended' ? 'wait' : !r.enabled ? (r.legacy ? 'legacy' : 'off') : r.status?.active ? 'on' : 'wait';
+          // Takvim kuralı ya da takvimin askıya aldığı kural: durum + etiket + bitiş (ör. "Takvim tarafından askıda (#tatil → Tatil) · bitiş yarın 18:30")
+          const calText = r.calendarOnly || cal ? `${r.calendarOnly ? (r.status?.active ? 'Takvimle etkin' : 'Takvim bekliyor') : 'Takvim tarafından askıda'}${cal?.label && !r.calendarOnly ? ` (${cal.label})` : ''}${cal?.until ? ` · bitiş ${untilText(cal.until)}` : ''}` : '';
           return (
             <section key={r.id} className={`glass-panel pc-rule pc-rule-${state}`}>
               <div className="pc-rule-head">
                 <div className="pc-rule-title">
                   <strong>{r.name || whatText(r, cats)}</strong>
                   <span className={`pc-pill pc-pill-${state}`}>
-                    {state === 'on' ? 'Şu an etkin' : state === 'wait' ? 'Bekliyor' : state === 'legacy' ? 'Gözden geçirin' : 'Kapalı'}
-                    {r.enabled && r.status?.nextChange ? ` · ${nextText(r.status.nextChange, r.status.active)}` : ''}
+                    {calText || (state === 'on' ? 'Şu an etkin' : state === 'wait' ? 'Bekliyor' : state === 'legacy' ? 'Gözden geçirin' : 'Kapalı')}
+                    {!calText && r.enabled && r.status?.nextChange ? ` · ${nextText(r.status.nextChange, r.status.active)}` : ''}
                   </span>
                 </div>
-                <button className={`toggle-btn toggle-sm ${r.enabled ? 'toggle-on' : 'toggle-off'}`} onClick={() => toggle(r)}
-                  aria-label={r.enabled ? 'Kuralı kapat' : 'Kuralı aç'}><div className="toggle-knob" /></button>
+                <button className={`toggle-btn toggle-sm ${r.enabled ? 'toggle-on' : 'toggle-off'}`} onClick={() => toggle(r)} disabled={r.calendarOnly}
+                  title={r.calendarOnly ? CAL_LOCK : undefined} aria-label={r.calendarOnly ? CAL_LOCK : r.enabled ? 'Kuralı kapat' : 'Kuralı aç'}><div className="toggle-knob" /></button>
               </div>
               <div className="pc-rule-rows">
                 <div className="pc-row"><Target size={14} /><span>{targetsText(r)}{r.enabled && !r.targets.all ? ` · ${r.status?.devices ?? 0} cihaz` : ''}</span></div>
@@ -170,7 +180,7 @@ export function ParentalPanel() {
                     {r.sites.length > 6 && <span className="pc-tag">+{r.sites.length - 6} site</span>}
                   </span>
                 </div>
-                <div className="pc-row"><CalendarClock size={14} /><span>{r.mode === 'always' ? 'Her zaman' : `${r.mode === 'during' ? 'Engellenir' : 'Yalnız açık'}: ${r.windows.map(windowText).join(' · ')}`}</span></div>
+                <div className="pc-row"><CalendarClock size={14} /><span>{r.calendarOnly ? 'Yalnız takvim etkinliği sırasında' : r.mode === 'always' ? 'Her zaman' : `${r.mode === 'during' ? 'Engellenir' : 'Yalnız açık'}: ${r.windows.map(windowText).join(' · ')}`}</span></div>
               </div>
               {r.legacy && <div className="pc-legacy"><Info size={13} /> Eski sürümden taşındı ve kapalı geldi — düzenleyip açın.</div>}
               {r.templateId !== undefined && <p className="pc-hint"><Info size={13} /> Koruma Şablonları (Okul / Aile) oluşturdu — geri alma orada; burada değiştirirseniz geri almada silinmez.</p>}
@@ -178,7 +188,7 @@ export function ParentalPanel() {
               {r.targets.all && <p className="pc-hint"><Info size={13} /> {r.templateId === undefined ? 'Tüm ağ kuralı burada düzenlenemez (açıp kapatabilir ya da silebilirsiniz). ' : ''}
                 Bu kuralda dış DNS ve şifreli DNS (DoH) engellenmez — Ziyaret Geçmişi'ndeki «tüm ağda şifreli DNS engeli» bunu kapatır (yalnız IPv4).</p>}
               <div className="pc-rule-foot">
-                {!r.targets.all && <button className="btn-outline btn-sm" onClick={() => setEditing({ id: r.id, body: { name: r.name, enabled: r.enabled, targets: r.targets, blockAll: r.blockAll, categories: r.categories, sites: r.sites, mode: r.mode, windows: r.windows } })}>
+                {!r.targets.all && <button className="btn-outline btn-sm" onClick={() => setEditing({ id: r.id, body: { name: r.name, enabled: r.enabled, targets: r.targets, blockAll: r.blockAll, categories: r.categories, sites: r.sites, mode: r.mode, windows: r.windows, ...(r.calendarOnly ? { calendarOnly: true } : {}) } })}>
                   <Pencil size={13} /> Düzenle
                 </button>}
                 <button className="btn-outline btn-sm pc-danger" onClick={() => setRemoving(r)}><Trash2 size={13} /> Sil</button>
@@ -218,8 +228,8 @@ function RuleEditor({ initial, id, cats, devices, groups, targetsText, onClose, 
   const problem = useMemo(() => {
     if (!r.targets.devices.length && !r.targets.groups.length) return 'Kime uygulanacağını seçin';
     if (!r.blockAll && !r.categories.length && !r.sites.length) return 'Neyin engelleneceğini seçin';
-    if (r.mode !== 'always' && !r.windows.length) return 'En az bir saat aralığı ekleyin';
-    if (r.windows.some(w => !w.days.length)) return 'Her saat aralığında en az bir gün seçin';
+    if (!r.calendarOnly && r.mode !== 'always' && !r.windows.length) return 'En az bir saat aralığı ekleyin';
+    if (!r.calendarOnly && r.windows.some(w => !w.days.length)) return 'Her saat aralığında en az bir gün seçin';
     return '';
   }, [r]);
 
@@ -248,10 +258,12 @@ function RuleEditor({ initial, id, cats, devices, groups, targetsText, onClose, 
     setSaving(true);
     setErr('');
     try {
-      const body = { ...r, windows: r.mode === 'always' ? [] : r.windows } as unknown as Record<string, unknown>;
+      // Takvim kuralı kapalı kaydedilir (yalnız takvim açar); takvim kuralından çıkarılan kural kapalı kalır, kartından açılır
+      const body = (r.calendarOnly ? { ...r, mode: 'always', windows: [], enabled: false, calendarOnly: true }
+        : { ...r, windows: r.mode === 'always' ? [] : r.windows, ...(initial.calendarOnly ? { calendarOnly: false } : {}) }) as unknown as Record<string, unknown>;
       if (id == null) await postApi('/parental/rules', body);
       else await putApi(`/parental/rules/${id}`, body);
-      toast.success(id == null ? 'Kural eklendi ve uygulanıyor' : 'Kural güncellendi');
+      toast.success(r.calendarOnly ? 'Takvim kuralı kaydedildi' : id == null ? 'Kural eklendi ve uygulanıyor' : 'Kural güncellendi');
       onSaved();
     } catch (e) {
       setErr(e instanceof Error ? e.message : 'Kaydedilemedi');
@@ -343,6 +355,10 @@ function RuleEditor({ initial, id, cats, devices, groups, targetsText, onClose, 
 
       <section className="pc-sec">
         <h5><Clock size={14} /> Ne zaman</h5>
+        <button className={`pc-all pc-cal ${r.calendarOnly ? 'is-on' : ''}`} onClick={() => set({ calendarOnly: !r.calendarOnly })} aria-pressed={!!r.calendarOnly}>
+          <CalendarClock size={18} /><span><strong>Yalnız takvimle çalışır</strong><small>Elle açılmaz: Ağ Ajandası → Takvim kuralları'nda bağlanan etkinlik süresince uygulanır</small></span>
+        </button>
+        {!r.calendarOnly && <>
         <div className="pc-seg" role="radiogroup">
           {(['always', 'during', 'outside'] as Mode[]).map(m => (
             <button key={m} role="radio" aria-checked={r.mode === m} className={r.mode === m ? 'is-on' : ''} onClick={() => setMode(m)}>{MODE_LABEL[m]}</button>
@@ -379,11 +395,12 @@ function RuleEditor({ initial, id, cats, devices, groups, targetsText, onClose, 
             )}
           </div>
         )}
+        </>}
       </section>
 
       <div className="pc-summary">
         <Info size={14} />
-        <span>{problem ? 'Kural tamamlanınca özeti burada görünür.' : <><strong>{targetsText(r)}</strong>: {whatText(r, cats)} {r.mode === 'outside' ? 'yalnız belirtilen saatlerde açık, diğer zamanlarda engellenir' : `— ${whenText(r)} engellenir`}.</>}</span>
+        <span>{problem ? 'Kural tamamlanınca özeti burada görünür.' : <><strong>{targetsText(r)}</strong>: {whatText(r, cats)} {r.calendarOnly ? '— yalnız takvim etkinliği sırasında engellenir' : r.mode === 'outside' ? 'yalnız belirtilen saatlerde açık, diğer zamanlarda engellenir' : `— ${whenText(r)} engellenir`}.</>}</span>
       </div>
       {err && <div className="routing-apply routing-apply-err"><AlertTriangle size={14} /><span>{err}</span></div>}
     </Modal>

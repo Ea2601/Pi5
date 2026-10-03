@@ -1,7 +1,7 @@
 // Dış takvim eşitleme (G5.2): kullanıcının verdiği ICS adreslerinden (Google "gizli iCal adresi", Outlook 365 "takvimi
 // yayımla", iCloud "herkese açık takvim") SALT OKUNUR çekme; ufuk içindeki oluşumlar saklanır ve Ağ Ajandası'nda gösterilir.
-// Hiçbir kural, nft, Pi-hole, ebeveyn ya da kota ayarına dokunmaz (etiket → kural bağlama sonraki sürümde; o da
-// "çözülemedi" işaretli oluşumları hiçbir zaman tetiklemez).
+// Hiçbir kural, nft, Pi-hole, ebeveyn ya da kota ayarına dokunmaz (etiket → profil bağlaması calendarEngine.ts'te, G5.3: dış
+// etkinlik onay ister; "çözülemedi" işaretli oluşumları hiçbir zaman tetiklemez).
 //  - Varsayılan: kaynak yok → ağ isteği, zamanlayıcı, dosya yok; tablolar ilk kaynak eklenirken kurulur.
 //  - Adres gizli bir anahtardır (bilen takvimi okur): yalnız /etc/pi5-gateway/calendar/sources.conf'ta (dizin 0700, dosya
 //    0600, yalnız "id=URL" satırları). Veritabanına, app_settings'e, yedeğe, günlüğe, argv / env'e girmez; yanıtlarda maskeli

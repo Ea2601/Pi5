@@ -202,9 +202,10 @@ async function evaluate(): Promise<Evaluation> {
   const limits = (await dbAll('SELECT * FROM bandwidth_limits') as any[]).map(rowToLimit).filter(l => isMac(l.device_mac))
     .sort((a, b) => a.device_mac.localeCompare(b.device_mac));
   const states = await loadStates();
-  if (!limits.length) return { rows: [], devs: [], states, keys, raw: new Map() };
+  const caps = calendarCapsNow();   // takvim kaplaması (G5.3): boşsa her şey eskisi gibi
+  if (!limits.length && !caps.size) return { rows: [], devs: [], states, keys, raw: new Map() };
   const raw = await periodUsage(keys.day, keys.monthStart).catch(() => new Map<string, { day: number; month: number }>());
-  const ips = await ipsByMac(new Set(limits.filter(l => l.enabled).map(l => l.device_mac)));
+  const ips = await ipsByMac(new Set([...limits.filter(l => l.enabled).map(l => l.device_mac), ...caps.keys()]));
   const prot = await protectedSet();
   const names = new Map<string, string>();
   for (const d of await dbAll('SELECT mac_address, hostname FROM devices') as any[]) names.set(normMac(d.mac_address), String(d.hostname || ''));
@@ -232,6 +233,7 @@ async function evaluate(): Promise<Evaluation> {
       downKbps: effKbps(l.max_down_kbps, slow), upKbps: effKbps(l.max_up_kbps, slow),
     });
   }
+  mergeCalendarCaps(devs, caps, ips, prot);
   return { rows, devs, states, keys, raw };
 }
 
@@ -511,4 +513,38 @@ export function startQos(opts: { protectedMacs?: () => Promise<Set<string>> } = 
       setInterval(() => { void tick(); }, TICK_MS);
     })();
   }, 15000);
+}
+
+// ─── Takvim kaplaması (G5.3, calendarEngine.ts) ───
+// Takvim etkinliği sırasında seçilen cihazlara GEÇİCİ ek hız kısıtı. Yalnız kısıt ekler: hız = en küçüğü (kullanıcı sınırı,
+// takvim); kullanıcının sınırını ve kotasını kaldıramaz (kota kesmesi sürer), bandwidth_limits / quota_state'e yazmaz, kota
+// sayaçlarına ve dönemlere (updateStates) dokunmaz. Sınırı olmayan hedef cihaz yalnız hız girdisi alır. Korunan MAC'ler
+// (modem, Pi) her zaman dışarıda. Kaplama boşken evaluate ve buildQosRules metni eskisiyle bayt bayt aynı.
+export type CalendarCap = { downKbps: number; upKbps: number };
+let capsProvider: (() => Map<string, CalendarCap>) | null = null;
+export function setCalendarCaps(fn: (() => Map<string, CalendarCap>) | null): void { capsProvider = fn; }
+function calendarCapsNow(): Map<string, CalendarCap> {
+  if (!capsProvider) return new Map();
+  try {
+    const out = new Map<string, CalendarCap>();
+    for (const [mac, c] of capsProvider()) {
+      const m = normMac(mac);
+      const ok = (v: number) => Number.isInteger(v) && v >= MIN_KBPS && v <= MAX_KBPS;
+      if (isMac(m) && (ok(c.downKbps) || ok(c.upKbps))) out.set(m, { downKbps: ok(c.downKbps) ? c.downKbps : 0, upKbps: ok(c.upKbps) ? c.upKbps : 0 });
+    }
+    return out;
+  } catch { return new Map(); }
+}
+const minKbps = (a: number, b: number) => (a && b ? Math.min(a, b) : a || b);   // 0 = sınırsız
+function mergeCalendarCaps(devs: QosDevice[], caps: Map<string, CalendarCap>, ips: Map<string, string[]>, prot: Set<string>): void {
+  if (!caps.size) return;
+  for (const d of devs) {
+    const c = caps.get(d.mac);
+    if (c) { d.downKbps = minKbps(d.downKbps, c.downKbps); d.upKbps = minKbps(d.upKbps, c.upKbps); }
+  }
+  const have = new Set(devs.map(d => d.mac));
+  for (const [mac, c] of [...caps].sort((a, b) => a[0].localeCompare(b[0]))) {
+    if (have.has(mac) || prot.has(mac)) continue;
+    devs.push({ mac, ips: ips.get(mac) || [], block: false, downKbps: c.downKbps, upKbps: c.upKbps });
+  }
 }

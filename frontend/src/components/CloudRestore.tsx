@@ -47,6 +47,7 @@ const TABLE_LABEL: Record<string, string> = {
   dhcp_leases: 'Statik DHCP kayıtları', domain_suggestion_dismissed: 'Yoksayılan öneriler', calendar_sources: 'Takvim bağlantıları',
   port_forwards: 'Port yönlendirmeleri', device_names: 'Elle verilen cihaz adları',
   policy_templates: 'Koruma şablonları',
+  calendar_profiles: 'Takvim profilleri', calendar_bindings: 'Takvim etiket bağlamaları', calendar_local_events: 'Yerel takvim etkinlikleri',
 };
 // Hiç geri yüklenmeyenler: eski donanımın arayüz adlarını / adreslerini taşırlar ya da parola içerirler
 const NEVER_RESTORED = [

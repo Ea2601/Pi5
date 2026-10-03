@@ -248,3 +248,11 @@
 :root.light-theme .flt-status,
 :root.light-theme .flt-item,
 :root.light-theme .flt-radio { background: rgba(15, 23, 42, 0.025); }
+
+/* ── 12. Takvim kuralları (Ağ Ajandası → CalendarRules.css; G5.3): kaplama blok renkleri açık zeminde koyu tonlar (-700/-800) ──
+   Tembel sekme CSS'i bu katmandan sonra yüklenir: .cr-panel'deki token bloğunu eşit özgüllük ezer, tam :root.light-theme gerekir. */
+:root.light-theme .cr-panel {
+  --agenda-pending: 146, 64, 14;
+  --agenda-calendar: 63, 98, 18;
+  --agenda-blocked: 185, 28, 28;
+}

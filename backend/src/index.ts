@@ -62,6 +62,7 @@ import { applyZapret, zapretStatus, startBlockcheck, blockcheckRunning, zapretIn
 import type { ZapretApplyResult } from './zapret';
 import { registerAgendaRoutes, processTimeZone, readSystemTimeZone, namedZone, zonesDiffer } from './agenda';
 import { registerCalendarRoutes, startCalendarSync, calendarBackupRows, prepareCalendarRestore, afterCalendarRestore } from './calendarSync';
+import { registerCalendarEngineRoutes, startCalendarEngine, ENGINE_BACKUP_TABLES, engineBackupRows, ensureEngineSchema, afterEngineRestore } from './calendarEngine';
 import { unboundStatus, applyUnboundSettings, validateUnboundSettings, savedUnboundSettings } from './unbound';
 import { recordEvent, recordEventOnce, recordVersionChange, serviceLabel } from './events';
 import { wgServerStatus, setServerEnabled, addPeer, updatePeerRole, deletePeer, peerConfig, reapplyWgServer,
@@ -2964,6 +2965,9 @@ app.use('/api/calendar', (req, res, next) => (req.method === 'GET' ? next() : wr
   void netAdminGuard(req, res, next);
 });
 registerCalendarRoutes(app);
+// Takvim kuralları (calendarEngine.ts, G5.3): etiket → profil; ebeveyn ve kota / hız motorlarına geçici kaplama. Aynı kapı
+// (uyduda 409, netAdminGuard, yazma sınırı); motor varsayılan kapalı.
+registerCalendarEngineRoutes(app);
 
 // ─── Metric history recorder — sample every 5s, keep ~11 min (10-min window + margin) ───
 // Runs independent of any client so history accumulates continuously; the dashboard reads it
@@ -4677,7 +4681,7 @@ const BACKUP_TABLES = [
   'service_config', 'service_status', 'traffic_routing', 'domain_routing', 'routing_rules',
   'pihole_lists', 'zapret_domains', 'bandwidth_limits', 'parental_rules', 'traffic_schedules',
   'device_groups', 'device_group_members', 'throttle_rules', 'app_settings', 'cron_jobs', 'dhcp_leases',
-  'domain_suggestion_dismissed', 'port_forwards', 'device_names', 'calendar_sources', 'policy_templates',
+  'domain_suggestion_dismissed', 'port_forwards', 'device_names', 'calendar_sources', 'policy_templates', ...ENGINE_BACKUP_TABLES,
 ];
 // device_names gerçek tablo değil: devices'tan yalnız elle verilen adlar (name_manual = 1) — cihaz listesinin kendisi
 // (IP, son görülme) çalışma kaydıdır, yedekten gelmez; geri yüklemede yalnız adlar birleştirilir.
@@ -4699,6 +4703,9 @@ const BACKUP_MANIFEST: { key: string; label: string; desc: string; tables: strin
   // Yalnız uygulanmış koruma şablonu varken listelenir (templates.ts); şablonun ebeveyn kuralları "Cihazlar" bölümündedir
   { key: 'templates', label: 'Koruma şablonları', desc: 'Uygulanan koruma şablonlarının kaydı (geri alma için: oluşturduğu kurallar ve değiştirdiği ayarların önceki değeri)',
     tables: ['policy_templates'] },
+  // Yalnız takvim kuralı varken listelenir; onay kararları ve motorun açık / kapalı ayarı yedeğe girmez (geri yükleme açmaz)
+  { key: 'calendar_rules', label: 'Takvim kuralları', desc: 'Etiket → profil bağlamaları, profiller ve paneldeki yerel etkinlikler — dış etkinliklerin onayları yedeğe girmez, yeniden istenir',
+    tables: ENGINE_BACKUP_TABLES },
 ];
 const BACKUP_TABLE_SET = new Set(BACKUP_TABLES);
 // Ayar tabloları birleştirilir (yedekte olmayan anahtar kalır: rol, eşleştirme, sürüm gibi çalışma anahtarları eski bir
@@ -4711,7 +4718,7 @@ const BACKUP_MERGE_TABLES = new Set(['service_config', 'service_status', 'app_se
 // wan_monitor: hatta özgü ölçüm ayarı — başka bir cihazın / kotalı hattın yedeğiyle kendiliğinden ping başlatmasın.
 // sqm_config: hatta özgü bant (akıllı kuyruk) — başka bir cihaza / hatta geri yüklenip hattı yanlış bantla kısmasın.
 const BACKUP_SKIP_SETTINGS = new Set(['last_seen_version', 'pihole_hosts_managed', 'storage_job_notified', 'wg_reach_watch',
-  'cron_defaults_seeded', 'accent_gray_migrated', 'hotplug_watch', 'wan_monitor', 'sqm_config',
+  'cron_defaults_seeded', 'accent_gray_migrated', 'hotplug_watch', 'wan_monitor', 'sqm_config', 'calendar_settings',
   // Koruma şablonları: bu Pi-hole'un çalışma kayıtları (Default grubunu eklediğimiz kullanıcı kayıtları, /etc/dnsmasq.d okumasını
   // güvenli arama mı açtırdı) — başka bir cihazın durumunu taşımasınlar (parental.ts, safeSearch.ts)
   'parental_default_added', 'safesearch_dir_was_off']);
@@ -4863,6 +4870,7 @@ async function applyRestored(tables: Set<string>, keys: Set<string>, req: expres
   } else if (unmarked) {
     await step('Koruma şablonları', async () => unmarkedNote);
   }
+  if (ENGINE_BACKUP_TABLES.some(t => tables.has(t))) await step('Takvim kuralları', () => afterEngineRestore());
   return out;
 }
 
@@ -4874,7 +4882,8 @@ async function buildBackupExport(): Promise<{ backup_version: number; created_at
     configTables[t] = await (t === 'dhcp_leases' ? dbAll('SELECT * FROM dhcp_leases WHERE is_static = 1')
       : t === 'device_names' ? dbAll('SELECT mac_address, hostname FROM devices WHERE name_manual = 1')
         : t === 'calendar_sources' ? calendarBackupRows()
-          : dbAll(`SELECT * FROM ${t}`)).catch(() => []);
+          : ENGINE_BACKUP_TABLES.includes(t) ? engineBackupRows(t)
+            : dbAll(`SELECT * FROM ${t}`)).catch(() => []);
   }
   // Takvim bağlantıları yalnız varsa (adres yok — yalnız ad, renk, açık, aralık); takvimsiz kurulumun yedeği eskisiyle aynı
   if (!configTables.calendar_sources?.length) delete configTables.calendar_sources;
@@ -4886,6 +4895,8 @@ async function buildBackupExport(): Promise<{ backup_version: number; created_at
     const { template_id: _t, ...rest } = r || {};
     return rest;
   });
+  // Takvim kuralı tabloları da yalnız doluysa (kullanılmayan kurulumun yedeği eskisiyle aynı)
+  for (const t of ENGINE_BACKUP_TABLES) if (!configTables[t]?.length) delete configTables[t];
 
   return {
     backup_version: 2,
@@ -4900,7 +4911,7 @@ app.get('/api/backup/manifest', async (_req, res) => {
     const exp = await buildBackupExport();
     res.json({
       sections: BACKUP_MANIFEST.map(m => ({ key: m.key, label: m.label, desc: m.desc, count: m.tables.reduce((a, t) => a + (exp.data[t]?.length || 0), 0) }))
-        .filter(m => (m.key !== 'calendar' && m.key !== 'templates') || m.count > 0),
+        .filter(m => (m.key !== 'calendar' && m.key !== 'templates' && m.key !== 'calendar_rules') || m.count > 0),
       excluded: 'VPS sunucuları ve WireGuard anahtarları, Ev VPN anahtarları ve DDNS hesapları bu dosyaya girmez (gizli anahtar). Bulut Yedeği\'nde «gizli anahtarlar» seçeneğiyle şifreli yedeklenebilir.',
     });
   } catch (e: any) {
@@ -4968,6 +4979,9 @@ async function importBackupData(backup: any, req: express.Request): Promise<Back
     data.calendar_sources = cal.rows;
     if (cal.skipped) notes.push({ item: 'Takvim bağlantıları', ok: true, detail: `${cal.skipped} kayıt atlandı (geçersiz ya da en çok 5)` });
   }
+
+  // Takvim kuralı tabloları işlemden önce kurulur (restoreTable sütunları tablodan okur)
+  if (present.some(t => ENGINE_BACKUP_TABLES.includes(t))) await ensureEngineSchema();
 
   // Tüm tablolar tek işlemde (kısmi hata = geri alma).
   let restored = 0;
@@ -6860,6 +6874,8 @@ const server = app.listen(Number(port), bindHost, () => {
     void startCalendarSync().catch((e: any) => console.error('[takvim]', e?.message || e));
     // Hat düzeyi akıllı kuyruk (sqm.ts): ayar yoksa hiçbir şey yapmaz (tc yok); açıksa 15 sn'de bir uzlaştırma.
     startSqm();
+    // Takvim kuralları motoru (calendarEngine.ts): sağlayıcılar bağlanır; motor kapalıysa (varsayılan) zamanlayıcı yok.
+    startCalendarEngine({ protectedMacs: blockProtectedMacs });
     // Tak-çalıştır ağ kartı algılama (portWatch.ts): yalnız ayar açıksa (varsayılan kapalı) 10 sn'de bir /sys okunur.
     void initPortWatch().catch((e: any) => console.error('[tak-çalıştır]', e?.message || e));
     // Yeni cihaz bildirimi (deviceWatch.ts): yalnız ayar açıksa (varsayılan kapalı) 60 sn'de bir komşu tablosu okunur.

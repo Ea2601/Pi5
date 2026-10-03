@@ -48,6 +48,7 @@ interface BackupManifest { sections: { key: string; label: string; desc: string;
 const SECTION_ICONS: Record<string, ReactNode> = {
   services: <Settings size={16} />, routing: <Globe size={16} />, devices: <Users size={16} />,
   firewall: <Shield size={16} />, dns: <Database size={16} />, system: <Calendar size={16} />, calendar: <CalendarSync size={16} />,
+  calendar_rules: <CalendarSync size={16} />,
 };
 
 const BACKUP_HISTORY_KEY = 'pi5_backup_history';

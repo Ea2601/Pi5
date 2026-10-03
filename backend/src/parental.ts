@@ -124,6 +124,8 @@ export function normalizeSite(raw: unknown): string | null {
 }
 
 export function validateRule(body: any): { rule: Omit<ParentalRule, 'id' | 'legacy'> } | { error: string } {
+  const calErr = calendarRuleError(body);   // takvim kuralı (G5.3): ayrı denetim, aşağıda
+  if (calErr) return { error: calErr };
   const name = String(body?.name ?? '').trim().slice(0, 60);
   const devices = [...new Set((Array.isArray(body?.targets?.devices) ? body.targets.devices : []).map((m: unknown) => String(m).toLowerCase()))] as string[];
   const groups = [...new Set((Array.isArray(body?.targets?.groups) ? body.targets.groups : []).map(Number))] as number[];
@@ -208,6 +210,7 @@ function ensureSchema(): Promise<void> {
         "sites TEXT DEFAULT ''", "windows TEXT DEFAULT ''", "schedule_mode TEXT DEFAULT 'always'", 'version INTEGER DEFAULT 1',
         'legacy INTEGER DEFAULT 0', 'template_id INTEGER DEFAULT NULL'];
       for (const c of cols) await dbRun(`ALTER TABLE parental_rules ADD COLUMN ${c}`).catch(() => { /* zaten var */ });
+      for (const c of CALENDAR_COLS) await dbRun(`ALTER TABLE parental_rules ADD COLUMN ${c}`).catch(() => { /* zaten var */ });
     })();
   }
   return schemaReady;
@@ -258,7 +261,7 @@ async function migrateLegacy(): Promise<void> {
 export async function listRules(): Promise<ParentalRule[]> {
   await ensureSchema();
   await migrateLegacy();
-  return (await dbAll('SELECT * FROM parental_rules ORDER BY id') as any[]).map(rowToRule);
+  return (await dbAll('SELECT * FROM parental_rules ORDER BY id') as any[]).map(r => withCalendarFlags(rowToRule(r), r));
 }
 
 const ruleParams = (r: Omit<ParentalRule, 'id' | 'legacy'>) => [r.name, JSON.stringify(r.targets), r.blockAll ? 1 : 0,
@@ -279,13 +282,14 @@ export async function createRule(body: any, opts: { templateId?: number } = {}):
     row = { ...row, template_id: opts.templateId };
   }
   requestApply('kural eklendi');
-  return rowToRule(row);
+  return markCalendarRule(rowToRule(row), body);
 }
 
 export async function updateRule(id: number, body: any): Promise<void> {
   await ensureSchema();
   const row = await dbGet('SELECT * FROM parental_rules WHERE id = ?', [id]);
   if (!row) throw new Error('Kural bulunamadı');
+  body = calendarEditBody(row, body);   // takvim kuralı elle açılamaz (G5.3)
   // Yalnız aç / kapat. Açarken kural geçerli olmalı (eski kurallarda hedef kaybolmuş olabilir: "Çocuklar" gibi sabit gruplar)
   if (body && Object.keys(body).length === 1 && body.enabled !== undefined) {
     if (body.enabled) {
@@ -299,6 +303,7 @@ export async function updateRule(id: number, body: any): Promise<void> {
     if ('error' in v) throw new Error(v.error);
     await dbRun(`UPDATE parental_rules SET name = ?, targets = ?, block_all = ?, categories = ?, sites = ?, windows = ?,
       schedule_mode = ?, enabled = ?, version = 2, legacy = 0 WHERE id = ?`, [...ruleParams(v.rule), id]);
+    await writeCalendarFlag(id, body);
   }
   requestApply('kural güncellendi');
 }
@@ -411,7 +416,7 @@ interface DnsPlan {
   allItems?: { regex: Set<string>; lists: Set<string> };
 }
 
-export function planDns(rules: ParentalRule[], targets: Map<number, Set<string>>, now: Date, all = false): DnsPlan {
+export function planDns(rules: ParentalRule[], targets: Map<number, Set<string>>, now: Date, all = false, ov: CalendarOverlay | null = currentOverlay()): DnsPlan {
   const p: DnsPlan = { groups: new Map(), clients: new Map(), regex: new Map(), lists: new Map() };
   const add = (m: Map<string, Set<string>>, k: string, g: string) => { if (!m.has(k)) m.set(k, new Set()); m.get(k)!.add(g); };
   const guard = new Set<string>();
@@ -434,7 +439,7 @@ export function planDns(rules: ParentalRule[], targets: Map<number, Set<string>>
     const macs = targets.get(r.id) || new Set();
     if (!macs.size) continue;
     const g = `${GROUP_PREFIX}${r.id}`;
-    p.groups.set(g, ruleActive(r, now));
+    p.groups.set(g, effectiveActive(r, now, ov));
     for (const m of macs) { add(p.clients, m.toUpperCase(), g); guard.add(m.toUpperCase()); }
     for (const c of r.categories) {
       const cat = CATEGORIES[c];
@@ -443,6 +448,7 @@ export function planDns(rules: ParentalRule[], targets: Map<number, Set<string>>
     }
     for (const s of r.sites) add(p.regex, domainRegex([s]), g);
   }
+  planCalendarRules(rules, targets, now, ov, p, guard);   // takvim kuralları (G5.3): uyurken grup kapalı kurulur
   if (guard.size) {
     p.groups.set(DNS_GROUP, true);
     for (const m of guard) add(p.clients, m, DNS_GROUP);
@@ -618,18 +624,19 @@ async function applyAll(reason: string): Promise<void> {
   const rules = await listRules();
   const targets = await resolveTargets(rules);
   const now = new Date();
+  const ov = currentOverlay();   // takvim kaplaması (G5.3): bu tur boyunca tek görüntü
   const errors: string[] = [];
   const all = await dnsGuardAllEnabled();
   // Güvenlik duvarı: şu an "tüm internet" kuralı etkin cihazlar + DNS koruması (kategori/site kuralı açık cihazlar)
   const blockNow = new Set<string>(), guard = new Set<string>();
   for (const r of rules) {
     const macs = targets.get(r.id) || new Set();
-    if (r.enabled && r.blockAll && ruleActive(r, now)) macs.forEach(m => blockNow.add(m));
-    if (r.enabled && hasDnsPart(r)) macs.forEach(m => guard.add(m));
+    if (r.blockAll && effectiveActive(r, now, ov)) macs.forEach(m => blockNow.add(m));
+    if ((r.calendarOnly ? effectiveActive(r, now, ov) : r.enabled) && hasDnsPart(r)) macs.forEach(m => guard.add(m));
   }
   try { await applyNft([...blockNow], [...guard], all); } catch (e: any) { errors.push(e.message); }
 
-  const plan = planDns(rules, targets, now, all);
+  const plan = planDns(rules, targets, now, all, ov);
   const planKey = JSON.stringify([[...plan.clients].map(([k, v]) => [k, [...v].sort()]).sort(),
     [...plan.regex].map(([k, v]) => [k, [...v].sort()]).sort(), [...plan.lists].map(([k, v]) => [k, [...v].sort()]).sort(),
     [...plan.groups.keys()].sort()]);
@@ -712,10 +719,11 @@ export async function rulesWithStatus(): Promise<{ rules: (ParentalRule & { stat
   const rules = await listRules();
   const targets = await resolveTargets(rules);
   const now = new Date();
+  const ov = currentOverlay();
   return {
     rules: rules.map(r => {
       const nc = nextChange(r, now);
-      return { ...r, status: { active: ruleActive(r, now), nextChange: nc ? nc.toISOString() : null, devices: targets.get(r.id)?.size || 0 } };
+      return { ...r, status: { active: effectiveActive(r, now, ov), nextChange: nc ? nc.toISOString() : null, devices: targets.get(r.id)?.size || 0, ...calendarStatus(r, now, ov) } };
     }),
     health: parentalHealth(),
   };
@@ -726,4 +734,126 @@ export function startParental(opts: { protectedMacs: () => Promise<Set<string>> 
   if (!isLinux) return;
   setTimeout(() => { void runApply('açılış'); }, 12000);
   setInterval(() => { void runApply('zamanlayıcı'); }, TICK_MS);
+}
+
+// ── Takvim kaplaması (G5.3, calendarEngine.ts) ───────────────────────────────
+// Takvim motoru nft'ye ya da Pi-hole'a YAZMAZ: bu motora geçici bir kaplama (hangi kural ne zamana dek askıda / etkin) verir;
+// uygulama yine bu dosyanın 30 sn'lik döngüsüdür (döngü kaplamayı her turda yeniden okur, kendi yazdığını geri yazmaz).
+//  - Sağlayıcı yokken ya da motor kapalıyken kaplama null: effectiveActive ≡ ruleActive, plan ve nft metni bayt bayt aynı.
+//  - Takvim kuralı (calendar_only = 1, cal_armed = 1) veritabanında enabled = 0 KALIR: yeni bir schedule_mode değeri eski
+//    sürümde (rowToRule / ruleActive) kuralı kalıcı "her zaman" yapardı; enabled = 0 eski kodda ve yedeği eski panele
+//    yükleyende pasif kalır. Elle açılamaz (validateRule / updateRule); tüm ağ hedefiyle (Default grup) birleşemez.
+//  - Uyuyan takvim kuralının Pi-hole grubu (motor açıkken) KAPALI olarak önceden kurulur: etkinleşme yalnız grup aç / kapa,
+//    gravity beklenmez. DNS atlatma koruması takvim kuralında yalnız kural etkinken uygulanır.
+//  - Her etki bir bitiş anı taşır (until): motor dursa da etki o anda kendiliğinden biter.
+export interface ParentalRule { calendarOnly?: true; calArmed?: true }   // yalnız takvim kuralında bulunur
+export interface CalendarEffect { until: number; label: string }
+export interface CalendarOverlay { suspend: Map<number, CalendarEffect>; activate: Map<number, CalendarEffect> }
+export interface RuleStatus { calendar?: { state: 'active' | 'waiting' | 'suspended'; until: string | null; label: string | null } }
+const CALENDAR_COLS = ['calendar_only INTEGER DEFAULT 0', 'cal_armed INTEGER DEFAULT 0'];
+
+let overlayProvider: (() => CalendarOverlay | null) | null = null;
+export function setCalendarOverlay(fn: (() => CalendarOverlay | null) | null): void { overlayProvider = fn; }
+function currentOverlay(): CalendarOverlay | null {
+  if (!overlayProvider) return null;
+  try { return overlayProvider(); } catch { return null; }
+}
+const effectLive = (e: CalendarEffect | undefined, now: Date): e is CalendarEffect => !!e && now.getTime() < e.until;
+// Tüm ağ hedefli kural (G1.3-A, Pi-hole Default grubu): takvim askıya alamaz (alan henüz yoksa false)
+const allTarget = (r: ParentalRule) => !!(r.targets as { all?: boolean } | undefined)?.all;
+// Kuralın şu an uygulanıp uygulanmadığı (kaplama dahil). Kaplama null: ruleActive ile aynı.
+export function effectiveActive(r: ParentalRule, now: Date, ov: CalendarOverlay | null = currentOverlay()): boolean {
+  if (r.calendarOnly) return !!ov && !!r.calArmed && effectLive(ov.activate.get(r.id), now) && !effectLive(ov.suspend.get(r.id), now);
+  if (ov && !allTarget(r) && effectLive(ov.suspend.get(r.id), now)) return false;
+  return ruleActive(r, now);
+}
+// Liste yanıtı: takvim kuralı ve takvimin askıya aldığı kural için durum (diğer kuralların yanıtı eskisiyle aynı). Kapalı ya da
+// tüm ağ hedefli normal kural askıya alınmış görünmez (askının etkisi yok; kart "Kapalı" kalır).
+function calendarStatus(r: ParentalRule, now: Date, ov: CalendarOverlay | null): Pick<RuleStatus, 'calendar'> {
+  const sus = ov ? ov.suspend.get(r.id) : undefined;
+  const act = ov ? ov.activate.get(r.id) : undefined;
+  if (r.calendarOnly) {
+    const on = effectiveActive(r, now, ov);
+    const e = on ? act : effectLive(sus, now) ? sus : undefined;
+    return { calendar: { state: on ? 'active' : effectLive(sus, now) ? 'suspended' : 'waiting', until: e ? new Date(e.until).toISOString() : null, label: e?.label ?? null } };
+  }
+  return r.enabled && !allTarget(r) && effectLive(sus, now) ? { calendar: { state: 'suspended', until: new Date(sus.until).toISOString(), label: sus.label } } : {};
+}
+
+// Takvim kuralı alanının denetimi (validateRule'un başında). calendarOnly yoksa / false ise hiçbir şey denetlenmez.
+function calendarRuleError(body: any): string | null {
+  if (body?.calendarOnly === undefined || body.calendarOnly === false) return null;
+  if (body.calendarOnly !== true) return 'calendarOnly true ya da false olmalı';
+  if (body.enabled !== false) return 'Takvim kuralı elle açılamaz — yalnız takvim etkinliği sırasında çalışır';
+  if (body.targets?.all) return 'Tüm ağ hedefi takvimle açılıp kapatılamaz (Pi-hole Default grubu) — cihaz ya da grup seçin';
+  if (body.mode !== undefined && body.mode !== 'always') return 'Takvim kuralında saat aralığı olmaz — süreyi takvim etkinliği belirler';
+  return null;
+}
+function withCalendarFlags(rule: ParentalRule, row: any): ParentalRule {
+  if (!Number(row?.calendar_only)) return rule;
+  // enabled her zaman false: eski sürümde elle açılmış (enabled = 1) bir takvim kuralı da yalnız takvimle çalışır
+  return { ...rule, enabled: false, calendarOnly: true, ...(Number(row.cal_armed) ? { calArmed: true as const } : {}) };
+}
+// Yeni kural takvim kuralıysa işaretlenir (INSERT eskisiyle aynı; kural enabled = 0 eklendiği için arada etkisizdir). createRule
+// son satırı okur, eşzamanlı başka bir ekleme olabilir: işaret, eklenen kuralın kendisine (aynı ad, hedef ve içerik; kapalı,
+// henüz takvim kuralı değil; en yenisi) yazılır — başka bir kural kapatılmaz ya da takvim kuralına çevrilmez.
+async function markCalendarRule(rule: ParentalRule, body: any): Promise<ParentalRule> {
+  if (body?.calendarOnly !== true) return rule;
+  const v = validateRule(body);
+  if ('error' in v) return rule;
+  const [name, targets, blockAll, categories, sites] = ruleParams(v.rule);
+  const row = await dbGet(`SELECT * FROM parental_rules WHERE name = ? AND targets = ? AND block_all = ? AND categories = ? AND sites = ?
+    AND enabled = 0 AND calendar_only = 0 ORDER BY id DESC LIMIT 1`, [name, targets, blockAll, categories, sites]);
+  if (!row) return rule;
+  await dbRun('UPDATE parental_rules SET calendar_only = 1, cal_armed = 1, enabled = 0 WHERE id = ?', [row.id]);
+  requestApply('takvim kuralı eklendi');
+  return { ...rowToRule(row), enabled: false, calendarOnly: true, calArmed: true };
+}
+// PUT /api/parental/rules/:id: takvim kuralını "Aç"mak reddedilir (kalıcı "her zaman" engeli olurdu); tam düzenlemede alan
+// gönderilmemişse takvim kuralı olarak kalır (enabled = 0). calendarOnly: false açıkça gönderilirse normal kurala döner, ama
+// KAPALI: çıkarma ve açma iki ayrı istek (tek istekte takvim kuralı kalıcı engel olamaz); açmak kartındaki düğmeyle.
+const MANUAL_ON = 'Takvim kuralı elle açılamaz — yalnız takvim etkinliği sırasında çalışır (Ağ Ajandası → Takvim kuralları)';
+function calendarEditBody(row: any, body: any): any {
+  if (!Number(row?.calendar_only)) return body;
+  if (body && Object.keys(body).length === 1 && body.enabled !== undefined) {
+    if (body.enabled) throw new Error(MANUAL_ON);
+    return body;
+  }
+  if (body?.calendarOnly === false) {
+    if (body.enabled === true) throw new Error('Takvim kuralı elle açılamaz — önce "Yalnız takvimle çalışır"ı kaldırıp kaydedin, sonra kartından açın');
+    return { ...body, enabled: false };
+  }
+  return body?.calendarOnly === undefined ? { ...body, calendarOnly: true, enabled: body?.enabled ?? false } : body;
+}
+async function writeCalendarFlag(id: number, body: any): Promise<void> {
+  if (body?.calendarOnly === undefined) return;
+  const on = body.calendarOnly === true ? 1 : 0;
+  await dbRun('UPDATE parental_rules SET calendar_only = ?, cal_armed = ? WHERE id = ?', [on, on, id]);
+}
+
+// planDns'in takvim kuralları: yalnız motor açıkken (kaplama null değil). Grup kuralın takvim durumuna göre açık / kapalı.
+function planCalendarRules(rules: ParentalRule[], targets: Map<number, Set<string>>, now: Date, ov: CalendarOverlay | null, p: DnsPlan, guard: Set<string>): void {
+  if (!ov) return;
+  const add = (m: Map<string, Set<string>>, k: string, g: string) => { if (!m.has(k)) m.set(k, new Set()); m.get(k)!.add(g); };
+  for (const r of rules) {
+    if (!r.calendarOnly || !r.calArmed || !hasDnsPart(r) || (r.targets as { all?: boolean }).all) continue;
+    const macs = targets.get(r.id) || new Set();
+    if (!macs.size) continue;
+    const g = `${GROUP_PREFIX}${r.id}`;
+    const on = effectiveActive(r, now, ov);
+    p.groups.set(g, on);
+    for (const m of macs) { add(p.clients, m.toUpperCase(), g); if (on) guard.add(m.toUpperCase()); }
+    for (const c of r.categories) {
+      const cat = CATEGORIES[c];
+      if (cat.domains?.length) add(p.regex, domainRegex(cat.domains), g);
+      for (const l of cat.lists || []) add(p.lists, l, g);
+    }
+    for (const s of r.sites) add(p.regex, domainRegex([s]), g);
+  }
+}
+
+// Kaplama değişti (takvim motoru): beklemeden bir tur (yalnız değişen uygulanır). Bittiğinde sağlık durumu döner.
+export async function applyCalendarOverlay(): Promise<ParentalHealth> {
+  if (isLinux) await runApply('takvim');
+  return parentalHealth();
 }

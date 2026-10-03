@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from 'react';
+import { lazy, Suspense, useCallback, useMemo, useState } from 'react';
 import type { MouseEvent } from 'react';
 import { CalendarDays, AlertTriangle, Info, ChevronRight, Repeat, RefreshCw, Loader2, X, CalendarSync } from 'lucide-react';
 import { useApi } from '../hooks/useApi';
@@ -8,6 +8,9 @@ import { BANDWIDTH_TAB_KEY, MAINTENANCE_TAB_KEY } from '../nav';
 import type { TabId } from '../types';
 import { CalendarSources } from './CalendarSources';
 import './AgendaPanel.css';
+
+// Takvim kuralları (G5.3): ayrı parça — yalnız bu sayfa açılınca yüklenir
+const CalendarRules = lazy(() => import('./CalendarRules').then(m => ({ default: m.CalendarRules })));
 
 // Ağ Ajandası (backend agenda.ts, GET /api/agenda): Pi'de zamanlanmış işler ve saat pencereleri — salt okunur. Ebeveyn ve
 // Trafik Zamanlayıcı pencereleri, panel ve sistem cron görevleri, bulut yedeği, otomatik hız testi, kota dönemi ve Zapret
@@ -285,6 +288,7 @@ export function AgendaPanel() {
       )}
     </Panel>
     <CalendarSources onChanged={calendarChanged} tz={view.tz} />
+    <Suspense fallback={null}><CalendarRules tz={view.tz} /></Suspense>
     </>
   );
 }
